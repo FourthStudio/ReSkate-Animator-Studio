@@ -1,5 +1,6 @@
 ﻿#include "anim_studio.h"
 #include "trick_batch.h"
+#include "native_asset_names.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
 #include "anim_research.h"
@@ -26,6 +27,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <optional>
 #include <vector>
 
@@ -2863,17 +2865,25 @@ namespace {
 std::vector<GameTrick> read_catalog() {
     std::vector<GameTrick> out;
     try {
+        const auto indexed = native_assets();
+        std::unordered_map<std::string_view, const NativeAsset*> named;
+        for (const auto& asset : *indexed) named.emplace(asset.asset, &asset);
         std::ifstream in(library_folder() / L"library" / L"catalog.json", std::ios::binary);
         if (!in) return out;
         const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         const auto json = Json::parse(text);
         if (!json.is_array()) return out;
-        for (std::size_t i = 0; i < json.size() && i < 2000; ++i) {
+        for (std::size_t i = 0; i < json.size() && i < 10000; ++i) {
             const auto& e = json.at(i);
             if (!e.is_object()) continue;
             GameTrick t{e.value("category", ""), e.value("label", ""), e.value("trick", ""), e.value("pop", ""), e.value("file", ""), e.value("asset", ""), e.value("preview_only", false)};
             t.position_codec = e.value("position_codec", "");
             t.looping = e.value("native_looping", false);
+            if (t.preview_only && t.asset.starts_with("animation/dingo/")) {
+                const auto found = named.find(t.asset);
+                t.label = found != named.end() ? found->second->label : native_asset_name(t.asset).label;
+                t.category = native_asset_folder(t.asset, "ClipControllerAsset", t.category);
+            }
             const std::filesystem::path relative_file(t.file);
             if (t.trick.empty() || t.file.empty() || t.file.find("..") != std::string::npos ||
                 relative_file.has_root_path() || relative_file.extension() != L".clip") continue;
@@ -2927,27 +2937,115 @@ struct GameCatalogCache {
 GameCatalogCache& game_catalog_cache() { static GameCatalogCache cache; return cache; }
 } // namespace
 std::shared_ptr<const std::vector<NativeAsset>> native_assets() {
-    static const auto assets = [] {
+    static std::mutex mutex;
+    static std::uint64_t revision{};
+    static std::shared_ptr<const std::vector<NativeAsset>> assets;
+    std::lock_guard lock(mutex);
+    const auto current_revision = tricks_revision.load(std::memory_order_acquire);
+    if (assets && revision == current_revision) return assets;
+    assets = [] {
         auto out = std::make_shared<std::vector<NativeAsset>>();
         try {
             const auto path = library_folder() / L"library" / L"native-catalog.json";
             std::error_code error;
             if (!std::filesystem::is_regular_file(path, error) || std::filesystem::file_size(path, error) > 32 * 1024 * 1024) return out;
             std::ifstream in(path, std::ios::binary);
-            const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+            const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), JsonLimits{32 * 1024 * 1024, 48, 2 * 1024 * 1024});
             if (!root.is_array() || root.size() > 100000) return out;
             for (const auto& e : root) {
                 if (!e.is_object()) continue;
                 NativeAsset asset{e.value("category", "Other"), e.value("asset", ""), e.value("kind", "unclassified")};
-                if (asset.asset.starts_with("animation/dingo/") && asset.asset.size() < 1024 && asset.category.size() < 256)
+                asset.root_type = e.value("root_type", "");
+                asset.decode_state = e.value("state", "indexed");
+                asset.detail = e.value("detail", "");
+                asset.partition = e.value("partition", "");
+                if (asset.partition.empty()) asset.partition = std::filesystem::path(e.value("document", "")).stem().string();
+                if (asset.root_type.size() > 128 || asset.decode_state.size() > 32 || asset.detail.size() > 1024 || asset.partition.size() > 36) continue;
+                const auto display = native_asset_name(asset.asset, asset.root_type, asset.category);
+                asset.label = display.label; asset.context = display.context;
+                asset.category = native_asset_folder(asset.asset, asset.root_type, asset.category);
+                asset.search = display.search + native_search_key(asset.category);
+                if ((asset.asset.starts_with("animation/dingo/") || asset.asset.starts_with("_af/")) && asset.asset.size() < 1024 && asset.category.size() < 256)
                     out->push_back(std::move(asset));
             }
+            native_disambiguate_names(*out);
         } catch (const std::exception& e) {
             logging::log(Level::warning, Channel::skater, "Animation Studio: native asset index not loaded: {}", e.what());
         }
         return out;
     }();
+    revision = current_revision;
     return assets;
+}
+NativeDocumentPage native_asset_fields(const std::string& asset, const std::string& path, std::size_t page) {
+    NativeDocumentPage result;
+    static std::mutex mutex;
+    static std::string cached_asset, cached_error;
+    static std::uint64_t cached_revision{};
+    static std::shared_ptr<const Json> document;
+    std::lock_guard lock(mutex);
+    try {
+        const auto revision = tricks_revision.load(std::memory_order_acquire);
+        if (asset != cached_asset || cached_revision != revision) {
+            cached_asset = asset; cached_revision = revision; document.reset(); cached_error.clear();
+            try {
+                std::string guid = asset;
+                const auto assets = native_assets();
+                if (const auto found = std::find_if(assets->begin(), assets->end(), [&](const NativeAsset& a) { return a.asset == asset; }); found != assets->end()) guid = found->partition;
+                const bool resource = guid.starts_with("res:");
+                const auto resource_id = resource ? guid.substr(4) : "";
+                bool valid = guid.size() == 36;
+                for (std::size_t i = 0; i < guid.size(); ++i) {
+                    const char c = guid[i];
+                    valid &= (i == 8 || i == 13 || i == 18 || i == 23) ? c == '-' :
+                        ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
+                }
+                if (resource) valid = !resource_id.empty() && resource_id.size() <= 20 && resource_id.find_first_not_of("0123456789") == std::string::npos;
+                if (!valid) throw std::runtime_error("No typed document for this indexed name.");
+                const auto file = library_folder() / L"library" / (resource ? L"native-resources" : L"native-documents") / ((resource ? resource_id : guid) + ".json");
+                std::error_code error;
+                if (!std::filesystem::is_regular_file(file, error) || std::filesystem::file_size(file, error) > 16 * 1024 * 1024)
+                    throw std::runtime_error("Typed document missing or too large; regenerate the native inventory.");
+                std::ifstream in(file, std::ios::binary);
+                document = std::make_shared<const Json>(Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}), JsonLimits{16 * 1024 * 1024, 64, 2 * 1024 * 1024}));
+            } catch (const std::exception& e) { cached_error = e.what(); }
+        }
+        if (!document) throw std::runtime_error(cached_error);
+        result.title = document->value("asset", asset);
+        const Json* node = document.get();
+        std::size_t start = 0;
+        while (start < path.size()) {
+            const auto slash = path.find('/', start);
+            const auto token = path.substr(start, slash == std::string::npos ? slash : slash - start);
+            if (node->is_array()) {
+                if (token.empty() || token.find_first_not_of("0123456789") != std::string::npos) throw std::runtime_error("Invalid array path");
+                node = &node->at(static_cast<std::size_t>(std::stoull(token)));
+            } else node = &node->at(token);
+            if (slash == std::string::npos) break;
+            start = slash + 1;
+        }
+        constexpr std::size_t page_size = 50;
+        result.pages = std::max<std::size_t>(1, (node->size() + page_size - 1) / page_size);
+        page = std::min(page, result.pages - 1);
+        const auto add = [&](const std::string& label, const Json& value) {
+            NativeField field;
+            field.label = label; field.path = path.empty() ? label : path + '/' + label;
+            field.expandable = value.is_object() || value.is_array();
+            field.value = value.is_array() ? std::to_string(value.size()) + " items >" : value.is_object() ?
+                ((value.contains("type") && value.at("type").is_string()) ? value.at("type").get<std::string>() : "Object") + " >" : value.dump();
+            if (field.value.size() > 200) field.value.resize(200);
+            if (value.is_object() && value.contains("kind") && value.at("kind").is_string() && value.at("kind").get<std::string>() == "external") field.reference = value.value("partition", "");
+            if (value.is_object() && value.contains("resource_id") && value.at("resource_id").is_number_integer()) field.reference = "res:" + value.at("resource_id").dump();
+            result.fields.push_back(std::move(field));
+        };
+        const auto first = page * page_size, last = first + page_size;
+        if (node->is_array()) for (std::size_t i = first; i < std::min(last, node->size()); ++i) add(std::to_string(i), node->at(i));
+        else if (node->is_object()) {
+            std::size_t i = 0;
+            for (const auto& [name, value] : node->items()) { if (i >= first && i < last) add(name, value); ++i; }
+        }
+    } catch (const std::exception& e) { result.error = e.what(); }
+    return result;
 }
 std::shared_ptr<const std::vector<GameTrick>> game_tricks() {
     auto& cache = game_catalog_cache();
@@ -3005,7 +3103,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.time = 0; // at its start: on the board, on the ground
         s.playing = false;
         s.dirty = false; // only an edit makes it unsaved
-        message = trick.preview_only ? "Opened " + trick.label + " for editing. Live grind phase replacement is not connected yet; saving preserves your work without activating it in game." :
+        message = trick.preview_only ? "Opened " + trick.label + " for editing. Live native-phase replacement is not connected for this source; saving preserves your work without activating it in game." :
             "Opened the game's " + trick.label + " (" + trick.pop + " pop). Native board physics and graph constraints are not included in this clip.";
         s.status = message;
         publish_locked(s);
