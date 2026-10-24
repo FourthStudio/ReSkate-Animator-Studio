@@ -3299,8 +3299,10 @@ void on_animation(std::uintptr_t component) noexcept {
             // first one's keys at full weight all the way down, which is what looked wrong.
             const bool airborne = l.episode.phase == PlaybackPhase::air || l.episode.phase == PlaybackPhase::landing;
             const auto name = airborne ? current_trick(component) : std::string{};
-            // A change after we had settled on one is the game doing something else: the layer stands back
-            // over 120 ms, and only then takes up the new trick, so nothing jumps between the two.
+            // A change after we had settled on one is the game doing something else (a grab out of the flip): the
+            // layer stands back over the Crossfade setting, and only then takes up the new trick, so the grab eases
+            // in rather than snapping (it was 120 ms).
+            const float stand_back = std::clamp(snap->crossfade, 0.1f, 0.8f);
             if (!name.empty() && l.game_trick && l.episode.phase == PlaybackPhase::air && !l.episode.selection_open(at) &&
                 l.game_trick->trick != name && l.gave_way_at < 0) {
                 l.gave_way_at = at;
@@ -3308,7 +3310,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 logging::log(Level::info, Channel::skater, "Animation Studio: the game turned {} into {}; standing back.",
                              l.gave_way_from, name);
             }
-            if (l.gave_way_at >= 0 && at - l.gave_way_at >= 0.12) {
+            if (l.gave_way_at >= 0 && at - l.gave_way_at >= stand_back) {
                 l.game_trick = nullptr; // let it be chosen again, for whatever the game is doing now
                 l.gave_way_at = -1;
                 l.limbs = {};
@@ -3431,8 +3433,11 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
                 l.played_mirrored = mirror_it;
                 const auto& played = *keys;
-                // Standing back after the trick changed: the whole layer, over the same 120 ms.
-                const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
+                // Standing back after the trick changed: the whole layer, eased out over the same time.
+                const float give_way = l.gave_way_at >= 0 ? [&] {
+                    const float x = std::clamp(1 - static_cast<float>(at - l.gave_way_at) / stand_back, 0.0f, 1.0f);
+                    return x * x * (3 - 2 * x);
+                }() : 1.0f;
                 const auto& clip = *trick->clip;
                 // The game leads. It says how far into its trick clip it is (game_trick_progress), and its own pose
                 // says which of its clips that is (NativeClock::follow); the edits are laid on its pose at that time,
@@ -3448,8 +3453,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     reading = l.native_clock.follow(l.pose, *progress); // the game's own pose, before any edit
                     l.clock_on_progress = l.clock_on_progress || reading.locked;
                 } else if (l.clock_on_progress) {
-                    // The game's trick clip is over (or another animation took its place): the layer fades out
-                    // where it was.
+                    // The game's trick clip is over, or another animation took its place. Down a long drop the game
+                    // stops its clip at the catch and falls with its own pose: the layer fades out where it was, over
+                    // the Crossfade setting, into the game's fall and landing.
                     trick_clip_ended = true;
                     reading.locked = true;
                     reading.time = l.clock_last_time;

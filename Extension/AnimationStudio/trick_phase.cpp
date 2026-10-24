@@ -87,7 +87,9 @@ void follow_instance(std::uintptr_t instance) noexcept {
 std::optional<float> progress() noexcept {
     // The game writes the phase every tick while a clip plays; one write of none can come in the middle of a clip
     // (seen once in a kickflip, between 0.288 and 0.373), so the clip is over only when none has stood a few ticks.
-    constexpr std::uint64_t none_stands_ms = 80, silent_ms = 500;
+    // Down a long drop the game stops its clip at the catch and stops writing the phase: silent a few ticks, the clip
+    // is over too (it was 500 ms, so the trick stood still at the catch before it handed over to the fall).
+    constexpr std::uint64_t none_stands_ms = 80, silent_ms = 150;
     const auto now = GetTickCount64();
     const auto latest_at = latest_ms.load(std::memory_order_acquire), inside_at = inside_ms.load(std::memory_order_acquire);
     if (!latest_at || !inside_at || now - inside_at > silent_ms) return std::nullopt;
