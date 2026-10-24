@@ -1451,6 +1451,105 @@ void native_clock_follows_the_game() {
               "A recording drifting off the game's clip hands over to the game's clip, in time and without a jump");
     }
 }
+// The game's own progress through its trick clip gives the time; the pose only picks the clip.
+void native_clock_reads_the_games_progress() {
+    const auto angle = [](std::size_t j, float t) { return 0.6f * std::sin(2.1f * t + 0.37f * static_cast<float>(j)) + 0.3f * std::sin(5.3f * t + static_cast<float>(j)); };
+    const auto turn = [&](std::size_t j, float t, float size = 1.0f) {
+        const float a = size * angle(j, t) / 2;
+        return j % 2 ? Quat{0, 0, std::sin(a), std::cos(a)} : Quat{std::sin(a), 0, 0, std::cos(a)};
+    };
+    const auto make = [&](float up, float down, float size, int frames) {
+        auto clip = std::make_shared<Clip>();
+        clip->joints = skeleton_joints;
+        for (int f = 0; f < frames; ++f) {
+            const float t = static_cast<float>(f) / 60;
+            clip->times.push_back(t);
+            for (std::size_t j = 0; j < skeleton_joints; ++j) {
+                Joint joint;
+                if (j >= 2 && j < 375) joint.rotation = turn(j, t, size);
+                clip->frames.push_back(joint);
+            }
+        }
+        clip->takeoff = up;
+        clip->landing = down;
+        return clip;
+    };
+    const auto pose_of = [&](const Clip& clip, float t, bool mirrored) {
+        std::vector<Joint> pose(skeleton_joints);
+        clip.sample(t, pose);
+        if (!mirrored) return pose;
+        std::vector<Joint> out(skeleton_joints);
+        for (std::size_t j = 0; j < skeleton_joints; ++j) {
+            out[mirror_joint[j]] = pose[j];
+            out[mirror_joint[j]].rotation = mirror_rotation(pose[j].rotation);
+        }
+        return out;
+    };
+    // A recording of the trick (pop 0.2 s, landing 0.7 s), and two of the game's clips for it: the same moves
+    // (another length: its recording was cut differently) and a higher pop (pop 0.25 s, landing 0.85 s).
+    const auto recording = make(0.2f, 0.7f, 1.0f, 100);
+    const auto same = make(0.2f, 0.7f, 1.0f, 90);
+    const auto higher = make(0.25f, 0.85f, 1.35f, 95);
+    const auto models = build_native_models({recording, same, higher}, 0);
+    const float higher_length = higher->duration();
+    {
+        NativeClock clock;
+        clock.start(models);
+        bool right = true;
+        float worst = 0;
+        for (int i = 0; i <= 40; ++i) {
+            const float progress = 0.15f + 0.5f * static_cast<float>(i) / 40;
+            const float game = progress * higher_length;
+            const auto r = clock.follow(pose_of(*higher, game, true), progress);
+            right = right && r.locked && !r.lost && r.clip == 2 && r.mirrored && r.error < 1.0f;
+            const float expected = game <= 0.25f ? 0.2f - (0.25f - game) : game >= 0.85f ? 0.7f + (game - 0.85f) : 0.2f + (game - 0.25f) * 0.5f / 0.6f;
+            worst = std::max(worst, std::abs(r.time - expected));
+        }
+        check(right && worst < 1e-4f, "The game's progress through its clip gives the time, read across onto the edit's own clip through the marks");
+        const auto held = clock.follow(pose_of(*higher, 0.6f * higher_length, true), 0.6f);
+        const auto still = clock.follow(pose_of(*higher, 0.6f * higher_length, true), 0.6f);
+        check(held.locked && std::abs(held.time - still.time) < 1e-6f, "A clip the game holds is held: the time does not run on");
+    }
+    {
+        NativeClock clock;
+        clock.start(models);
+        const auto r = clock.follow(pose_of(*same, 0.4f * same->duration(), false), 0.4f);
+        check(r.locked && r.clip == 1 && std::abs(r.time - 0.4f * same->duration()) < 1e-4f,
+              "A recording is never taken for the game's clip, even when its pose is the same: its length is not the clip's");
+    }
+    {
+        const auto own_game_clip = build_native_models({same, higher}, 0, true);
+        NativeClock clock;
+        clock.start(own_game_clip);
+        const auto r = clock.follow(pose_of(*same, 0.4f * same->duration(), false), 0.4f);
+        check(r.locked && r.clip == 0 && std::abs(r.time - 0.4f * same->duration()) < 1e-4f,
+              "An edit made on the game's own clip follows it directly");
+    }
+    {
+        const auto alone = build_native_models({recording}, 0);
+        NativeClock clock;
+        clock.start(alone);
+        const auto r = clock.follow(pose_of(*recording, 0.4f * recording->duration(), false), 0.4f);
+        check(r.locked && r.clip == 0, "With no game clip to choose from, the recording stands in for it");
+    }
+    {
+        NativeClock clock;
+        clock.start(models);
+        check(!clock.follow(pose_of(*higher, 0.3f, true), 5.0f).locked && !clock.follow(pose_of(*higher, 0.3f, true), -0.2f).locked,
+              "Progress outside the clip (the game plays no trick clip) is not followed");
+    }
+    {
+        // A catch of the higher pop with no pop or landing marks of its own, listed first: as near to the game's pose,
+        // but it cannot be read across onto the edit's clip, so the marked clip is followed.
+        auto unmarked = std::make_shared<Clip>(*higher);
+        unmarked->takeoff = unmarked->landing = -1;
+        const auto with_catch = build_native_models({recording, unmarked, higher}, 0);
+        NativeClock clock;
+        clock.start(with_catch);
+        const auto r = clock.follow(pose_of(*higher, 0.4f * higher_length, true), 0.4f);
+        check(r.locked && r.clip == 2, "A clip without pop and landing marks is not followed while one with them fits");
+    }
+}
 void native_clips_pop_where_the_game_does() {
     // A library clip at 60 fps: the board flat, then from frame 8 (0.133 s) its tail goes down 8 degrees a
     // frame. Its height dips as the tail strikes (0.15 s), deepest as it lands (frame 38, 0.633 s), and a
@@ -1851,6 +1950,7 @@ int main(int argc, char** argv) {
         fitting_the_air_keeps_the_flip();
         native_clips_pop_where_the_game_does();
         native_clock_follows_the_game();
+        native_clock_reads_the_games_progress();
         diagnostic_history_is_bounded();
         retargeted_edits_preserve_native_rig_and_convert_joint_frames();
         switch_edits_follow_the_native_body_facing();

@@ -2,6 +2,7 @@
 #include "trick_batch.h"
 #include "native_asset_names.h"
 #include "pop_grades.h"
+#include "trick_phase.h"
 #include "recording_rules.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
@@ -18,6 +19,7 @@
 #include "Engine/Game/Build/20260929/grind_exit.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
+#include "Engine/Game/Build/20260929/trick_clip_clock.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Skater/ai_skaters.h"
@@ -85,6 +87,22 @@ struct alignas(16) NativeBone {
     std::array<float, 4> scale, rotation, position;
 };
 static_assert(sizeof(NativeBone) == 0x30);
+// The local skater's graph instance, from its animation component (0 while the rig is not there yet): the one whose
+// trick phase is followed (trick_phase::follow_instance).
+std::uintptr_t skater_graph_instance(std::uintptr_t component) noexcept {
+    namespace clock = addr::trick_clip_clock;
+    const auto holder = read<std::uintptr_t>(component + 0xa0).value_or(0);
+    const auto rig = holder ? read<std::uintptr_t>(holder + clock::holder_to_rig).value_or(0) : 0;
+    return rig ? read<std::uintptr_t>(rig + clock::rig_to_graph_instance).value_or(0) : 0;
+}
+// How far the game is into the trick clip it plays for the local skater, 0 to 1; nothing while it plays none.
+std::optional<float> game_trick_progress() noexcept { return trick_phase::progress(); }
+// What the trick clock is following, for the log.
+std::string game_trick_progress_steps(std::uintptr_t component) {
+    const auto progress = trick_phase::progress();
+    return std::format("graph instance {:#x}, trick phase {}", skater_graph_instance(component),
+                       progress ? std::format("{:.3f}", *progress) : std::string("none"));
+}
 
 double now_seconds() noexcept {
     static const double frequency = [] {
@@ -427,7 +445,9 @@ struct Live {
     double clock_selected_at{-1}; // when the trick was chosen
     double clock_locked_at{-1};   // when the game's clip was found
     float clock_weight{};         // the layer, ramped in when found and out when the game moves on (eased when used)
-    bool clock_fallback{};        // its clip was not found: the trick plays on its own clock instead
+    bool clock_fallback{};        // nothing to follow it by (no clip of it has a body): the trick plays on its own clock
+    bool clock_on_progress{};     // following the game's own progress through its trick clip (game_trick_progress)
+    bool clock_not_found{};       // neither that progress nor the game's clip in its pose: the trick does not play
     // Once the game's pose leaves the clip (its own landing, a recording drifting off it) the trick goes on at
     // its own pace, its landing on the game's touchdown, until the game starts something new.
     double clock_lost_at{-1}, clock_touch_at{-1};
@@ -1115,6 +1135,7 @@ void read_library_locked(State& s) {
 } // namespace
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
 namespace {
+std::vector<GameTrick> read_catalog(); // the game's own clips in the trick library, below
 // Every saved animation with a trick, ready to play in game. Read from the files, outside the lock.
 std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_trick) {
     auto tricks = std::make_shared<CustomTricks>();
@@ -1185,6 +1206,10 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
                          others.empty() ? std::string{} : " (and its " + std::to_string(others.size()) + " other stance versions, each in its stance)");
         }
     std::map<std::string, std::shared_ptr<const Clip>> library_clips; // read once for every saved trick of a kind
+    // The clips the game itself plays, not the library as shown: there a recorded take (Record all tricks) stands in
+    // for the game's clip of its trick and pop, and a recording is not what the game plays. With them, a trick that had
+    // been recorded had none of the game's clips to follow, and on another pop played late.
+    const auto game_clips = read_catalog();
     for (const auto& entry : saved_jsons(folder)) {
         if (std::none_of(requested.begin(), requested.end(), [&](const Preset& p) {
             return p.active && p.name == entry.stem().string();
@@ -1222,23 +1247,40 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             // What the game may play for this trick: the trick's own clip, and the library's low, mid and high
             // pop of it (a saved trick plays on whichever the game picks, following that clip's time).
             std::vector<std::shared_ptr<const Clip>> references{clip};
+            std::size_t unreadable = 0;
+            std::string why_unreadable;
+            const auto* library = &game_clips;
             try {
-                if (const auto library = game_tricks()) {
-                    const auto add = [&](const GameTrick& g) {
+                if (!library->empty()) {
+                    std::map<std::string, std::shared_ptr<const Clip>> pop_clips; // the trick's low, mid and high, by asset
+                    // `pop_clip`: the low, mid or high clip `g` is a catch of (its dark or light catch: the same clip, frame
+                    // for frame, but for the catch). Such a catch has no pop or landing of its own in the library; it is
+                    // given its pop clip's, or it could not be read across onto the trick when the game plays it.
+                    const auto add = [&](const GameTrick& g, const Clip* pop_clip) {
                         auto found = library_clips.find(g.file);
                         if (found == library_clips.end()) {
-                            std::shared_ptr<const Clip> loaded;
-                            try { loaded = read_game_clip(g); } catch (...) {}
+                            std::shared_ptr<Clip> loaded;
+                            try {
+                                loaded = read_game_clip(g);
+                            } catch (const std::exception& e) {
+                                if (why_unreadable.empty()) why_unreadable = g.file + ": " + e.what();
+                            }
+                            if (loaded && loaded->takeoff < 0 && pop_clip && pop_clip->times.size() == loaded->times.size()) {
+                                loaded->takeoff = pop_clip->takeoff;
+                                loaded->landing = pop_clip->landing;
+                            }
                             found = library_clips.emplace(g.file, std::move(loaded)).first;
                         }
                         if (found->second) references.push_back(found->second);
+                        else ++unreadable;
+                        return found->second;
                     };
                     // The game's clips of the trick's family ("animation/dingo/c_proto_onb_trick_o_kickflip_").
                     std::vector<std::string> families;
                     for (const auto& g : *library) {
                         if (g.preview_only || g.recorded || g.file.empty()) continue;
                         if (trick_key(g.trick) != trick) continue;
-                        add(g);
+                        pop_clips[g.asset] = add(g, nullptr);
                         const auto cut = g.asset.rfind('_');
                         if (g.asset.starts_with("animation/dingo/c_proto_onb_trick_") && cut != std::string::npos)
                             families.push_back(g.asset.substr(0, cut + 1));
@@ -1252,8 +1294,12 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
                             const std::string_view style(g.asset.c_str() + family.size());
                             if (style.find("dark") != std::string_view::npos || style.find("light") != std::string_view::npos ||
                                 style.find("uflip") != std::string_view::npos || style.find("held") != std::string_view::npos ||
-                                style.find("lateflip") != std::string_view::npos)
-                                add(g);
+                                style.find("lateflip") != std::string_view::npos) {
+                                // "low_dark" is a catch of "low".
+                                const auto pop = style.substr(0, style.find('_'));
+                                const auto base = pop_clips.find(family + std::string(pop));
+                                add(g, base != pop_clips.end() ? base->second.get() : nullptr);
+                            }
                             break;
                         }
                     }
@@ -1261,7 +1307,12 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             } catch (const std::exception& e) {
                 logging::log(Level::warning, Channel::skater, "Animation Studio: the library's pops of {} are not looked for: {}", trick, e.what());
             }
-            auto native = build_native_models(references, 0);
+            // Without the game's clips its progress cannot be read across onto the trick: say so.
+            logging::log(references.size() > 1 ? Level::info : Level::warning, Channel::skater,
+                         "Animation Studio: {} follows {} of the game's clips of {}{}{}.", entry.stem().string(), references.size() - 1, trick,
+                         library->empty() ? " (there is no trick library: SETTINGS > TRICKS > Trick library builds it)" : std::string{},
+                         unreadable ? std::format(" ({} could not be read; {})", unreadable, why_unreadable) : std::string{});
+            auto native = build_native_models(references, 0, animation->source.kind == "native_asset");
             tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy, right, fakie, std::move(native)});
             if (const auto p = std::find_if(requested.begin(), requested.end(), [&](const Preset& x) { return x.name == entry.stem().string(); });
                 p != requested.end())
@@ -2914,6 +2965,9 @@ void on_animation(std::uintptr_t component) noexcept {
         if (!layout.buffer) throw std::runtime_error("the skater's pose is still loading");
         if (layout.count != skeleton_joints)
             throw std::runtime_error(std::format("the skater has {} joints, not the standard {}", layout.count, skeleton_joints));
+        // Every update, not only once a trick is chosen: the game writes its trick phase from the start of the clip,
+        // before the trick has a name, and only the followed skater's writes are kept.
+        trick_phase::follow_instance(skater_graph_instance(component));
         l.animation_updates.fetch_add(1, std::memory_order_relaxed);
         if (!l.logged_layout) {
             l.logged_layout = true;
@@ -3341,6 +3395,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1;
                     l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear();
                     l.clock_fallback = !found || !found->native || found->native->models.empty();
+                    l.clock_on_progress = l.clock_not_found = false;
                     if (found) {
                         const bool lead_matches = found->leads_right == live.leads_right;
                         logging::log(Level::info, Channel::skater,
@@ -3354,6 +3409,8 @@ void on_animation(std::uintptr_t component) noexcept {
                         logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
                                      pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air, found->name,
                                      "authored edits over fresh native pose");
+                    if (found)
+                        logging::log(Level::info, Channel::skater, "Animation Studio: the game's trick clip clock: {}.", game_trick_progress_steps(component));
                 }
             }
             if (const auto* trick = l.game_trick) {
@@ -3377,25 +3434,42 @@ void on_animation(std::uintptr_t component) noexcept {
                 // Standing back after the trick changed: the whole layer, over the same 120 ms.
                 const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
                 const auto& clip = *trick->clip;
-                // The game leads. Its own pose says which of its clips it plays and how far into it it is
-                // (NativeClock); the edits are laid on its pose at that time, eased in as it is found and out
-                // as the game moves into anything else. The brackets only mask the edits, as in the studio.
+                // The game leads. It says how far into its trick clip it is (game_trick_progress), and its own pose
+                // says which of its clips that is (NativeClock::follow); the edits are laid on its pose at that time,
+                // eased in as it is found and out as the game moves into anything else. Without a trick clip (a
+                // piece the game plays outside one) the clip and its time are searched for in the pose instead
+                // (NativeClock::update). Never a clock of the trick's own: one whose clip is not found does not play.
+                // The brackets only mask the edits, as in the studio.
                 PlaybackSample sampled;
                 NativeClock::Reading reading;
-                if (!l.clock_fallback) {
-                    reading = l.native_clock.update(l.pose, 1.0f / 60); // the game's own pose, before any edit
+                const auto progress = l.clock_fallback ? std::nullopt : game_trick_progress();
+                bool trick_clip_ended = false;
+                if (progress) {
+                    reading = l.native_clock.follow(l.pose, *progress); // the game's own pose, before any edit
+                    l.clock_on_progress = l.clock_on_progress || reading.locked;
+                } else if (l.clock_on_progress) {
+                    // The game's trick clip is over (or another animation took its place): the layer fades out
+                    // where it was.
+                    trick_clip_ended = true;
+                    reading.locked = true;
+                    reading.time = l.clock_last_time;
+                } else if (!l.clock_fallback && !l.clock_not_found) {
+                    reading = l.native_clock.update(l.pose, 1.0f / 60);
+                    // Searched for only just after the pop: later the game is in its landing or the next trick's
+                    // crouch, and a pose there found in the clip would put the keys at the wrong moment.
                     if (!reading.locked && at - l.clock_selected_at > 0.25) {
-                        l.clock_fallback = true;
-                        logging::log(Level::info, Channel::skater, "Animation Studio: the game's clip for {} was not found ({:.1f} degrees off); "
-                                     "it plays on its own clock.", trick->name, reading.error);
+                        l.clock_not_found = true;
+                        logging::log(Level::info, Channel::skater, "Animation Studio: the game's clip for {} was not found ({:.1f} degrees off) and "
+                                     "it gave no progress through a trick clip ({}): it does not play this time.", trick->name, reading.error,
+                                     game_trick_progress_steps(component));
                     }
                 }
                 if (!l.clock_fallback) {
                     if (reading.locked && l.clock_locked_at < 0) {
                         l.clock_locked_at = at;
-                        logging::log(Level::info, Channel::skater, "Animation Studio: {} follows the game's {}clip {} at {:.2f} s ({:.1f} degrees).",
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} follows the game's {}clip {} at {:.2f} s ({:.1f} degrees){}.",
                                      trick->name, reading.mirrored ? "mirrored " : "", reading.clip == 0 ? std::string("(its own)") : std::to_string(reading.clip),
-                                     reading.time, reading.error);
+                                     reading.time, reading.error, l.clock_on_progress ? ", by the game's own progress through it" : "");
                     }
                     if (reading.switched)
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} moved onto the game's clip {} at {:.2f} s ({:.1f} degrees): it fits the game better.",
@@ -3430,6 +3504,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float edit_end = played.end >= 0 ? played.end : clip.duration();
                     std::string why;
                     if (l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail) why = "a grind";
+                    else if (trick_clip_ended) why = "the game's trick clip ended";
                     else if (touch && current_state && *current_state == 103) why = "the next pop";
                     else if (time >= 0 && time >= edit_end - 0.5f / 60) why = "its end";
                     // Followed through the landing and lost well after it: that is the game going into its next
@@ -3468,6 +3543,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 diagnostic.clock_error = reading.error;
                 diagnostic.clock_clip = l.clock_fallback ? -2 : reading.clip;
                 diagnostic.clock_state = l.clock_fallback ? "own clock" : !reading.locked ? "looking" : !l.clock_why.empty() ? "let go"
+                                       : l.clock_on_progress ? "game progress"
                                        : reading.lost ? "own pace" : "following";
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time) * give_way;
                 diagnostic.preset = trick->name;
@@ -4335,6 +4411,8 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
         std::string why;
         grading = pop_grades::install(base, why);
         if (!grading) logging::log(Level::warning, Channel::skater, "Animation Studio: pops are chosen by their air time, not the game's grade: {}.", why);
+        if (!trick_phase::install(base, why))
+            logging::log(Level::warning, Channel::skater, "Animation Studio: saved tricks find the game's clip by its pose only: {}.", why);
     }
     grade_is_ours.store(grading && !multiplayer_session_active() && ai_skaters::active_count() == 0, std::memory_order_release);
     return result;

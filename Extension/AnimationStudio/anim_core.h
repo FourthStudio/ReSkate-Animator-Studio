@@ -404,13 +404,18 @@ struct NativeModels {
     };
     std::vector<Model> models;
     float edit_up{-1}, edit_down{-1}; // the edit's own clip's pop and landing
+    // The edit's own clip is one of the game's (an edit made on a library trick), so the game can be playing it.
+    // A recording is not: its length is not the length of the clip the game plays, so the game's progress
+    // through its clip says nothing of where the recording is.
+    bool own_plays_in_game{};
     // A time in a model's clip as a time in the edit's own clip: the same before the pop, stretched between the
     // pop and the landing, the same again after the landing. model_time is the other way.
     float edit_time(const Model& model, float seconds) const noexcept;
     float model_time(const Model& model, float edit_seconds) const noexcept;
 };
 // `clips[own]` is the edit's own clip; the others are the clips the game may play for its trick instead.
-std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own);
+std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own,
+                                                        bool own_plays_in_game = false);
 class NativeClock {
 public:
     static constexpr float lock_degrees = 4.5f; // how near the game's pose has to be to a clip to follow it
@@ -432,6 +437,10 @@ public:
     void reset() noexcept;
     // One animation update: the game's own pose and the seconds the game moved on since the last.
     Reading update(std::span<const Joint> pose, float step) noexcept;
+    // One animation update while the game plays a trick clip and says how far into it it is (`progress`, 0 to 1):
+    // the time is read off that, never searched for. The pose only says which of the clips it is, and which way
+    // round, at that one moment; another clip takes over only when it fits clearly better for a few updates.
+    Reading follow(std::span<const Joint> pose, float progress) noexcept;
     bool active() const noexcept { return static_cast<bool>(models_); }
 
 private:

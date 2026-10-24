@@ -1578,8 +1578,10 @@ float NativeModels::model_time(const Model& model, float seconds) const noexcept
     if (seconds >= edit_down) return model.down + (seconds - edit_down);
     return model.up + (seconds - edit_up) * (model.down - model.up) / (edit_down - edit_up);
 }
-std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own) {
+std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own,
+                                                        bool own_plays_in_game) {
     auto out = std::make_shared<NativeModels>();
+    out->own_plays_in_game = own_plays_in_game;
     if (own < clips.size() && clips[own]) {
         out->edit_up = clips[own]->takeoff;
         out->edit_down = clips[own]->landing;
@@ -1635,6 +1637,64 @@ float NativeClock::error_at(const NativeModels::Model& model, std::size_t frame,
     float sum = 0;
     for (std::size_t k = 0; k < n; ++k) sum += degrees_between(pose[model.joints[k]].rotation, model.frames[frame * n + k]);
     return sum / static_cast<float>(n);
+}
+NativeClock::Reading NativeClock::follow(std::span<const Joint> pose, float progress) noexcept {
+    Reading out;
+    if (!models_ || models_->models.empty() || pose.size() < native_body_joints || !(progress >= 0 && progress <= 1)) return out;
+    const auto& models = models_->models;
+    const bool any_game_clip = std::any_of(models.begin(), models.end(), [](const NativeModels::Model& m) { return !m.own; });
+    // A clip without its pop and landing marks cannot be read across onto the edit's own clip (edit_time): taken only
+    // when none of the others has them.
+    const auto marked = [](const NativeModels::Model& m) { return m.up >= 0 && m.down > m.up; };
+    const auto playable = [&](const NativeModels::Model& m) { return !(m.own && !models_->own_plays_in_game && any_game_clip); };
+    const bool any_marked = std::any_of(models.begin(), models.end(), [&](const NativeModels::Model& m) { return playable(m) && marked(m); });
+    // Where each clip the game may be playing is now, and how near the game's pose is to it there.
+    const auto frame_at = [](const NativeModels::Model& m, float seconds) {
+        const auto after = std::lower_bound(m.times.begin(), m.times.end(), seconds);
+        if (after == m.times.end()) return m.times.size() - 1;
+        if (after == m.times.begin()) return std::size_t{0};
+        return static_cast<std::size_t>(after - m.times.begin()) - (seconds - *(after - 1) < *after - seconds ? 1 : 0);
+    };
+    std::vector<float> errors(models.size(), 180);
+    for (std::size_t i = 0; i < models.size(); ++i) {
+        const auto& m = models[i];
+        if (!playable(m) || (any_marked && !marked(m))) continue;
+        errors[i] = error_at(m, frame_at(m, progress * m.duration), pose);
+    }
+    const auto best = static_cast<int>(std::min_element(errors.begin(), errors.end()) - errors.begin());
+    if (errors[static_cast<std::size_t>(best)] >= 180) return out;
+    out.switched = false;
+    if (locked_ < 0) {
+        locked_ = best;
+        baseline_ = errors[static_cast<std::size_t>(best)];
+    } else if (best != locked_ && errors[static_cast<std::size_t>(best)] < errors[static_cast<std::size_t>(locked_)] - 1.0f) {
+        streak_ = best == candidate_ ? streak_ + 1 : 1;
+        candidate_ = best;
+        if (streak_ >= 4) {
+            locked_ = best;
+            baseline_ = errors[static_cast<std::size_t>(best)];
+            candidate_ = -1;
+            streak_ = 0;
+            out.switched = true;
+        }
+    } else {
+        candidate_ = -1;
+        streak_ = 0;
+    }
+    const auto& m = models[static_cast<std::size_t>(locked_)];
+    error_ = errors[static_cast<std::size_t>(locked_)];
+    baseline_ = std::min(baseline_, error_);
+    time_ = models_->edit_time(m, progress * m.duration);
+    lost_ = false;
+    confidence_ = 1;
+    out.locked = true;
+    out.time = time_;
+    out.error = error_;
+    out.baseline = baseline_;
+    out.clip = static_cast<int>(m.clip);
+    out.mirrored = m.mirrored;
+    out.confidence = confidence_;
+    return out;
 }
 NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step) noexcept {
     Reading out;
