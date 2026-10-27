@@ -1689,6 +1689,29 @@ void slow_catch_off_drops() {
               "Onto a rail it lands on the rail's top, sooner than on the street");
         check(motion_state(701) == MotionState::rail && motion_state(401) == MotionState::rail && motion_state(501) == MotionState::offboard,
               "701 is a grind, as the 400s are");
+        // A mid tre flip on flat ground (1.0.10): the ray from over the board's path hit the skater's own body, 0.5 m up,
+        // and it was taken for a landing on a rail. Near the board, a hit over its lowest point is him, not ground.
+        const auto with_skater = [](float dx, float, float top) -> std::optional<float> {
+            if (std::abs(dx) < 0.5f && top > 0.6f) return 0.9f; // his body, over the board
+            return 0.0f < top ? std::optional<float>(0.0f) : std::nullopt;
+        };
+        const float board_low = 0.4f;
+        float hit_self = -1, hit_clean = -1;
+        time_to_landing(board_low, 3.0f, 2.0f, 0.0f, with_skater, 0.05f, 16, &hit_self);
+        time_to_landing(board_low, 3.0f, 2.0f, 0.0f,
+                        [&](float dx, float dz, float top) { return ground_not_self(with_skater, dx, dz, top, board_low); }, 0.05f, 16,
+                        &hit_clean);
+        check(near(hit_self, 0.9f, 0.001f) && near(hit_clean, 0.0f, 0.001f), "The skater's own body is not a rail to land on");
+        // ... and a rail the board comes down on, under it, still is one.
+        const auto rail_close = [](float dx, float, float top) -> std::optional<float> {
+            const float ground = dx > 0.1f ? 0.15f : 0.0f; // a low rail just ahead, under the board
+            return ground < top ? std::optional<float>(ground) : std::nullopt;
+        };
+        float hit_rail = -1;
+        time_to_landing(0.25f, 4.0f, 0.0f, 0.0f,
+                        [&](float dx, float dz, float top) { return ground_not_self(rail_close, dx, dz, top, 0.25f); }, 0.05f, 16,
+                        &hit_rail);
+        check(near(hit_rail, 0.15f, 0.001f), "A rail under the board is still found");
     }
     {
         // Heatz's Nollie 360 Flip (2026-10-25): rolling, the board lay at 90 degrees to the placement; the pop had turned it to

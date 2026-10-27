@@ -5293,9 +5293,11 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
     if (auto& probe = ground_probe(); probe.wanted.exchange(false, std::memory_order_acq_rel)) {
         const float x = probe.x.load(std::memory_order_acquire), z = probe.z.load(std::memory_order_acquire);
         float surface = 0;
-        const float t = time_to_landing(probe.low.load(std::memory_order_acquire), probe.vx.load(std::memory_order_acquire),
+        const float low = probe.low.load(std::memory_order_acquire);
+        const auto ground = [&](float dx, float dz, float top) { return local_ground_height(x + dx, z + dz, top, top - 60.0f); };
+        const float t = time_to_landing(low, probe.vx.load(std::memory_order_acquire),
                                         probe.vy.load(std::memory_order_acquire), probe.vz.load(std::memory_order_acquire),
-                                        [&](float dx, float dz, float top) { return local_ground_height(x + dx, z + dz, top, top - 60.0f); },
+                                        [&](float dx, float dz, float top) { return ground_not_self(ground, dx, dz, top, low); },
                                         0.05f, 16, &surface);
         probe.surface.store(surface, std::memory_order_release);
         probe.to_ground.store(t, std::memory_order_release);

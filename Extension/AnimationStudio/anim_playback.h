@@ -306,6 +306,19 @@ float time_to_landing(float low, float vx, float vy, float vz, GroundAt&& ground
     const float down = time_to_ground(vy - board_gravity * last_t, last_gap);
     return down < 0 ? -1 : last_t + down;
 }
+// The skater and his board are bodies in the world the ground is looked for in: a ray from over the board's path, within
+// reach of where the board is now (self_reach), hit them, and a mid tre flip on flat ground was taken for one landing on a
+// rail - its legs held in the game's catch to the ground, then a snap (1.0.10, 2026-10-27). A hit there higher than the
+// board's own lowest point (`low`) is him: the ground is looked for again from just under the board. A rail or a ledge the
+// board comes down on is under it until it lands.
+inline constexpr float self_reach = 0.8f;
+template <class GroundAt>
+std::optional<float> ground_not_self(GroundAt&& ground_at, float dx, float dz, float top, float low) {
+    const std::optional<float> hit = ground_at(dx, dz, top);
+    if (hit && std::isfinite(low) && dx * dx + dz * dz < self_reach * self_reach && *hit > low - 0.02f && top > low - 0.02f)
+        return ground_at(dx, dz, low - 0.02f);
+    return hit;
+}
 // The lowest a foot's ankle is drawn: its height over the deck's mount, along the deck's up (on the deck the ankle stands
 // 10.4 cm over it; the ground is 8.7 cm under it). `over`: within the deck's outline. Below -infinity: no limit.
 // In the air, the deck upright under him: an ankle over the deck less than 9.5 cm over it is lifted to there, unless it is more
