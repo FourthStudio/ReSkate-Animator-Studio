@@ -30,6 +30,9 @@ struct DiagnosticSample {
     double skater_age{-1}, board_age{-1};
     double render_at{-1}, render_board_at{-1};
     std::string trick, preset;
+    // The pop the studio chose by, where it came from ("grade": the game's, "air": the air time's guess) and why it picked
+    // what it picked (or nothing), so a dump says it rather than leaving it to be worked out.
+    std::string pop, pop_source, decision;
     std::optional<Joint> native_board, desired_board, render_board;
     std::vector<Joint> native, desired, render_native;
     std::string observed_phase, entry, source_kind;
@@ -80,7 +83,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     timeline << std::setprecision(12);
     poses << std::setprecision(12);
     board << std::setprecision(12);
-    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg\n";
+    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision\n";
     const std::string columns = "seconds,sequence,stage,joint,sx,sy,sz,qx,qy,qz,qw,px,py,pz\n";
     poses << columns; board << columns;
     rig << columns;
@@ -107,7 +110,8 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
                  << s.skater_publications << ',' << s.board_publications << ',' << s.skater_age << ',' << s.board_age << ',' << !s.native.empty() << ','
                  << diagnostic_csv(s.observed_phase) << ',' << diagnostic_csv(s.entry) << ',' << diagnostic_csv(s.source_kind) << ','
                  << s.episode << ',' << s.render_edit_sequence << ',' << s.render_presentation << ',' << s.board_edit_sequence << ',' << s.board_presentation << ',' << s.reverse_facing << ',' << s.source_timing
-                 << ',' << diagnostic_csv(s.clock_state) << ',' << s.clock_clip << ',' << s.clock_error << '\n';
+                 << ',' << diagnostic_csv(s.clock_state) << ',' << s.clock_clip << ',' << s.clock_error
+                 << ',' << diagnostic_csv(s.pop) << ',' << diagnostic_csv(s.pop_source) << ',' << diagnostic_csv(s.decision) << '\n';
         if (!s.native.empty()) ++captured;
         for (std::size_t j = 0; j < s.native.size(); ++j) joint_row(poses, s.at, s.sequence, "animation_native", j, s.native[j]);
         for (std::size_t j = 0; j < s.desired.size(); ++j) {

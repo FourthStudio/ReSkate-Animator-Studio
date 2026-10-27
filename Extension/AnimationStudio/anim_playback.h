@@ -16,6 +16,9 @@ enum class MotionState { unknown, riding, air, rail, offboard };
 // grounded; treating it as unavailable discards the entry before every normal pop.
 inline MotionState motion_state(std::optional<std::uint32_t> state) noexcept {
     if (!state) return MotionState::unknown;
+    // 701 is a grind as well (launches.h other_grind_state: the game's own checks take it with the 400s). Taken for off the
+    // board, a trick into it was cut in one frame and the board snapped.
+    if (*state == 701) return MotionState::rail;
     if (*state == 300 || *state >= 500) return MotionState::offboard;
     if (*state >= 400 && *state < 500) return MotionState::rail;
     if (*state == 200 || *state == 201) return MotionState::air;
@@ -275,11 +278,13 @@ inline float time_to_ground(float up_speed, float height) noexcept {
 // the whole long way down - though the board lands on the far side moments later (22sh's flips over the gap, 2026-10-25).
 // The board's lowest point is `low` over where it is now, flying at (vx, vy, vz) and falling at board_gravity; `ground_at(dx,
 // dz, top)` is the ground's height under that point moved (dx, dz), the topmost below `top` (none: nothing there). Samples
-// along the path every `step` seconds; past the last, straight down from there. Below 0: not known.
+// along the path every `step` seconds; past the last, straight down from there. Below 0: not known. `surface`: the height of
+// what it lands on (a rail or a ledge stands over the ground it took off from).
 template <class GroundAt>
-float time_to_landing(float low, float vx, float vy, float vz, GroundAt&& ground_at, float step = 0.05f, int samples = 16) {
+float time_to_landing(float low, float vx, float vy, float vz, GroundAt&& ground_at, float step = 0.05f, int samples = 16,
+                      float* surface = nullptr) {
     if (!std::isfinite(low) || !std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(vz)) return -1;
-    float last_t = -1, last_gap = 0;
+    float last_t = -1, last_gap = 0, last_ground = 0;
     for (int k = 0; k <= samples; ++k) {
         const float t = static_cast<float>(k) * step;
         const float y = low + vy * t - 0.5f * board_gravity * t * t;
@@ -288,13 +293,16 @@ float time_to_landing(float low, float vx, float vy, float vz, GroundAt&& ground
         if (!ground || !std::isfinite(*ground)) continue;
         const float gap = y - *ground;
         if (gap <= 0) {
+            if (surface) *surface = *ground;
             if (last_t < 0) return 0;
             return last_t + (t - last_t) * last_gap / (last_gap - gap);
         }
         last_t = t;
         last_gap = gap;
+        last_ground = *ground;
     }
     if (last_t < 0) return -1;
+    if (surface) *surface = last_ground;
     const float down = time_to_ground(vy - board_gravity * last_t, last_gap);
     return down < 0 ? -1 : last_t + down;
 }

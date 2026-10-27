@@ -1677,6 +1677,18 @@ void slow_catch_off_drops() {
             return ground < top ? std::optional<float>(ground) : std::nullopt;
         };
         check(time_to_landing(0.3f, 4.0f, 2.0f, 0.0f, off_a_ledge) > time_to_ground(2.0f, 0.3f) + 0.1f, "Off a ledge, the drop is still a drop");
+        // A low pop onto a rail (2026-10-27): what it lands on is the rail's top, sooner than the street; on flat ground the street.
+        const auto rail_ahead = [](float dx, float, float top) -> std::optional<float> {
+            const float ground = dx > 0.6f ? 0.15f : 0.0f; // a low rail, 15 cm high from 0.6 m ahead
+            return ground < top ? std::optional<float>(ground) : std::nullopt;
+        };
+        float on = -1, street = -1;
+        const float to_rail = time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, rail_ahead, 0.05f, 16, &on);
+        const float to_street = time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, flat, 0.05f, 16, &street);
+        check(to_rail > 0 && to_rail < to_street && near(on, 0.15f, 0.001f) && near(street, 0.0f, 0.001f),
+              "Onto a rail it lands on the rail's top, sooner than on the street");
+        check(motion_state(701) == MotionState::rail && motion_state(401) == MotionState::rail && motion_state(501) == MotionState::offboard,
+              "701 is a grind, as the 400s are");
     }
     {
         // Heatz's Nollie 360 Flip (2026-10-25): rolling, the board lay at 90 degrees to the placement; the pop had turned it to
