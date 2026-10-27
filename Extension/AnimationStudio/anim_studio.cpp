@@ -1300,17 +1300,22 @@ std::string pack_team(const PresetPack& pack) {
     }
     return market::installed_from(pack.name);
 }
-// The keys of the packs the checked team put out. True when they changed (the library is read again with them).
-bool claim_account_keys(const std::vector<PresetPack>& packs) {
+// The keys of the packs the checked team put out, and of the packs and tricks that went out with that team on them
+// (maker_team: shared while signed in). True when they changed (the library is read again with them).
+bool claim_account_keys(const std::vector<PresetPack>& packs, const std::vector<std::pair<std::string, std::string>>& trick_teams = {}) {
     std::set<std::string> keys;
     std::vector<std::string> names;
     const auto team = market::verified_team();
-    if (!team.empty())
+    const auto same = [&](const std::string& t) { return !t.empty() && _stricmp(t.c_str(), team.c_str()) == 0; };
+    if (!team.empty()) {
         for (const auto& pack : packs)
-            if (!pack.maker_key.empty() && pack.maker_key != device_key() && _stricmp(pack_team(pack).c_str(), team.c_str()) == 0) {
+            if (!pack.maker_key.empty() && pack.maker_key != device_key() && (same(pack_team(pack)) || same(pack.maker_team))) {
                 keys.insert(pack.maker_key);
                 names.push_back(pack.name);
             }
+        for (const auto& [key, trick_team] : trick_teams)
+            if (!key.empty() && key != device_key() && same(trick_team)) keys.insert(key);
+    }
     {
         std::lock_guard lock(account_keys_mutex);
         if (keys == account_keys) return false;
@@ -1354,6 +1359,7 @@ void read_library_locked(State& s) {
         s.packs_on = packs_on();
         const auto playing = playing_names(s.library, !s.packs_on.empty());
         const auto locked_clips = read_locked_clips();
+        std::vector<std::pair<std::string, std::string>> trick_teams; // (maker key, team it went out with), for claim_account_keys
         for (const auto& name : s.library) {
             try {
                 std::ifstream in(saved_json(name), std::ios::binary);
@@ -1363,6 +1369,8 @@ void read_library_locked(State& s) {
                     s.presets.back().fakie = animation.fakie;
                     s.presets.back().leads_right = leads_right(authored_goofy(animation), animation.switch_stance.value_or(false));
                     s.presets.back().made_by = animation.author;
+                    if (!animation.maker_team.empty() && !animation.maker_key.empty())
+                        trick_teams.emplace_back(animation.maker_key, animation.maker_team);
                     s.presets.back().label = animation.label;
                     s.presets.back().saved_at = saved_time(saved_json(name));
                     // By its clip as well, for one whose key was taken out; never one with this PC's key (made or saved
@@ -1398,7 +1406,7 @@ void read_library_locked(State& s) {
                 }
         std::sort(s.packs.begin(), s.packs.end(), [](const PresetPack& a, const PresetPack& b) { return a.name < b.name; });
         // Your team's packs made on another PC are yours (claim_account_keys): read again with that known, once.
-        if (claim_account_keys(s.packs)) {
+        if (claim_account_keys(s.packs, trick_teams)) {
             read_library_locked(s);
             return;
         }
@@ -7556,6 +7564,10 @@ struct Shared {
 };
 Shared shared_files_locked(State& s, const std::string& pack_name) {
     if (!s.library_read) read_library_locked(s);
+    // Signed in to the MARKET (its token checked to be the team's): what goes out carries the team too, so it is its maker's
+    // on any PC signed in to that team - after a new PC, a Windows reinstall or EXPORT ALL and back, where the PC's key is
+    // another and creators were told their own work was someone else's (2026-10-27).
+    const std::string team = market::verified_team();
     Shared out;
     std::vector<std::string> names;
     bool editable = false; // whether the pack lets others edit its tricks
@@ -7583,6 +7595,7 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
             auto shared = pack;
             editable = pack.editable;
             if (shared.maker_key.empty()) shared.maker_key = device_key();
+            if (shared.maker_team.empty() && !team.empty()) shared.maker_team = team;
             shared.off.clear();
             files.emplace_back("presets/" + title + ".json", pack_json(shared).dump(2));
             std::error_code picture_error;
@@ -7613,6 +7626,7 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
                 auto root = Json::parse(text);
                 if (root.is_object()) {
                     if (root.value("maker_key", "").empty()) root["maker_key"] = device_key();
+                    if (root.value("maker_team", "").empty() && !team.empty()) root["maker_team"] = team;
                     // Locked or open to edit, as the pack is set (EXPORT ALL: locked).
                     if (editable) root["editable"] = true;
                     else root.erase("editable");
@@ -9107,6 +9121,27 @@ bool report_bug(std::string& message) {
                                  "Packs on: {}\r\nOpen trick: {}\r\nLast message: {}\r\nLast failure: {}\r\n",
                                  goofy_stance() ? "goofy" : "regular", s.play_in_game ? "on" : "off", s.front_foot ? "front foot" : "exact stance",
                                  s.crossfade, on.empty() ? "none" : on, s.edits.name.empty() ? s.edits.trick : s.edits.name, s.status, s.failure);
+            // Who owns what on this PC, for "the studio says I did not make my own pack": the MARKET sign-in, this PC's key
+            // (its start only: a one-way hash anyway) and the packs taken for someone else's, with why.
+            const auto mv = market::view();
+            static constexpr std::array<const char*, 5> checks{"not checked yet", "being checked", "the team's (checked)",
+                                                               "not this team's", "Thunderstore not reached"};
+            const auto team_now = market::verified_team();
+            about += std::format("MARKET account: {}{}\r\nThis PC's maker key: {}...\r\n",
+                                 mv.team.empty() ? std::string("not signed in") : mv.team + ", token " +
+                                     checks[static_cast<std::size_t>(std::clamp(mv.account_state, 0, 4))],
+                                 !mv.team.empty() && !team_now.empty() && mv.account_state != 2 ? " (yes from an earlier check)" : "",
+                                 device_key().substr(0, 8));
+            std::string not_mine;
+            int listed = 0;
+            for (const auto& pack : s.packs)
+                if (locked_key(pack.maker_key) && listed++ < 12)
+                    not_mine += std::format("\r\n  {}: made on PC {}..., made by {}, team {}", pack.name, pack.maker_key.substr(0, 8),
+                                            pack.made_by.empty() ? "-" : pack.made_by,
+                                            !pack.maker_team.empty() ? pack.maker_team : pack_team(pack).empty() ? "-" : pack_team(pack));
+            const auto foreign = std::count_if(s.presets.begin(), s.presets.end(), [](const Preset& p) { return p.foreign || p.locked; });
+            about += std::format("Packs taken for someone else's on this PC: {}{}\r\nTricks taken for someone else's on this PC: {}\r\n",
+                                 not_mine.empty() ? "none" : std::to_string(listed), not_mine, foreign);
         }
         about += "\r\nWhat happened (write it here, or in your message): the trick, your stance (normal / switch / fakie / nollie), "
                  "and what you saw.\r\n";

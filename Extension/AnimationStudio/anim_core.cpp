@@ -978,6 +978,7 @@ std::string to_json(const Animation& animation) {
     if (animation.board_backwards) root["board_backwards"] = *animation.board_backwards;
     if (animation.keep_leads_right) root["leads"] = *animation.keep_leads_right ? "right" : "left";
     if (!animation.maker_key.empty()) root["maker_key"] = animation.maker_key;
+    if (!animation.maker_team.empty()) root["maker_team"] = animation.maker_team;
     if (animation.editable) root["editable"] = true;
     if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
@@ -1025,6 +1026,7 @@ Animation from_json(std::string_view text) {
     result.trick = root.value("trick", "");
     result.author = root.value("author", "");
     result.maker_key = root.value("maker_key", "").substr(0, 64);
+    result.maker_team = root.value("maker_team", "").substr(0, 64);
     result.editable = root.value("editable", false);
     result.label = utf8_prefix(root.value("label", ""), 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;

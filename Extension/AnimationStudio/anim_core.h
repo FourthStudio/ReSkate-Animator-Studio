@@ -201,6 +201,7 @@ struct Animation {
     std::string trick;  // what the player says it is (Kickflip, Heelflip ...)
     std::string author; // who made it, kept with it so a shared trick says whose it is
     std::string maker_key; // the key of the PC it was made on: on any other it plays, but is not opened to edit or copied
+    std::string maker_team; // the Thunderstore team its maker was signed in as when it went out: theirs on any PC signed in so
     bool editable{};       // its maker let others edit and copy it (the pack it was shared in said so)
     std::string label;  // the name it is shown by in MY TRICKS and the packs (PACKS); empty: its name
     Clip clip;

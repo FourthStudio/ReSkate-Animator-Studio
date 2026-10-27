@@ -8524,7 +8524,26 @@ void reshare_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
     const auto [a, b] = card_box(d, f, display, 860 * k, 440 * k, "WOAAHH, WAIT THERE...");
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 96 * k;
-    if (pack->installed) {
+    // Your own, made on another PC (a new PC, a Windows reinstall, EXPORT ALL and back): its maker is you by name, or it went
+    // out with your team. Then the card says so, where your sign-in stands and what to do - creators were told their own
+    // pack was "Fourth's, not yours" (2026-10-27).
+    const auto m = studio::market::view();
+    const auto same = [](const std::string& a, const std::string& b) { return !a.empty() && _stricmp(a.c_str(), b.c_str()) == 0; };
+    const bool looks_mine = pack->installed && (same(pack->made_by, v.your_name) || same(pack->pack.maker_team, m.team));
+    if (looks_mine) {
+        y += paragraph(d, f.bold, 19 * k, ImVec2(x, y), w, white, pack->name + " looks like yours, made on another PC.") + 14 * k;
+        y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
+                       "Every pack carries the key of the PC it was made on. This one came from another PC (or from before a Windows "
+                       "reinstall), so the studio can't tell it's yours by the PC alone. Your Thunderstore team can.") + 14 * k;
+        const std::string status =
+            m.team.empty() ? "You're not signed in to the MARKET here. Sign in with the Thunderstore team that published it (MARKET > ACCOUNT): "
+                             "then it's yours to share and update on this PC."
+            : m.account_state == 3 ? "Your token can't publish for " + m.team + ". Link the team's token again in MARKET > ACCOUNT."
+            : m.account_state == 2 ? "You're signed in as " + m.team + ", but this pack went out under another team (or came in as a file). "
+                                     "Sign in with the team that published it. From now on, what you share carries your team, so this won't happen again."
+                                   : "Your team " + m.team + " is still being checked with Thunderstore. Try again in a moment.";
+        paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint, status);
+    } else if (pack->installed) {
         y += paragraph(d, f.bold, 19 * k, ImVec2(x, y), w, white,
                        "That's not very nice: trying to reshare someone else's pack!") + 14 * k;
         y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,

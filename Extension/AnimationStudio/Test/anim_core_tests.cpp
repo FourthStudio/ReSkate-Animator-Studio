@@ -114,9 +114,11 @@ void packs_and_playlist() {
     pack.slots["heelflip|mid"] = {"Heelflip a"};
     pack.off = {"Kickflip a"};
     pack.maker_key = "abc";
+    pack.maker_team = "FourthStudio";
     pack.editable = true;
     const auto back = read_pack_json(pack_json(pack));
     check(back.off.contains("Kickflip a") && back.maker_key == "abc" && back.editable, "A pack keeps what is off, its maker and whether others may edit it");
+    check(back.maker_team == "FourthStudio", "A pack keeps the team it went out with, so it is its maker's on any PC signed in to it");
     std::vector<Preset> presets{{"Kickflip a", "kickflip", "mid"}, {"Kickflip b", "kickflip", "mid"}, {"Heelflip a", "heelflip", "mid"}, {"Mine", "ollie", "mid"}};
     select_presets(presets, std::span<const PresetPack>(&pack, 1));
     check(!presets[0].active && !presets[0].included && presets[1].active && presets[2].active && !presets[3].included,
@@ -205,8 +207,10 @@ void packs_and_playlist() {
           "A trick's stance version, against the skater's own stance");
     Animation locked;
     locked.maker_key = "k";
+    locked.maker_team = "FourthStudio";
     locked.keep_leads_right = true;
     const auto read = from_json(to_json(locked));
+    check(read.maker_team == "FourthStudio", "A trick keeps the team it went out with");
     check(read.maker_key == "k" && !read.editable && read.keep_leads_right == std::optional<bool>(true), "A trick keeps its maker, its lock and the foot it leads with");
     check(!read.catch_at, "A trick with no catch set has none: the studio finds it");
     auto caught = from_json(to_json(locked));
