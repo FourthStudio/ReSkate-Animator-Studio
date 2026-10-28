@@ -2059,11 +2059,11 @@ void the_catch_follows_the_game() {
     check(near(catch_aligned_time(0.1f, 0.2f, 0.5f, 0.6f, 0.8f), 0.1f), "Before the pop it is the game's time");
     check(near(catch_aligned_time(0.5f, 0.2f, 0.5f, 0.6f, 0.8f), 0.6f), "As the game catches, the trick catches");
     check(near(catch_aligned_time(0.35f, 0.2f, 0.5f, 0.6f, 0.8f), 0.4f), "faster on the way (4/3 times its pace)");
-    check(near(catch_aligned_time(0.8f, 0.2f, 0.5f, 0.6f, 0.8f), 0.8f) && near(catch_aligned_time(0.65f, 0.2f, 0.5f, 0.6f, 0.8f), 0.7f),
-          "and from the catch on to land as the game lands");
-    check(near(catch_aligned_time(1.0f, 0.2f, 0.5f, 0.6f, 0.8f), 1.0f), "After the landing it is the game's time again");
+    check(near(catch_aligned_time(0.65f, 0.2f, 0.5f, 0.6f, 0.8f), 0.75f) && near(catch_aligned_time(1.0f, 0.2f, 0.5f, 0.6f, 0.8f), 1.1f),
+          "and from the catch on at its own pace (not half speed)");
     check(near(catch_aligned_time(0.5f, 0.2f, 0.5f, 0.5f, 0.8f), 0.5f), "A catch on the game's plays at the game's pace");
-    check(near(catch_aligned_time(0.5f, 0.2f, 0.25f, 0.75f, 0.8f), 0.5f), "One too far from the game's is not lined up");
+    check(near(catch_aligned_time(0.25f, 0.2f, 0.25f, 0.75f, 0.8f), 0.2f + 0.05f * 4 / 3),
+          "One far from the game's is lined up only as far as a third faster goes");
     check(near(catch_aligned_time(0.5f, 0.2f, -1, 0.6f, 0.8f), 0.5f), "nor one the game has none for");
     // It never goes back as the game goes on.
     float last = -1;

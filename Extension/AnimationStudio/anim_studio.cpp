@@ -3712,8 +3712,9 @@ void on_animation(std::uintptr_t component) noexcept {
             if (l.episode.phase == PlaybackPhase::air && l.predicted_air == 0 && at - l.episode.takeoff >= 0.03) {
                 const double elapsed = at - l.episode.takeoff;
                 const auto vy = board_up_speed(base, component);
+                // At the board's own gravity (board_gravity, 20 m/s2): at 9.81 every air came out about twice as long.
                 l.predicted_air = vy && *vy > 0.3f
-                    ? static_cast<float>(std::clamp(2 * (*vy + 9.81 * elapsed) / 9.81 - elapsed, 0.15, 3.0)) : -1.0f;
+                    ? static_cast<float>(std::clamp(2 * (*vy + board_gravity * elapsed) / board_gravity - elapsed, 0.15, 3.0)) : -1.0f;
             }
             // The game's trick, read for as long as he is in the air rather than only just after takeoff.
             // A name arriving late used to be ignored, so a trick that turned into another one kept the
@@ -3941,6 +3942,11 @@ void on_animation(std::uintptr_t component) noexcept {
                         // Worked out on the client thread a moment ago (along the board's path): less the time since.
                         if (landing_in >= 0 && found >= 0 && now_seconds() - found < 0.15)
                             to_ground = std::max(0.0f, landing_in - static_cast<float>(now_seconds() - found));
+                        // Nothing from it (not asked yet, or no answer): the board coming back down to the height it took off
+                        // from, at the speed it goes up now. On a higher pop the trick reached its landing in the air with the
+                        // ground not known, and handed back to the game there (2026-10-28, test 5 and 6).
+                        else if (!to_ground && l.takeoff_mount_ok && finite(mount) && std::isfinite(lowest) && velocity)
+                            to_ground = time_to_ground((*velocity)[1], lowest - lowest_point(l.takeoff_mount, l.latch_shape));
                     }
                     const bool was_on = l.stretch.on();
                     const float hold = played.catch_hold.value_or(default_catch_hold);
@@ -3983,14 +3989,15 @@ void on_animation(std::uintptr_t component) noexcept {
                     float time = reading.locked ? catch_aligned_time(reading.time, up, trick->game_caught, trick->caught, down) : -1.0f;
                     if (reading.locked && !l.catch_lined_said && trick->caught > 0 && trick->game_caught > 0) {
                         l.catch_lined_said = true;
-                        const bool lined = catch_aligned_time(trick->game_caught, up, trick->game_caught, trick->caught, down) != trick->game_caught ||
-                                           std::abs(trick->caught - trick->game_caught) < 1e-3f;
+                        const float at_catch = catch_aligned_time(trick->game_caught, up, trick->game_caught, trick->caught, down);
+                        const float pace = (at_catch - up) / (trick->game_caught - up);
                         logging::log(Level::info, Channel::skater,
                                      "Animation Studio: {} catches at {:.2f} s, the game at {:.2f} s: {}.", trick->name, trick->caught, trick->game_caught,
-                                     !lined ? "too far apart to line up (it plays at the game's pace)"
-                                            : std::abs(trick->caught - trick->game_caught) < 1e-3f ? "together"
-                                            : std::format("it plays {:.2f} times its pace to the catch and {:.2f} after it", (trick->caught - up) / (trick->game_caught - up),
-                                                          (down - trick->caught) / (down - trick->game_caught)));
+                                     std::abs(trick->caught - trick->game_caught) < 1e-3f ? std::string("together")
+                                     : std::abs(at_catch - trick->caught) < 1e-3f
+                                         ? std::format("its flip plays {:.2f} times its pace to catch with the game, then at its own", pace)
+                                         : std::format("its flip plays {:.2f} times its pace, as far as it goes (its catch {:.2f} s off the game's), then at its own",
+                                                       pace, trick->caught - at_catch));
                     }
                     // On the game's clip of a higher pop than the trick was made on, the trick takes the longer air in its own
                     // time from its catch (AirStretch), as off a drop: it plays to its landing on the touchdown, or on the rail
