@@ -212,8 +212,8 @@ struct Settings {
     // On: update to the newest pre-release on GitHub when there is one newer than the latest
     // release. Turned off, the next check goes back to the latest release.
     bool prereleases{};
-    // On: update from official ReSkate's releases instead of this build's own (Animator Studio's).
-    // Only offered when this build has releases of its own (update::has_official_channel).
+    // On: base ReSkate chosen, and SWITCH installs official ReSkate's DLL and launcher in place of
+    // this build's (offers_base_reskate).
     bool official_reskate{};
     std::string steam_username;   // never the password
     bool steam_remember{true};
@@ -232,9 +232,14 @@ struct Settings {
     std::string shader_cache_mods;
 };
 
-// The releases the settings update from: official ReSkate's only when chosen and there is a choice.
+// Whether the launcher offers base ReSkate: only a build with releases of its own, a mod name to
+// tell the two apart, and binary updates to install the switch with.
+inline bool offers_base_reskate() {
+    return update::has_official_channel() && !reskate_mod_name.empty() && update::binary_updates_enabled();
+}
+// The releases the settings update from: official ReSkate's only when chosen and offered.
 inline update::Channel update_channel(const Settings& settings) {
-    return settings.official_reskate && update::has_official_channel() ? update::Channel::official : update::Channel::own;
+    return settings.official_reskate && offers_base_reskate() ? update::Channel::official : update::Channel::own;
 }
 // What the player is told the build is, for the releases they chose: "ReSkate + Animator Studio" for
 // this build's own, "Base ReSkate" for official ReSkate's, and "ReSkate" for a build with no named mod.

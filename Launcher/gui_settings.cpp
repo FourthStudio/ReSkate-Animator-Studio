@@ -510,9 +510,9 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                               "Update to the newest pre-release on GitHub, to try what is coming before it is released. "
                               "Pre-releases are less tested. Turn off to go back to the latest release.",
                               settings.prereleases);
-            // A build with releases of its own (Animator Studio) can go back to official ReSkate and
-            // return: this launcher stays while official ReSkate is the version the build was made from.
-            if (update::has_official_channel())
+            // The front page's base ReSkate tile, here too. One way: SWITCH installs official ReSkate's
+            // launcher, which cannot bring this build back.
+            if (offers_base_reskate())
                 setting_check("Use base ReSkate",
                               std::format("Install official ReSkate and its own launcher in place of {}. Nothing changes "
                                           "until you press SWITCH. Official ReSkate's launcher has no way back: to get {} "

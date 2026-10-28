@@ -6,7 +6,8 @@
 Attach launcher.json, ReSkateLauncher.exe and ReSkate.dll to the GitHub release. The game and
 DepotDownloader pins are copied from the official ReSkate release the build was made from
 (--official), so both choices in the launcher ask for the same skate. build. The dedicated server
-is left out: servers keep updating from official ReSkate.
+entries point at that official release's own server downloads (full links): the server carries no
+Animator Studio, and a server built with our release repo reads our launcher.json.
 """
 
 import argparse
@@ -51,6 +52,12 @@ def main():
         "game": base["game"],
         "depot_downloader": base["depot_downloader"],
     }
+    for server in ("server", "server_linux"):
+        if server in base:
+            entry = dict(base[server])
+            if entry["url"].startswith("asset:"):
+                entry["url"] = f"https://github.com/{OFFICIAL_REPO}/releases/download/{args.official}/{entry['url'][6:]}"
+            config[server] = entry
     Path(args.output).write_text(json.dumps(config, indent=4) + "\n", encoding="utf-8")
     print(f"{args.output}: Animator Studio {version}, game build {base['game'].get('build_id', '?')}")
 
