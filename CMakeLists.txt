@@ -403,6 +403,17 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     add_executable(dingosdk_studio_pack_file_tests Extension/AnimationStudio/Test/pack_file_tests.cpp)
     target_include_directories(dingosdk_studio_pack_file_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME studio_pack_files COMMAND dingosdk_studio_pack_file_tests)
+    # studio-settings.json, read and written back.
+    add_executable(dingosdk_studio_settings_file_tests Extension/AnimationStudio/Test/studio_settings_file_tests.cpp)
+    target_include_directories(dingosdk_studio_settings_file_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_studio_settings_file_tests PRIVATE dingosdk_json)
+    add_test(NAME studio_settings_file COMMAND dingosdk_studio_settings_file_tests)
+    # The settings rows the studio and the ReSkate menu both draw, with the studio's setters stood in for.
+    add_executable(dingosdk_studio_settings_rows_tests Extension/UI/Overlay/Test/animation_studio_settings_tests.cpp
+        Extension/UI/Overlay/animation_studio_settings.cpp)
+    target_include_directories(dingosdk_studio_settings_rows_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_studio_settings_rows_tests PRIVATE dingosdk_json)
+    add_test(NAME studio_settings_rows COMMAND dingosdk_studio_settings_rows_tests)
     if(WIN32 AND NOT TARGET dingosdk_native_tools_view_tests)
         add_executable(dingosdk_native_tools_view_tests Extension/UI/NativeMenu/Test/native_tools_view_tests.cpp)
         target_include_directories(dingosdk_native_tools_view_tests PRIVATE "${PROJECT_SOURCE_DIR}")

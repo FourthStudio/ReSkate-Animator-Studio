@@ -8,6 +8,7 @@
 #include "studio_cover_maker.h"
 #include "studio_market_art.h"
 #include "studio_torn.h"
+#include "animation_studio_settings.h"
 #include <shlobj.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -299,7 +300,6 @@ struct Ui {
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
     float clear_force{1.0f};     // how wide the body is taken to be: 0 nothing, 1 the full shapes
     float ground_force{0.6f};    // the ground force field (SETTINGS): how much of a joint's thickness is kept above the floor; 0 off
-    float crossfade_slider{};    // the Crossfade setting on its slider, 0 to 1 (0.1 to 0.8 s), from the studio each frame
     bool controls_open{true};    // the shortcuts panel out (its tab at its side, or F1, slides it in and out)
     float controls_t{1};         // how far out it is, eased
     bool shove_limbs{true};      // a limb that is run into gives way as well, not only what you move
@@ -5359,7 +5359,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
                            : "Off: " + v.playlist_playing + " is on. Switching this one on switches that one off: one playlist plays at a time.") + 14 * k;
     }
     if (!v.playlist_open.empty()) {
-        text(d, f.heading, 14 * k, ImVec2(x, y + 9 * k), white, "THE SAME TRICK MORE THAN ONCE");
+        text(d, f.heading, 14 * k, ImVec2(x, y + 9 * k), white, "WHICH VERSION PLAYS");
         const int chosen = static_cast<int>(v.playlist_mode);
         const int picked = segmented(d, f, "##playlistmode", ImVec2(x + 300 * k, y), w - 300 * k, 36 * k, {"FIXED", "IN TURNS", "SHUFFLE"}, chosen);
         if (picked >= 0 && picked != chosen) {
@@ -7296,70 +7296,26 @@ void packs_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
 // ---- SETTINGS -------------------------------------------------------------------------------------
 // As the game's own: a tile for each part (a picture and what it holds), and in each the settings as rows, a value at
 // the right with arrows either side or a bar to slide, and what the chosen one does in a box beside them.
-struct Setting {
-    enum class Kind { choice, slider, action, folder, name, info, key, heading };
-    Kind kind{};
-    std::string label, value, about;
-    std::function<void(int)> step;    // choice: one along, -1 or 1
-    float amount{};                   // slider: 0 to 1
-    std::function<void(float)> slide; // slider: set it
-    std::function<void()> act;        // action
-    bool exporting{};                 // folder: which one
-    bool enabled{true};
-    std::string key_id, own;          // key: the action (key_actions) and its own key, as written
-};
+// The rows the ReSkate menu shows too are written once, in animation_studio_settings.cpp.
+using studio_settings::Setting;
+using studio_settings::choice;
+using studio_settings::on_off;
+using studio_settings::slider;
+using studio_settings::button_row;
+using studio_settings::info_setting;
 constexpr std::array<const char*, 4> settings_pages{"STUDIO", "SKATER", "TRICKS", "PACKS"};
 constexpr std::array<const char*, 4> settings_blurbs{"The room, the camera, playback and the studio's own tools.",
                                                      "How the skater is posed: limits, keeping clear, the ground, his stance.",
                                                      "How your tricks play in game: on or off, the crossfade, matching, your name.",
                                                      "Where packs are exported to and imported from, and bringing them in."};
-Setting choice(std::string label, std::string value, std::string about, std::function<void(int)> step) {
-    Setting s;
-    s.kind = Setting::Kind::choice;
-    s.label = std::move(label);
-    s.value = std::move(value);
-    s.about = std::move(about);
-    s.step = std::move(step);
-    return s;
-}
-Setting on_off(std::string label, bool on, std::string about, std::function<void(bool)> set) {
-    return choice(std::move(label), on ? "ON" : "OFF", std::move(about), [on, set = std::move(set)](int) { set(!on); });
-}
-Setting slider(std::string label, float amount, std::string value, std::string about, std::function<void(float)> slide) {
-    Setting s;
-    s.kind = Setting::Kind::slider;
-    s.label = std::move(label);
-    s.amount = amount;
-    s.value = std::move(value);
-    s.about = std::move(about);
-    s.slide = std::move(slide);
-    return s;
-}
-Setting button_row(std::string label, std::string about, std::function<void()> act) {
-    Setting s;
-    s.kind = Setting::Kind::action;
-    s.label = std::move(label);
-    s.about = std::move(about);
-    s.act = std::move(act);
-    return s;
-}
-Setting info_setting(std::string label, std::string value, std::string about) {
-    Setting s;
-    s.kind = Setting::Kind::info;
-    s.label = std::move(label);
-    s.value = std::move(value);
-    s.about = std::move(about);
-    return s;
-}
 std::vector<Setting> settings_of(int page, const studio::View& v) {
     auto& u = ui();
+    const auto now = studio::settings();
+    const studio_settings::Tell tell = [](const std::string& m) { say(m); };
     std::vector<Setting> rows;
     switch (page) {
     case 0: {
-        rows.push_back(on_off("Studio room", v.room,
-                              "On: the studio opens in the game's own lit studio room, as skate.'s Skaters page shows it. Off: it opens where "
-                              "you are. Takes effect the next time it opens.",
-                              [](bool on) { studio::set_room(on); }));
+        rows.push_back(studio_settings::studio_room(now));
         rows.push_back(choice("Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))].name,
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
                               "him and above, as he stands when you pick it; BOARD is close on the deck, CINEMATIC wide and low, FILMER "
@@ -7375,15 +7331,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               [](bool on) { ui().hide_joints = !on; }));
         rows.push_back(on_off("Shortcuts panel", u.controls_open, "The list of keys (or buttons) at the editor's lower right. Key: " + key_of("shortcuts") + ".",
                               [](bool on) { ui().controls_open = on; }));
-        rows.push_back(button_row("Report a bug",
-                                  "Something went wrong? Right after it happens, press this: the last 15 seconds, the game's log, your studio "
-                                  "settings and which build this is go into one zip, and Explorer shows it. Send that zip to us with what "
-                                  "happened, the trick and your stance. Nothing is sent by itself.",
-                                  [] {
-                                      std::string m;
-                                      studio::report_bug(m);
-                                      say(m);
-                                  }));
+        rows.push_back(studio_settings::report_a_bug(tell));
         rows.push_back(button_row("Export diagnostics",
                                   "Reproduce a problem, open the studio, then export: the last 15 seconds of poses, stances, timings, the board and "
                                   "the tricks in play, as text files to send.",
@@ -7431,19 +7379,9 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 1: {
-        rows.push_back(choice("Editing stance", v.stance_choice == 1 ? "REGULAR" : v.stance_choice == 2 ? "GOOFY" : v.showing_goofy ? "THE GAME'S (GOOFY)" : "THE GAME'S (REGULAR)",
-                              "Which foot leads while you edit, in the studio only: your stance in game is the game's own option. A trick "
-                              "made leading with the other foot is mirrored into this stance the way the game mirrors its own, so the leg "
-                              "you grab is the leg that moves. The game's: the stance set in the game's own options.",
-                              [c = v.stance_choice](int by) { studio::set_stance((c + by + 3) % 3); }));
-        rows.push_back(on_off("Hands grab the board", v.grab_board,
-                              "A hand brought near the deck closes its fingers round it, more the nearer it gets. Shown only: the fingers are "
-                              "not keyed or saved.",
-                              [](bool on) { studio::set_grab(on); }));
-        rows.push_back(on_off("Joint limits", v.limits,
-                              "On: knees and elbows bend one way and every joint stays in the range the game's own animation uses, while you "
-                              "pose and in game. Off: joints go wherever you push them.",
-                              [](bool on) { studio::set_joint_limits(on); }));
+        rows.push_back(studio_settings::editing_stance(now));
+        rows.push_back(studio_settings::hands_grab_the_board(now));
+        rows.push_back(studio_settings::joint_limits(now));
         rows.push_back(slider("Keep clear", u.anti_clip ? u.clear_force : 0.0f,
                               !u.anti_clip || u.clear_force <= 0.005f ? "OFF" : std::format("{:.0f}%", u.clear_force * 100),
                               "What you move is kept out of his body and off the deck. How wide his body is taken to be: low keeps the limbs "
@@ -7472,30 +7410,9 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 2: {
-        rows.push_back(on_off("Custom tricks in game", v.play_in_game,
-                              "On: your saved tricks play in game. The game leads: it says which clip it plays and how far into it it is, and "
-                              "your keys go onto its pose there, so the trick looks as the studio shows it and lands when the game lands.",
-                              [](bool on) { studio::set_play_in_game(on); }));
-        {
-            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.crossfade_slider = std::clamp((v.crossfade - 0.1f) / 0.7f, 0.0f, 1.0f);
-            const float seconds = 0.1f + u.crossfade_slider * 0.7f;
-            rows.push_back(slider("Crossfade", u.crossfade_slider, std::format("{:.2f} s", seconds),
-                                  "How smoothly your trick hands back to the game when it goes into its next move - a manual, a push, the "
-                                  "next trick. Short is snappy, long is buttery.",
-                                  [](float amount) {
-                                      ui().crossfade_slider = amount;
-                                      static float said = -1;
-                                      const float s = std::round((0.1f + amount * 0.7f) * 100) / 100;
-                                      if (std::abs(s - said) > 0.005f) {
-                                          said = s;
-                                          studio::set_crossfade(s);
-                                      }
-                                  }));
-        }
-        rows.push_back(choice("Trick matching", v.front_foot ? "FRONT FOOT" : "EXACT STANCE",
-                              "Front foot: a trick plays in every stance, mirrored onto your front foot when the other foot leads, as the game "
-                              "does. Exact stance: only the one made on the foot that leads now; the game's own otherwise.",
-                              [on = v.front_foot](int) { studio::set_front_foot(!on); }));
+        rows.push_back(studio_settings::custom_tricks_in_game(now));
+        rows.push_back(studio_settings::crossfade(now));
+        rows.push_back(studio_settings::trick_matching(now));
         {
             const auto build = studio::library_build();
             Setting s = button_row("Trick library",
@@ -7510,36 +7427,12 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                                             : "BUILT " + build.built + "  -  REBUILD";
             rows.push_back(std::move(s));
         }
-        {
-            Setting s;
-            s.kind = Setting::Kind::name;
-            s.label = "Made by";
-            s.about = "Your name. It goes with every trick you save and every pack you make, so a trick passed on says whose it is.";
-            rows.push_back(std::move(s));
-        }
+        rows.push_back(studio_settings::made_by(now, tell));
         break;
     }
     default: {
-        {
-            Setting s;
-            s.kind = Setting::Kind::folder;
-            s.label = "Export folder";
-            s.exporting = true;
-            s.value = v.export_path;
-            s.about = "Where EXPORT PACK and EXPORT ALL TRICKS put their zip. It opens by itself after an export. CHOOSE picks "
-                      "another folder, DEFAULT goes back to ReSkate.Tricks\\exports.";
-            rows.push_back(std::move(s));
-        }
-        {
-            Setting s;
-            s.kind = Setting::Kind::folder;
-            s.label = "Import folder";
-            s.exporting = false;
-            s.value = v.import_path;
-            s.about = "Where IMPORT looks for packs: put a pack's zip there (your Downloads folder works well) and press IMPORT. "
-                      "Imported zips are moved into an imported folder inside it.";
-            rows.push_back(std::move(s));
-        }
+        rows.push_back(studio_settings::pack_folder(now, true));
+        rows.push_back(studio_settings::pack_folder(now, false));
         rows.push_back(button_row("Import packs now", "Takes in every pack zip in the import folder: checked first, names already used get the next number.", [] {
             std::string m;
             studio::import_packs(m);
@@ -7770,20 +7663,18 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         }
         case Setting::Kind::name: {
             if (!u.your_name_filled && !ImGui::IsAnyItemActive()) {
-                std::snprintf(u.your_name.data(), u.your_name.size(), "%s", v.your_name.c_str());
+                std::snprintf(u.your_name.data(), u.your_name.size(), "%s", row.value.c_str());
                 u.your_name_filled = true;
             }
             bool edited = false;
-            if (field(f, "##yourname", u.your_name, ImVec2(control_x, mid_y - 17 * k), 400 * k, "your name", &edited) || edited) {
-                studio::set_your_name(u.your_name.data());
-                say(std::string("Made by ") + u.your_name.data() + " from now on.");
-            }
+            if ((field(f, "##yourname", u.your_name, ImVec2(control_x, mid_y - 17 * k), 400 * k, "your name", &edited) || edited) && row.edit)
+                row.edit(u.your_name.data());
             break;
         }
         case Setting::Kind::folder: {
             text(d, f.bold, 14 * k, ImVec2(control_x, a1.y + 18 * k), lit ? white : soft, elide(f.bold, 14 * k, row.value, b1.x - control_x - 20 * k));
             const float by = a1.y + 58 * k, bw = 118 * k;
-            const bool custom = !(row.exporting ? v.export_folder : v.import_folder).empty();
+            const bool custom = row.custom;
             if (action(d, f, "##choosefolder", ImVec2(b1.x - 3 * (bw + 8 * k) - 6 * k, by), ImVec2(bw, 34 * k), "CHOOSE", Look::paper))
                 open_browser(v, row.exporting ? 1 : 2, {});
             if (action(d, f, "##openfolder", ImVec2(b1.x - 2 * (bw + 8 * k) - 6 * k, by), ImVec2(bw, 34 * k), "OPEN")) studio::open_pack_folder(row.exporting);

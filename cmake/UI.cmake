@@ -10,6 +10,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/overlay_input.cpp
     Extension/UI/Overlay/item_browser_overlay.cpp
     Extension/UI/Overlay/animation_studio_overlay.cpp
+    Extension/UI/Overlay/animation_studio_settings.cpp
     Extension/UI/Overlay/frame_grab.cpp
     Extension/UI/Overlay/depth_probe.cpp
     Extension/UI/Overlay/overlay_notices.cpp
@@ -38,6 +39,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/studio_market_art.cpp
     Extension/UI/Overlay/studio_cover_maker.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
+    Extension/UI/Overlay/skate_menu_animator_studio.cpp
     Extension/UI/Overlay/skate_menu_settings.cpp
     Extension/UI/Overlay/park_editor.cpp
     Extension/UI/Overlay/park_editor_actions.cpp

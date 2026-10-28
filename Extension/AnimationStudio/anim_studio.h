@@ -168,6 +168,19 @@ std::string toggle_stance_readout();
 std::string research_trace(const std::string& action);
 // Cheap, any thread: whether the studio has the screen.
 bool is_open() noexcept;
+// The studio's settings (SETTINGS), cheaply, for a page that shows them with the studio closed: no trick, joint or
+// library is read or copied. Each is changed by its setter below.
+struct Settings {
+    bool room{true}, play_in_game{true};
+    int stance_choice{}; // 0 the game's, 1 regular, 2 goofy (set_stance)
+    bool game_goofy{};   // the game's own stance is goofy
+    bool grab_board{}, limits{true}, front_foot{true};
+    float crossfade{0.3f};
+    std::string your_name;
+    std::string export_folder, import_folder; // "" the defaults
+    std::string export_path, import_path;     // where they are, in full (UTF-8)
+};
+Settings settings();
 // The studio's room (studio_room.h). Any thread.
 bool room_wanted() noexcept;       // the Studio room row is on
 void watch_room(bool on) noexcept; // look for the menu's skater in the room
@@ -368,6 +381,22 @@ bool set_pack_editable(const std::string& pack, bool editable, std::string& mess
 // on play), how its tricks take turns, and what is in it.
 void set_playlist_on(bool on, std::string& message);
 void set_playlist_mode(PlaylistMode mode, std::string& message);
+// The same for a playlist by its name, whichever one PACKS has open: `name` on and any other off ("" none on), and how
+// its tricks take turns.
+void play_playlist(const std::string& name, std::string& message);
+void set_playlist_mode(const std::string& name, PlaylistMode mode, std::string& message);
+// The playlists, cheaply, for a page that switches them with the studio closed: their names, how many entries each
+// has, how its tricks take turns, and the one on ("" none). The trick library is read the first time, as the studio does.
+struct PlaylistsNow {
+    struct Entry {
+        std::string name;
+        std::size_t size{};
+        PlaylistMode mode{PlaylistMode::fixed};
+    };
+    std::vector<Entry> lists;
+    std::string on;
+};
+PlaylistsNow playlists_now();
 bool playlist_add(const PlaylistEntry& entry, std::string& message); // makes Playlist 1 when there is none
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)

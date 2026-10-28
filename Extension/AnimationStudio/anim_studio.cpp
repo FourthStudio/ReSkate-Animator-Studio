@@ -26,6 +26,7 @@
 #include "native_library.h"
 #include "marketplace.h"
 #include "pack_file_transaction.h"
+#include "studio_settings_file.h"
 #include <Windows.h>
 #include <shellapi.h>
 #include <bcrypt.h>
@@ -761,58 +762,52 @@ std::filesystem::path library_folder() {
 // The studio's settings, kept beside the animations in ReSkate.Tricks so they survive a restart. It is not an
 // animation: the library listings pass over it.
 constexpr const wchar_t* settings_file = L"studio-settings.json";
+// The state's own values are kept for a key the file does not have.
+SettingsFile settings_file_of(const State& s) {
+    SettingsFile f;
+    f.front_foot = s.front_foot;
+    f.joint_limits = s.limits;
+    f.stance = s.stance_choice;
+    f.grab_board = s.grab_board;
+    f.made_by = s.your_name;
+    f.hover_preview = s.hover_preview;
+    f.ungrouped = s.ungrouped;
+    f.favorite_packs = s.favorite_packs;
+    f.export_folder = s.export_folder;
+    f.import_folder = s.import_folder;
+    f.crossfade = s.crossfade;
+    f.editor_keys = s.keys;
+    f.studio_room = s.room;
+    f.play_in_game = s.play_in_game;
+    return f;
+}
 void load_settings(State& s) {
     try {
         std::ifstream in(library_folder() / settings_file, std::ios::binary);
         if (!in) return;
-        const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
-        if (!root.is_object()) return;
-        s.front_foot = root.value("front_foot", s.front_foot);
-        s.limits = root.value("joint_limits", s.limits);
-        s.stance_choice = std::clamp(root.value("stance", s.stance_choice), 0, 2);
-        s.grab_board = root.value("grab_board", s.grab_board);
-        s.your_name = utf8_prefix(root.value("made_by", s.your_name.c_str()), 48);
-        s.hover_preview = root.value("hover_preview", s.hover_preview);
-        s.ungrouped.clear();
-        if (root.contains("ungrouped") && root.at("ungrouped").is_array())
-            for (const auto& name : root.at("ungrouped"))
-                if (name.is_string() && s.ungrouped.size() < 2000) s.ungrouped.insert(name.string());
-        s.favorite_packs.clear();
-        if (root.contains("favorite_packs") && root.at("favorite_packs").is_array())
-            for (const auto& name : root.at("favorite_packs"))
-                if (name.is_string() && s.favorite_packs.size() < 500) s.favorite_packs.push_back(name.string());
-        s.export_folder = root.value("export_folder", "");
-        s.import_folder = root.value("import_folder", "");
-        if (root.contains("crossfade") && root.at("crossfade").is_number())
-            s.crossfade = std::clamp(static_cast<float>(root.at("crossfade").get<double>()), 0.1f, 0.8f);
-        s.keys.clear();
-        if (root.contains("editor_keys") && root.at("editor_keys").is_object())
-            for (const auto& [action, key] : root.at("editor_keys").items())
-                if (key.is_string() && action.size() < 32 && key.string().size() < 32 && s.keys.size() < 64) s.keys[action] = key.string();
+        auto f = settings_file_of(s);
+        read_settings_file(Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>())), f);
+        s.front_foot = f.front_foot;
+        s.limits = f.joint_limits;
+        s.stance_choice = f.stance;
+        s.grab_board = f.grab_board;
+        s.your_name = f.made_by;
+        s.hover_preview = f.hover_preview;
+        s.ungrouped = std::move(f.ungrouped);
+        s.favorite_packs = std::move(f.favorite_packs);
+        s.export_folder = f.export_folder;
+        s.import_folder = f.import_folder;
+        s.crossfade = f.crossfade;
+        s.keys = std::move(f.editor_keys);
+        s.room = f.studio_room;
+        s.play_in_game = f.play_in_game;
     } catch (...) {}
 }
 void write_preset_file(const std::filesystem::path& path, const std::string& text); // below
 // Caller holds the mutex.
 void save_settings_locked(const State& s) {
     try {
-        Json root = Json::object();
-        root["front_foot"] = s.front_foot;
-        root["joint_limits"] = s.limits;
-        root["stance"] = s.stance_choice;
-        root["grab_board"] = s.grab_board;
-        root["crossfade"] = s.crossfade;
-        if (!s.export_folder.empty()) root["export_folder"] = s.export_folder;
-        if (!s.import_folder.empty()) root["import_folder"] = s.import_folder;
-        if (!s.your_name.empty()) root["made_by"] = s.your_name;
-        root["hover_preview"] = s.hover_preview;
-        if (!s.ungrouped.empty()) root["ungrouped"] = Json(std::vector<std::string>(s.ungrouped.begin(), s.ungrouped.end()));
-        if (!s.favorite_packs.empty()) root["favorite_packs"] = Json(s.favorite_packs);
-        if (!s.keys.empty()) {
-            Json keys = Json::object();
-            for (const auto& [action, key] : s.keys) keys[action] = key;
-            root["editor_keys"] = keys;
-        }
-        write_preset_file(library_folder() / settings_file, root.dump(2));
+        write_preset_file(library_folder() / settings_file, settings_file_json(settings_file_of(s)).dump(2));
     } catch (...) {}
 }
 // The packs switched on: presets/current.txt, one name a line (a file from before holds one). A name whose
@@ -5312,6 +5307,25 @@ bool room_wanted() noexcept {
     std::lock_guard lock(s.mutex);
     return s.room;
 }
+Settings settings() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    Settings out;
+    out.room = s.room;
+    out.play_in_game = s.play_in_game;
+    out.stance_choice = s.stance_choice;
+    out.game_goofy = goofy_stance();
+    out.grab_board = s.grab_board;
+    out.limits = s.limits;
+    out.front_foot = s.front_foot;
+    out.crossfade = s.crossfade;
+    out.your_name = s.your_name;
+    out.export_folder = s.export_folder;
+    out.import_folder = s.import_folder;
+    out.export_path = utf8_path(pack_export_folder(s));
+    out.import_path = utf8_path(pack_import_folder(s));
+    return out;
+}
 void watch_room(bool on) noexcept { room_watch.store(on, std::memory_order_release); }
 void set_in_room(bool on) noexcept { in_room_flag.store(on, std::memory_order_release); }
 bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std::memory_order_acquire) < 0.5; }
@@ -5680,6 +5694,7 @@ void set_room(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.room = on;
+    save_settings_locked(s);
     s.eased_valid = false;
     room_switches.fetch_add(1, std::memory_order_acq_rel);
     s.status = on ? "To the studio room: the studio opens again there." : "Out of the studio room: the studio stays open where you are.";
@@ -5689,6 +5704,7 @@ void set_play_in_game(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.play_in_game = on;
+    save_settings_locked(s);
     s.status = on ? "Your saved tricks play in game, as the studio shows them." : "Tricks play as the game has them.";
     publish_locked(s);
 }
@@ -6820,32 +6836,64 @@ void say_locked(State& s, std::string& message, std::string said) {
     s.status = message;
     publish_locked(s, false);
 }
-} // namespace
-void set_playlist_on(bool on, std::string& message) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
+// `name` on and any other off, or "" none on.
+void play_playlist_locked(State& s, const std::string& name, std::string& message) {
     auto lists = s.playlists;
-    const auto* open = lists.named(s.playlist_open);
-    if (!open) return say_locked(s, message, "Make a playlist first: + NEW PLAYLIST.");
     const auto before = lists.on;
-    lists.on = on ? open->name : std::string{};
-    message = on ? (open->entries.empty() ? open->name + " is on - it is empty, so nothing of yours plays until you add to it."
-                                          : open->name + " is on: it decides what plays in game.") +
-                       (before.empty() || before == open->name ? std::string{} : " " + before + " is off now: one playlist plays at a time.")
-                 : open->name + " is off: no playlist is on, so nothing of yours plays.";
+    if (name.empty()) {
+        lists.on.clear();
+        message = (before.empty() ? std::string("No playlist is on") : before + " is off: no playlist is on") + ", so nothing of yours plays.";
+        return playlists_changed_locked(s, lists, message);
+    }
+    const auto* list = lists.named(name);
+    if (!list) return say_locked(s, message, "There is no playlist called " + name + ".");
+    lists.on = name;
+    message = (list->entries.empty() ? name + " is on - it is empty, so nothing of yours plays until you add to it."
+                                     : name + " is on: it decides what plays in game.") +
+              (before.empty() || before == name ? std::string{} : " " + before + " is off now: one playlist plays at a time.");
     playlists_changed_locked(s, lists, message);
 }
-void set_playlist_mode(PlaylistMode mode, std::string& message) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
+void set_playlist_mode_locked(State& s, const std::string& name, PlaylistMode mode, std::string& message) {
     auto lists = s.playlists;
-    auto* open = lists.named(s.playlist_open);
-    if (!open) return;
-    open->mode = mode;
+    auto* list = lists.named(name);
+    if (!list) return;
+    list->mode = mode;
     message = mode == PlaylistMode::fixed ? "Fixed: where two in the playlist are the same trick, the one higher up plays every time."
               : mode == PlaylistMode::turns ? "In turns: the same trick from the playlist plays one after another, top to bottom."
                                             : "Shuffle: the same trick from the playlist plays at random, never twice running.";
     playlists_changed_locked(s, lists, message);
+}
+} // namespace
+void set_playlist_on(bool on, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto* open = s.playlists.named(s.playlist_open);
+    if (!open) return say_locked(s, message, "Make a playlist first: + NEW PLAYLIST.");
+    play_playlist_locked(s, on ? open->name : std::string{}, message);
+}
+void set_playlist_mode(PlaylistMode mode, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    set_playlist_mode_locked(s, s.playlist_open, mode, message);
+}
+void play_playlist(const std::string& name, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    play_playlist_locked(s, name, message);
+}
+void set_playlist_mode(const std::string& name, PlaylistMode mode, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    set_playlist_mode_locked(s, name, mode, message);
+}
+PlaylistsNow playlists_now() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.library_read) read_library_locked(s);
+    PlaylistsNow now;
+    now.on = s.playlists.on;
+    for (const auto& list : s.playlists.lists) now.lists.push_back({list.name, list.entries.size(), list.mode});
+    return now;
 }
 bool playlist_add(const PlaylistEntry& entry, std::string& message) {
     auto& s = state();
@@ -7297,6 +7345,7 @@ bool test_in_game(const std::string& animation, std::string& message) {
     }
     s.test_trick = name;
     s.play_in_game = true;
+    save_settings_locked(s);
     s.tricks_read = false;
     s.open_requested = false; // the studio closes: go and skate it
     s.open_request_pending = true;
