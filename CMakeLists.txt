@@ -409,8 +409,8 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_link_libraries(dingosdk_studio_settings_file_tests PRIVATE dingosdk_json)
     add_test(NAME studio_settings_file COMMAND dingosdk_studio_settings_file_tests)
     # The settings rows the studio and the ReSkate menu both draw, with the studio's setters stood in for.
-    add_executable(dingosdk_studio_settings_rows_tests Extension/UI/Overlay/Test/animation_studio_settings_tests.cpp
-        Extension/UI/Overlay/animation_studio_settings.cpp)
+    add_executable(dingosdk_studio_settings_rows_tests Extension/AnimationStudio/Test/studio_settings_rows_tests.cpp
+        Extension/AnimationStudio/studio_settings_rows.cpp)
     target_include_directories(dingosdk_studio_settings_rows_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_studio_settings_rows_tests PRIVATE dingosdk_json)
     add_test(NAME studio_settings_rows COMMAND dingosdk_studio_settings_rows_tests)

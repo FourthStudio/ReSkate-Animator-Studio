@@ -8,7 +8,7 @@
 #include "studio_cover_maker.h"
 #include "studio_market_art.h"
 #include "studio_torn.h"
-#include "animation_studio_settings.h"
+#include "Extension/AnimationStudio/studio_settings_rows.h"
 #include <shlobj.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -7296,13 +7296,13 @@ void packs_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
 // ---- SETTINGS -------------------------------------------------------------------------------------
 // As the game's own: a tile for each part (a picture and what it holds), and in each the settings as rows, a value at
 // the right with arrows either side or a bar to slide, and what the chosen one does in a box beside them.
-// The rows the ReSkate menu shows too are written once, in animation_studio_settings.cpp.
-using studio_settings::Setting;
-using studio_settings::choice;
-using studio_settings::on_off;
-using studio_settings::slider;
-using studio_settings::button_row;
-using studio_settings::info_setting;
+// The rows the ReSkate menu shows too are written once, in Extension/AnimationStudio/studio_settings_rows.cpp.
+using studio::settings_rows::Setting;
+using studio::settings_rows::choice;
+using studio::settings_rows::on_off;
+using studio::settings_rows::slider;
+using studio::settings_rows::button_row;
+using studio::settings_rows::info_setting;
 constexpr std::array<const char*, 4> settings_pages{"STUDIO", "SKATER", "TRICKS", "PACKS"};
 constexpr std::array<const char*, 4> settings_blurbs{"The room, the camera, playback and the studio's own tools.",
                                                      "How the skater is posed: limits, keeping clear, the ground, his stance.",
@@ -7311,11 +7311,11 @@ constexpr std::array<const char*, 4> settings_blurbs{"The room, the camera, play
 std::vector<Setting> settings_of(int page, const studio::View& v) {
     auto& u = ui();
     const auto now = studio::settings();
-    const studio_settings::Tell tell = [](const std::string& m) { say(m); };
+    const studio::settings_rows::Tell tell = [](const std::string& m) { say(m); };
     std::vector<Setting> rows;
     switch (page) {
     case 0: {
-        rows.push_back(studio_settings::studio_room(now));
+        rows.push_back(studio::settings_rows::studio_room(now));
         rows.push_back(choice("Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))].name,
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
                               "him and above, as he stands when you pick it; BOARD is close on the deck, CINEMATIC wide and low, FILMER "
@@ -7331,7 +7331,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               [](bool on) { ui().hide_joints = !on; }));
         rows.push_back(on_off("Shortcuts panel", u.controls_open, "The list of keys (or buttons) at the editor's lower right. Key: " + key_of("shortcuts") + ".",
                               [](bool on) { ui().controls_open = on; }));
-        rows.push_back(studio_settings::report_a_bug(tell));
+        rows.push_back(studio::settings_rows::report_a_bug(tell));
         rows.push_back(button_row("Export diagnostics",
                                   "Reproduce a problem, open the studio, then export: the last 15 seconds of poses, stances, timings, the board and "
                                   "the tricks in play, as text files to send.",
@@ -7379,9 +7379,9 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 1: {
-        rows.push_back(studio_settings::editing_stance(now));
-        rows.push_back(studio_settings::hands_grab_the_board(now));
-        rows.push_back(studio_settings::joint_limits(now));
+        rows.push_back(studio::settings_rows::editing_stance(now));
+        rows.push_back(studio::settings_rows::hands_grab_the_board(now));
+        rows.push_back(studio::settings_rows::joint_limits(now));
         rows.push_back(slider("Keep clear", u.anti_clip ? u.clear_force : 0.0f,
                               !u.anti_clip || u.clear_force <= 0.005f ? "OFF" : std::format("{:.0f}%", u.clear_force * 100),
                               "What you move is kept out of his body and off the deck. How wide his body is taken to be: low keeps the limbs "
@@ -7410,9 +7410,9 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 2: {
-        rows.push_back(studio_settings::custom_tricks_in_game(now));
-        rows.push_back(studio_settings::crossfade(now));
-        rows.push_back(studio_settings::trick_matching(now));
+        rows.push_back(studio::settings_rows::custom_tricks_in_game(now));
+        rows.push_back(studio::settings_rows::crossfade(now));
+        rows.push_back(studio::settings_rows::trick_matching(now));
         {
             const auto build = studio::library_build();
             Setting s = button_row("Trick library",
@@ -7427,12 +7427,12 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                                             : "BUILT " + build.built + "  -  REBUILD";
             rows.push_back(std::move(s));
         }
-        rows.push_back(studio_settings::made_by(now, tell));
+        rows.push_back(studio::settings_rows::made_by(now, tell));
         break;
     }
     default: {
-        rows.push_back(studio_settings::pack_folder(now, true));
-        rows.push_back(studio_settings::pack_folder(now, false));
+        rows.push_back(studio::settings_rows::pack_folder(now, true));
+        rows.push_back(studio::settings_rows::pack_folder(now, false));
         rows.push_back(button_row("Import packs now", "Takes in every pack zip in the import folder: checked first, names already used get the next number.", [] {
             std::string m;
             studio::import_packs(m);

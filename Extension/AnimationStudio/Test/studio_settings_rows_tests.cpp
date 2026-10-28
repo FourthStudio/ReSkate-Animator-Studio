@@ -1,4 +1,4 @@
-#include "Extension/UI/Overlay/animation_studio_settings.h"
+#include "Extension/AnimationStudio/studio_settings_rows.h"
 #include <cmath>
 #include <iostream>
 #include <optional>
@@ -43,7 +43,7 @@ bool report_bug(std::string& message) {
 }
 
 using namespace dingosdk;
-using namespace dingosdk::overlay::studio_settings;
+using namespace dingosdk::anim_studio::settings_rows;
 namespace {
 void check(bool ok, const char* why) { if (!ok) throw std::runtime_error(why); }
 void reset() { anim_studio::given = {}; }

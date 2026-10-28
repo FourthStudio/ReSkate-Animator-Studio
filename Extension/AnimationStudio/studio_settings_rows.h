@@ -1,5 +1,5 @@
 #pragma once
-#include "Extension/AnimationStudio/anim_studio.h"
+#include "anim_studio.h"
 #include <functional>
 #include <string>
 #include <vector>
@@ -8,7 +8,7 @@
 // is changed, written once. The studio's SETTINGS and the ReSkate menu's ADDONS > ANIMATOR STUDIO (the ones that act
 // in game) each draw the rows they want, in their own order and their own look, so the two never say or do different
 // things.
-namespace dingosdk::overlay::studio_settings {
+namespace dingosdk::anim_studio::settings_rows {
 struct Setting {
     enum class Kind { choice, slider, action, folder, name, info, key, heading };
     Kind kind{};

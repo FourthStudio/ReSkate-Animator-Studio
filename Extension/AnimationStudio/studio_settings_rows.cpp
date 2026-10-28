@@ -1,10 +1,10 @@
-#include "animation_studio_settings.h"
+#include "studio_settings_rows.h"
 #include <algorithm>
 #include <cmath>
 #include <format>
 #include <utility>
 
-namespace dingosdk::overlay::studio_settings {
+namespace dingosdk::anim_studio::settings_rows {
 namespace studio = anim_studio;
 namespace {
 constexpr float shortest_crossfade = 0.1f, longest_crossfade = 0.8f; // seconds, as set_crossfade keeps it

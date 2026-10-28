@@ -1,15 +1,15 @@
 #include "skate_menu_internal.h"
-#include "animation_studio_settings.h"
+#include "Extension/AnimationStudio/studio_settings_rows.h"
 #include "Extension/AnimationStudio/anim_studio.h"
 
 #include <string>
 
 // ADDONS > ANIMATOR STUDIO: the studio's settings that change how your tricks play in game and the playlist that plays,
 // changed without opening it, and a way into it. What only acts while editing stays in the studio. The rows are the studio's own
-// (animation_studio_settings.h). This page only draws them as the menu does.
+// (Extension/AnimationStudio/studio_settings_rows.h). This page only draws them as the menu does.
 namespace dingosdk::overlay::menu {
 namespace {
-using studio_settings::Setting;
+using anim_studio::settings_rows::Setting;
 
 // A slider's value as its own format: the row has already written it ("0.30 s").
 std::string as_format(const std::string& value) {
@@ -60,18 +60,18 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     ImGui::BeginChild("animator-studio", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     const auto now = anim_studio::settings();
     begin_card(menu, "in-game", "IN GAME");
-    setting_row(menu, studio_settings::custom_tricks_in_game(now));
-    setting_row(menu, studio_settings::crossfade(now));
-    setting_row(menu, studio_settings::trick_matching(now));
+    setting_row(menu, anim_studio::settings_rows::custom_tricks_in_game(now));
+    setting_row(menu, anim_studio::settings_rows::crossfade(now));
+    setting_row(menu, anim_studio::settings_rows::trick_matching(now));
     end_card();
-    const studio_settings::Tell tell = [&menu](const std::string& said) { feedback(menu, said.c_str()); };
+    const anim_studio::settings_rows::Tell tell = [&menu](const std::string& said) { feedback(menu, said.c_str()); };
     const auto playlists = anim_studio::playlists_now();
     begin_card(menu, "playlist", "PLAYLIST");
-    setting_row(menu, studio_settings::playing_playlist(playlists, tell));
-    setting_row(menu, studio_settings::which_version_plays(playlists, tell));
+    setting_row(menu, anim_studio::settings_rows::playing_playlist(playlists, tell));
+    setting_row(menu, anim_studio::settings_rows::which_version_plays(playlists, tell));
     if (playlists.lists.empty()) note("No playlists yet: make one in the studio, PACKS > PLAYLIST.");
     end_card();
-    setting_row(menu, studio_settings::report_a_bug(tell)); // a button, not a setting: no card of its own
+    setting_row(menu, anim_studio::settings_rows::report_a_bug(tell)); // a button, not a setting: no card of its own
     ImGui::EndChild();
 }
 }
