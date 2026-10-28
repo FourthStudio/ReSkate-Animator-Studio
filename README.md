@@ -4,7 +4,7 @@ Edit skate animations in game, build your own trick packs, and choose how they p
 
 Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
 
-> **Current candidate:** Animator Studio 1.0.10 on ReSkate 2.1.2. Automated checks cover animation logic and pack files; final in-game release acceptance is tracked in the [release checklist](contrib/studio-release-checklist.md).
+> **Current candidate:** Animator Studio 1.0.11 on ReSkate 2.1.3. Automated checks cover animation logic and pack files; final in-game release acceptance is tracked in the [release checklist](contrib/studio-release-checklist.md).
 >
 > This is a fan project, unaffiliated with Electronic Arts or Full Circle. You need your own copy of skate. on Steam. The game is not included.
 
@@ -12,9 +12,9 @@ Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio,
 
 **For now, the Animator Studio is one file: a `ReSkate.dll` that takes the place of ReSkate's own.** You swap the DLL and turn ReSkate's updates off. Once the ReSkate team brings the studio into ReSkate itself, none of this is needed: you will just update ReSkate.
 
-You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.2** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
+You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.3** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
 
-1. Install **ReSkate 2.1.2** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.2) and start it once the normal way, so it is set up and up to date.
+1. Install **ReSkate 2.1.3** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.3) and start it once the normal way, so it is set up and up to date.
 2. In the launcher, open **Settings > LAUNCHER** and turn **Install ReSkate updates** off. While it is on, the launcher puts the official `ReSkate.dll` back.
 3. Close the launcher and the game.
 4. Open your ReSkate folder (the one with `Skate.exe` and `ReSkateLauncher.exe`). Back up `ReSkate.dll`, and your `ReSkate.Tricks` folder if you already have one.
@@ -100,7 +100,7 @@ cmake --preset ci-windows
 cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher --parallel 4
 ```
 
-Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 1.0.9 / ReSkate 2.1.2 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
+Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 1.0.9 / ReSkate 2.1.3 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
 
 See the [Studio implementation notes](contrib/animator-studio.md), [repository structure](STRUCTURE.md), and [release checklist](contrib/studio-release-checklist.md). Keep gameplay changes, tests and UI descriptions together; use focused PRs and wait for review before merging.
 

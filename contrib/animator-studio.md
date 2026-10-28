@@ -1,10 +1,30 @@
-# Animator Studio implementation
+# Animator Studio
 
-This describes the 1.0.10 candidate. User installation and operation are in [README](../README.md); release acceptance is in the [checklist](studio-release-checklist.md).
+This is Studio 1.0.11 on the published ReSkate 2.1.3 source. Follow [README](../README.md) to install the Studio DLL over ReSkate 2.1.3 and disable official updates while using this modified runtime. See [release acceptance](studio-release-checklist.md) for the earlier validation record.
+
+## Use the studio
+
+Once your skater is in game, press **F8**, hold **L3 + R3**, or choose **Open Animation Studio** under **Mod Options > PLAYER** or the ReSkate menu's **SKATER** page. Close Park Editor first. The first library build reads your own installed game; no game animation data is shipped in this repository.
+
+In **TRICKS**, search the native library or browse its folders, choose a trick/pop, then edit body and board keys on the timeline. Save it under your own name. Preview speed changes watching speed, not gameplay timing. Editor bindings are configurable under **SETTINGS > STUDIO > EDITOR KEYS**.
+
+Saving alone does not activate an animation. In **MY TRICKS**, tick **ACTIVE**, choose a playlist and turn that playlist on. Only one playlist is on at a time. Also enable **Custom tricks in game**. **TEST IN GAME** is temporary until you reopen the studio or restart; playlists retain the persistent selection.
+
+- **Fixed** picks the highest playlist entry per trick/pop/stance/takeoff slot; Alternate variants expand only within that winning entry.
+- **In turns** follows playlist order across attempts. **Shuffle** chooses randomly without immediately repeating when alternatives exist.
+- **Exact stance** uses the saved leading-foot/fakie combination. **Front foot** can mirror across leading feet. Save separate normal, fakie, switch and switch-fakie versions when each needs its own style.
+- **ANY pop** generates low/mid/high versions in memory; **COPY TO LOW, MID AND HIGH** makes separately editable versions. A selected pop can also provide fallbacks where no explicit version covers another height.
+- **CATCH**, **CATCH HOLD** and **DROP PREVIEW** tune/watch the catch-based timing on drops. Each trick can override the global crossfade.
+
+Browse/install packs in **MARKET**, then activate them through a playlist. Publishing your own pack requires **MARKET > ACCOUNT / SIGN IN**, your Thunderstore team and its service account token. The token stays in `ReSkate.Tricks/market/account.key`, protected by Windows DPAPI for your Windows user; `account.json` stores the team name. Sign out and relink if that key was deleted or moved to another PC. Never share these account files or zip the whole tricks folder to distribute a pack; use export/share.
+
+Back up `ReSkate.Tricks` before modifying an existing library. Pack update failures keep recovery files under `.pack-transactions` when rollback cannot finish. **SETTINGS > STUDIO > REPORT A BUG** creates a local report ZIP; review it and include the trick, pop, stance, session context and preview/gameplay result when reporting a problem.
+
+Native inventory includes graph states, transitions and parameters as well as clips. An indexed or editable grind/loop does not imply that live replacement of that phase is implemented. General airborne foot correction remains disabled. Proton/macOS Studio operation and live market publishing were not validated in this integration.
 
 ## Runtime contract
 
-Studio is compiled into ReSkate.dll. ReSkate 2.1.2 and game build 20260929 / Steam 25414733 are the supported integration. Do not infer support for another executable from a successful source build.
+Studio is compiled into ReSkate.dll for the supported game build 20260929 / Steam 25414733. This compatibility update uses official ReSkate 2.1.3 at `9506a39e052e88a6cad2d50e624910f217e914a8`; it does not change the supported game identity. Do not infer support for another game executable from a successful source build.
 
 Gameplay edits are applied to fresh native body/board poses. The selected trick, pop, stance and takeoff context decide which saved edits are eligible. The native clip matching clock supplies source timing; marked fallback paths are not proof of a decoded native animation-graph state.
 
@@ -47,3 +67,5 @@ Standard bug reports collect bounded diagnostics, relevant preset files, log tai
 | Market | `marketplace.*`, `marketplace_listing.h` |
 
 See the [build guide](studio-tester-build.md) for regression and library checks. Legacy recording tools and early prototype notes are historical, not current user workflows.
+
+Studio work by 22sh, Fourth Studio, Norms and Steez, with testing by THE CREW, built on ReSkate and its contributors. The integration retains the original authors' commit history.
