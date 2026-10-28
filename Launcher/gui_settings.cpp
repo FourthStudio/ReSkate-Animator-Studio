@@ -497,7 +497,8 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                       "Hide while you play and return when Skate closes. Turn off to close after a successful launch.",
                       settings.keep_open_after_launch);
         {
-            const bool updates_were = settings.updates, prereleases_were = settings.prereleases;
+            const bool updates_were = settings.updates, prereleases_were = settings.prereleases,
+                       official_was = settings.official_reskate;
             setting_check("Install ReSkate updates",
                           "Turn off to keep the ReSkate.dll and launcher you have, such as a test build someone gave you. "
                           "Skate's own Steam updates are not affected.",
@@ -509,8 +510,18 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                               "Update to the newest pre-release on GitHub, to try what is coming before it is released. "
                               "Pre-releases are less tested. Turn off to go back to the latest release.",
                               settings.prereleases);
-            // Either flipped: checked again now, so PLAY or the update button changes to match.
-            if (settings.updates != updates_were || settings.prereleases != prereleases_were) {
+            // A build with releases of its own (Animator Studio) can go back to official ReSkate and
+            // return: this launcher stays while official ReSkate is the version the build was made from.
+            if (update::has_official_channel())
+                setting_check("Use base ReSkate",
+                              std::format("Install official ReSkate and its own launcher in place of {}. Nothing changes "
+                                          "until you press SWITCH. Official ReSkate's launcher has no way back: to get {} "
+                                          "again, download it from its releases page. Your tricks, mods and settings stay.",
+                                          reskate_product_name, reskate_mod_name).c_str(),
+                              settings.official_reskate);
+            // Any flipped: checked again now, so PLAY or the update button changes to match.
+            if (settings.updates != updates_were || settings.prereleases != prereleases_were ||
+                settings.official_reskate != official_was) {
                 launcher.save();
                 launcher.check_again_if_update_choices_changed();
             }

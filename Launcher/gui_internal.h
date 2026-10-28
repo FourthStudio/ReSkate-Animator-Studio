@@ -7,6 +7,7 @@
 #include "mod_profiles.h"
 #include "start_maps.h"
 #include "thunderstore.h"
+#include "reskate_version.h"
 
 #include "Engine/Vfs/mod_conflicts.h"
 #include "Engine/Vfs/mod_list.h"
@@ -211,6 +212,9 @@ struct Settings {
     // On: update to the newest pre-release on GitHub when there is one newer than the latest
     // release. Turned off, the next check goes back to the latest release.
     bool prereleases{};
+    // On: update from official ReSkate's releases instead of this build's own (Animator Studio's).
+    // Only offered when this build has releases of its own (update::has_official_channel).
+    bool official_reskate{};
     std::string steam_username;   // never the password
     bool steam_remember{true};
     bool steam_prefer_code{};
@@ -227,6 +231,17 @@ struct Settings {
     // launch with other mods empties the game's shader cache first.
     std::string shader_cache_mods;
 };
+
+// The releases the settings update from: official ReSkate's only when chosen and there is a choice.
+inline update::Channel update_channel(const Settings& settings) {
+    return settings.official_reskate && update::has_official_channel() ? update::Channel::official : update::Channel::own;
+}
+// What the player is told the build is, for the releases they chose: "ReSkate + Animator Studio" for
+// this build's own, "Base ReSkate" for official ReSkate's, and "ReSkate" for a build with no named mod.
+std::string build_name(update::Channel channel);
+// A release's runtime version as the player reads it: this build's "1.0.11+reskate.2.1.2" is
+// "ReSkate 2.1.2 + Animator Studio 1.0.11"; official ReSkate's "2.1.2" is "Base ReSkate 2.1.2".
+std::string build_version_name(update::Channel channel, const std::string& version);
 
 inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};
 
@@ -306,7 +321,7 @@ private:
     bool relaunched_{};
     // The update choices the last check was made with: one changed in settings is checked
     // again straight away (save()).
-    std::atomic<bool> checked_updates_{true}, checked_prereleases_{};
+    std::atomic<bool> checked_updates_{true}, checked_prereleases_{}, checked_official_{};
     std::atomic<bool> prerelease_available_{};
     bool binaries_{true};
     std::mutex mutex_;
@@ -334,6 +349,7 @@ private:
     update::Progress progress_for(std::string label);
     bool launcher_outdated(const update::Config& config) const;
     bool runtime_outdated(const update::Config& config) const;
+    void leave_way_back() const;
     void run_check();
     void run_updates();
     void run_download(bool validate);
@@ -358,6 +374,8 @@ struct Changelog {
     thunderstore::Readme text;
     // Whether pre-releases are wanted (the setting), and whether `note` was fetched with them.
     bool prereleases{}, fetched_prereleases{};
+    // Whose releases the notes are of (the "ReSkate build" setting), and those `note` came from.
+    update::Channel channel{}, fetched_channel{};
 
     ~Changelog() {
         if (worker.joinable()) worker.join();

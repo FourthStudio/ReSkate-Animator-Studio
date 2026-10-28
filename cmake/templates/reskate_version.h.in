@@ -10,4 +10,8 @@ inline constexpr bool reskate_release_build = reskate_version != "0.0.0";
 inline constexpr std::string_view reskate_mod_id = "@DINGOSDK_MOD_ID@";
 inline constexpr std::string_view reskate_mod_version = "@DINGOSDK_MOD_VERSION@";
 inline constexpr bool reskate_modified_build = !reskate_mod_id.empty();
+// The name players see for the mod (DINGOSDK_MOD_NAME), and with it the name of the whole build:
+// "ReSkate + Animator Studio", or "ReSkate" when the build carries no named mod.
+inline constexpr std::string_view reskate_mod_name = "@DINGOSDK_MOD_NAME@";
+inline constexpr std::string_view reskate_product_name = reskate_mod_name.empty() ? "ReSkate" : "ReSkate + @DINGOSDK_MOD_NAME@";
 }
