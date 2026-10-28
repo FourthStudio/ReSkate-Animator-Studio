@@ -43,6 +43,11 @@ struct DiagnosticSample {
     std::vector<Joint> source, board_rig;
     double board_rig_at{-1};
     std::optional<Joint> source_board;
+    // Every update, not only with the poses (feet.csv): the hips, legs, feet and toes in the world and the board's mount,
+    // as drawn and as the game had them - a shoe in the board for a few frames falls between the poses' tenths of a second.
+    std::vector<std::pair<std::uint16_t, Joint>> feet_drawn, feet_native;
+    std::optional<Joint> feet_drawn_board, feet_native_board;
+    double feet_at{-1};
 };
 struct DiagnosticBuffer {
     static constexpr std::size_t capacity = 4096;
@@ -74,7 +79,8 @@ inline std::string diagnostic_csv(std::string_view text) {
 inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std::filesystem::path& folder) {
     std::filesystem::create_directories(folder);
     std::ofstream timeline(folder / "timeline.csv"), poses(folder / "poses.csv"), board(folder / "board.csv");
-    std::ofstream rig(folder / "board-rig.csv");
+    std::ofstream rig(folder / "board-rig.csv"), feet(folder / "feet.csv");
+    feet.exceptions(std::ios::badbit | std::ios::failbit); feet.imbue(std::locale::classic()); feet << std::setprecision(9);
     rig.exceptions(std::ios::badbit | std::ios::failbit); rig.imbue(std::locale::classic()); rig << std::setprecision(12);
     timeline.exceptions(std::ios::badbit | std::ios::failbit);
     poses.exceptions(std::ios::badbit | std::ios::failbit);
@@ -87,6 +93,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     const std::string columns = "seconds,sequence,stage,joint,sx,sy,sz,qx,qy,qz,qw,px,py,pz\n";
     poses << columns; board << columns;
     rig << columns;
+    feet << columns;
     const double origin = history.samples.empty() ? 0 : history.samples.front().at;
     double previous = origin, max_gap = 0, max_position_delta = 0, max_angle = 0;
     std::size_t captured = 0, invalid = 0;
@@ -133,8 +140,12 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
         if (s.desired_board) joint_row(board, s.at, s.sequence, "desired", board_joint, *s.desired_board);
         if (s.render_board) joint_row(board, s.render_board_at, s.sequence, "render_before_override", board_joint, *s.render_board);
         if (s.render_edited_board) joint_row(board, s.render_edited_board_at, s.sequence, "render_after_edits", board_joint, *s.render_edited_board);
+        for (const auto& [index, j] : s.feet_drawn) joint_row(feet, s.feet_at, s.sequence, "drawn", index, j);
+        if (s.feet_drawn_board) joint_row(feet, s.feet_at, s.sequence, "drawn", board_joint, *s.feet_drawn_board);
+        for (const auto& [index, j] : s.feet_native) joint_row(feet, s.feet_at, s.sequence, "native", index, j);
+        if (s.feet_native_board) joint_row(feet, s.feet_at, s.sequence, "native", board_joint, *s.feet_native_board);
     }
-    timeline.flush(); poses.flush(); board.flush(); rig.flush();
+    timeline.flush(); poses.flush(); board.flush(); rig.flush(); feet.flush();
     Json summary = Json::object();
     summary["schema"] = 3;
     summary["samples"] = history.samples.size();

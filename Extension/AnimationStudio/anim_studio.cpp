@@ -4243,6 +4243,22 @@ void on_animation(std::uintptr_t component) noexcept {
               }
               if (shot.skater_generation == generation && shot.at >= 0) diagnostic.skater_age = at - shot.at;
               if (shot.board_generation == generation && shot.board_at >= 0) diagnostic.board_age = at - shot.board_at;
+              // The feet and the board, every update (feet.csv; contrib/animator-studio/clip_check.py reads it).
+              static constexpr std::array<std::uint16_t, 9> feet_joints{7, 8, 9, 10, 11, 341, 342, 343, 344};
+              if (shot.edited_generation == generation && shot.edited_skater.size() >= skeleton_joints && shot.edited_board &&
+                  shot.edited_board_generation == generation) {
+                  for (const auto j : feet_joints) diagnostic.feet_drawn.emplace_back(j, world(shot.edited_skater, j));
+                  diagnostic.feet_drawn_board = *shot.edited_board;
+                  diagnostic.feet_at = shot.edited_at;
+              }
+              if (shot.skater_generation == generation && shot.skater.size() >= skeleton_joints && shot.board_generation == generation) {
+                  std::vector<Joint> own;
+                  own.reserve(shot.skater.size());
+                  for (const auto& bone : shot.skater) own.push_back(joint_of(bone));
+                  for (const auto j : feet_joints) diagnostic.feet_native.emplace_back(j, world(own, j));
+                  diagnostic.feet_native_board = shot.board;
+                  if (diagnostic.feet_at < 0) diagnostic.feet_at = shot.at;
+              }
               if (diagnostic_pose && shot.skater_generation == generation && shot.at >= 0) {
                   if (shot.edited_generation == generation && shot.edited_at >= 0) {
                       diagnostic.render_edited = shot.edited_skater; diagnostic.render_edited_at = shot.edited_at;
