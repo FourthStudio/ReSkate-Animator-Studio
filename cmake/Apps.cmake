@@ -28,6 +28,11 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     target_link_libraries(dingosdk_mod_manager_tests PRIVATE dingosdk_mod_list dingosdk_launcher_support dingosdk_logging dingosdk_json
         dingosdk_miniz dingosdk_zstd winhttp shell32)
     add_test(NAME launcher_mod_manager COMMAND dingosdk_mod_manager_tests)
+    add_executable(dingosdk_update_channel_tests Launcher/Test/update_channel_tests.cpp Launcher/updater.cpp)
+    target_link_libraries(dingosdk_update_channel_tests PRIVATE dingosdk_launcher_support dingosdk_logging dingosdk_json
+        dingosdk_miniz winhttp shell32)
+    target_include_directories(dingosdk_update_channel_tests PRIVATE "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    add_test(NAME launcher_update_channel COMMAND dingosdk_update_channel_tests)
     add_executable(dingosdk_thunderstore_tests Launcher/Test/thunderstore_tests.cpp Launcher/thunderstore.cpp)
     target_link_libraries(dingosdk_thunderstore_tests PRIVATE dingosdk_json dingosdk_miniz)
     target_include_directories(dingosdk_thunderstore_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -223,6 +228,13 @@ set(DINGOSDK_RELEASE_REPO "Dingo-Shenanigans/ReSkate" CACHE STRING "Public GitHu
 set(launcher_release_repo "${DINGOSDK_RELEASE_REPO}")
 if(NOT launcher_release_repo MATCHES "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     message(FATAL_ERROR "DINGOSDK_RELEASE_REPO must be owner/repo")
+endif()
+# A modified build (Animator Studio) sets DINGOSDK_RELEASE_REPO to its own releases; the launcher's
+# Settings then offer official ReSkate's releases from here as the other choice.
+set(DINGOSDK_OFFICIAL_RELEASE_REPO "Dingo-Shenanigans/ReSkate" CACHE STRING "Official ReSkate's GitHub owner/repo")
+set(official_release_repo "${DINGOSDK_OFFICIAL_RELEASE_REPO}")
+if(NOT official_release_repo MATCHES "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    message(FATAL_ERROR "DINGOSDK_OFFICIAL_RELEASE_REPO must be owner/repo")
 endif()
 if(DINGOSDK_LAUNCHER_AUTO_UPDATE)
     set(launcher_binary_updates true)

@@ -13,6 +13,8 @@ set(DINGOSDK_VERSION "0.0.0" CACHE STRING "Release version stamped into the ship
 # Set by a modified build (a mod that replaces ReSkate.dll) so it is never mistaken for ReSkate itself.
 set(DINGOSDK_MOD_ID "" CACHE STRING "Name of the mod this build carries (letters, digits, underscores); empty for ReSkate itself")
 set(DINGOSDK_MOD_VERSION "" CACHE STRING "Version of that mod")
+# What players are told the build is: "ReSkate + <name>" on the launcher, the startup splash and the
+# game's first notice, so nobody takes it for ReSkate alone.
 if(DINGOSDK_MOD_ID AND NOT DINGOSDK_MOD_ID MATCHES "^[A-Za-z0-9_]+$")
     message(FATAL_ERROR "DINGOSDK_MOD_ID may only use letters, digits and underscores")
 endif()
@@ -21,8 +23,8 @@ if(DINGOSDK_MOD_VERSION AND NOT DINGOSDK_MOD_VERSION MATCHES "^[0-9A-Za-z._+-]+$
 endif()
 # The mod's name as players read it in the start-up notice ("Animator Studio"); empty: the mod id.
 set(DINGOSDK_MOD_NAME "" CACHE STRING "Name of that mod as players read it (letters, digits, spaces and . _ -); empty for the mod id")
-if(DINGOSDK_MOD_NAME AND NOT DINGOSDK_MOD_NAME MATCHES "^[A-Za-z0-9 ._-]+$")
-    message(FATAL_ERROR "DINGOSDK_MOD_NAME may only use letters, digits, spaces and . _ -")
+if(DINGOSDK_MOD_NAME AND NOT DINGOSDK_MOD_NAME MATCHES "^[A-Za-z0-9 ._+-]+$")
+    message(FATAL_ERROR "DINGOSDK_MOD_NAME may only use letters, digits, spaces and . _ + -")
 endif()
 set(reskate_mod_name "${DINGOSDK_MOD_NAME}")
 if(NOT reskate_mod_name)

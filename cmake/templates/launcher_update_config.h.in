@@ -5,4 +5,7 @@ inline constexpr bool launcher_binary_updates = @launcher_binary_updates@;
 
 // Public GitHub releases source ("owner/repo"): launcher.json in its latest release.
 inline constexpr wchar_t launcher_release_repo[] = L"@launcher_release_repo@";
+// Official ReSkate's releases ("owner/repo"). A modified build that updates from releases of its own
+// lets the player choose these instead; when both are the same repo there is nothing to choose.
+inline constexpr wchar_t official_release_repo[] = L"@official_release_repo@";
 }

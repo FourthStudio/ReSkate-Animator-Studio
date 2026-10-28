@@ -1,4 +1,5 @@
 #include "startup_window.h"
+#include "reskate_version.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -52,7 +53,8 @@ constexpr wchar_t art_resource[] = L"STARTUP_SPLASH";
 
 struct Shared {
     std::mutex mutex;
-    std::wstring heading{L"Starting ReSkate\x2026"}, detail;
+    std::wstring heading = L"Starting " + std::wstring(reskate_product_name.begin(), reskate_product_name.end()) + L"\x2026";
+    std::wstring detail;
     float progress{-1.0f};
     bool opened{}, closing{};
     std::atomic<bool> shown{};
@@ -388,6 +390,19 @@ struct Window {
         DeleteDC(source);
 
         SetBkMode(dc, TRANSPARENT);
+        // A build that carries a mod says so on any picture, the built-in art's own RESKATE logo
+        // included: "+ ANIMATOR STUDIO" on a blue tag in the top right.
+        if (!reskate_mod_name.empty()) {
+            std::wstring tag = L"+ ";
+            for (const char c : reskate_mod_name) tag += static_cast<wchar_t>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+            SelectObject(dc, heading);
+            SIZE extent{};
+            GetTextExtentPoint32W(dc, tag.c_str(), static_cast<int>(tag.size()), &extent);
+            const RECT box{width - px(16) - extent.cx - px(20), px(16), width - px(16), px(16) + extent.cy + px(12)};
+            fill(dc, box, blue);
+            SetTextColor(dc, paper);
+            TextOutW(dc, box.left + px(10), box.top + px(6), tag.c_str(), static_cast<int>(tag.size()));
+        }
         const int bar = height - px(bar_height);
         const auto line = [&](HFONT font, COLORREF colour, const std::wstring& text, int top, int line_height) {
             SelectObject(dc, font);
@@ -557,6 +572,8 @@ void open() noexcept {
         state.closing = true;  // no window is no harm
     }
 }
+
+std::string starting_heading() { return "Starting " + std::string(reskate_product_name) + "\xE2\x80\xA6"; }
 
 void status(std::string_view heading, std::string_view detail, float progress) noexcept {
     try {
