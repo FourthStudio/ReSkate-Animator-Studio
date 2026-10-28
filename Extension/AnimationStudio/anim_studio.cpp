@@ -640,12 +640,20 @@ std::atomic<float> trick_blend{0.15f}; // one trick's keys into the next on the 
 // Into a grind (apply_gameplay_body): the trick's last keys ease out over half the Crossfade, kept between these (0.06 s,
 // test.1, was right for the feet but snappy, robotic - 2026-10-27), and the feet go onto the game's deck first.
 constexpr float grind_ease_min = 0.18f, grind_ease_max = 0.3f, grind_feet_on_deck = 0.1f;
+// Into a grind, with the inertial blend (EditTransition): the hips, legs and board settle in this long, the rest of the body
+// over the Crossfade. The blend carries their motion on, so this is no snap the way 0.1 s of a plain fade was.
+constexpr float grind_legs_ease = 0.14f;
 // What lands with the board into a grind: the hips, the legs, the feet and the toes (skeleton.csv's editable joints).
 constexpr std::array<std::uint16_t, 9> grind_lower_body{7, 8, 9, 10, 11, 341, 342, 343, 344};
 // Onto a rail or a ledge: landing on something this much higher than the board took off from (metres), the board, hips and
 // legs go to the game's pose over the last raised_lead seconds before it, never in less than raised_min_ease (test.4's 0.15 s
 // lead was still a fraction of a second too quick, 2026-10-27).
 constexpr float raised_landing = 0.12f, raised_lead = 0.25f, raised_min_ease = 0.12f;
+// The board, hips and legs going to the game's ahead of a rail or a ledge (lower_release): off since 2026-10-28. The game's
+// own board in the air is still turning when its clip is later than the trick (a higher pop), and going to it drew that
+// flip and then the grind snapping it flat, in two frames. The trick plays on to its catch instead (its clock aims its
+// landing at the rail: AirStretch), and the inertial blend takes it into the grind at the lock.
+bool raised_hand_over = false; // (not constexpr: the code it gates is kept compiled)
 std::atomic<bool> overrides_allowed{true};
 Live& live();
 struct GameplayPackets {
@@ -3963,7 +3971,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     // holds its catch and lands as it does. Played to its landing it stood still in the air until the game's
                     // touchdown, then let go in one frame. Down a drop it takes its own time to the touchdown instead (AirStretch).
                     float hand_back = -1;
-                    if (reading.locked && reading.clip > 0 && trick->native && !l.stretch.on()) {
+                    // Not with a rail or a ledge ahead (raised_contact_at): the game's own board would still be turning there,
+                    // and the grind would snap it flat. The trick plays on to the lock and the blend takes it in.
+                    if (reading.locked && reading.clip > 0 && trick->native && !l.stretch.on() && l.raised_contact_at < 0) {
                         const auto c = static_cast<std::size_t>(reading.clip);
                         if (c < trick->native->higher_pop.size() && trick->native->higher_pop[c] && up >= 0 && down > up)
                             // The later of its catch and 85% of its air: an ollie's catch comes just after the pop, and it was
@@ -4184,7 +4194,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->fakie = l.playback_fakie;
                     packet->match_rest = whole; // on another pop's clip: body and board as made (other_pop)
                     packet->limits = snap->limits;
-                    packet->lower_release = l.raised_release;
+                    packet->lower_release = raised_hand_over ? l.raised_release : 0.0f;
                     // The board keys are authored in the board's own frame and played in it (nose-relative both
                     // times), so they need no turning for fakie. A deck turned round under him is the game's
                     // board-backwards flag, applied where the board is drawn.
@@ -4659,38 +4669,24 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             const float blend = trick_blend.load(std::memory_order_relaxed);
             const bool grinding = motion == MotionState::rail;
             const double now = now_seconds();
-            // Given the game's pose, a joint the trick turned a long way fades from where it was drawn to where it is wanted
-            // now (pose_fade_share): into a nose slide the legs go over to the slide's, not the flip's bend on top of it.
+            // Inertial (EditTransition, given the game's pose): from the pose drawn, with each joint's motion carried on, to
+            // the pose wanted now - the game's next move as it goes on, or the next trick's. Into a grind the hips and legs
+            // settle with the board (grind_legs_ease) while the rest of the body takes the Crossfade: legs still keyed
+            // mid-flip on a board already on the rail put a knee or a foot through the deck (test.2, 2026-10-27).
             const auto deltas = publication.transition.evaluate(now, generation, packet ? packet->episode : 0,
                 packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas,
-                grinding ? std::clamp(blend, grind_ease_min, grind_ease_max) : blend, native);
-            // Into a grind the hips and legs land with the board (grind_feet_on_deck, the board's pass eases the same way)
-            // while the rest of the body eases in over the Crossfade: legs still keyed mid-flip on a board already on the
-            // rail put a knee or a foot through the deck for a few frames on some grinds (test.2, 2026-10-27).
-            float feet = 0;
-            if (grinding && !packet && publication.transition.started >= 0) {
-                const float u = std::clamp(static_cast<float>(now - publication.transition.started) / grind_feet_on_deck, 0.0f, 1.0f);
-                feet = u * u * (3 - 2 * u);
-                auto& t = publication.transition;
-                for (const std::uint16_t j : grind_lower_body)
-                    if (j < t.current.size() && j < t.from_now.size()) {
-                        t.current[j].rotation = slerp(t.from_now[j].rotation, Quat{0, 0, 0, 1}, feet);
-                        for (std::size_t k = 0; k < 3; ++k) t.current[j].offset[k] = t.from_now[j].offset[k] * (1 - feet);
-                    }
-            }
+                grinding ? std::clamp(blend, grind_ease_min, grind_ease_max) : blend, native,
+                grinding ? std::span<const std::uint16_t>(grind_lower_body) : std::span<const std::uint16_t>{}, grind_legs_ease);
             apply_pose_deltas(deltas, edited);
             applied_deltas.assign(deltas.begin(), deltas.end());
             // Other players get the feet on the board too.
             const bool slid = slide_feet_on_the_games_board(publication, motion, packet != nullptr, native, edited);
             if (slid) applied_deltas = pose_edit_deltas(native, edited);
             // Fading out after a trick handed back (no packet, so seat_feet_on_board does not run), rolling on the ground or
-            // grinding: no foot is drawn lower than the game has it, whatever the last keys leave in the fade. Into a grind
-            // the feet go onto the game's deck first (grind_feet_on_deck), so the body can ease in without them going
-            // through the board.
+            // grinding: no foot is drawn lower than the game has it, whatever the last keys leave in the fade.
             if (!packet && (motion == MotionState::riding || grinding)) {
                 for (const std::uint16_t foot : {left_foot_joint, right_foot_joint}) {
-                    auto own = world(native, foot);
-                    if (feet > 0 && finite(own)) place_foot(edited, foot, own.position, &own.rotation, feet);
+                    const auto own = world(native, foot);
                     const auto drawn = world(edited, foot);
                     if (finite(drawn) && finite(own) && drawn.position[1] < own.position[1] - 0.01f)
                         place_foot(edited, foot, Vec3{drawn.position[0], own.position[1], drawn.position[2]}, nullptr, 1.0f);
@@ -4718,6 +4714,8 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                     remember_drawn_feet(publication, edited, drawn_board, known, generation, now);
                 }
             }
+            // The pose drawn, all of it: a transition starting on a later frame starts from it, at the speed it was going.
+            publication.transition.remember_drawn(edited, now);
         } else publication.transition.reset();
         if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
             (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) continue;
@@ -5081,6 +5079,19 @@ struct BoardThisFrame {
 BoardThisFrame board_this_frame(std::span<const Joint> native, std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet,
                                 EditTransition& transition, BoardShape& shape, bool& shape_ok, std::uint64_t generation, double now) {
     auto& l = live();
+    // His placement now (the body's pose holds it unedited): the board's blend goes on relative to him.
+    Joint placement_now;
+    bool placement_ok = false;
+    {
+        const auto component = packet ? packet->component : l.component.load(std::memory_order_acquire);
+        const auto body_holder = component ? read<std::uintptr_t>(component + 0xa0).value_or(0) : 0;
+        const auto body_layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
+        std::array<NativeBone, 2> placement_bones{};
+        if (body_layout.buffer && body_layout.count == skeleton_joints && peek(body_layout.buffer, placement_bones.data(), sizeof(placement_bones))) {
+            placement_now = compose(joint_of(placement_bones[0]), joint_of(placement_bones[1]));
+            placement_ok = finite(placement_now);
+        }
+    }
     const auto native_mount = compose(compose(native[0], native[1]), native[board_mount]);
     Joint want = native_mount;
     Joint studio_board;
@@ -5136,20 +5147,41 @@ BoardThisFrame board_this_frame(std::span<const Joint> native, std::uintptr_t ho
     const Joint wanted = want;
     want = native_mount;
     const auto motion = l.render_motion.load(std::memory_order_acquire);
-    // On a rail the board is the game's: the trick's last board keys ease out in grind_feet_on_deck, with the hips and
-    // legs (apply_gameplay_body), instead of the board jumping onto the rail in one frame under legs still mid-flip.
+    // On a rail the board is the game's: the trick's last board keys go out in grind_legs_ease, with the hips and legs
+    // (apply_gameplay_body), instead of the board jumping onto the rail in one frame under legs still mid-flip.
     if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
-        const auto delta = transition.evaluate(now, generation, packet ? packet->episode : 0,
-            packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired,
-            motion == MotionState::rail ? grind_feet_on_deck : trick_blend.load(std::memory_order_relaxed))[0];
-        if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
-        for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
+        const float seconds = motion == MotionState::rail ? grind_legs_ease : trick_blend.load(std::memory_order_relaxed);
+        if (placement_ok) {
+            // Inertial, in his frame: from the board drawn, turning and moving as it was, to the board wanted now.
+            const auto native_rel = relative(placement_now, native_mount), wanted_rel = relative(placement_now, wanted);
+            std::array<Offset, 1> local{};
+            local[0].rotation = normalised(multiply(conjugate(native_rel.rotation), wanted_rel.rotation));
+            for (std::size_t k = 0; k < 3; ++k) local[0].offset[k] = wanted_rel.position[k] - native_rel.position[k];
+            const std::array<Joint, 1> base{native_rel};
+            const auto delta = transition.evaluate(now, generation, packet ? packet->episode : 0,
+                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, local, seconds, base)[0];
+            auto drawn_rel = native_rel;
+            drawn_rel.rotation = normalised(multiply(native_rel.rotation, delta.rotation));
+            for (std::size_t k = 0; k < 3; ++k) drawn_rel.position[k] += delta.offset[k];
+            want = compose(placement_now, drawn_rel);
+            want.scale = native_mount.scale;
+        } else {
+            const auto delta = transition.evaluate(now, generation, packet ? packet->episode : 0,
+                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired, seconds)[0];
+            if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
+            for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
+        }
     } else transition.reset();
     // The fade after a trick (or into the next one), rolling or on a rail: no lower than the game's board either. Easing
     // out on a rail, a board the trick had a little lower dipped the deck into the rail on slides (boardslide, lipslide:
     // the deck lies on the rail; on the trucks it did not show) - test.5, 2026-10-27.
     if ((motion == MotionState::riding || motion == MotionState::rail) && shape_ok && want != native_mount)
         (void)keep_board_above(want, shape, lowest_point(native_mount, shape));
+    // The board drawn, in his frame: a blend starting on a later frame starts from it (the body's look-ahead works on a copy).
+    if (placement_ok) {
+        const std::array<Joint, 1> drawn_rel{relative(placement_now, want)};
+        transition.remember_drawn(drawn_rel, now);
+    }
     return {native_mount, want, studio_board, studio_board_ok, motion, wanted};
 }
 // ---- the deck's force field --------------------------------------------------------------------------------------------

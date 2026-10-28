@@ -194,10 +194,37 @@ struct EditPublicationCache {
         before = std::move(native); after = std::move(edited);
     }
 };
-// How much of a joint's edit fades as a pose rather than as a change on the game's (EditTransition, given `native`): none
-// for a small edit, which keeps the game's own motion under it, all of it from 20 degrees (or 8 cm) on. A big edit laid on
-// a new pose of the game's - a kickflip's knees on a nose slide's, already bent - bent the leg twice and put the foot
-// through the deck as the trick handed over (2026-10-28).
+// ---- inertial blending (Bollo, "Inertialization", GDC 2018) ----------------------------------------------------------
+// One value's difference from where it is wanted, at a transition (x0, its speed v0), taken away over `seconds` by a
+// fifth-order curve that starts at that speed and ends with no difference, no speed and no acceleration. A difference
+// already shrinking finishes no later than its speed takes it there; one growing starts from rest (no overshoot).
+struct InertialCurve {
+    float x0{}, v0{}, a0{}, A{}, B{}, C{}, t1{};
+    void start(float x, float v, float seconds) noexcept {
+        *this = {};
+        if (!(x > 1e-6f) || !std::isfinite(x)) return;
+        x0 = x;
+        v0 = std::isfinite(v) && v < 0 ? v : 0.0f;
+        t1 = std::max(seconds, 0.02f);
+        if (v0 < 0) t1 = std::max(0.02f, std::min(t1, -5 * x0 / v0));
+        const float t2 = t1 * t1;
+        a0 = (-8 * v0 * t1 - 20 * x0) / t2;
+        A = -(a0 * t2 + 6 * v0 * t1 + 12 * x0) / (2 * t2 * t2 * t1);
+        B = (3 * a0 * t2 + 16 * v0 * t1 + 30 * x0) / (2 * t2 * t2);
+        C = -(3 * a0 * t2 + 12 * v0 * t1 + 20 * x0) / (2 * t2 * t1);
+    }
+    float at(float t) const noexcept {
+        if (!(x0 > 0) || !(t < t1)) return 0;
+        t = std::max(t, 0.0f);
+        return std::max(0.0f, ((((A * t + B) * t + C) * t + a0 / 2) * t + v0) * t + x0);
+    }
+};
+// A joint's turn and place away from where they are wanted, taken away together (InertialCurve each).
+struct InertialJoint {
+    Vec3 axis{1, 0, 0}, along{1, 0, 0};
+    InertialCurve turn, move;
+};
+// How much of a joint's edit is a big one (the fade's glue holds feet only through a fade out of something the studio drew).
 inline float pose_fade_share(const Offset& edit) noexcept {
     const float w = std::clamp(std::abs(edit.rotation[3]), 0.0f, 1.0f);
     const float degrees = 2 * std::acos(w) * 57.2957795f;
@@ -207,72 +234,117 @@ inline float pose_fade_share(const Offset& edit) noexcept {
 }
 // Smooth only edit deltas when selection changes. Absolute skeleton/board coordinates
 // are never retained: the same delta can be composed over a moving fresh native pose.
-// Given the game's pose (`native`), a big edit is the exception (pose_fade_share): the fade starts from the pose drawn as it
-// began and goes to the pose wanted now - the game's next move as it is now, the legs going over to its legs - instead of
-// the old edit carried on top of the new move's pose.
+// Given the game's pose (`native`) a transition is inertial instead: from the pose drawn (remember_drawn: the last two
+// frames, for how fast each joint was going) to the pose wanted now - the game's next move as it goes on, or the next
+// trick's - each joint's difference taken away by an InertialCurve. The motion goes on through it without a stop or a jump,
+// and a transition begun in the middle of another starts from where that one had got to (into a grind and straight out
+// of it). A plain fade from the old edit to the new one stopped the pose dead and started it again, and laid the old edit
+// on the next move's pose (2026-10-28).
 struct EditTransition {
     std::uint64_t generation{~std::uint64_t{0}}, episode{};
     std::uintptr_t source{};
     double started{-1}, observed{-1};
     std::vector<Offset> from, current;
-    std::vector<Joint> from_pose; // the pose drawn as the fade began (given `native`)
-    std::vector<Offset> from_now; // `from` as it stands on this update's pose of the game's
-    std::vector<Joint> drawn;     // the pose drawn on the last update (given `native`): where a fade starts from
     float from_left{}; // how much of `from` is still in `current`: 1 as a fade starts, 0 when it is done
+    float seconds_now{0.15f};
+    // Inertial: the pose drawn on the last two frames, and each joint's difference as it is taken away.
+    std::vector<Joint> drawn, drawn_before;
+    double drawn_at{-1}, drawn_before_at{-1};
+    std::vector<InertialJoint> inertial;
     void reset() { *this = {}; }
+    // The pose as drawn this frame (after everything else that moved it): where a transition starts from.
+    void remember_drawn(std::span<const Joint> pose, double now) {
+        if (!std::isfinite(now)) return;
+        if (drawn.size() == pose.size() && now > drawn_at) {
+            drawn_before.swap(drawn);
+            drawn_before_at = drawn_at;
+        } else drawn_before.clear();
+        drawn.assign(pose.begin(), pose.end());
+        drawn_at = now;
+    }
+    // `faster`: joints whose difference goes in `faster_seconds` (into a grind, the hips and legs with the board).
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
                                      std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f,
-                                     std::span<const Joint> native = {}) {
+                                     std::span<const Joint> native = {}, std::span<const std::uint16_t> faster = {},
+                                     float faster_seconds = 0) {
         if (!std::isfinite(now)) { reset(); return current; }
         const bool posed = !native.empty() && native.size() == desired.size();
         if (generation != gen || current.size() != desired.size() || now < observed) {
-            generation = gen; current.assign(desired.size(), Offset{}); started = -1; drawn.clear();
+            generation = gen; current.assign(desired.size(), Offset{}); started = -1;
+            drawn.clear(); drawn_before.clear(); inertial.clear();
         }
-        if (started < 0 || episode != attempt || source != selected) {
-            from = current; started = now; episode = attempt; source = selected;
-            from_pose.clear();
-            if (posed) {
-                // The pose drawn on the last update: the game may already be in its next move on this one, and `from` on
-                // top of that would bend a leg twice.
-                if (drawn.size() == native.size()) from_pose = drawn;
-                else {
-                    from_pose.assign(native.begin(), native.end());
-                    for (std::size_t i = 0; i < from.size(); ++i) {
-                        from_pose[i].rotation = normalised(multiply(native[i].rotation, from[i].rotation));
-                        for (std::size_t k = 0; k < 3; ++k) from_pose[i].position[k] += from[i].offset[k];
+        const bool restart = started < 0 || episode != attempt || source != selected;
+        if (restart) {
+            from = current; started = now; episode = attempt; source = selected; seconds_now = std::max(seconds, 0.02f);
+            inertial.clear();
+            if (posed && drawn.size() == native.size() && now - drawn_at < 0.1) {
+                // Each joint: the drawn pose's difference from the one wanted now, and how fast it was changing.
+                const double dt = drawn_before.size() == drawn.size() ? drawn_at - drawn_before_at : 0.0;
+                const bool moving = dt > 0.004 && dt < 0.1;
+                inertial.resize(native.size());
+                for (std::size_t i = 0; i < native.size(); ++i) {
+                    const Quat want = normalised(multiply(native[i].rotation, desired[i].rotation));
+                    Vec3 want_at{};
+                    for (std::size_t k = 0; k < 3; ++k) want_at[k] = native[i].position[k] + desired[i].offset[k];
+                    float joint_seconds = seconds_now;
+                    for (const auto j : faster)
+                        if (j == i) joint_seconds = std::max(faster_seconds, 0.02f);
+                    auto& in = inertial[i];
+                    // The turn: angle about one axis, the speed along it.
+                    Quat off = normalised(multiply(conjugate(want), drawn[i].rotation));
+                    if (off[3] < 0) off = {-off[0], -off[1], -off[2], -off[3]};
+                    const float half = std::acos(std::clamp(off[3], -1.0f, 1.0f)), s = std::sin(half);
+                    if (s > 1e-5f) {
+                        in.axis = {off[0] / s, off[1] / s, off[2] / s};
+                        const float x0 = 2 * half;
+                        float v0 = 0;
+                        if (moving) {
+                            Quat before = normalised(multiply(conjugate(want), drawn_before[i].rotation));
+                            if (before[0] * off[0] + before[1] * off[1] + before[2] * off[2] + before[3] * off[3] < 0)
+                                before = {-before[0], -before[1], -before[2], -before[3]};
+                            const float x_before = 2 * std::atan2(before[0] * in.axis[0] + before[1] * in.axis[1] + before[2] * in.axis[2], before[3]);
+                            v0 = static_cast<float>((x0 - x_before) / dt);
+                        }
+                        in.turn.start(x0, v0, joint_seconds);
+                    }
+                    // The place: distance along one line, the speed along it.
+                    const Vec3 d{drawn[i].position[0] - want_at[0], drawn[i].position[1] - want_at[1], drawn[i].position[2] - want_at[2]};
+                    const float x0 = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                    if (x0 > 1e-5f) {
+                        in.along = {d[0] / x0, d[1] / x0, d[2] / x0};
+                        float v0 = 0;
+                        if (moving) {
+                            const float x_before = (drawn_before[i].position[0] - want_at[0]) * in.along[0] +
+                                                   (drawn_before[i].position[1] - want_at[1]) * in.along[1] +
+                                                   (drawn_before[i].position[2] - want_at[2]) * in.along[2];
+                            v0 = static_cast<float>((x0 - x_before) / dt);
+                        }
+                        in.move.start(x0, v0, joint_seconds);
                     }
                 }
             }
         }
         observed = now;
-        // Where the fade comes from on this update: the edit as it was, or - as far as it was a big one - the pose drawn
-        // then, as a change on the game's pose now.
-        from_now = from;
-        if (posed && from_pose.size() == from.size())
-            for (std::size_t i = 0; i < from.size(); ++i) {
-                const float share = pose_fade_share(from[i]);
-                if (!(share > 0)) continue;
-                const Quat turn = normalised(multiply(conjugate(native[i].rotation), from_pose[i].rotation));
-                from_now[i].rotation = slerp(from[i].rotation, turn, share);
-                for (std::size_t k = 0; k < 3; ++k)
-                    from_now[i].offset[k] = from[i].offset[k] + (from_pose[i].position[k] - native[i].position[k] - from[i].offset[k]) * share;
-            }
+        const float t = static_cast<float>(now - started);
         // `seconds` (0.15 unless the Crossfade setting says): one trick's keys into the next, or out when a trick is
         // cut short (a new air, a bail), without a snap.
-        float u = std::clamp(static_cast<float>(now - started) / std::max(seconds, 0.02f), 0.0f, 1.0f);
+        float u = std::clamp(t / seconds_now, 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
         from_left = 1 - u;
-        for (std::size_t i = 0; i < desired.size(); ++i) {
-            current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from_now[i].rotation, desired[i].rotation, u);
-            for (std::size_t k = 0; k < 3; ++k)
-                current[i].offset[k] = u >= 1 ? desired[i].offset[k] : from_now[i].offset[k] + (desired[i].offset[k] - from_now[i].offset[k]) * u;
-        }
-        if (posed) {
-            drawn.assign(native.begin(), native.end());
-            for (std::size_t i = 0; i < current.size(); ++i) {
-                if (current[i].rotation != Quat{0, 0, 0, 1}) drawn[i].rotation = normalised(multiply(native[i].rotation, current[i].rotation));
-                for (std::size_t k = 0; k < 3; ++k) drawn[i].position[k] += current[i].offset[k];
+        if (!inertial.empty()) {
+            // What is wanted now, and each joint's difference as far as it is still left.
+            for (std::size_t i = 0; i < desired.size(); ++i) {
+                const auto& in = inertial[i];
+                const float angle = in.turn.at(t), distance = in.move.at(t);
+                current[i].rotation = angle > 0 ? normalised(multiply(desired[i].rotation, axis_angle(in.axis, angle))) : desired[i].rotation;
+                for (std::size_t k = 0; k < 3; ++k) current[i].offset[k] = desired[i].offset[k] + in.along[k] * distance;
             }
+            return current;
+        }
+        for (std::size_t i = 0; i < desired.size(); ++i) {
+            current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from[i].rotation, desired[i].rotation, u);
+            for (std::size_t k = 0; k < 3; ++k)
+                current[i].offset[k] = u >= 1 ? desired[i].offset[k] : from[i].offset[k] + (desired[i].offset[k] - from[i].offset[k]) * u;
         }
         return current;
     }

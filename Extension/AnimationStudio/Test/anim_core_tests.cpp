@@ -1976,21 +1976,30 @@ void native_clips_pop_where_the_game_does() {
     check(!place_native_marks(piece) && piece.takeoff < 0, "and a piece with no pop gets none");
 }
 
-// The fade into the game's next move: a big edit fades from the pose drawn, a small one stays a change on the game's.
+// The inertial blend: from the pose drawn, at the speed it was going, to the pose wanted now, with no jump and no stop.
 void fades_go_to_the_next_move() {
+    {
+        InertialCurve c;
+        c.start(1, 0, 0.3f);
+        check(near(c.at(0), 1) && near(c.at(0.3f), 0) && near(c.at(0.5f), 0), "A blend starts where it is and ends where it is wanted");
+        float last = 1;
+        bool falls = true;
+        for (float t = 0.01f; t < 0.3f; t += 0.01f) {
+            const float x = c.at(t);
+            falls = falls && x <= last + 1e-6f;
+            last = x;
+        }
+        check(falls, "and gets there without going back");
+        c.start(1, -20, 0.3f);
+        check(near(c.t1, 0.25f) && near(c.at(0.25f), 0), "Already going there fast, it gets there sooner, without overshooting");
+        check(c.at(0.01f) < 1 - 0.1f, "and goes on at the speed it had");
+        c.start(1, 5, 0.3f);
+        check(near(c.v0, 0) && near(c.at(0.3f), 0), "Going the other way, it starts from rest");
+    }
     const auto turn_x = [](float degrees) { return axis_angle(Vec3{1, 0, 0}, degrees * 3.14159265f / 180); };
     const auto degrees_about_x = [](const Quat& q) { return 2 * std::atan2(q[0], q[3]) * 180 / 3.14159265f; };
-    {
-        Offset small, big;
-        small.rotation = turn_x(3);
-        big.rotation = turn_x(40);
-        check(near(pose_fade_share(small), 0) && near(pose_fade_share(big), 1), "A small edit fades as a change, a big one as a pose");
-        Offset moved;
-        moved.offset = {0, 0.1f, 0};
-        check(near(pose_fade_share(moved), 1), "and a hips move of 10 cm as a pose");
-    }
-    // A knee keyed 40 degrees round on the game's pose (0 degrees); the trick hands back as the game's next move bends that
-    // knee 50 degrees itself.
+    // A knee keyed 40 degrees round, bending further as it is drawn (39 then 40); the trick hands back as the game's next
+    // move bends that knee 50 degrees itself.
     std::vector<Joint> before(1), after(1);
     after[0].rotation = turn_x(50);
     std::array<Offset, 1> keyed{}, none{};
@@ -1998,35 +2007,50 @@ void fades_go_to_the_next_move() {
     {
         EditTransition fade;
         fade.evaluate(1, 1, 1, 10, keyed, 0.3f, before);
-        fade.evaluate(1.5, 1, 1, 10, keyed, 0.3f, before); // played to the end
-        const auto start = fade.evaluate(1.5, 1, 1, 0, none, 0.3f, after)[0];
-        // The knee as drawn: the game's 50 and the change on it.
-        const float drawn_start = degrees_about_x(normalised(multiply(after[0].rotation, start.rotation)));
-        check(near(drawn_start, 40, 0.5f), "Handing over, the knee starts where it was drawn (40), not 40 more on the next move's 50");
-        const auto half = fade.evaluate(1.65, 1, 1, 0, none, 0.3f, after)[0];
-        const float drawn_half = degrees_about_x(normalised(multiply(after[0].rotation, half.rotation)));
-        check(near(drawn_half, 45, 0.5f), "halfway it is between them (45)");
-        const auto done = fade.evaluate(1.8, 1, 1, 0, none, 0.3f, after)[0];
-        check(near(degrees_about_x(normalised(multiply(after[0].rotation, done.rotation))), 50, 0.5f), "and then the next move's own (50)");
+        std::vector<Joint> drawn(1);
+        drawn[0].rotation = turn_x(39);
+        fade.remember_drawn(drawn, 1.4833);
+        drawn[0].rotation = turn_x(40);
+        fade.remember_drawn(drawn, 1.5);
+        const auto drawn_at = [&](double now) {
+            const auto d = fade.evaluate(now, 1, 1, 0, none, 0.3f, after)[0];
+            return degrees_about_x(normalised(multiply(after[0].rotation, d.rotation)));
+        };
+        check(near(drawn_at(1.5), 40, 0.2f), "Handing over, the knee starts where it was drawn (40), not 40 more on the next move's 50");
+        const float early = drawn_at(1.52), half = drawn_at(1.65);
+        check(early > 40 && early < 41.5f, "goes on bending the way it was going, with no jump");
+        check(half > 41 && half < 50, "is on its way halfway through");
+        check(near(drawn_at(1.8), 50, 0.2f), "and then is the next move's own (50)");
     }
     {
-        // Without the game's pose (the board's fade), the change is carried as it was: 40 on top of 50.
+        // A second hand-over halfway through the first starts from where the first had got to: no jump.
+        EditTransition fade;
+        std::vector<Joint> drawn(1);
+        drawn[0].rotation = turn_x(40);
+        fade.remember_drawn(drawn, 0.98);
+        fade.remember_drawn(drawn, 1.0);
+        const auto mid = fade.evaluate(1.0, 1, 1, 0, none, 0.3f, after)[0];
+        (void)mid;
+        const auto halfway = fade.evaluate(1.15, 1, 1, 0, none, 0.3f, after)[0];
+        drawn[0].rotation = normalised(multiply(after[0].rotation, halfway.rotation));
+        const float there = degrees_about_x(drawn[0].rotation);
+        fade.remember_drawn(drawn, 1.15);
+        std::array<Offset, 1> next{};
+        next[0].rotation = turn_x(-30); // the next trick's knee: 20 on the game's 50
+        const auto start = fade.evaluate(1.15, 1, 2, 11, next, 0.3f, after)[0];
+        check(near(degrees_about_x(normalised(multiply(after[0].rotation, start.rotation))), there, 0.2f),
+              "A new transition in the middle of one starts where that one had got to");
+        const auto done = fade.evaluate(1.5, 1, 2, 11, next, 0.3f, after)[0];
+        check(near(degrees_about_x(normalised(multiply(after[0].rotation, done.rotation))), 20, 0.2f), "and ends on the new one");
+    }
+    {
+        // Without the game's pose (no drawn pose to start from), the change is faded as it was: 40 on top of 50.
         EditTransition fade;
         fade.evaluate(1, 1, 1, 10, keyed);
         fade.evaluate(1.5, 1, 1, 10, keyed);
         const auto start = fade.evaluate(1.5, 1, 1, 0, none, 0.3f)[0];
         check(near(degrees_about_x(normalised(multiply(after[0].rotation, start.rotation))), 90, 0.5f),
-              "The board's fade still carries its change over the game's");
-    }
-    {
-        // A small edit (3 degrees) keeps following the game's motion under it.
-        std::array<Offset, 1> small{};
-        small[0].rotation = turn_x(3);
-        EditTransition fade;
-        fade.evaluate(1, 1, 1, 10, small, 0.3f, before);
-        fade.evaluate(1.5, 1, 1, 10, small, 0.3f, before);
-        const auto start = fade.evaluate(1.5, 1, 1, 0, none, 0.3f, after)[0];
-        check(near(degrees_about_x(normalised(multiply(after[0].rotation, start.rotation))), 53, 0.5f), "A small edit rides on the game's motion");
+              "Without a pose drawn to start from, the old fade carries its change");
     }
 }
 // The deck's force field: a shoe standing on the deck is clear of it, a shoe sunk in is as deep as it is sunk, and the side
