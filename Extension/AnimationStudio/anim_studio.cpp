@@ -1,6 +1,7 @@
 #include "anim_studio.h"
 #include "native_asset_names.h"
 #include "pop_grades.h"
+#include "held_moves.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
 #include "reskate_version.h"
@@ -17,6 +18,7 @@
 #include "Engine/Game/Build/20260929/skater_lead_foot.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
+#include "Engine/Game/Build/20260929/game_state_values.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
@@ -568,6 +570,37 @@ struct Live {
         bool told{};                // what was nearest has been logged this hold
     } held;
     std::deque<std::pair<double, std::array<Quat, 10>>> held_history; // the spine and the legs, the last half second
+    // The manual the game says he holds (Enum.Intent.Manual) and the saved manual pieces playing for it, one part after
+    // another on their own clock from the moment the game said so (signalled_manual).
+    struct ManualPlay {
+        ManualIntent intent;
+        ManualPart part{ManualPart::loop};
+        int piece{-1}; // piece_tricks index; -1 none of yours for that part
+        bool mirrored{}, fakie{};
+        float time{};
+    } manual;
+    double last_air_at{-1}; // when he was last in the air (a manual begun just after is a landing into it)
+    std::string last_air_trick; // the game's name for the trick of that air ("" none): what a manual landed into follows
+    // When the game last began a manual, and what he came out of into it (follow_manual_intent, every frame, whatever
+    // plays: a saved trick still landing holds the pieces back past the moment it began).
+    struct ManualStart {
+        ManualSide side{ManualSide::none};
+        bool landed_into_it{};
+        std::string previous; // the trick he landed into it out of, "" none
+        std::uint64_t riding_since_ms{}; // when he last came onto the board on the ground (GetTickCount64)
+    } manual_start;
+    std::vector<std::size_t> manual_pieces; // piece_tricks indices of the saved manual parts, played by the game's signal
+    // The grind the game says he is on (Enum.GS.SkateGrindType) and the saved loop playing for it (signalled_grind).
+    struct GrindPlay {
+        int type{-1};              // the grind type taken, -1 none yet
+        int pending{-1};           // a new type heard, waiting to settle
+        double pending_since{-1};
+        std::uint64_t locked_ms{}; // when he locked on (GetTickCount64): an older value is the last grind's
+        int piece{-1};             // piece_tricks index; -1 none of yours for that grind
+        bool mirrored{};
+        float time{};
+    } grind;
+    std::vector<std::size_t> grind_pieces; // piece_tricks indices of the saved grind loops the game's name can choose
     // Giving way to the game. The native graph goes on underneath the authored layer the whole time, and
     // it changes its mind: a trick is refined, an obstacle turns it into something else. Then the layer
     // stands back smoothly (gave_way_at) rather than guess what the game will do.
@@ -2890,6 +2923,162 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
                  l.piece_tricks[static_cast<std::size_t>(nearest)]->name, loop->mirrored ? ", mirrored" : "", loop->score, next);
     return PieceMatch{static_cast<std::size_t>(nearest), loop->mirrored, g.time, loop->score};
 }
+// A manual by the game's word for it rather than by the pose: the pose is the blend of the game's manual poses the stick
+// asks for and is never near enough one saved loop (held_moves.h). The parts saved for the side the game says (and the
+// way he rolls) play one after another, as made or mirrored by the foot that leads: the way in when he tips into it
+// rolling (landing into one, the game lays its landing over the loop instead), the loop until the game says the manual
+// is over or changes side, then the way out while he rolls on.
+constexpr double landed_into_manual_window = 0.25; // seconds after the air in which a manual is a landing into it
+const char* manual_part_name(ManualPart part) {
+    switch (part) {
+    case ManualPart::into: return "way in";
+    case ManualPart::exit: return "way out";
+    case ManualPart::brake: return "brake";
+    case ManualPart::pose: return "pose";
+    default: return "loop";
+    }
+}
+// The piece saved for that part of the manual, or -1: piece_tricks index.
+int saved_manual_part(const Live& l, ManualSide side, bool fakie, ManualPart part) {
+    std::vector<ManualPiece> pieces;
+    std::vector<std::size_t> indices;
+    for (const auto index : l.manual_pieces)
+        if (auto piece = manual_piece_of(l.piece_tricks[index]->trick)) {
+            piece->after = l.piece_tricks[index]->edits->after;
+            pieces.push_back(std::move(*piece));
+            indices.push_back(index);
+        }
+    const int chosen = choose_manual_piece(pieces, side, fakie, part, l.manual_start.previous);
+    return chosen < 0 ? -1 : static_cast<int>(indices[static_cast<std::size_t>(chosen)]);
+}
+void start_manual_part(Live& l, ManualPart part, std::uintptr_t component) {
+    auto& m = l.manual;
+    m.part = part;
+    m.time = 0;
+    m.piece = saved_manual_part(l, m.intent.side, m.fakie, part);
+    if (m.piece < 0) return;
+    const auto* trick = l.piece_tricks[static_cast<std::size_t>(m.piece)];
+    const bool live_leads_right = leads_right(goofy_stance(), switch_stance(l.base.load(std::memory_order_acquire), component).value_or(false));
+    m.mirrored = trick->leads_right != live_leads_right;
+    logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {}{}{}, by its own signal; its {} plays your {}{}.",
+                 m.intent.side == ManualSide::tail ? "manual" : "nose manual", m.fakie ? " rolling fakie" : "",
+                 l.manual_start.previous.empty() ? std::string{} : " out of a " + l.manual_start.previous, manual_part_name(part), trick->name,
+                 m.mirrored ? ", mirrored" : "");
+}
+float manual_part_length(const Live& l) {
+    return l.manual.piece < 0 ? 0 : l.piece_tricks[static_cast<std::size_t>(l.manual.piece)]->clip->duration();
+}
+// The manual the game says he holds now: a value written before he last came onto the board on the ground is the one
+// before a bail or a respawn, not this ride's.
+constexpr std::uint64_t manual_value_before_riding_ms = 100;
+ManualIntent heard_manual(const Live& l) {
+    const auto heard = pop_grades::local_manual_intent(grades_solo.load(std::memory_order_acquire));
+    if (heard.ms + manual_value_before_riding_ms < l.manual_start.riding_since_ms) return {};
+    return manual_intent_of(heard.value);
+}
+// Every frame: when the game begins a manual, whether he landed into it and out of which trick.
+void follow_manual_intent(Live& l, double at, bool riding) {
+    auto& start = l.manual_start;
+    if (!riding) {
+        start = {};
+        return;
+    }
+    if (!start.riding_since_ms) start.riding_since_ms = GetTickCount64();
+    const auto side = heard_manual(l).side;
+    if (side != ManualSide::none && start.side == ManualSide::none) {
+        start.landed_into_it = l.last_air_at >= 0 && at - l.last_air_at < landed_into_manual_window;
+        start.previous = start.landed_into_it ? l.last_air_trick : std::string{};
+    }
+    start.side = side;
+}
+// The physics state of the crouch before a pop (anim_playback.h motion_state): a manual that ends in it ends in a trick.
+constexpr std::uint32_t pop_crouch_physics_state = 103;
+std::optional<PieceMatch> signalled_manual(Live& l, float dt, std::uintptr_t component, std::optional<std::uint32_t> state) {
+    auto& m = l.manual;
+    const auto heard = heard_manual(l);
+    const bool ended = heard.side == ManualSide::none && m.intent.side != ManualSide::none && m.part != ManualPart::exit;
+    if (ended) {
+        // Its way out, while he rolls on; nothing more when none is saved, or when he pops out of it into a trick.
+        const bool popping = state && *state == pop_crouch_physics_state;
+        if (!popping && saved_manual_part(l, m.intent.side, m.fakie, ManualPart::exit) >= 0) start_manual_part(l, ManualPart::exit, component);
+        else {
+            if (m.piece >= 0) logging::log(Level::info, Channel::skater, "Animation Studio: the game ends the manual; your pieces let go.");
+            m = {};
+            return std::nullopt;
+        }
+    } else if (heard.side != ManualSide::none && (heard.side != m.intent.side || heard.brake != m.intent.brake || m.part == ManualPart::exit)) {
+        const bool fresh = m.intent.side == ManualSide::none || m.part == ManualPart::exit;
+        m.intent = heard;
+        const bool landed_into_it = l.manual_start.landed_into_it;
+        if (fresh) m.fakie = rolling_fakie(l.riding_forward);
+        const auto part = heard.brake ? ManualPart::brake
+                        : fresh && !landed_into_it && saved_manual_part(l, heard.side, m.fakie, ManualPart::into) >= 0 ? ManualPart::into
+                                                                                                                    : ManualPart::loop;
+        start_manual_part(l, part, component);
+        if (m.piece < 0 && fresh)
+            logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {}; none of your manual pieces is for it.",
+                         heard.side == ManualSide::tail ? "manual" : "nose manual");
+    }
+    if (m.intent.side == ManualSide::none || m.piece < 0) return std::nullopt;
+    m.time += dt;
+    const float length = manual_part_length(l);
+    if (length > 0 && m.time >= length) {
+        if (m.part == ManualPart::into) start_manual_part(l, ManualPart::loop, component);
+        else if (m.part == ManualPart::exit) {
+            m = {};
+            return std::nullopt;
+        } else m.time = std::fmod(m.time, length);
+    }
+    if (m.piece < 0) return std::nullopt;
+    return PieceMatch{static_cast<std::size_t>(m.piece), m.mirrored, m.time, 0};
+}
+// A grind by the game's name for it rather than by the pose: the loop of that grind, from the lock on, and the next
+// grind's when it changes to another (a crook into a willy stall kept the crook loop by the pose, 2026-10-27). `named`:
+// the game has said which grind this is, so the pose is not asked.
+constexpr double grind_type_settle = 0.05; // one lock wrote BS_NoseGrind for a single write before BS_Crook
+constexpr std::uint64_t grind_value_before_lock_ms = 100;
+std::optional<PieceMatch> signalled_grind(Live& l, double at, float dt, std::uintptr_t component, bool& named) {
+    auto& g = l.grind;
+    const auto heard = pop_grades::local_skate_grind_type(grades_solo.load(std::memory_order_acquire));
+    const auto names = std::span(addr::game_state_values::skate_grind_type_names);
+    const bool this_lock = heard.ms + grind_value_before_lock_ms >= g.locked_ms;
+    const auto grind = this_lock && heard.value > 0 && static_cast<std::size_t>(heard.value) < names.size()
+                           ? skate_grind_of(names[static_cast<std::size_t>(heard.value)]) : std::nullopt;
+    if (!grind) return std::nullopt;
+    std::vector<GrindLoop> loops;
+    std::vector<std::size_t> indices;
+    for (const auto index : l.grind_pieces)
+        if (auto loop = grind_loop_of(l.piece_tricks[index]->trick)) {
+            loops.push_back(std::move(*loop));
+            indices.push_back(index);
+        }
+    const int chosen = choose_grind_loop(loops, *grind);
+    named = chosen >= 0;
+    if (heard.value == g.type) g.pending = -1;
+    else {
+        if (heard.value != g.pending) g.pending = heard.value, g.pending_since = at;
+        if (at - g.pending_since < grind_type_settle) return std::nullopt;
+        g.type = heard.value;
+        g.pending = -1;
+        g.time = 0;
+        const auto name = names[static_cast<std::size_t>(g.type)];
+        if (chosen < 0) {
+            if (g.piece >= 0) logging::log(Level::info, Channel::skater, "Animation Studio: the game turns the grind into {}; none of your loops is for it.", name);
+            g.piece = -1;
+            return std::nullopt;
+        }
+        g.piece = static_cast<int>(indices[static_cast<std::size_t>(chosen)]);
+        const auto* trick = l.piece_tricks[static_cast<std::size_t>(g.piece)];
+        const bool live_leads_right = leads_right(goofy_stance(), switch_stance(l.base.load(std::memory_order_acquire), component).value_or(false));
+        g.mirrored = trick->leads_right != live_leads_right;
+        logging::log(Level::info, Channel::skater, "Animation Studio: the game names the grind {}; playing your {}{}.", name, trick->name,
+                     g.mirrored ? ", mirrored" : "");
+    }
+    if (g.piece < 0) return std::nullopt;
+    g.time += dt;
+    if (const float length = l.piece_tricks[static_cast<std::size_t>(g.piece)]->clip->duration(); length > 0) g.time = std::fmod(g.time, length);
+    return PieceMatch{static_cast<std::size_t>(g.piece), g.mirrored, g.time, 0};
+}
 void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generation, std::uintptr_t component,
                  const Joint& live_placement, std::shared_ptr<const GameplayPacket>& scheduled, Joint& board_target,
                  float& board_weight, MotionState motion, std::optional<std::uint32_t> state) {
@@ -2898,8 +3087,12 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
         l.mirrored_edits.clear(); // an address can be reused by a new animation
         l.piece_tricks.clear();
         l.held_loops.clear();
+        l.manual_pieces.clear();
+        l.grind_pieces.clear();
+        l.grind = {};
         l.tracked.clear();
         l.held = {};
+        l.manual = {};
         std::vector<const Clip*> clips;
         if (snap.tricks)
             for (const auto& t : *snap.tricks)
@@ -2908,8 +3101,12 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                     const auto kind = held_kind_of(t.trick);
                     const auto index = l.piece_tricks.size();
                     l.piece_tricks.push_back(&t);
-                    if (kind != Live::HeldKind::none) l.held_loops.push_back({index, kind});
-                    else {
+                    if (manual_piece_of(t.trick)) l.manual_pieces.push_back(index);
+                    else if (kind != Live::HeldKind::none) {
+                        l.held_loops.push_back({index, kind});
+                        // A grind loop is chosen by the game's name for the grind, and by its pose when that name is not heard.
+                        if (kind == Live::HeldKind::grind && grind_loop_of(t.trick)) l.grind_pieces.push_back(index);
+                    } else {
                         l.tracked.push_back(index);
                         clips.push_back(t.clip.get());
                     }
@@ -2919,9 +3116,9 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
         if (!l.piece_tricks.empty())
             logging::log(Level::info, Channel::skater,
                          "Animation Studio: watching for {} edited piece{} of the game's animation: {} by how they move ({} move enough to be recognised), "
-                         "{} held loop{} by the pose held.",
+                         "{} held loop{} by the pose held, {} manual part{} by the game's signal.",
                          l.piece_tricks.size(), l.piece_tricks.size() == 1 ? "" : "s", clips.size(), l.pieces.looking_for() / 2, l.held_loops.size(),
-                         l.held_loops.size() == 1 ? "" : "s");
+                         l.held_loops.size() == 1 ? "" : "s", l.manual_pieces.size(), l.manual_pieces.size() == 1 ? "" : "s");
     }
     auto& play = l.piece_play;
     if (l.piece_tricks.empty()) return;
@@ -2939,25 +3136,39 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     // Where the game holds a move: grinding, in the air (a grab), on the board on the ground (a manual, a powerslide).
     using K = Live::HeldKind;
     K holding = K::none;
+    if (motion == MotionState::air) l.last_air_at = at;
+    if (motion != MotionState::rail) l.grind = {};
+    else if (!l.grind.locked_ms) l.grind.locked_ms = GetTickCount64();
     if (motion == MotionState::rail) holding = K::grind;
     else if (motion == MotionState::air) holding = K::grab;
     else if (motion == MotionState::riding || (motion == MotionState::unknown && state && *state < 300)) holding = K::ground;
+    follow_manual_intent(l, at, holding == K::ground);
     const bool any_held = std::any_of(l.held_loops.begin(), l.held_loops.end(), [&](const auto& h) { return h.second == holding; });
     if (holding == K::none || !any_held) l.held = {};
     std::optional<PieceMatch> match;
     if (!l.game_trick && !scheduled) {
         match = l.pieces.update(at, l.pose);
         if (match) match->piece = match->piece < l.tracked.size() ? l.tracked[match->piece] : l.piece_tricks.size();
-        // Nothing moving through a piece: the loop of a move he holds, if one of them is saved.
-        if (!match && any_held) match = held_play(l, snap, at, dt, holding);
-    } else l.pieces.reset();
+        // Nothing moving through a piece: a manual the game says he holds, then the loop of a move he holds by its pose.
+        if (!match && holding == K::ground && !l.manual_pieces.empty()) match = signalled_manual(l, dt, component, state);
+        else l.manual = {};
+        bool grind_named = false;
+        if (!match && holding == K::grind && !l.grind_pieces.empty()) match = signalled_grind(l, at, dt, component, grind_named);
+        if (!match && any_held && !grind_named) match = held_play(l, snap, at, dt, holding);
+    } else {
+        l.pieces.reset();
+        l.manual = {}; // a saved trick plays: the manual it ends, if any, is over
+    }
     // Exact stance: a piece seen playing the other way round to the way it was made is left to the game.
     if (match && !snap.front_foot && match->mirrored) match.reset();
     if (match && match->piece < l.piece_tricks.size()) {
         const auto* trick = l.piece_tricks[match->piece];
         if (trick != play.trick || match->mirrored != play.mirrored || play.weight <= 0) {
+            // One part of a manual after another keeps its weight: the new part's keys blend in over the old part's
+            // (EditTransition), where fading out and in again showed the game's own pose between them.
+            const bool next_manual_part = play.trick && play.weight > 0 && manual_piece_of(play.trick->trick) && manual_piece_of(trick->trick);
             play.episode = (std::uint64_t{1} << 63) | ++l.piece_episodes;
-            play.weight = 0;
+            if (!next_manual_part) play.weight = 0;
             // The board's keys work in the frame the board has now, as a trick's do from its takeoff.
             play.board_frame_ok = false;
             if (l.board_ok) {
@@ -3661,6 +3872,8 @@ void on_animation(std::uintptr_t component) noexcept {
             // first one's keys at full weight all the way down, which is what looked wrong.
             const bool airborne = l.episode.phase == PlaybackPhase::air || l.episode.phase == PlaybackPhase::landing;
             const auto name = airborne ? current_trick(component) : std::string{};
+            if (!name.empty()) l.last_air_trick = name;
+            else if (motion == MotionState::air && at - l.last_air_at > landed_into_manual_window) l.last_air_trick.clear();
             // A change after we had settled on one is the game doing something else: the layer stands back
             // over 120 ms, and only then takes up the new trick, so nothing jumps between the two.
             if (!name.empty() && l.game_trick && l.episode.phase == PlaybackPhase::air && !l.episode.selection_open(at) &&
@@ -4468,6 +4681,31 @@ void idle(double now) {
 } // namespace playback_verify
 
 void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept; // below
+// A manual piece's clip has no board, and its legs stand in a plain pose: in game, the game puts the feet on the board.
+// Leg keys made on that pose pull the live feet off the deck. So each foot goes along the line between the live feet, to
+// where the keys put it along the line between the clip's feet: 0 is the left foot, 1 the right.
+void feet_along_the_live_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept {
+    try {
+        if (!packet.clip || packet.clip->joints != skeleton_joints || !(packet.weight > 0)) return;
+        const auto clip = studio_pose(*packet.clip, packet.time, packet.mirrored);
+        auto keyed = clip;
+        apply_edits(*packet.edits, packet.time, keyed);
+        const auto a = world(clip, left_foot_joint).position, b = world(clip, right_foot_joint).position;
+        const Vec3 line{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const float length2 = line[0] * line[0] + line[1] * line[1] + line[2] * line[2];
+        if (!(length2 > 0.0025f)) return;
+        const auto live_a = world(native, left_foot_joint).position, live_b = world(native, right_foot_joint).position;
+        constexpr std::array<std::uint16_t, 6> legs{341, 342, 343, 8, 9, 10}; // thigh, knee and foot of each leg
+        for (const auto j : legs) edited[j].rotation = native[j].rotation;
+        for (const auto foot : {left_foot_joint, right_foot_joint}) {
+            const auto k = world(keyed, foot).position;
+            const float along = ((k[0] - a[0]) * line[0] + (k[1] - a[1]) * line[1] + (k[2] - a[2]) * line[2]) / length2;
+            const Vec3 to{live_a[0] + (live_b[0] - live_a[0]) * along, live_a[1] + (live_b[1] - live_a[1]) * along,
+                          live_a[2] + (live_b[2] - live_a[2]) * along};
+            place_foot(edited, foot, to, nullptr, std::min(packet.weight, 1.0f));
+        }
+    } catch (...) {}
+}
 bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motion, bool playing, std::span<const Joint> native,
                                    std::vector<Joint>& edited) noexcept; // below
 void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
@@ -4496,6 +4734,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                                       packet->match_rest);
             if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
             seat_feet_on_board(*packet, native, edited);
+            if (manual_piece_of(packet->edits->trick)) feet_along_the_live_board(*packet, native, edited);
         }
         const auto desired_deltas = pose_edit_deltas(native, edited);
         edited = native;
@@ -8503,6 +8742,13 @@ float peek_duration() {
     std::lock_guard lock(s.mutex);
     return s.peek_clip ? s.peek_clip->duration() : 0.0f;
 }
+// What OPEN says about when a saved piece of the game's animation plays in game.
+std::string how_a_piece_is_found(const std::string& trick) {
+    if (manual_piece_of(trick))
+        return "In game it plays when the game says he is in that part of the manual: its way in, its loop or its way out.";
+    if (grind_loop_of(trick)) return "In game it plays from the lock on whenever the game names that grind.";
+    return "In game it plays whenever the game plays that piece: the studio knows it by the skater's pose, about a quarter of a second after it starts.";
+}
 bool load_game_trick(const GameTrick& trick, std::string& message) {
     try {
         auto clip = read_game_clip(trick);
@@ -8531,7 +8777,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.playing = false;
         s.dirty = false; // only an edit makes it unsaved
         message = trick.preview_only ? "Opened " + trick.label + " to edit. It is a piece of the game's own animation rather than a whole trick, "
-                                       "so it is saved by the clip it came from. In game it plays whenever the game plays that piece: the studio knows it by the skater's pose, about a quarter of a second after it starts." :
+                                       "so it is saved by the clip it came from. " + how_a_piece_is_found(s.edits.trick) :
             "Opened the game's " + trick.label + " (" + trick.pop + " pop). In game, skate.'s own board physics and blending still play on top of your changes.";
         s.status = message;
         publish_locked(s);

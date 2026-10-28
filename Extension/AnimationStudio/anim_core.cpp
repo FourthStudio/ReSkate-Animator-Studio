@@ -974,6 +974,7 @@ std::string to_json(const Animation& animation) {
                           {"rig", animation.source.rig}, {"board_frame", animation.source.board_frame},
                           {"position_codec", animation.source.position_codec}};
     root["entry"] = animation.entry;
+    if (!animation.after.empty()) root["after"] = animation.after;
     if (animation.fakie) root["fakie"] = *animation.fakie;
     if (animation.board_backwards) root["board_backwards"] = *animation.board_backwards;
     if (animation.keep_leads_right) root["leads"] = *animation.keep_leads_right ? "right" : "left";
@@ -1032,6 +1033,7 @@ Animation from_json(std::string_view text) {
     result.pop = root.value("pop", "");
     result.stance = root.value("stance", "");
     result.entry = root.value("entry", "ground");
+    result.after = root.contains("after") && root.at("after").is_string() ? root.at("after").get<std::string>() : std::string{};
     if (root.contains("fakie") && root.at("fakie").is_boolean()) result.fakie = root.at("fakie").get<bool>();
     if (root.contains("board_backwards") && root.at("board_backwards").is_boolean()) result.board_backwards = root.at("board_backwards").get<bool>();
     if (const auto leads = root.value("leads", ""); leads == "right" || leads == "left") result.keep_leads_right = leads == "right";

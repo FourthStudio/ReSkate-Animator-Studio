@@ -13,6 +13,7 @@
 #include "Extension/AnimationStudio/anim_playback.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
+#include "Extension/AnimationStudio/held_moves.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -2335,6 +2336,79 @@ void fakie_recordings_have_their_own_slot() {
     check(presets[1].active, "The fakie recording plays beside the normal one");
     check(presets[0].active != presets[2].active, "and two normal ones still share a slot");
 }
+// A manual is played by the game's own signal for it, part by part, with the pieces made for its side and the way he rolls.
+void manuals_play_by_the_games_signal() {
+    check(manual_intent_of(1).side == ManualSide::tail && manual_intent_of(2).side == ManualSide::nose && !manual_intent_of(2).brake &&
+          manual_intent_of(3).side == ManualSide::tail && manual_intent_of(3).brake && manual_intent_of(4).side == ManualSide::nose &&
+          manual_intent_of(0).side == ManualSide::none && manual_intent_of(7).side == ManualSide::none, "The game's manual intent reads as its side and brake");
+    const auto piece = [](const char* asset) { return manual_piece_of(std::string("native:animation/dingo/") + asset); };
+    const auto tail_loop = piece("c_proto_onb_manual_t_loop_med");
+    const auto nose_fakie = piece("c_proto_onb_manual_n_fakie_loop_med");
+    const auto pose = piece("c_proto_onb_manual_t_high_pose");
+    const auto nose_into = piece("c_proto_onb_manual_n_into");
+    const auto tail_exit = piece("c_proto_onb_manual_t_exit");
+    const auto nose_brake = piece("c_proto_onb_manual_n_brake_rolling_slow");
+    check(tail_loop && tail_loop->side == ManualSide::tail && tail_loop->part == ManualPart::loop && !tail_loop->fakie, "A tail manual loop is read from its asset");
+    check(nose_fakie && nose_fakie->side == ManualSide::nose && nose_fakie->fakie && nose_fakie->part == ManualPart::loop, "A fakie nose manual loop is read from its asset");
+    check(pose && pose->part == ManualPart::pose && nose_into && nose_into->part == ManualPart::into && tail_exit && tail_exit->part == ManualPart::exit &&
+          nose_brake && nose_brake->part == ManualPart::brake, "Each part of a manual is read from its asset");
+    check(!piece("c_proto_onb_grind_5050_rail_loop") && !manual_piece_of("kickflip") && !piece("c_proto_onb_manual_land_addi") &&
+          !piece("c_proto_onb_manual_t_land_addi"), "Other pieces, and the landing layer, are not manual parts");
+    const std::vector<ManualPiece> pieces{*pose, *nose_fakie, *tail_loop, {ManualSide::nose, false, ManualPart::loop}, *nose_into, *tail_exit};
+    check(choose_manual_piece(pieces, ManualSide::tail, false) == 2, "The tail loop plays for a manual, before a tail pose");
+    check(choose_manual_piece(pieces, ManualSide::nose, true) == 1 && choose_manual_piece(pieces, ManualSide::nose, false) == 3,
+          "A nose manual takes the loop made for the way he rolls");
+    check(choose_manual_piece(pieces, ManualSide::tail, true) == 2, "With no fakie tail loop the tail loop plays rolling fakie too");
+    check(choose_manual_piece(pieces, ManualSide::nose, false, ManualPart::into) == 4 && choose_manual_piece(pieces, ManualSide::tail, false, ManualPart::into) == -1,
+          "A way in plays only where one is saved");
+    check(choose_manual_piece(pieces, ManualSide::tail, false, ManualPart::exit) == 5 && choose_manual_piece(pieces, ManualSide::nose, false, ManualPart::exit) == -1,
+          "A way out plays only where one is saved");
+    check(choose_manual_piece(pieces, ManualSide::tail, false, ManualPart::brake) == 2, "A brake with no brake piece plays the loop");
+    auto after_kickflip = ManualPiece{ManualSide::nose, false, ManualPart::loop, "kickflip"};
+    const std::vector<ManualPiece> chained{{ManualSide::nose, false, ManualPart::loop}, after_kickflip};
+    check(choose_manual_piece(chained, ManualSide::nose, false, ManualPart::loop, "kickflip") == 1, "A nose manual made to follow a kickflip plays after one");
+    check(choose_manual_piece(chained, ManualSide::nose, false, ManualPart::loop, "heelflip") == 0 &&
+          choose_manual_piece(chained, ManualSide::nose, false, ManualPart::loop) == 0, "After anything else, or rolling into it, the plain one plays");
+    check(choose_manual_piece(std::vector<ManualPiece>{after_kickflip}, ManualSide::nose, false) == -1, "A piece made to follow a move plays only after it");
+    const std::vector<ManualPiece> exit_after{{ManualSide::nose, false, ManualPart::loop}, {ManualSide::nose, false, ManualPart::exit, "kickflip"}};
+    check(choose_manual_piece(exit_after, ManualSide::nose, false, ManualPart::loop, "kickflip") == 0 &&
+          choose_manual_piece(exit_after, ManualSide::nose, false, ManualPart::exit, "kickflip") == 1,
+          "Following the move never puts another part in place of the one asked for");
+    Animation follows;
+    follows.after = "kickflip";
+    check(from_json(to_json(follows)).after == "kickflip" && from_json(to_json(Animation{})).after.empty() &&
+          to_json(Animation{}).find("\"after\"") == std::string::npos, "The move a piece follows is saved, and nothing is written when it has none");
+    check(choose_manual_piece(std::vector<ManualPiece>{*nose_fakie}, ManualSide::tail, false) == -1 &&
+          choose_manual_piece(pieces, ManualSide::none, false) == -1, "Nothing plays for a side without a piece, or with no manual");
+}
+// A grind is played by the game's name for it, with the loop the game's clip of that grind is.
+void grinds_play_by_the_games_name() {
+    const auto crook = skate_grind_of("BS_Crook");
+    const auto bf_5050 = skate_grind_of("BF_FS_50_50");
+    check(crook && !crook->frontside && !crook->bigflip && crook->grind == "crook", "BS_Crook reads as a backside crook");
+    check(bf_5050 && bf_5050->frontside && bf_5050->bigflip && bf_5050->grind == "5050", "BF_FS_50_50 reads as the bigflip family's FS 50-50");
+    check(skate_grind_of("FS_5_0")->grind == "50" && skate_grind_of("BS_Lip")->grind == "lip" && skate_grind_of("BS_Board")->grind == "board" &&
+          !skate_grind_of("Invalid") && !skate_grind_of("Exit"), "5-0, lip and board read as the clips spell them; Invalid and Exit are none");
+    const auto loop = [](const char* asset) { return grind_loop_of(std::string("native:animation/dingo/") + asset); };
+    const auto overcrook = loop("c_proto_onb_grind_fs_overcrook_bs_crook_rail_loop");
+    const auto five_oh = loop("c_proto_onb_grind_fs_bs_5_0_rail_loop");
+    const auto fifty = loop("c_proto_onb_grind_5050_rail_loop");
+    const auto bf_board = loop("c_proto_onb_grind_bf_fs_lipslide_bs_boardslide_rail_loop");
+    const auto salad = loop("c_proto_onb_grind_bs_salad_fs_oversalad_rail_loop");
+    check(overcrook && overcrook->frontside == "overcrook" && overcrook->backside == "crook" && !overcrook->bigflip, "A crook loop says both its grinds");
+    check(five_oh && five_oh->frontside == "50" && five_oh->backside == "50" && fifty && fifty->frontside == "5050" && fifty->backside == "5050",
+          "5-0 and 50-50 loops are both sides'");
+    check(bf_board && bf_board->bigflip && bf_board->frontside == "lip" && bf_board->backside == "board", "A bigflip lip/board loop");
+    check(salad && salad->backside == "salad" && salad->frontside == "oversalad", "A loop named backside first");
+    check(!loop("c_proto_onb_grind_fs_crook_bs_overcrook_rail_into") && !loop("c_proto_onb_grind_fs_boardslide_bs_lipslide_rail_loop_dark") &&
+          !loop("c_proto_ofb_grind_5050_feet_rail_loop") && !grind_loop_of("kickflip"), "Ways in, dark slides and on-foot clips are not grind loops");
+    const std::vector<GrindLoop> loops{*five_oh, *overcrook, *bf_board, *loop("c_proto_onb_grind_bf_fs_overcrook_bs_crook_rail_loop")};
+    check(choose_grind_loop(loops, *crook) == 1, "A BS crook plays the loop that is the BS crook's");
+    check(choose_grind_loop(loops, *skate_grind_of("BF_BS_Crook")) == 3, "A bigflip crook plays the bigflip family's loop first");
+    check(choose_grind_loop(loops, *skate_grind_of("BS_Board")) == 2, "With no loop of its own family, the other family's plays");
+    check(choose_grind_loop(loops, *skate_grind_of("FS_5_0")) == 0 && choose_grind_loop(loops, *skate_grind_of("BS_Willy")) == -1,
+          "A 5-0 plays from either side; a grind with no loop plays none");
+}
 int main(int argc, char** argv) {
     try {
         timing_and_stance_edge_cases();
@@ -2371,6 +2445,8 @@ int main(int argc, char** argv) {
         lead_foot_is_read_from_the_clip();
         every_stance_finds_its_recording();
         fakie_recordings_have_their_own_slot();
+        manuals_play_by_the_games_signal();
+        grinds_play_by_the_games_name();
         mirroring_puts_each_joint_where_its_reflection_belongs();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();

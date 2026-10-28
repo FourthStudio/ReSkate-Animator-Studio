@@ -215,6 +215,9 @@ struct Animation {
     std::optional<bool> switch_stance;
     AnimationSource source;
     std::string entry{"ground"}; // observed ground/rail entry; unknown is never guessed as ground
+    // The move a piece of a held move follows, as the game names it ("kickflip"): it plays only straight after one, in
+    // place of the piece for any way in. "" any.
+    std::string after;
     // The brackets on the timeline: the window the animation works in, from `start` to `end` (end < 0: to the
     // clip's end). Moving either bracket retimes unlocked tracks into the new window.
     float start{0};

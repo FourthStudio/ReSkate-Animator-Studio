@@ -45,7 +45,68 @@ bool is_pop_height(std::uintptr_t descriptor) noexcept {
     slot.store(identity, std::memory_order_relaxed);
     return false;
 }
+// The game's values the studio plays held moves by (held_moves.h), each skater graph's last one. Each descriptor is
+// found by its name, as PopHeight's is.
+struct GraphValue {
+    std::uintptr_t instance{};
+    std::int32_t value{};
+    std::uint64_t ms{}; // when it was written (GetTickCount64)
+};
+struct WatchedValue {
+    std::string_view name;
+    std::atomic<std::uintptr_t> descriptor{}, name_at{};
+    std::array<std::atomic<std::uint64_t>, 256> not_it{};
+    std::mutex mutex;
+    std::array<GraphValue, 16> values{};
+    GraphValue last;
+};
+std::array<WatchedValue, 2> watched{{{values::manual_intent_name}, {values::skate_grind_type_name}}};
+bool is_watched(WatchedValue& w, std::uintptr_t descriptor) noexcept {
+    std::uintptr_t name_at{};
+    if (!memory::peek(descriptor + values::descriptor_name, name_at) || !name_at) return false;
+    if (descriptor == w.descriptor.load(std::memory_order_relaxed) && name_at == w.name_at.load(std::memory_order_relaxed)) return true;
+    const auto identity = descriptor ^ (name_at * 0x9e3779b97f4a7c15ull);
+    auto& slot = w.not_it[(descriptor >> 4) & (w.not_it.size() - 1)];
+    if (slot.load(std::memory_order_relaxed) == identity) return false;
+    std::array<char, 64> name{};
+    if (memory::peek_cstring(name_at, name.data(), name.size()) >= 0 && std::string_view(name.data()) == w.name) {
+        w.descriptor.store(descriptor, std::memory_order_relaxed);
+        w.name_at.store(name_at, std::memory_order_relaxed);
+        return true;
+    }
+    slot.store(identity, std::memory_order_relaxed);
+    return false;
+}
+void remember(WatchedValue& w, std::uintptr_t instance, std::int32_t value) {
+    std::lock_guard lock(w.mutex);
+    const GraphValue written{instance, value, GetTickCount64()};
+    w.last = written;
+    auto* oldest = &w.values[(instance >> 4) % w.values.size()];
+    for (auto& v : w.values) {
+        if (v.instance == instance || !v.instance) {
+            v = written;
+            return;
+        }
+        if (v.ms < oldest->ms) oldest = &v;
+    }
+    *oldest = written; // more graphs than slots (AI skaters, others online): the one not heard from longest gives way
+}
+GraphValue local_write(WatchedValue& w, bool solo) noexcept {
+    std::uintptr_t ours{};
+    {
+        std::lock_guard lock(log_mutex);
+        ours = grade_log.ours;
+    }
+    std::lock_guard lock(w.mutex);
+    if (ours)
+        for (const auto& v : w.values)
+            if (v.instance == ours) return v;
+    // Alone in the game the only skater graph writing it is his, before his first pop has said which graph is his.
+    return solo ? w.last : GraphValue{};
+}
 std::uintptr_t set_int_hook(std::uintptr_t setter, std::uintptr_t instance, std::int32_t value) {
+    for (auto& w : watched)
+        if (is_watched(w, setter - values::descriptor_to_setter)) remember(w, instance, value);
     if (value > 0 && is_pop_height(setter - values::descriptor_to_setter)) {
         std::lock_guard lock(log_mutex);
         grade_log.add(GetTickCount64(), instance, value);
@@ -74,6 +135,14 @@ bool install(std::uintptr_t base, std::string& why) {
     static const std::string failure = hook_setter(base);
     why = failure;
     return failure.empty();
+}
+LocalValue local_manual_intent(bool solo) noexcept {
+    const auto written = local_write(watched[0], solo);
+    return {written.value, written.ms};
+}
+LocalValue local_skate_grind_type(bool solo) noexcept {
+    const auto written = local_write(watched[1], solo);
+    return {written.value, written.ms};
 }
 PopHeight local_pop_height(std::uint64_t takeoff_ms, std::uint64_t now_ms, bool solo, std::uint64_t attempt) noexcept {
     std::lock_guard lock(log_mutex);
