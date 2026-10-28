@@ -373,8 +373,6 @@ struct UnpackedTrick {
 bool unpack_preview(const std::filesystem::path& zip, const std::filesystem::path& into, std::vector<UnpackedTrick>& tricks, std::string& message);
 std::filesystem::path studio_folder();       // ReSkate.Tricks
 std::filesystem::path pack_export_folder();  // where exports go
-// A trick in a pack switched off (it stays in the pack, but does not play) or on again.
-bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
 // PLAY (MY TRICKS): on, the trick plays in game on its own, whichever packs are on; off, it does not play at all - from
 // its packs neither (it is switched off in each). A trick saved or put in a pack starts switched off.
 bool set_trick_play(const std::string& animation, bool on, std::string& message);
@@ -414,11 +412,6 @@ bool delete_playlist(std::string& message);     // the open one
 std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message);
 // PLAY on a pack's card: the whole pack into the playlist that is on (or "My packs", switched on, when none is), or out of it.
 bool set_pack_playing(const std::string& pack, bool on, std::string& message);
-// ACTIVE on a saved trick. On: put back where it was switched off (its pack, in the playlist that is on or a pack that is
-// on), or - when it is in nothing that plays - choose_playlist: the overlay asks which playlist it goes in. In a playlist
-// already but beaten to its pop by one above it: show_playlist. Off: out of the playlist that is on, or off in its pack.
-enum class ActiveAnswer { done, show_playlist, choose_playlist };
-ActiveAnswer set_trick_active(const std::string& animation, bool on, std::string& message);
 void set_hover_preview(bool on);
 // SETTINGS > STUDIO: the catch's tools shown (View::catch_marker, drop_preview_tool). Off, DROP PREVIEW goes back to 0.
 void set_catch_marker(bool on);

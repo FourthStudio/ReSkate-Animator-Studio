@@ -8,6 +8,9 @@
 #include <vector>
 
 namespace dingosdk::anim_studio {
+// The first-start guide's version: a guide that changed opens once again for everyone (studio-settings.json "guide_read"
+// keeps the one read). 2 (2026-10-28): no ACTIVE, your own tricks straight into playlists, pop heights.
+inline constexpr int guide_version = 2;
 // What studio-settings.json keeps, apart from the studio's state: the studio reads it into its state at start and
 // writes it back whole after each change. A key the file does not have keeps the value it is given.
 struct SettingsFile {
@@ -25,7 +28,7 @@ struct SettingsFile {
     bool studio_room{true};
     bool play_in_game{true};
     bool catch_marker{true}, drop_preview{true}; // SETTINGS > STUDIO: the catch's tools shown
-    bool guide_seen{};                           // the first-start guide was read
+    bool guide_seen{};                           // this first-start guide (guide_version) was read
 };
 inline void read_settings_file(const Json& root, SettingsFile& f) {
     if (!root.is_object()) return;
@@ -55,7 +58,7 @@ inline void read_settings_file(const Json& root, SettingsFile& f) {
     f.play_in_game = root.value("play_in_game", f.play_in_game);
     f.catch_marker = root.value("catch_marker", f.catch_marker);
     f.drop_preview = root.value("drop_preview", f.drop_preview);
-    f.guide_seen = root.value("guide_seen", f.guide_seen);
+    f.guide_seen = root.value("guide_read", 0) >= guide_version; // "guide_seen" was the first guide's: it opens again
 }
 inline Json settings_file_json(const SettingsFile& f) {
     Json root = Json::object();
@@ -79,7 +82,7 @@ inline Json settings_file_json(const SettingsFile& f) {
     root["play_in_game"] = f.play_in_game;
     root["catch_marker"] = f.catch_marker;
     root["drop_preview"] = f.drop_preview;
-    root["guide_seen"] = f.guide_seen;
+    root["guide_read"] = f.guide_seen ? guide_version : 0;
     return root;
 }
 }

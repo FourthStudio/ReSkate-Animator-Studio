@@ -81,8 +81,8 @@ Setting drop_height_preview(const studio::Settings& now) {
 }
 Setting how_it_works() {
     return button_row("How it works",
-                      "The guide from the first start again: how packs play, Exact stance and Front foot, and how to make a "
-                      "playlist.",
+                      "The guide from the first start again: how packs play, Exact stance and Front foot, putting your own "
+                      "tricks in a playlist, and pop heights.",
                       [] { studio::set_guide_seen(false); });
 }
 Setting report_a_bug(Tell tell) {

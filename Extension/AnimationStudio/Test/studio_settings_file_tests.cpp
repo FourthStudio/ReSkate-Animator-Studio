@@ -66,6 +66,10 @@ void a_file_from_before_shows_the_catch_tools_and_the_guide() {
     read_settings_file(Json::parse(R"({"front_foot": true})"), read);
     check(read.catch_marker && read.drop_preview, "A file without the keys hid the catch tools");
     check(!read.guide_seen, "A file without the key does not open the guide");
+    // The first guide read (its key from before): the new guide opens once.
+    SettingsFile older;
+    read_settings_file(Json::parse(R"({"guide_seen": true})"), older);
+    check(!older.guide_seen, "The changed guide does not open for someone who read the first one");
 }
 void values_out_of_range_are_kept_in_it() {
     SettingsFile read;

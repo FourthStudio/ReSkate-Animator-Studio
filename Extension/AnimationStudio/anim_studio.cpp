@@ -118,9 +118,6 @@ struct CustomTrick {
     // only. "" the trick itself.
     std::string height;
     bool any_pop{};  // the trick itself on ANY pop: it plays when the pop is not known yet too
-    // A version for a pop the trick is not set to (it is set to one pop): it plays there only when nothing of yours is
-    // for that pop - as tricks played on the pops they had no version for until 2026-10-25, but as the copy would.
-    bool fallback{};
     // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
 };
@@ -880,8 +877,8 @@ Playlist read_playlist_file() {
 }
 // ---- the playlists: presets/playlists.json ----
 // Any number, one on at a time (or none): the one on decides what plays in game, its whole packs and single tricks in
-// order; with none on the packs that are on do. Your own tricks play from a playlist: ACTIVE on one that is in nothing
-// asks which playlist it goes in.
+// order; with none on, nothing of yours does. Your own tricks go in one as themselves, no pack needed: + ADD under MY
+// TRICKS in PACKS > PLAYLIST, or + PLAYLIST on the trick (into the playlist that is on).
 std::filesystem::path playlists_file() { return library_folder() / L"presets" / L"playlists.json"; }
 Json playlist_entries_json(const std::vector<PlaylistEntry>& entries) {
     Json out = Json::array();
@@ -1050,6 +1047,10 @@ PresetPack read_pack_file(const std::string& name) {
     if (!in) throw std::runtime_error("The pack " + name + " is missing.");
     auto pack = read_pack_json(Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>())));
     pack.name = name;
+    // A pack's tricks all play with it: the ACTIVE switch that turned one off inside a pack is gone (2026-10-28), so one
+    // switched off before plays again (and the file loses it the next time the pack is saved). Pick single tricks in the
+    // playlist instead.
+    pack.off.clear();
     return pack;
 }
 // Every pack there is (the playlist can take from any of them, on or not).
@@ -1665,19 +1666,14 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
             out.edits = std::move(own);
         }
     } else if (place(animation->pop)) {
-        // Set to one pop: on it, itself - or, when its clip is of another pop (set by hand, by its pack's rule, a copy made
-        // before copies went onto the game's clip), its version for that pop, as TEST IN GAME plays it. On the other heights a
-        // fallback version, played only when nothing of yours is for that pop: until 2026-10-25 a trick played on the pops it
-        // had no version for, and testers' tricks then stopped playing on every pop the game graded otherwise.
+        // Set to one pop: on it alone, itself - or, when its clip is of another pop (set by hand, by its pack's rule, a copy
+        // made before copies went onto the game's clip), its version for that pop, as TEST IN GAME plays it. On the other
+        // heights the game's own trick plays: only ANY POP plays it on every height. (From 2026-10-26 to 10-28 it stood in on
+        // the other heights when nothing of yours was for them, so a trick set to LOW played on every pop - testers read
+        // that as the pop setting not working.)
         const std::string set_pop = animation->pop;
         if (set_pop != clip_pop)
             if (auto version = version_for(set_pop)) out = std::move(*version);
-        for (const char* height : {"low", "mid", "high"})
-            if (height != set_pop)
-                if (auto version = version_for(height)) {
-                    version->fallback = true;
-                    heights->push_back(std::move(*version));
-                }
     }
     return out;
 }
@@ -3758,9 +3754,8 @@ void on_animation(std::uintptr_t component) noexcept {
                         for (const auto& t : *l.game_tricks) {
                             if (t.trick != name || (exact && t.edits->entry != entry_name(l.episode.entry))) continue;
                             candidates.push_back(&t);
-                            // A fallback version only where nothing better is; a trick on ANY pop while the pop is not known.
+                            // A trick on ANY pop also while the pop is not known.
                             int rank = playback_pop_rank(pop, t.edits->pop);
-                            if (rank == 0 && t.fallback) rank = 3;
                             if (pop.empty() && t.any_pop) rank = 1;
                             described.push_back({t.leads_right, t.fakie, rank});
                         }
@@ -3800,8 +3795,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 // What was chosen and why, for the diagnostics (Dump Doctor reads it).
                 if (found)
                     l.decision = std::format("{} ({}{}{})", found->name,
-                                             found->fallback ? "its " + found->height + " version: nothing of yours is for that pop"
-                                             : found->any_pop || found->edits->pop.empty() ? std::string("ANY pop")
+                                             found->any_pop || found->edits->pop.empty() ? std::string("ANY pop")
                                                                                            : std::string("its own pop"),
                                              found->leads_right == live.leads_right ? "" : ", mirrored",
                                              variants.size() > 1 ? std::format(", one of {}", variants.size()) : std::string());
@@ -3845,7 +3839,7 @@ void on_animation(std::uintptr_t component) noexcept {
                                      pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air,
                                      found->height.empty() ? found->name
                                                            : found->name + " as made for the " + found->height + " pop" +
-                                                                 (found->fallback ? " (nothing of yours is for that pop)" : found->any_pop || found->edits->pop.empty() ? " (it is on ANY pop)" : ""),
+                                                                 (found->any_pop || found->edits->pop.empty() ? " (it is on ANY pop)" : ""),
                                      "authored edits over fresh native pose");
                     if (found && !found->edits->pop.empty() && found->edits->pop != pop)
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is made for a {} pop; with none of yours for a {} pop it plays on this one too.",
@@ -6589,15 +6583,15 @@ bool set_pack_member(const std::string& pack_name, const std::string& animation,
         return false;
     }
     const auto slot = found != s.presets.end() ? preset_slot(found->trick, found->pop) : std::string{};
-    message = in ? "Put " + shown_name(s, animation) + " in " + pack_name + ": tick ACTIVE there to have it play in game."
+    message = in ? "Put " + shown_name(s, animation) + " in " + pack_name + ": it plays in game when the pack is in the playlist that is on."
                  : "Took " + shown_name(s, animation) + " out of " + pack_name + ".";
     return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
         for (auto& [filed, names] : pack.slots) std::erase(names, animation);
         pack.unlinked.erase(animation);
         if (in) {
-            pack.slots[slot].push_back(animation);
-            pack.off.insert(animation); // put in, not playing: PLAY switches it on
-        } else pack.off.erase(animation);
+            pack.slots[slot].push_back(animation); // it plays with its pack (a pack's tricks are not switched off one by one)
+        }
+        pack.off.erase(animation);
     });
 }
 bool set_pack_mode(const std::string& pack_name, const std::string& slot, bool alternate, std::string& message) {
@@ -6932,16 +6926,6 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
 }
-bool set_pack_trick_on(const std::string& pack_name, const std::string& animation, bool on, std::string& message) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    message = shown_name(s, animation) + (on ? " plays from " + pack_name + " again." : " is off in " + pack_name + ": it stays in the pack, but does not play.");
-    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
-        if (!pack.has(animation)) throw std::runtime_error(animation + " is not in " + pack_name + ".");
-        if (on) pack.off.erase(animation);
-        else pack.off.insert(animation);
-    });
-}
 bool set_trick_play(const std::string& animation, bool on, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -7243,106 +7227,6 @@ std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& en
     playlists_changed_locked(s, lists, message);
     return name;
 }
-ActiveAnswer set_trick_active(const std::string& animation, bool on, std::string& message) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    if (!s.library_read) read_library_locked(s);
-    const auto me = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == animation; });
-    if (me == s.presets.end()) {
-        say_locked(s, message, animation + " is not saved.");
-        return ActiveAnswer::done;
-    }
-    const auto shown = shown_name(s, animation);
-    const auto pack_named = [&](const std::string& name) -> const PresetPack* {
-        const auto found = std::find_if(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name == name; });
-        return found == s.packs.end() ? nullptr : &*found;
-    };
-    auto lists = s.playlists;
-    auto* playing = lists.named(lists.on);
-    // Where it is in the playlist that is on: as itself, and in a whole pack there.
-    bool single = false;
-    std::vector<std::string> whole;
-    if (playing)
-        for (const auto& e : playing->entries) {
-            if (e.animation == animation) single = true;
-            else if (e.animation.empty())
-                if (const auto* pack = pack_named(e.pack); pack && pack->has(animation)) whole.push_back(pack->name);
-        }
-    const auto switch_in_pack = [&](const std::string& pack, bool to) {
-        std::string ignored;
-        change_pack_locked(s, pack, ignored, [&](PresetPack& p) {
-            if (to) p.off.erase(animation);
-            else p.off.insert(animation);
-        });
-    };
-    if (!on) {
-        if (playing) {
-            std::vector<std::string> said;
-            if (single) {
-                std::erase_if(playing->entries, [&](const PlaylistEntry& e) { return e.animation == animation; });
-                write_playlists(lists);
-                said.push_back("out of " + playing->name);
-            }
-            for (const auto& pack : whole) {
-                switch_in_pack(pack, false);
-                said.push_back("off in " + pack);
-            }
-            std::string words;
-            for (std::size_t i = 0; i < said.size(); ++i) words += (i == 0 ? "" : " and ") + said[i];
-            message = said.empty() ? shown + " is not in " + playing->name + "." : "Took " + shown + " " + words + ".";
-        } else {
-            std::vector<std::string> off;
-            const auto packs_on_now = s.packs_on; // switching one re-reads them
-            for (const auto& pack : packs_on_now)
-                if (pack.has(animation) && !pack.off.contains(animation)) {
-                    switch_in_pack(pack.name, false);
-                    off.push_back(pack.name);
-                }
-            std::string words;
-            for (std::size_t i = 0; i < off.size(); ++i) words += (i == 0 ? "" : i + 1 == off.size() ? " and " : ", ") + off[i];
-            message = off.empty() ? shown + " does not play now." : "Switched " + shown + " off in " + words + " (it stays in it).";
-        }
-        s.tricks_read = false;
-        read_library_locked(s);
-        s.status = message;
-        publish_locked(s, false);
-        return ActiveAnswer::done;
-    }
-    // On: back where it was switched off; in a playlist already, beaten to its pop; or into a playlist (the overlay asks).
-    if (playing) {
-        bool back = false;
-        for (const auto& pack : whole)
-            if (const auto* p = pack_named(pack); p && p->off.contains(animation)) {
-                switch_in_pack(pack, true);
-                back = true;
-            }
-        if (back) {
-            s.tricks_read = false;
-            read_library_locked(s);
-            say_locked(s, message, shown + " is on in " + whole.front() + " again, in " + playing->name + ".");
-            return ActiveAnswer::done;
-        }
-        if (single || !whole.empty()) {
-            say_locked(s, message, shown + " is in " + playing->name + ", but another of its pop and stance plays first: move it up there.");
-            return ActiveAnswer::show_playlist;
-        }
-        return ActiveAnswer::choose_playlist;
-    }
-    const auto packs_on_now = s.packs_on; // switching one re-reads them
-    for (const auto& pack : packs_on_now)
-        if (pack.has(animation)) {
-            if (pack.off.contains(animation)) {
-                switch_in_pack(pack.name, true);
-                s.tricks_read = false;
-                read_library_locked(s);
-                say_locked(s, message, shown + " plays from " + pack.name + " again.");
-                return ActiveAnswer::done;
-            }
-            say_locked(s, message, shown + " is on in " + pack.name + ", but another of its pop and stance plays first.");
-            return ActiveAnswer::done;
-        }
-    return ActiveAnswer::choose_playlist;
-}
 void set_hover_preview(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -7608,7 +7492,7 @@ bool test_in_game(const std::string& animation, std::string& message) {
     s.tricks_read = false;
     s.open_requested = false; // the studio closes: go and skate it
     s.open_request_pending = true;
-    message = "Testing " + name + " in game until you open the studio again (F8) or close the game: do the trick. ACTIVE puts it in a playlist, for good.";
+    message = "Testing " + name + " in game until you open the studio again (F8) or close the game: do the trick. + PLAYLIST puts it in a playlist, for good.";
     s.status = message;
     publish_locked(s, false);
     return true;
@@ -8267,8 +8151,8 @@ bool save(std::string& message) {
         s.tricks_read = false; // the next tick reads the custom tricks again
         read_library_locked(s);
         message = name == wanted ? "Saved " + name + "." : "Saved as " + name + ": " + wanted + " is another saved animation.";
-        // A first save says how it gets to play: ACTIVE puts it in a playlist (the card asks which).
-        if (first_save) message += " Tick ACTIVE to put it in a playlist and play it in game.";
+        // A first save says how it gets to play: + PLAYLIST puts it in the playlist that is on (the card asks which, with none on).
+        if (first_save) message += " + PLAYLIST puts it in a playlist, and it plays in game.";
         s.status = message;
         logging::log(Level::info, Channel::skater, "Animation Studio: saved {} ({} keys) to {}.", name, s.edits.key_count(), folder.string());
         publish_locked(s);
@@ -9063,6 +8947,22 @@ bool remove(const std::string& name, std::string& message, std::vector<std::stri
         }
     } catch (const std::exception& e) {
         logging::log(Level::warning, Channel::skater, "Animation Studio: {} was deleted, but its packs were not all updated: {}", safe, e.what());
+    }
+    // Out of every playlist too: as itself, and the packs that went with it (an entry for a trick that is gone would sit
+    // in the playlist and play nothing).
+    try {
+        auto lists = s.playlists;
+        bool changed = false;
+        for (auto& playlist : lists.lists)
+            if (std::erase_if(playlist.entries, [&](const PlaylistEntry& e) {
+                    return e.animation == safe || std::find(gone.begin(), gone.end(), e.pack) != gone.end();
+                })) {
+                changed = true;
+                left.push_back(playlist.name);
+            }
+        if (changed) write_playlists(lists);
+    } catch (const std::exception& e) {
+        logging::log(Level::warning, Channel::skater, "Animation Studio: {} was deleted, but its playlists were not all updated: {}", safe, e.what());
     }
     const auto list = [](const std::vector<std::string>& names) {
         std::string out;
