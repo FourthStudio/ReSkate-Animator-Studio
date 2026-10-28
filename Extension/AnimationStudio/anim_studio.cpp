@@ -628,6 +628,7 @@ struct GameplayPacket {
     float match{};     // how far a keyed joint goes to the pose it has in the studio (match_bent_joints)
     float match_rest{}; // and how far every other joint and the board do (match_whole_body)
     float feet_match{}; // how far a foot on the deck goes where the studio has it on the board (off the game's clip)
+    float deck_contact{}; // the same from the trick's catch on, on the game's clip too (seat_feet_on_board)
     bool limits{};      // keyed joints are kept inside the game's range
     float lower_release{}; // how far the board, hips and legs are the game's ahead of a rail or a ledge (raised_lead)
     Quat board_frame_local{0, 0, 0, 1};
@@ -4172,6 +4173,13 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float off = l.off_clip * l.off_clip * (3 - 2 * l.off_clip);
                     const float whole = l.other_pop * l.other_pop * (3 - 2 * l.other_pop);
                     packet->mirrored = l.played_mirrored; packet->match = std::max(off, whole); packet->feet_match = off;
+                    // From the catch on (eased in over the 0.06 s before it), a foot the trick has on the deck is on the board
+                    // drawn, on the game's clip too: going into a grind the board came down onto the ledge while the keyed
+                    // legs held the catch, and the feet hung 10-15 cm over the deck for a quarter of a second (2026-10-28).
+                    if (trick->caught > 0) {
+                        const float c = std::clamp((sampled.time - (trick->caught - 0.06f)) / 0.06f, 0.0f, 1.0f);
+                        packet->deck_contact = c * c * (3 - 2 * c);
+                    }
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
                     packet->match_rest = whole; // on another pop's clip: body and board as made (other_pop)
@@ -4340,7 +4348,18 @@ struct BodyPublicationState {
     std::uint64_t feet_generation{~std::uint64_t{0}};
     double on_rail_at{-1};
     bool feet_at_lock_ok{};
-    bool deck_top{true}; // the feet belong over the grip, not under the deck (guard_feet_from_deck)
+    // Each foot's side of the deck (guard_feet_from_deck: from the pose drawn), and for which life of the skater.
+    std::array<bool, 2> deck_top{true, true};
+    std::uint64_t deck_generation{~std::uint64_t{0}};
+    // The board and the feet as drawn on the last frame, in the placement's frame, and each foot on that board as a fade began
+    // (glue_feet_through_fade).
+    Joint last_board{};
+    std::array<Joint, 2> last_feet{};
+    double last_drawn_at{-1};
+    std::uint64_t last_drawn_generation{~std::uint64_t{0}};
+    double glue_started{-1};
+    bool glue_ok{};
+    std::array<Joint, 2> glue_from{};
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 // While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
@@ -4578,10 +4597,14 @@ void idle(double now) {
 } // namespace playback_verify
 
 void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept; // below
-bool board_drawn_this_frame(const std::shared_ptr<const GameplayPacket>& packet, Joint& drawn, Joint& games, BoardShape& shape,
+bool board_drawn_this_frame(const std::shared_ptr<const GameplayPacket>& packet, Joint& drawn, Joint& games, Joint& wanted, BoardShape& shape,
                             bool& shape_ok) noexcept; // below
 bool guard_feet_from_deck(std::span<const Joint> native, std::vector<Joint>& edited, const Joint& board, const Joint& games_board,
-                          const BoardShape* shape, bool& top) noexcept; // below
+                          const BoardShape* shape, std::array<bool, 2>& top) noexcept; // below
+bool glue_feet_through_fade(BodyPublicationState& body, std::span<const Joint> wanted, const Joint& drawn_board, const Joint& wanted_board,
+                            const BoardShape* shape, std::vector<Joint>& edited, std::uint64_t generation, double now) noexcept; // below
+void remember_drawn_feet(BodyPublicationState& body, std::span<const Joint> edited, const Joint& drawn_board, const BoardShape* shape,
+                         std::uint64_t generation, double now) noexcept; // below
 bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motion, bool playing, std::span<const Joint> native,
                                    std::vector<Joint>& edited) noexcept; // below
 void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
@@ -4625,6 +4648,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             seat_feet_on_board(*packet, native, edited);
         }
         const auto desired_deltas = pose_edit_deltas(native, edited);
+        const std::vector<Joint> wanted = edited; // the pose wanted this frame, before the fade
         edited = native;
         std::vector<Offset> applied_deltas;
         const auto motion = l.render_motion.load(std::memory_order_acquire);
@@ -4657,8 +4681,8 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             apply_pose_deltas(deltas, edited);
             applied_deltas.assign(deltas.begin(), deltas.end());
             // Other players get the feet on the board too.
-            if (slide_feet_on_the_games_board(publication, motion, packet != nullptr, native, edited))
-                applied_deltas = pose_edit_deltas(native, edited);
+            const bool slid = slide_feet_on_the_games_board(publication, motion, packet != nullptr, native, edited);
+            if (slid) applied_deltas = pose_edit_deltas(native, edited);
             // Fading out after a trick handed back (no packet, so seat_feet_on_board does not run), rolling on the ground or
             // grinding: no foot is drawn lower than the game has it, whatever the last keys leave in the fade. Into a grind
             // the feet go onto the game's deck first (grind_feet_on_deck), so the body can ease in without them going
@@ -4672,15 +4696,27 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                         place_foot(edited, foot, Vec3{drawn.position[0], own.position[1], drawn.position[2]}, nullptr, 1.0f);
                 }
             }
-            // Last of all, the deck's force field: no shoe in the board drawn this frame, whatever came before
-            // (guard_feet_from_deck). Other players get it too.
+            // The board drawn this frame: through a fade the feet stay on it (glue_feet_through_fade), and last of all the
+            // deck's force field keeps every shoe and shin out of it (guard_feet_from_deck). Other players get both.
             {
-                Joint drawn_board, games_board;
+                Joint drawn_board, games_board, wanted_board;
                 BoardShape shape;
                 bool shape_ok = false;
-                if (board_drawn_this_frame(packet, drawn_board, games_board, shape, shape_ok) &&
-                    guard_feet_from_deck(native, edited, drawn_board, games_board, shape_ok ? &shape : nullptr, publication.deck_top))
-                    applied_deltas = pose_edit_deltas(native, edited);
+                if (board_drawn_this_frame(packet, drawn_board, games_board, wanted_board, shape, shape_ok)) {
+                    const BoardShape* known = shape_ok ? &shape : nullptr;
+                    if (publication.deck_generation != generation) {
+                        publication.deck_generation = generation;
+                        publication.deck_top = {true, true};
+                    }
+                    // Only where the studio draws something of its own: the game's own frames are left as they are.
+                    if (edited != native || drawn_board != games_board) {
+                        bool moved = false;
+                        if (!slid) moved |= glue_feet_through_fade(publication, wanted, drawn_board, wanted_board, known, edited, generation, now);
+                        moved |= guard_feet_from_deck(native, edited, drawn_board, games_board, known, publication.deck_top);
+                        if (moved) applied_deltas = pose_edit_deltas(native, edited);
+                    }
+                    remember_drawn_feet(publication, edited, drawn_board, known, generation, now);
+                }
             }
         } else publication.transition.reset();
         if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
@@ -4954,7 +4990,8 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
         const float w = std::min(packet.weight, 1.0f);
         // 1. Off the game's clip: the studio's foot on the studio's board - the recording's body and board, the keys on
         // both, under the live placement (which drops out of the relation) - put on the drawn board.
-        if (packet.feet_match > 0 && packet.clip->joints == skeleton_joints && !packet.clip->board.empty()) {
+        const float on_deck_gate = std::max(packet.feet_match, packet.deck_contact);
+        if (on_deck_gate > 0 && packet.clip->joints == skeleton_joints && !packet.clip->board.empty()) {
             Joint rel;
             if (packet.clip->sample_board(std::clamp(packet.time, 0.0f, packet.clip->duration()), rel)) {
                 rel = nose_forward(*packet.clip, rel);
@@ -4985,7 +5022,7 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
                                                 (want.position[1] - now_at[1]) * (want.position[1] - now_at[1]) +
                                                 (want.position[2] - now_at[2]) * (want.position[2] - now_at[2]));
                     const float near_x = std::clamp((0.30f - gap) / 0.18f, 0.0f, 1.0f);
-                    const float share = packet.feet_match * x * x * (3 - 2 * x) * near_x * near_x * (3 - 2 * near_x) * w *
+                    const float share = on_deck_gate * x * x * (3 - 2 * x) * near_x * near_x * (3 - 2 * near_x) * w *
                                         std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
                     if (share <= 0) continue;
                     place_foot(edited, foot, want.position, &want.rotation, share);
@@ -5029,6 +5066,7 @@ struct BoardThisFrame {
     Joint native_mount, want, studio_board;
     bool studio_board_ok{};
     MotionState motion{MotionState::unknown};
+    Joint wanted; // the board wanted this frame, before its fade
 };
 BoardThisFrame board_this_frame(std::span<const Joint> native, std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet,
                                 EditTransition& transition, BoardShape& shape, bool& shape_ok, std::uint64_t generation, double now) {
@@ -5085,6 +5123,7 @@ BoardThisFrame board_this_frame(std::span<const Joint> native, std::uintptr_t ho
     std::array<Offset, 1> desired{};
     if (want.rotation != native_mount.rotation) desired[0].rotation = normalised(multiply(want.rotation, conjugate(native_mount.rotation)));
     for (std::size_t k = 0; k < 3; ++k) desired[0].offset[k] = want.position[k] - native_mount.position[k];
+    const Joint wanted = want;
     want = native_mount;
     const auto motion = l.render_motion.load(std::memory_order_acquire);
     // On a rail the board is the game's: the trick's last board keys ease out in grind_feet_on_deck, with the hips and
@@ -5101,12 +5140,12 @@ BoardThisFrame board_this_frame(std::span<const Joint> native, std::uintptr_t ho
     // the deck lies on the rail; on the trucks it did not show) - test.5, 2026-10-27.
     if ((motion == MotionState::riding || motion == MotionState::rail) && shape_ok && want != native_mount)
         (void)keep_board_above(want, shape, lowest_point(native_mount, shape));
-    return {native_mount, want, studio_board, studio_board_ok, motion};
+    return {native_mount, want, studio_board, studio_board_ok, motion, wanted};
 }
 // ---- the deck's force field --------------------------------------------------------------------------------------------
 // The board as its pass will draw it this frame, worked out on the body's pass (board_this_frame on a copy of the board's
 // fade, so working it out changes nothing), and the game's own board under it.
-bool board_drawn_this_frame(const std::shared_ptr<const GameplayPacket>& packet, Joint& drawn, Joint& games, BoardShape& shape,
+bool board_drawn_this_frame(const std::shared_ptr<const GameplayPacket>& packet, Joint& drawn, Joint& games, Joint& wanted, BoardShape& shape,
                             bool& shape_ok) noexcept {
     try {
         auto& l = live();
@@ -5131,7 +5170,8 @@ bool board_drawn_this_frame(const std::shared_ptr<const GameplayPacket>& packet,
         const auto board = board_this_frame(native, holder, packet, fade, shape, shape_ok, generation, now_seconds());
         drawn = board.want;
         games = board.native_mount;
-        return finite(drawn) && finite(games);
+        wanted = board.wanted;
+        return finite(drawn) && finite(games) && finite(wanted);
     } catch (...) {
         return false;
     }
@@ -5143,58 +5183,76 @@ Quat turn_onto(const Vec3& from, const Vec3& to) noexcept {
     const auto c = cross(from, to);
     return normalised(Quat{c[0], c[1], c[2], 1 + d});
 }
-// The body's last step: no shoe is drawn in the board drawn this frame - not by the keys, not by the fade into the game's
-// next move, not where the game's board and the trick's came apart - any deeper than the game's own pose has it in the
-// game's own board (that it never changes). Each shoe (sole_points, against the deck, its kicks, nose, tail, trucks and
-// wheels: deck_depth) is lifted out along the deck's up - or its down, when he is on its other side (feet_side_of_deck) -
-// by bending the leg, the shoe keeping its turn; one the leg cannot lift that far (straight) is also laid flat on the deck.
-// A foot keyed or blended through the deck (a custom trick fading into a nose slide, 2026-10-28) goes over it instead.
-// True when a foot was moved.
-bool guard_feet_from_deck(std::span<const Joint> native, std::vector<Joint>& edited, const Joint& board, const Joint& games_board,
-                          const BoardShape* shape, bool& top) noexcept {
-    try {
-        if (edited.size() < skeleton_joints || native.size() < skeleton_joints || !finite(board) || !finite(games_board)) return false;
-        // The board's own axes (board_shape): up, along (tail to nose) and across.
-        Vec3 up{0, 1, 0}, along{0, 0, 1};
+// The board's own axes in its mount's frame (board_shape: up, along tail to nose, across), and a point in the world on a
+// board: along it, up from its mount and across it.
+struct DeckAxes {
+    Vec3 up{0, 1, 0}, along{0, 0, 1}, across{1, 0, 0};
+    explicit DeckAxes(const BoardShape* shape) noexcept {
         if (shape) {
             up = unit(shape->up);
             along = unit(Vec3{shape->points[0][0] - shape->points[1][0], shape->points[0][1] - shape->points[1][1],
                               shape->points[0][2] - shape->points[1][2]});
         }
-        const Vec3 across = unit(cross(up, along));
-        const auto dot3 = [](const Vec3& a, const Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
-        // A point in the world, on a board: along it, up from its mount and across it.
-        const auto on = [&](const Joint& b, const Vec3& point) {
-            const auto local = rotate(conjugate(b.rotation), Vec3{point[0] - b.position[0], point[1] - b.position[1], point[2] - b.position[2]});
-            return Vec3{dot3(local, along), dot3(local, up), dot3(local, across)};
+        across = unit(cross(up, along));
+    }
+    Vec3 local(const Vec3& p) const noexcept {
+        return {p[0] * along[0] + p[1] * along[1] + p[2] * along[2], p[0] * up[0] + p[1] * up[1] + p[2] * up[2],
+                p[0] * across[0] + p[1] * across[1] + p[2] * across[2]};
+    }
+    Vec3 on(const Joint& board, const Vec3& point) const noexcept {
+        return local(rotate(conjugate(board.rotation), Vec3{point[0] - board.position[0], point[1] - board.position[1], point[2] - board.position[2]}));
+    }
+};
+// The leg's joint above a foot: the knee (the shin's top).
+std::uint16_t knee_of(std::uint16_t foot) noexcept { return foot == left_foot_joint ? std::uint16_t{342} : std::uint16_t{9}; }
+// The body's last step: no shoe and no shin is drawn in the board drawn this frame - not by the keys, not by the fade into
+// the game's next move, not where the game's board and the trick's came apart - any deeper than the game's own pose has it
+// in the game's own board (that it never changes). Each shoe (sole_points and shoe_upper_points) and shin (shin_points_along)
+// is held against the deck, its kicks, nose, tail, trucks and wheels (deck_depth), from the side its foot is on
+// (foot_side_of_deck, kept in `top` from the pose drawn), and lifted out along the deck's up - or down, from its other side -
+// by bending the leg, the shoe keeping its turn; one the leg cannot lift that far (straight) is also laid flat on the deck.
+// A foot keyed or blended through the deck goes over it instead. True when a foot was moved.
+bool guard_feet_from_deck(std::span<const Joint> native, std::vector<Joint>& edited, const Joint& board, const Joint& games_board,
+                          const BoardShape* shape, std::array<bool, 2>& top) noexcept {
+    try {
+        if (edited.size() < skeleton_joints || native.size() < skeleton_joints || !finite(board) || !finite(games_board)) return false;
+        const DeckAxes axes(shape);
+        const auto at = [](const Joint& joint, const Vec3& point) {
+            const auto r = rotate(joint.rotation, point);
+            return Vec3{joint.position[0] + r[0], joint.position[1] + r[1], joint.position[2] + r[2]};
         };
-        // A point of a shoe (in its foot's frame) in the world.
-        const auto at = [](const Joint& foot, const Vec3& point) {
-            const auto r = rotate(foot.rotation, point);
-            return Vec3{foot.position[0] + r[0], foot.position[1] + r[1], foot.position[2] + r[2]};
+        const auto sole = sole_points();
+        const auto upper = shoe_upper_points();
+        // Every point of a leg that is kept out of the deck, in the world, with its thickness.
+        const auto leg_points = [&](std::span<const Joint> pose, std::uint16_t foot, std::vector<std::pair<Vec3, float>>& out) {
+            out.clear();
+            const auto f = world(pose, foot);
+            for (const auto& p : sole) out.emplace_back(at(f, p), 0.0f);
+            for (const auto& p : upper) out.emplace_back(at(f, p), 0.0f);
+            const auto knee = world(pose, knee_of(foot));
+            for (const float along : shin_points_along) out.emplace_back(at(knee, Vec3{along, 0, 0}), shin_radius);
         };
-        top = feet_side_of_deck(on(board, world(edited, hips_joint).position)[1], top);
-        const bool games_top = on(games_board, world(native, hips_joint).position)[1] > deck_middle;
-        const auto points = sole_points();
-        const auto turned_up = rotate(board.rotation, up);
-        const Vec3 out = top ? turned_up : Vec3{-turned_up[0], -turned_up[1], -turned_up[2]};
+        const auto turned_up = rotate(board.rotation, axes.up);
         bool moved = false;
-        for (const std::uint16_t foot : {left_foot_joint, right_foot_joint}) {
-            // As deep as the game's own pose has each point of the shoe in the game's own board, it may stay: some of the
-            // game's landings sink a foot in a little.
-            std::array<float, 9> allowed{};
-            const auto own = world(native, foot);
-            if (finite(own))
-                for (std::size_t i = 0; i < points.size(); ++i) {
-                    const auto pt = on(games_board, at(own, points[i]));
-                    allowed[i] = deck_depth(pt[0], pt[1], pt[2], games_top);
-                }
+        std::vector<std::pair<Vec3, float>> points, own;
+        for (std::size_t side = 0; side < 2; ++side) {
+            const std::uint16_t foot = side == 0 ? left_foot_joint : right_foot_joint;
+            const bool over = top[side];
+            const Vec3 out = over ? turned_up : Vec3{-turned_up[0], -turned_up[1], -turned_up[2]};
+            // As deep as the game's own pose has each point in the game's own board (from the same side), it may stay: some
+            // of the game's landings sink a foot in a little, and the game's pose is left as it is.
+            leg_points(native, foot, own);
+            std::array<float, 32> allowed{};
+            for (std::size_t i = 0; i < own.size() && i < allowed.size(); ++i) {
+                const auto pt = axes.on(games_board, own[i].first);
+                allowed[i] = deck_depth(pt[0], pt[1], pt[2], over, own[i].second);
+            }
             const auto depth = [&] {
-                const auto drawn = world(edited, foot);
+                leg_points(edited, foot, points);
                 float most = 0;
-                for (std::size_t i = 0; i < points.size(); ++i) {
-                    const auto pt = on(board, at(drawn, points[i]));
-                    most = std::max(most, deck_depth(pt[0], pt[1], pt[2], top) - allowed[i]);
+                for (std::size_t i = 0; i < points.size() && i < allowed.size(); ++i) {
+                    const auto pt = axes.on(board, points[i].first);
+                    most = std::max(most, deck_depth(pt[0], pt[1], pt[2], over, points[i].second) - allowed[i]);
                 }
                 return most;
             };
@@ -5207,7 +5265,7 @@ bool guard_feet_from_deck(std::span<const Joint> native, std::vector<Joint>& edi
                     // turn), and what is left is lifted again.
                     const auto sole_down = unit(rotate(drawn.rotation, sole_down_in_foot));
                     const Vec3 want_down{-out[0], -out[1], -out[2]};
-                    if (dot3(sole_down, want_down) < 0.5f) break;
+                    if (sole_down[0] * want_down[0] + sole_down[1] * want_down[1] + sole_down[2] * want_down[2] < 0.5f) break;
                     const auto flat = normalised(multiply(turn_onto(sole_down, want_down), drawn.rotation));
                     place_foot(edited, foot, drawn.position, &flat, 1.0f);
                     moved = true;
@@ -5219,6 +5277,70 @@ bool guard_feet_from_deck(std::span<const Joint> native, std::vector<Joint>& edi
                 place_foot(edited, foot, to, &drawn.rotation, 1.0f);
                 moved = true;
             }
+        }
+        return moved;
+    } catch (...) {
+        return false;
+    }
+}
+// After the body's pass: the board and the feet as drawn, in the placement's frame (a fade starting on the next frame starts
+// from them: glue_feet_through_fade), and each foot's side of the deck from the pose drawn (foot_side_of_deck).
+void remember_drawn_feet(BodyPublicationState& body, std::span<const Joint> edited, const Joint& drawn_board, const BoardShape* shape,
+                         std::uint64_t generation, double now) noexcept {
+    try {
+        if (edited.size() < skeleton_joints) return;
+        const auto placement = compose(edited[0], edited[1]);
+        const DeckAxes axes(shape);
+        body.last_board = relative(placement, drawn_board);
+        for (std::size_t side = 0; side < 2; ++side) {
+            const std::uint16_t foot = side == 0 ? left_foot_joint : right_foot_joint;
+            const auto f = world(edited, foot);
+            body.last_feet[side] = relative(placement, f);
+            const auto ankle = axes.on(drawn_board, f.position);
+            body.deck_top[side] = foot_side_of_deck(ankle[0], ankle[1], ankle[2], body.deck_top[side]);
+        }
+        body.last_drawn_at = now;
+        body.last_drawn_generation = generation;
+    } catch (...) {}
+}
+// Through a fade of the body (into a trick, out of one, from one into the next): each foot that stood on the deck as the
+// fade began, or stands on it in the pose faded to, stays on the board drawn now, sliding over it from where it stood to
+// where it is wanted - not each of the board and the legs fading its own way, which lifted a foot off the deck or put it
+// through it for a few frames between a custom trick and the game's next move (2026-10-28). A foot leaving the deck
+// (pushing off) is let go as the fade goes, one coming onto it (a catch) is taken onto it. True when a foot was moved.
+bool glue_feet_through_fade(BodyPublicationState& body, std::span<const Joint> wanted, const Joint& drawn_board, const Joint& wanted_board,
+                            const BoardShape* shape, std::vector<Joint>& edited, std::uint64_t generation, double now) noexcept {
+    try {
+        const auto& fade = body.transition;
+        if (wanted.size() < skeleton_joints || edited.size() < skeleton_joints || fade.started < 0) return false;
+        if (body.glue_started != fade.started) {
+            body.glue_started = fade.started;
+            // Where each foot stood on the board drawn on the frame before the fade (both from that frame).
+            body.glue_ok = body.last_drawn_generation == generation && now - body.last_drawn_at < 0.1;
+            for (std::size_t side = 0; side < 2; ++side) {
+                body.glue_from[side] = relative(body.last_board, body.last_feet[side]);
+                body.glue_ok = body.glue_ok && finite(body.glue_from[side]);
+            }
+        }
+        const float k = std::clamp(fade.from_left, 0.0f, 1.0f);
+        if (!body.glue_ok || !(k > 0)) return false;
+        const DeckAxes axes(shape);
+        const auto standing = [&](const Joint& on_board) {
+            const auto p = axes.local(on_board.position);
+            return foot_on_deck(p[0], p[1], p[2]);
+        };
+        bool moved = false;
+        for (std::size_t side = 0; side < 2; ++side) {
+            const std::uint16_t foot = side == 0 ? left_foot_joint : right_foot_joint;
+            const auto to = relative(wanted_board, world(wanted, foot));
+            if (!finite(to)) continue;
+            const auto& from = body.glue_from[side];
+            const float share = (standing(from) ? k : 0.0f) + (standing(to) ? 1 - k : 0.0f);
+            if (!(share > 0.001f)) continue;
+            const auto want = compose(drawn_board, foot_sliding_to_the_games(from, to, k));
+            if (!finite(want)) continue;
+            place_foot(edited, foot, want.position, &want.rotation, share);
+            moved = true;
         }
         return moved;
     } catch (...) {

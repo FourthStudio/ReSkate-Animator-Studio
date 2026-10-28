@@ -2057,6 +2057,20 @@ void the_deck_keeps_shoes_out() {
     check(near(deck_depth(trucks_at, wheels_bottom + 0.01f, 0.05f, false), 0.01f), "and where the trucks are, under the wheels");
     check(deck_depth(0.0f, deck_top_flat - deck_thickness - 0.01f, 0.0f, false) == 0, "Under the deck and clear of it");
     check(feet_side_of_deck(0.8f, false) && !feet_side_of_deck(-0.8f, true), "The feet go on the hips' side of the deck");
+    // The shoe's upper stands over its sole: on a flat deck it is never what goes in first.
+    for (const auto& point : shoe_upper_points())
+        check(sole_height(point, 0.106f) > deck_top_flat + 0.02f, "The shoe's upper is over the deck when the sole is on it");
+    // A shin is kept its thickness off the deck and its edges.
+    check(near(deck_depth(0.0f, deck_top_flat + 0.05f, 0.0f, true, shin_radius), shin_radius - 0.05f), "A shin 5 cm over the deck is 2 cm in");
+    check(deck_depth(0.0f, deck_top_flat + 0.05f, deck_half_width + 0.02f, true, shin_radius) == 0,
+          "A leg beside the board (pushing on the ground) is left alone");
+    check(deck_depth(0.0f, deck_top_flat - 0.005f, deck_half_width + 0.005f, false) == 0, "and so is a foot beside it, under its edge");
+    // Each foot's side: off the outline it is the side it is on, over or under it the side it is clear on, between as it was.
+    check(!foot_side_of_deck(0.0f, -0.2f, 0.4f, true) && foot_side_of_deck(0.0f, 0.2f, 0.4f, false), "Round the edge a foot takes the side it is on");
+    check(foot_side_of_deck(0.0f, 0.105f, 0.0f, false) && !foot_side_of_deck(0.0f, -0.1f, 0.0f, true), "Over or under the deck it is that side");
+    check(foot_side_of_deck(0.0f, 0.01f, 0.0f, true) && !foot_side_of_deck(0.0f, 0.01f, 0.0f, false), "and in it, as it was");
+    check(foot_on_deck(0.1f, 0.105f, 0.03f) && !foot_on_deck(0.1f, 0.4f, 0.03f) && !foot_on_deck(0.1f, 0.105f, 0.3f),
+          "A foot standing on the deck is on it; one high over it or off its side is not");
     check(feet_side_of_deck(0.05f, true) && !feet_side_of_deck(0.05f, false), "and keep it while the board is edge on");
 }
 void native_playback_contracts() {

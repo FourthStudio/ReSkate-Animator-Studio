@@ -480,6 +480,20 @@ inline std::array<Vec3, 9> sole_points() noexcept {
     return {at(-0.065f, 0.035f, 0), at(-0.065f, -0.035f, 0), at(0.015f, 0.045f, 0), at(0.015f, -0.045f, 0), at(0.094f, 0.05f, 0),
             at(0.094f, -0.05f, 0), at(0.165f, 0.03f, 0.008f), at(0.165f, -0.03f, 0.008f), at(0.175f, 0, 0.012f)};
 }
+// Over the sole, the shoe's upper - toe box, laces, heel, collar and sides - which a board on its side meets first (a
+// kickflip's deck turning past the back foot went through the shoe's side: 2026-10-28, the sole alone was checked).
+inline std::array<Vec3, 7> shoe_upper_points() noexcept {
+    const auto at = [](float forward, float side, float over_sole) {
+        return Vec3{sole_down_in_foot[0] * (ankle_over_sole - over_sole) + sole_forward_in_foot[0] * forward,
+                    sole_down_in_foot[1] * (ankle_over_sole - over_sole) + sole_forward_in_foot[1] * forward, side};
+    };
+    return {at(0.15f, 0, 0.035f), at(0.07f, 0, 0.065f), at(-0.07f, 0, 0.045f), at(-0.02f, 0, 0.1f), at(0.03f, 0.052f, 0.03f),
+            at(0.03f, -0.052f, 0.03f), at(0.11f, 0.045f, 0.03f)};
+}
+// The shin, in the knee joint's frame (X down the shin to the ankle, 0.438 m on): three points down it, each the middle of
+// a round leg this thick (wide trousers).
+inline constexpr std::array<float, 3> shin_points_along{0.14f, 0.24f, 0.34f};
+inline constexpr float shin_radius = 0.07f;
 // The board, in its mount's frame along its length (0 the middle), up and across: the grip 0.019 m over the mount, the
 // deck 0.014 m thick and 0.21 m wide, its kicks curving up 0.045 m from 0.29 m out to the tips at 0.40 m (the game's back
 // foot stands on the tail 0.025 m up at 0.31 m out and 0.046 m up at 0.36: 408 standing frames of 102 of its tricks), nose
@@ -506,19 +520,40 @@ inline float deck_half_width_at(float along) noexcept {
 // How deep a point (along, up and across in the board's frame) is in the board, from the side the feet are on: over the
 // grip (`top`), or else under the deck and, where the trucks are, under the wheels. 0 when it is clear of it, or past it
 // by more than deck_most_depth.
-inline float deck_depth(float along, float up, float across, bool top) noexcept {
+// `radius`: a round part (a shin) of that thickness round the point, kept that far off the deck. Its edges' margin
+// (deck_edge_margin) is for a shoe over the deck only: a leg beside the board - one pushing on the ground - passes the
+// deck's height there, and lifting it over the edge would take the foot off the ground.
+inline float deck_depth(float along, float up, float across, bool top, float radius = 0) noexcept {
     if (!std::isfinite(along) || !std::isfinite(up) || !std::isfinite(across)) return 0;
-    const float a = std::abs(along), w = std::abs(across);
-    if (a > deck_tip + deck_edge_margin) return 0;
-    if (w > deck_half_width_at(std::min(a, deck_tip)) + deck_edge_margin) return 0;
+    const float a = std::abs(along), w = std::abs(across), margin = top && radius == 0 ? deck_edge_margin : 0.0f;
+    if (a > deck_tip + margin) return 0;
+    if (w > deck_half_width_at(std::min(a, deck_tip)) + margin) return 0;
     float depth;
     if (top) {
-        depth = deck_top_at(along) - up;
+        depth = deck_top_at(along) - (up - radius);
     } else {
         const bool trucks = std::abs(a - trucks_at) < trucks_half_length && w < trucks_half_width;
-        depth = up - (trucks ? wheels_bottom : deck_top_at(along) - deck_thickness);
+        depth = (up + radius) - (trucks ? wheels_bottom : deck_top_at(along) - deck_thickness);
     }
     return depth > 0 && depth <= deck_most_depth ? depth : 0.0f;
+}
+// Which side of the deck a foot is on, from its ankle (along, up and across in the board's frame), as drawn on the last
+// frame: off the deck's outline, the side it is on (a foot goes round the board's edge to its other side); over or under
+// it by 5 cm, that side; else as it was. Kept per foot - one foot each side of a board on its edge is not pulled
+// through it - and from the pose drawn, which never crosses the deck, so a fast flip cannot carry a foot through it.
+inline bool foot_side_of_deck(float along, float up, float across, bool was_top) noexcept {
+    if (!std::isfinite(along) || !std::isfinite(up) || !std::isfinite(across)) return was_top;
+    const float a = std::abs(along), w = std::abs(across);
+    if (a > deck_tip + 0.1f || w > deck_half_width_at(std::min(a, deck_tip)) + 0.1f) return up > deck_middle;
+    if (up > deck_top_at(along) + 0.05f) return true;
+    if (up < deck_top_at(along) - deck_thickness - 0.05f) return false;
+    return was_top;
+}
+// A foot standing on the deck (its ankle, in the board's frame): over the deck's outline and 3 to 22 cm over the mount
+// (it stands 10.5 cm over it).
+inline bool foot_on_deck(float along, float up, float across) noexcept {
+    return std::isfinite(along) && std::isfinite(up) && std::isfinite(across) && std::abs(along) < deck_tip + 0.02f &&
+           std::abs(across) < deck_half_width + 0.05f && up > 0.03f && up < 0.22f;
 }
 // Which side of the deck the feet belong on: the hips' (`hips_up`, over the board's mount), held until the hips are 10 cm
 // clear on the other side - as the board turns edge on under him it stays as it was.
