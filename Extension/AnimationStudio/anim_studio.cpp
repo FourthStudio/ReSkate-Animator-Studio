@@ -219,8 +219,10 @@ bool air_corrections = false; // (not constexpr: the code it gates is kept compi
 // still to the touchdown, or handed back to the game's pose at its catch. The pose as made goes back to the game's from
 // this long before the touchdown, over this long (seconds), so he comes down in the game's landing with the keys on it.
 constexpr float drop_pose_back_by = 0.05f, drop_pose_back_over = 0.4f;
-// Why a trick lets go at its catch on a higher pop than it was made on (and over at least 0.3 s, whatever the crossfade).
-constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it was made on: the game's own pose from here";
+// Why a trick lets go at its landing on a higher pop than it was made on, its own time never having taken over the longer
+// air (and over at least 0.3 s, whatever the crossfade).
+constexpr const char* higher_pop_hand_back =
+    "its landing, on a higher pop than it was made on, the ground not known to take its own time: the game's own pose from here";
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
@@ -639,10 +641,12 @@ std::atomic<std::uint64_t> gameplay_epoch{};
 std::atomic<float> trick_blend{0.15f}; // one trick's keys into the next on the render thread: half the Crossfade setting
 // Into a grind (apply_gameplay_body): the trick's last keys ease out over half the Crossfade, kept between these (0.06 s,
 // test.1, was right for the feet but snappy, robotic - 2026-10-27), and the feet go onto the game's deck first.
-constexpr float grind_ease_min = 0.18f, grind_ease_max = 0.3f, grind_feet_on_deck = 0.1f;
+constexpr float grind_ease_min = 0.25f, grind_ease_max = 0.4f, grind_feet_on_deck = 0.1f;
 // Into a grind, with the inertial blend (EditTransition): the hips, legs and board settle in this long, the rest of the body
-// over the Crossfade. The blend carries their motion on, so this is no snap the way 0.1 s of a plain fade was.
-constexpr float grind_legs_ease = 0.14f;
+// over the Crossfade (0.25 to 0.4 s: grind_ease_min/max). The blend carries their motion on, and the feet stay on the board
+// through it (glue_feet_through_fade) and out of it (guard_feet_from_deck), so it needs no hurry: at 0.14 s the legs
+// bounced into the grind's crouch (2026-10-28).
+constexpr float grind_legs_ease = 0.22f;
 // What lands with the board into a grind: the hips, the legs, the feet and the toes (skeleton.csv's editable joints).
 constexpr std::array<std::uint16_t, 9> grind_lower_body{7, 8, 9, 10, 11, 341, 342, 343, 344};
 // Onto a rail or a ledge: landing on something this much higher than the board took off from (metres), the board, hips and
@@ -3966,19 +3970,17 @@ void on_animation(std::uintptr_t component) noexcept {
                     else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch = l.episode.landing;
                     float time = reading.locked ? reading.time : -1.0f;
                     const float up = clip.takeoff, down = clip.landing;
-                    // On the game's clip of a higher pop than the trick was made on: from its catch (its own; else four fifths
-                    // into its air, where a flip is done) the trick hands back to the game's own pose, crossfaded, and the game
-                    // holds its catch and lands as it does. Played to its landing it stood still in the air until the game's
-                    // touchdown, then let go in one frame. Down a drop it takes its own time to the touchdown instead (AirStretch).
+                    // On the game's clip of a higher pop than the trick was made on, the trick takes the longer air in its own
+                    // time from its catch (AirStretch), as off a drop: it plays to its landing on the touchdown, or on the rail
+                    // it reaches. Handed back to the game's own pose at its catch (until 2026-10-28) the board became the game's,
+                    // later in its flip on that pop, and into a grind the game then snapped it flat in two frames. Only when its
+                    // own time never took over (the ground not known) does it hand back, at its landing, rather than stand still
+                    // in the air there until the touchdown.
                     float hand_back = -1;
-                    // Not with a rail or a ledge ahead (raised_contact_at): the game's own board would still be turning there,
-                    // and the grind would snap it flat. The trick plays on to the lock and the blend takes it in.
                     if (reading.locked && reading.clip > 0 && trick->native && !l.stretch.on() && l.raised_contact_at < 0) {
                         const auto c = static_cast<std::size_t>(reading.clip);
                         if (c < trick->native->higher_pop.size() && trick->native->higher_pop[c] && up >= 0 && down > up)
-                            // The later of its catch and 85% of its air: an ollie's catch comes just after the pop, and it was
-                            // handed back 0.2 s into the air with its style hardly seen (test game, 2026-10-26).
-                            hand_back = std::max(trick->caught > up && trick->caught < down ? trick->caught : up, up + 0.85f * (down - up));
+                            hand_back = std::max(up, down - 0.03f);
                     }
                     if (reading.locked && touch && l.clock_touch_at < 0) { l.clock_touch_at = *touch; l.clock_touch_from = time; }
                     if (reading.locked && reading.lost) {
@@ -5275,6 +5277,10 @@ bool guard_feet_from_deck(std::span<const Joint> native, std::vector<Joint>& edi
             for (const float along : shin_points_along) out.emplace_back(at(knee, Vec3{along, 0, 0}), shin_radius);
         };
         const auto turned_up = rotate(board.rotation, axes.up);
+        // The side of the deck the feet belong on: the hips' (feet_side_of_deck, held while the board is edge on). A side kept
+        // per foot from the pose drawn (test 2 and 3) took a foot stepped off beside a board on the ground for one under it,
+        // and let it go under the tail on a flat trick (2026-10-28).
+        top[0] = top[1] = feet_side_of_deck(axes.on(board, world(edited, hips_joint).position)[1], top[0]);
         bool moved = false;
         std::vector<std::pair<Vec3, float>> points, own;
         for (std::size_t side = 0; side < 2; ++side) {
@@ -5326,20 +5332,16 @@ bool guard_feet_from_deck(std::span<const Joint> native, std::vector<Joint>& edi
     }
 }
 // After the body's pass: the board and the feet as drawn, in the placement's frame (a fade starting on the next frame starts
-// from them: glue_feet_through_fade), and each foot's side of the deck from the pose drawn (foot_side_of_deck).
-void remember_drawn_feet(BodyPublicationState& body, std::span<const Joint> edited, const Joint& drawn_board, const BoardShape* shape,
+// from them: glue_feet_through_fade).
+void remember_drawn_feet(BodyPublicationState& body, std::span<const Joint> edited, const Joint& drawn_board, const BoardShape* /*shape*/,
                          std::uint64_t generation, double now) noexcept {
     try {
         if (edited.size() < skeleton_joints) return;
         const auto placement = compose(edited[0], edited[1]);
-        const DeckAxes axes(shape);
         body.last_board = relative(placement, drawn_board);
         for (std::size_t side = 0; side < 2; ++side) {
             const std::uint16_t foot = side == 0 ? left_foot_joint : right_foot_joint;
-            const auto f = world(edited, foot);
-            body.last_feet[side] = relative(placement, f);
-            const auto ankle = axes.on(drawn_board, f.position);
-            body.deck_top[side] = foot_side_of_deck(ankle[0], ankle[1], ankle[2], body.deck_top[side]);
+            body.last_feet[side] = relative(placement, world(edited, foot));
         }
         body.last_drawn_at = now;
         body.last_drawn_generation = generation;
