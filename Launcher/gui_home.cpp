@@ -574,21 +574,21 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     auto* draw = ImGui::GetWindowDrawList();
     if (g_background.id) draw_photo(draw, size, time);
     else draw_background(draw, size, time);
+    const auto channel = update_channel(launcher.settings());
     std::string version = "Development build";
     if (update::binary_updates_enabled() && state.config && !state.config->launcher.version.empty())
         version = "Launcher " + state.config->launcher.version;
-    // Base ReSkate chosen but not yet installed: this launcher is still this build's, so its own version.
-    if (update::binary_updates_enabled() && update_channel(launcher.settings()) == update::Channel::official &&
-        !reskate_mod_version.empty())
+    // Base ReSkate chosen but not installed (SWITCH not pressed): this launcher is still this build's.
+    if (channel == update::Channel::official && !reskate_mod_version.empty())
         version = "Launcher " + std::string(reskate_mod_version);
     const bool greet = !launcher.settings().offline && !ui.steam_name.empty();
-    const auto channel = update_channel(launcher.settings());
-    const auto name = build_name(channel);
+    // While this launcher runs, this build is installed: after SWITCH, official ReSkate's launcher runs.
+    const auto name = build_name(update::Channel::own);
     draw_plate(draw, fonts, ImVec2(S(50), S(40)), greet ? "Welcome, " + ui.steam_name : name, version,
         launcher.settings().offline ? ImTextureID{} : ui.steam_avatar);
     page_title(draw, fonts, ImVec2(S(52), S(88)), "RESKATE");
     // The mod's name under the wordmark, so the launcher is never taken for ReSkate alone.
-    const bool named_mod = channel == update::Channel::own && !reskate_mod_name.empty();
+    const bool named_mod = !reskate_mod_name.empty();
     if (named_mod) {
         std::string plus = "+ " + std::string(reskate_mod_name);
         std::transform(plus.begin(), plus.end(), plus.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
@@ -598,7 +598,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     static std::string window_title;
     if (window_title != name) {
         window_title = name;
-        SetWindowTextW(window, std::wstring(name.begin(), name.end()).c_str());
+        SetWindowTextW(window, wide(name).c_str());
     }
 
     window_buttons(draw, window, size);
@@ -619,7 +619,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     switch (state.phase) {
     case Phase::checking: label = "CHECKING"; enabled = false; break;
     case Phase::update_available:
-        if (!update::has_official_channel()) {
+        if (!offers_base_reskate()) {
             label = "UPDATE";
             detail = "New ReSkate files are ready";
         } else if (channel == update::Channel::official) {
@@ -645,7 +645,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         detail = !state.config ? std::string("Offline")
                : !update::binary_updates_enabled() ? name + " development build"
                : state.config->runtime.version.empty() ? name
-               : build_version_name(channel, state.config->runtime.version);
+               : build_version_name(update::Channel::own, state.config->runtime.version);
         break;
     case Phase::launching: label = "LAUNCHING"; enabled = false; break;
     case Phase::failed: label = "RETRY"; break;
@@ -673,16 +673,17 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     // A controller starts on PLAY.
     if (!modal) default_focus();
     if (settings_tile(draw, fonts, settings, ImVec2(column, S(84)), !modal)) ui.settings = true;
-    if (update::has_official_channel()) {
+    if (offers_base_reskate()) {
         const ImVec2 build_size(column, S(84));
         const ImVec2 build_position(primary.x, settings.y - S(14) - build_size.y);
         const bool base_chosen = channel == update::Channel::official;
         auto own_name = build_name(update::Channel::own);
         std::transform(own_name.begin(), own_name.end(), own_name.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-        const bool switched = base_chosen && state.phase == Phase::ready;   // base ReSkate's DLL already in place
+        // Base ReSkate chosen, and SWITCH not shown: offline, or "Install ReSkate updates" is off.
+        const bool cannot_switch = base_chosen && state.phase != Phase::update_available;
         if (build_tile(draw, fonts, build_position, build_size, !modal && !launcher.busy(),
                 base_chosen ? "STAY ON" : "SWITCH TO", base_chosen ? own_name : std::string("BASE RESKATE"),
-                switched      ? "Official ReSkate is installed. Reinstall to come back."
+                cannot_switch ? "Nothing has changed: base ReSkate needs updates on and a connection."
                 : base_chosen ? "Nothing has changed yet: SWITCH installs base ReSkate."
                               : "Official ReSkate. " + std::string(reskate_mod_name) + " then needs a reinstall.")) {
             launcher.settings().official_reskate = !base_chosen;

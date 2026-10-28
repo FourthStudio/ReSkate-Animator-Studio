@@ -17,8 +17,6 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
 bool updates_enabled(const launcher_app::Session& session);
 // Whether the saved settings ask for pre-releases (the "Test pre-releases" setting).
 bool prereleases_enabled(const launcher_app::Session& session);
-// Whose releases the saved settings update from (the "ReSkate build" setting).
-launcher_update::Channel update_channel(const launcher_app::Session& session);
 
 // What pressing Play would start the game with: the Settings page's saved choices. A scripted
 // launch that names none of its own (a bare --no-gui, as Discord runs for a join) uses these.

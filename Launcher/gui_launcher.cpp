@@ -410,7 +410,7 @@ void Launcher::run_check() {
     const bool newer = config && (launcher_outdated(*config) || runtime_outdated(*config));
     if (newer && update::binary_updates_enabled() && binaries_ && settings_.updates) {
         const auto version = config->runtime.version.empty() ? config->launcher.version : config->runtime.version;
-        if (!update::has_official_channel()) {
+        if (!offers_base_reskate()) {
             set(Phase::update_available, "A ReSkate update is ready",
                 std::format("{} {} will be downloaded and installed.", config->prerelease ? "Pre-release" : "Version", version));
         } else if (channel == update::Channel::official) {
@@ -468,12 +468,14 @@ void Launcher::run_check() {
 }
 
 // Official ReSkate's launcher cannot bring this build back, so a link to where it can be
-// downloaded again is left beside it, where the player starts the game.
+// downloaded again is left beside it (the game folder, in a normal install).
 void Launcher::leave_way_back() const {
-    const auto shortcut = session_.self.parent_path() / std::format(L"Get {} back.url",
-        std::wstring(reskate_product_name.begin(), reskate_product_name.end()));
-    std::ofstream(shortcut, std::ios::binary | std::ios::trunc) << "[InternetShortcut]\r\nURL=" << update::releases_page() << "\r\n";
-    logging::write(logging::Level::info, logging::Channel::launcher, L"Switching to base ReSkate; left " + shortcut.wstring());
+    const auto shortcut = session_.self.parent_path() / (L"Get " + wide(reskate_product_name) + L" back.url");
+    std::ofstream file(shortcut, std::ios::binary | std::ios::trunc);
+    file << "[InternetShortcut]\r\nURL=" << update::releases_page() << "\r\n";
+    file.close();
+    logging::write(file ? logging::Level::info : logging::Level::warning, logging::Channel::launcher,
+        (file ? L"Switched to base ReSkate; left " : L"Switched to base ReSkate; could not write ") + shortcut.wstring());
 }
 
 void Launcher::run_updates() {
@@ -483,8 +485,8 @@ void Launcher::run_updates() {
     if (runtime_outdated(*config))
         update::replace_file(session_.paths.dll, config->runtime, progress_for("ReSkate.dll"));
     if (launcher_outdated(*config)) {
-        if (update_channel(settings_) == update::Channel::official) leave_way_back();
         update::replace_running_launcher(session_.self, config->launcher, progress_for("Launcher"));
+        if (update_channel(settings_) == update::Channel::official) leave_way_back();
         logging::flush();
         restart_ = true;
         return;
@@ -681,9 +683,6 @@ bool updates_enabled(const launcher_app::Session& session) {
 }
 bool prereleases_enabled(const launcher_app::Session& session) {
     return detail::load_settings(detail::settings_path(session)).prereleases;
-}
-launcher_update::Channel update_channel(const launcher_app::Session& session) {
-    return detail::update_channel(detail::load_settings(detail::settings_path(session)));
 }
 launcher::LaunchOptions saved_launch_options(const launcher_app::Session& session) {
     return detail::launch_options(detail::load_settings(detail::settings_path(session)), session.paths.directory);
