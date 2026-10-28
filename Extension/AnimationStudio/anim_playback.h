@@ -53,22 +53,6 @@ inline float fitted_air_time(float in_air, float recorded_air, float target) noe
     if (t > knee) t = knee + ease * (1 - std::exp(-(t - knee) / ease));
     return t;
 }
-// Skate leads: the trick's time for the game's (`game_time`, where the game is in its own clip, on the trick's timeline),
-// with the trick's catch (`catch_at`, its CATCH marker or AUTO CATCH) on the game's own catch (`game_catch`: the clip's,
-// with no keys): the flip a little faster or slower up to it - at most catch_pace_change either way, so as far as that
-// allows - and from the catch on at the trick's own pace (its landing then goes on the touchdown: AirStretch). Before the
-// pop, the game's own time. Lined up to the landing too (2026-10-28, test 6), a catch later than the game's played on at
-// half speed from it, which looked slow and out of place.
-inline constexpr float catch_pace_change = 1.0f / 3;
-inline float catch_aligned_time(float game_time, float takeoff, float game_catch, float catch_at, float landing) noexcept {
-    if (!std::isfinite(game_time) || !(takeoff >= 0) || !(landing > takeoff) || !(game_catch > takeoff) || !(game_catch < landing) ||
-        !(catch_at > takeoff) || !(catch_at < landing))
-        return game_time;
-    const float pace = std::clamp((catch_at - takeoff) / (game_catch - takeoff), 1 - catch_pace_change * 0.75f, 1 + catch_pace_change);
-    if (game_time <= takeoff) return game_time;
-    if (game_time <= game_catch) return takeoff + (game_time - takeoff) * pace;
-    return takeoff + (game_catch - takeoff) * pace + (game_time - game_catch);
-}
 // After the game's touchdown, `since` seconds ago: the recording from its own landing (`down`) on, at its own
 // pace, so the landing bend happens on the ground. It was at `from` at touchdown; if that was short of its
 // landing it catches up rather than jumping, over a time that grows with how far behind it was (80 to 200 ms),
@@ -210,153 +194,30 @@ struct EditPublicationCache {
         before = std::move(native); after = std::move(edited);
     }
 };
-// ---- inertial blending (Bollo, "Inertialization", GDC 2018) ----------------------------------------------------------
-// One value's difference from where it is wanted, at a transition (x0, its speed v0), taken away over `seconds` by a
-// fifth-order curve that starts at that speed and ends with no difference, no speed and no acceleration. A difference
-// already shrinking finishes no later than its speed takes it there; one growing starts from rest (no overshoot).
-struct InertialCurve {
-    float x0{}, v0{}, a0{}, A{}, B{}, C{}, t1{};
-    void start(float x, float v, float seconds) noexcept {
-        *this = {};
-        if (!(x > 1e-6f) || !std::isfinite(x)) return;
-        x0 = x;
-        v0 = std::isfinite(v) && v < 0 ? v : 0.0f;
-        t1 = std::max(seconds, 0.02f);
-        if (v0 < 0) t1 = std::max(0.02f, std::min(t1, -5 * x0 / v0));
-        const float t2 = t1 * t1;
-        a0 = (-8 * v0 * t1 - 20 * x0) / t2;
-        A = -(a0 * t2 + 6 * v0 * t1 + 12 * x0) / (2 * t2 * t2 * t1);
-        B = (3 * a0 * t2 + 16 * v0 * t1 + 30 * x0) / (2 * t2 * t2);
-        C = -(3 * a0 * t2 + 12 * v0 * t1 + 20 * x0) / (2 * t2 * t1);
-    }
-    float at(float t) const noexcept {
-        if (!(x0 > 0) || !(t < t1)) return 0;
-        t = std::max(t, 0.0f);
-        return std::max(0.0f, ((((A * t + B) * t + C) * t + a0 / 2) * t + v0) * t + x0);
-    }
-};
-// A joint's turn and place away from where they are wanted, taken away together (InertialCurve each).
-struct InertialJoint {
-    Vec3 axis{1, 0, 0}, along{1, 0, 0};
-    InertialCurve turn, move;
-};
-// How much of a joint's edit is a big one (the fade's glue holds feet only through a fade out of something the studio drew).
-inline float pose_fade_share(const Offset& edit) noexcept {
-    const float w = std::clamp(std::abs(edit.rotation[3]), 0.0f, 1.0f);
-    const float degrees = 2 * std::acos(w) * 57.2957795f;
-    const float cm = std::sqrt(edit.offset[0] * edit.offset[0] + edit.offset[1] * edit.offset[1] + edit.offset[2] * edit.offset[2]) * 100;
-    const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
-    return std::max(ease((degrees - 4) / 16), ease((cm - 2) / 6));
-}
 // Smooth only edit deltas when selection changes. Absolute skeleton/board coordinates
 // are never retained: the same delta can be composed over a moving fresh native pose.
-// Given the game's pose (`native`) a transition is inertial instead: from the pose drawn (remember_drawn: the last two
-// frames, for how fast each joint was going) to the pose wanted now - the game's next move as it goes on, or the next
-// trick's - each joint's difference taken away by an InertialCurve. The motion goes on through it without a stop or a jump,
-// and a transition begun in the middle of another starts from where that one had got to (into a grind and straight out
-// of it). A plain fade from the old edit to the new one stopped the pose dead and started it again, and laid the old edit
-// on the next move's pose (2026-10-28).
 struct EditTransition {
     std::uint64_t generation{~std::uint64_t{0}}, episode{};
     std::uintptr_t source{};
     double started{-1}, observed{-1};
     std::vector<Offset> from, current;
     float from_left{}; // how much of `from` is still in `current`: 1 as a fade starts, 0 when it is done
-    float seconds_now{0.15f};
-    // Inertial: the pose drawn on the last two frames, and each joint's difference as it is taken away.
-    std::vector<Joint> drawn, drawn_before;
-    double drawn_at{-1}, drawn_before_at{-1};
-    std::vector<InertialJoint> inertial;
     void reset() { *this = {}; }
-    // The pose as drawn this frame (after everything else that moved it): where a transition starts from.
-    void remember_drawn(std::span<const Joint> pose, double now) {
-        if (!std::isfinite(now)) return;
-        if (drawn.size() == pose.size() && now > drawn_at) {
-            drawn_before.swap(drawn);
-            drawn_before_at = drawn_at;
-        } else drawn_before.clear();
-        drawn.assign(pose.begin(), pose.end());
-        drawn_at = now;
-    }
-    // `faster`: joints whose difference goes in `faster_seconds` (into a grind, the hips and legs with the board).
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
-                                     std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f,
-                                     std::span<const Joint> native = {}, std::span<const std::uint16_t> faster = {},
-                                     float faster_seconds = 0) {
+                                     std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f) {
         if (!std::isfinite(now)) { reset(); return current; }
-        const bool posed = !native.empty() && native.size() == desired.size();
         if (generation != gen || current.size() != desired.size() || now < observed) {
             generation = gen; current.assign(desired.size(), Offset{}); started = -1;
-            drawn.clear(); drawn_before.clear(); inertial.clear();
         }
-        const bool restart = started < 0 || episode != attempt || source != selected;
-        if (restart) {
-            from = current; started = now; episode = attempt; source = selected; seconds_now = std::max(seconds, 0.02f);
-            inertial.clear();
-            if (posed && drawn.size() == native.size() && now - drawn_at < 0.1) {
-                // Each joint: the drawn pose's difference from the one wanted now, and how fast it was changing.
-                const double dt = drawn_before.size() == drawn.size() ? drawn_at - drawn_before_at : 0.0;
-                const bool moving = dt > 0.004 && dt < 0.1;
-                inertial.resize(native.size());
-                for (std::size_t i = 0; i < native.size(); ++i) {
-                    const Quat want = normalised(multiply(native[i].rotation, desired[i].rotation));
-                    Vec3 want_at{};
-                    for (std::size_t k = 0; k < 3; ++k) want_at[k] = native[i].position[k] + desired[i].offset[k];
-                    float joint_seconds = seconds_now;
-                    for (const auto j : faster)
-                        if (j == i) joint_seconds = std::max(faster_seconds, 0.02f);
-                    auto& in = inertial[i];
-                    // The turn: angle about one axis, the speed along it.
-                    Quat off = normalised(multiply(conjugate(want), drawn[i].rotation));
-                    if (off[3] < 0) off = {-off[0], -off[1], -off[2], -off[3]};
-                    const float half = std::acos(std::clamp(off[3], -1.0f, 1.0f)), s = std::sin(half);
-                    if (s > 1e-5f) {
-                        in.axis = {off[0] / s, off[1] / s, off[2] / s};
-                        const float x0 = 2 * half;
-                        float v0 = 0;
-                        if (moving) {
-                            Quat before = normalised(multiply(conjugate(want), drawn_before[i].rotation));
-                            if (before[0] * off[0] + before[1] * off[1] + before[2] * off[2] + before[3] * off[3] < 0)
-                                before = {-before[0], -before[1], -before[2], -before[3]};
-                            const float x_before = 2 * std::atan2(before[0] * in.axis[0] + before[1] * in.axis[1] + before[2] * in.axis[2], before[3]);
-                            v0 = static_cast<float>((x0 - x_before) / dt);
-                        }
-                        in.turn.start(x0, v0, joint_seconds);
-                    }
-                    // The place: distance along one line, the speed along it.
-                    const Vec3 d{drawn[i].position[0] - want_at[0], drawn[i].position[1] - want_at[1], drawn[i].position[2] - want_at[2]};
-                    const float x0 = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-                    if (x0 > 1e-5f) {
-                        in.along = {d[0] / x0, d[1] / x0, d[2] / x0};
-                        float v0 = 0;
-                        if (moving) {
-                            const float x_before = (drawn_before[i].position[0] - want_at[0]) * in.along[0] +
-                                                   (drawn_before[i].position[1] - want_at[1]) * in.along[1] +
-                                                   (drawn_before[i].position[2] - want_at[2]) * in.along[2];
-                            v0 = static_cast<float>((x0 - x_before) / dt);
-                        }
-                        in.move.start(x0, v0, joint_seconds);
-                    }
-                }
-            }
+        if (started < 0 || episode != attempt || source != selected) {
+            from = current; started = now; episode = attempt; source = selected;
         }
         observed = now;
-        const float t = static_cast<float>(now - started);
         // `seconds` (0.15 unless the Crossfade setting says): one trick's keys into the next, or out when a trick is
         // cut short (a new air, a bail), without a snap.
-        float u = std::clamp(t / seconds_now, 0.0f, 1.0f);
+        float u = std::clamp(static_cast<float>(now - started) / std::max(seconds, 0.02f), 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
         from_left = 1 - u;
-        if (!inertial.empty()) {
-            // What is wanted now, and each joint's difference as far as it is still left.
-            for (std::size_t i = 0; i < desired.size(); ++i) {
-                const auto& in = inertial[i];
-                const float angle = in.turn.at(t), distance = in.move.at(t);
-                current[i].rotation = angle > 0 ? normalised(multiply(desired[i].rotation, axis_angle(in.axis, angle))) : desired[i].rotation;
-                for (std::size_t k = 0; k < 3; ++k) current[i].offset[k] = desired[i].offset[k] + in.along[k] * distance;
-            }
-            return current;
-        }
         for (std::size_t i = 0; i < desired.size(); ++i) {
             current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from[i].rotation, desired[i].rotation, u);
             for (std::size_t k = 0; k < 3; ++k)
@@ -549,122 +410,6 @@ inline float drop_clip_time(const DropPlay& p, float real) noexcept {
     if (in_air <= air) return time;
     return std::min(p.duration, landed_time(in_air - air, p.land, time));
 }
-// ---- the deck's force field --------------------------------------------------------------------------------------------
-// The shoe's sole, in its foot joint's frame (the ankle; X along the foot to the toe joint, 0.112 m on). Measured in the
-// game's own clips (ollie, kickflip and heelflip at a mid pop, standing on the deck before the pop and after the landing,
-// 2026-10-28): the ankle 0.105 to 0.108 m over the board's mount, the toe joint 0.044 m, and the deck's down in the foot's
-// frame (0.54, 0.84, 0), give or take 0.05. So the sole is 0.085 m under the ankle along that down, the toe joint 0.025 m
-// over it, and the deck's top 0.019 m over the mount.
-inline constexpr Vec3 sole_down_in_foot{0.5408f, 0.8412f, 0.0f};
-inline constexpr Vec3 sole_forward_in_foot{0.8412f, -0.5408f, 0.0f};
-inline constexpr float ankle_over_sole = 0.085f;
-// Where the sole touches: the heel's two edges, the middle's, the ball's (under the toe joint) and the toe's tip (it
-// curves up a little), each in the foot's frame.
-inline std::array<Vec3, 9> sole_points() noexcept {
-    const auto at = [](float forward, float side, float raised) {
-        return Vec3{sole_down_in_foot[0] * (ankle_over_sole - raised) + sole_forward_in_foot[0] * forward,
-                    sole_down_in_foot[1] * (ankle_over_sole - raised) + sole_forward_in_foot[1] * forward, side};
-    };
-    return {at(-0.065f, 0.035f, 0), at(-0.065f, -0.035f, 0), at(0.015f, 0.045f, 0), at(0.015f, -0.045f, 0), at(0.094f, 0.05f, 0),
-            at(0.094f, -0.05f, 0), at(0.165f, 0.03f, 0.008f), at(0.165f, -0.03f, 0.008f), at(0.175f, 0, 0.012f)};
-}
-// Over the sole, the shoe's upper - toe box, laces, heel, collar and sides - which a board on its side meets first (a
-// kickflip's deck turning past the back foot went through the shoe's side: 2026-10-28, the sole alone was checked).
-inline std::array<Vec3, 7> shoe_upper_points() noexcept {
-    const auto at = [](float forward, float side, float over_sole) {
-        return Vec3{sole_down_in_foot[0] * (ankle_over_sole - over_sole) + sole_forward_in_foot[0] * forward,
-                    sole_down_in_foot[1] * (ankle_over_sole - over_sole) + sole_forward_in_foot[1] * forward, side};
-    };
-    return {at(0.15f, 0, 0.035f), at(0.07f, 0, 0.065f), at(-0.07f, 0, 0.045f), at(-0.02f, 0, 0.1f), at(0.03f, 0.052f, 0.03f),
-            at(0.03f, -0.052f, 0.03f), at(0.11f, 0.045f, 0.03f)};
-}
-// The shin, in the knee joint's frame (X down the shin to the ankle, 0.438 m on): three points down it, each the middle of
-// a round leg this thick (wide trousers).
-inline constexpr std::array<float, 3> shin_points_along{0.14f, 0.24f, 0.34f};
-inline constexpr float shin_radius = 0.07f;
-// The board, in its mount's frame along its length (0 the middle), up and across: the grip 0.019 m over the mount, the
-// deck 0.014 m thick and 0.21 m wide, its kicks curving up 0.045 m from 0.29 m out to the tips at 0.40 m (the game's back
-// foot stands on the tail 0.025 m up at 0.31 m out and 0.046 m up at 0.36: 408 standing frames of 102 of its tricks), nose
-// and tail rounded from 0.30 m; under it the trucks and wheels, 0.18 m out and 0.23 m across, down to the wheels' bottom
-// 0.087 m under the mount (board_shape).
-inline constexpr float deck_top_flat = 0.019f, deck_thickness = 0.014f, deck_tip = 0.40f, deck_half_width = 0.105f;
-inline constexpr float deck_kick_from = 0.29f, deck_kick_rise = 0.045f, deck_round_from = 0.30f;
-inline constexpr float trucks_at = 0.18f, trucks_half_length = 0.04f, trucks_half_width = 0.115f, wheels_bottom = -0.087f;
-// A shoe is kept this far off the deck's edges and tips too, and never pushed for more than deck_most_depth: a leg the
-// board went right through is past helping, and pulling it all that way (0.3 m at first) would throw it about.
-inline constexpr float deck_edge_margin = 0.01f, deck_most_depth = 0.12f;
-inline constexpr float deck_middle = deck_top_flat - deck_thickness / 2;
-inline float deck_top_at(float along) noexcept {
-    const float x = std::clamp((std::abs(along) - deck_kick_from) / (deck_tip - deck_kick_from), 0.0f, 1.0f);
-    return deck_top_flat + deck_kick_rise * x * x;
-}
-inline float deck_half_width_at(float along) noexcept {
-    const float a = std::abs(along);
-    if (a <= deck_round_from) return deck_half_width;
-    if (a >= deck_tip) return 0;
-    const float x = (a - deck_round_from) / (deck_tip - deck_round_from);
-    return deck_half_width * std::sqrt(std::max(0.0f, 1 - x * x));
-}
-// How deep a point (along, up and across in the board's frame) is in the board, from the side the feet are on: over the
-// grip (`top`), or else under the deck and, where the trucks are, under the wheels. 0 when it is clear of it, or past it
-// by more than deck_most_depth.
-// `radius`: a round part (a shin) of that thickness round the point, kept that far off the deck. Its edges' margin
-// (deck_edge_margin) is for a shoe over the deck only: a leg beside the board - one pushing on the ground - passes the
-// deck's height there, and lifting it over the edge would take the foot off the ground.
-inline float deck_depth(float along, float up, float across, bool top, float radius = 0) noexcept {
-    if (!std::isfinite(along) || !std::isfinite(up) || !std::isfinite(across)) return 0;
-    const float a = std::abs(along), w = std::abs(across), margin = top && radius == 0 ? deck_edge_margin : 0.0f;
-    if (a > deck_tip + margin) return 0;
-    if (w > deck_half_width_at(std::min(a, deck_tip)) + margin) return 0;
-    float depth;
-    if (top) {
-        depth = deck_top_at(along) - (up - radius);
-    } else {
-        const bool trucks = std::abs(a - trucks_at) < trucks_half_length && w < trucks_half_width;
-        depth = (up + radius) - (trucks ? wheels_bottom : deck_top_at(along) - deck_thickness);
-    }
-    return depth > 0 && depth <= deck_most_depth ? depth : 0.0f;
-}
-// Which side of the deck a foot is on, from its ankle (along, up and across in the board's frame), as drawn on the last
-// frame: off the deck's outline, the side it is on (a foot goes round the board's edge to its other side); over or under
-// it by 5 cm, that side; else as it was. Kept per foot - one foot each side of a board on its edge is not pulled
-// through it - and from the pose drawn, which never crosses the deck, so a fast flip cannot carry a foot through it.
-inline bool foot_side_of_deck(float along, float up, float across, bool was_top) noexcept {
-    if (!std::isfinite(along) || !std::isfinite(up) || !std::isfinite(across)) return was_top;
-    const float a = std::abs(along), w = std::abs(across);
-    if (a > deck_tip + 0.1f || w > deck_half_width_at(std::min(a, deck_tip)) + 0.1f) return up > deck_middle;
-    if (up > deck_top_at(along) + 0.05f) return true;
-    if (up < deck_top_at(along) - deck_thickness - 0.05f) return false;
-    return was_top;
-}
-// How far a foot stands on the deck, 0 to 1: its ankle (along, up and across in the board's frame) over the deck's outline
-// at standing height (10.5 cm over the mount: all of it from 7 to 14 cm, none under 5 or over 17), and its sole flat on it
-// (`sole_up`: the sole's down, along the deck's up - -1 flat on it: all of it to 22 degrees, none from 32). Only a foot
-// that stands on the deck is held to the board: one near a board turning under it (a flip) followed it round (2026-10-28).
-inline float foot_standing_on_deck(float along, float up, float across, float sole_up) noexcept {
-    if (!std::isfinite(along) || !std::isfinite(up) || !std::isfinite(across) || !std::isfinite(sole_up)) return 0;
-    if (std::abs(along) > deck_tip + 0.02f || std::abs(across) > deck_half_width + 0.04f) return 0;
-    const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
-    const float height = std::min(ease((up - 0.05f) / 0.02f), ease((0.17f - up) / 0.03f));
-    const float flat = ease((-sole_up - 0.848f) / (0.927f - 0.848f));
-    return height * flat;
-}
-// How level the board is under him, 0 to 1 (`up_dot`: the board's up along his placement's up): all of it to 25 degrees,
-// none from 35. A board turning in a flip or standing on its edge holds no foot.
-inline float board_level_under_him(float up_dot) noexcept {
-    if (!std::isfinite(up_dot)) return 0;
-    const float x = std::clamp((up_dot - 0.819f) / (0.906f - 0.819f), 0.0f, 1.0f);
-    return x * x * (3 - 2 * x);
-}
-// Which side of the deck the feet belong on: the hips' (`hips_up`, over the board's mount), held until the hips are 10 cm
-// clear on the other side - as the board turns edge on under him it stays as it was.
-inline bool feet_side_of_deck(float hips_up, bool was_top) noexcept {
-    if (!std::isfinite(hips_up)) return was_top;
-    if (hips_up > deck_middle + 0.1f) return true;
-    if (hips_up < deck_middle - 0.1f) return false;
-    return was_top;
-}
-
 // The moment off the drop that shows `clip_time` (the first: it never goes back).
 inline float drop_real_time(const DropPlay& p, float clip_time) noexcept {
     if (!p.on() || !std::isfinite(clip_time) || clip_time <= p.takeoff) return clip_time;
