@@ -172,14 +172,16 @@ void draw_plate(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std
     draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + h + S(12), position.y + S(24)), color::muted, version.c_str());
 }
 
-// The big action tile: blue like skate.'s selected tile, grey and scribbled when locked.
+// The big action tile: blue like skate.'s selected tile, grey and scribbled when locked, red when
+// pressing it cannot be undone (SWITCH to base ReSkate).
 bool action_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, const char* label,
-                 const std::string& detail, bool enabled, bool secondary, const std::string& mark = {}) {
+                 const std::string& detail, bool enabled, bool secondary, const std::string& mark = {},
+                 bool one_way = false) {
     bool hovered{};
     const bool pressed = tile_hit("##primary", position, size, enabled, hovered);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     const bool blue = enabled && !secondary;
-    rough_rect(draw, position, end, blue ? color::blue : enabled ? color::tile : color::tile_grey, 7);
+    rough_rect(draw, position, end, !blue ? (enabled ? color::tile : color::tile_grey) : one_way ? color::danger : color::blue, 7);
     if (!enabled) scribble(draw, position, end, 7);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
     const ImU32 ink = blue ? color::ink : enabled ? color::text : rgba(160, 162, 168);
@@ -219,19 +221,29 @@ bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2
 // The way to base ReSkate, on the front page so nobody has to be shown where it is. Pressed, base
 // ReSkate is chosen and PLAY turns into SWITCH, which installs it; until then, pressed again, the
 // choice is taken back. After SWITCH official ReSkate's launcher runs, and this tile is gone with it.
+// While it offers the switch it is marked as one way in red, as the status card marks a problem.
 bool build_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled,
-                const char* caption, const std::string& build, const std::string& detail) {
+                const char* caption, const std::string& build, const std::string& detail, bool one_way) {
     bool hovered{};
     const bool pressed = tile_hit("##build", position, size, enabled, hovered);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     rough_rect(draw, position, end, color::tile, 5);
-    if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
+    if (one_way) draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), color::danger);
+    if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)),
+        one_way ? color::danger : color::text, 0, 0, S(3));
     float y = position.y + S(12);
-    draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(position.x + S(18), y), color::muted, caption);
+    draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(position.x + S(18), y), one_way ? color::danger : color::muted, caption);
+    if (one_way) {
+        const std::string mark = "ONE WAY";
+        badge(draw, fonts, ImVec2(end.x - S(16) - badge_width(fonts, mark), position.y + S(12)), mark, color::danger, color::ink);
+    }
     y += fonts.caption->FontSize + S(2);
     draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(position.x + S(18), y), color::text, build.c_str());
-    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + S(18), end.y - S(12) - fonts.body->FontSize),
-        color::muted, detail.c_str(), nullptr, size.x - S(36));
+    // Kept inside the tile when the detail wraps: its last line sits on the bottom margin.
+    const float wrap = size.x - S(36);
+    const float detail_height = fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, wrap, detail.c_str()).y;
+    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + S(18), end.y - S(10) - detail_height),
+        color::muted, detail.c_str(), nullptr, wrap);
     return pressed;
 }
 
@@ -669,7 +681,9 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     const auto play_mark = state.phase == Phase::ready && ui.mods_pending
         ? (ui.mods_pending == 1 ? std::string("1 MOD UPDATE") : std::format("{} MOD UPDATES", ui.mods_pending))
         : std::string();
-    if (action_tile(draw, fonts, primary, primary_size, label, detail, enabled && !modal, secondary, play_mark)) act();
+    const bool switches_to_base = state.phase == Phase::update_available && offers_base_reskate() &&
+                                  channel == update::Channel::official;
+    if (action_tile(draw, fonts, primary, primary_size, label, detail, enabled && !modal, secondary, play_mark, switches_to_base)) act();
     // A controller starts on PLAY.
     if (!modal) default_focus();
     if (settings_tile(draw, fonts, settings, ImVec2(column, S(84)), !modal)) ui.settings = true;
@@ -683,9 +697,10 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         const bool cannot_switch = base_chosen && state.phase != Phase::update_available;
         if (build_tile(draw, fonts, build_position, build_size, !modal && !launcher.busy(),
                 base_chosen ? "STAY ON" : "SWITCH TO", base_chosen ? own_name : std::string("BASE RESKATE"),
-                cannot_switch ? "Nothing has changed: base ReSkate needs updates on and a connection."
-                : base_chosen ? "Nothing has changed yet: SWITCH installs base ReSkate."
-                              : "Official ReSkate. " + std::string(reskate_mod_name) + " then needs a reinstall.")) {
+                cannot_switch ? "To switch, turn updates on and go online."
+                : base_chosen ? "Nothing changed yet. Press to keep it."
+                              : "Removes " + std::string(reskate_mod_name) + " until you reinstall.",
+                !base_chosen)) {
             launcher.settings().official_reskate = !base_chosen;
             launcher.save();
         }
