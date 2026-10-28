@@ -1,6 +1,6 @@
 # Animator Studio
 
-This integration brings the Studio 1.0.10 feature set into ReSkate. Install and update ReSkate normally; a separate Studio DLL and disabled launcher updates are not required for an integrated build. See [release acceptance](studio-release-checklist.md) for the fork's earlier validation record.
+This is Studio 1.0.11 on the published ReSkate 2.1.3 source. Follow [README](../README.md) to install the Studio DLL over ReSkate 2.1.3 and disable official updates while using this modified runtime. See [release acceptance](studio-release-checklist.md) for the earlier validation record.
 
 ## Use the studio
 
@@ -24,7 +24,7 @@ Native inventory includes graph states, transitions and parameters as well as cl
 
 ## Runtime contract
 
-Studio is compiled into ReSkate.dll for the supported game build 20260929 / Steam 25414733. The fork's 1.0.10 release used ReSkate 2.1.2; this branch reconciles it with official main. Do not infer support for another game executable from a successful source build.
+Studio is compiled into ReSkate.dll for the supported game build 20260929 / Steam 25414733. This compatibility update uses official ReSkate 2.1.3 at `9506a39e052e88a6cad2d50e624910f217e914a8`; it does not change the supported game identity. Do not infer support for another game executable from a successful source build.
 
 Gameplay edits are applied to fresh native body/board poses. The selected trick, pop, stance and takeoff context decide which saved edits are eligible. The native clip matching clock supplies source timing; marked fallback paths are not proof of a decoded native animation-graph state.
 

@@ -591,6 +591,45 @@ struct WorldApi {
         push_position(L, (*box)[1]);
         return 2;
     }
+    // world.probe(from, to): {status = "unavailable"|"clear"|"hit"}; only a hit has position and
+    // fraction. A clear result qualifies this ray, not streaming for a region. No native identity,
+    // surface normal or velocity is supplied. Each call is one of the tick's raycasts, like
+    // world.raycast and world.pick, and its native casts also count against the VM's native cast
+    // budget, which only world.probe and world.physics.probe_batch spend.
+    static int world_probe(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.raycast", "reskate.world.probe");
+        if (lua_gettop(L) != 2) luaL_error(L, "world.probe takes only the ray's start and end");
+        const auto from = position_of(L, 1, "the ray's start");
+        const auto to = position_of(L, 2, "the ray's end");
+        const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+        const float distance_squared = dx * dx + dy * dy + dz * dz;
+        if (std::sqrt(distance_squared) > plugin.limits_.raycast_metres)
+            luaL_error(L, "a ray is at most %d m long", static_cast<int>(plugin.limits_.raycast_metres));
+        if (++plugin.raycasts_ > plugin.limits_.raycasts_per_tick)
+            luaL_error(L, "more than %d raycasts in one tick", plugin.limits_.raycasts_per_tick);
+        // The counted native ray refuses segments below this squared length. Do not call it for
+        // one, or label a nonexistent direction clear; the request still counts as a raycast.
+        const auto allowed = std::min(plugin.native_casts_.remaining(), body_query::casts_per_ray);
+        const auto counted = distance_squared < 1e-10f || !allowed ? Game::CountedProbe{} : game(plugin).world_probe_bounded(from, to, allowed);
+        const bool accounted = plugin.native_casts_.consume(counted.native_casts, allowed);
+        const auto& probe = counted.probe;
+        const bool ran = accounted && counted.native_casts && probe.available;
+        // A hit is reported only where it lies on this segment at its fraction.
+        const bool hit = ran && probe.hit &&
+                         body_query::consistent({from, to}, {body_query::Status::hit, probe.position, probe.fraction});
+        const char* status = !ran || (probe.hit && !hit) ? "unavailable" : hit ? "hit" : "clear";
+        lua_createtable(L, 0, hit ? 3 : 1);
+        lua_pushstring(L, status);
+        lua_setfield(L, -2, "status");
+        if (hit) {
+            push_position(L, probe.position);
+            lua_setfield(L, -2, "position");
+            lua_pushnumber(L, probe.fraction);
+            lua_setfield(L, -2, "fraction");
+        }
+        return 1;
+    }
     // world.pick(from, to): where the ray meets the world, and the object it meets: {position,
     // object = {blueprint?, position, heading, transform = {matrix}}?}, or nil when it is clear.
     static int world_pick(lua_State* L) {
@@ -1764,6 +1803,20 @@ struct WorldApi {
         game(plugin).board_clear(plugin.id(), lua_isnoneornil(L, 1) ? -1 : bone_number(L, 1));
         return 0;
     }
+    // scale(bone, size): the bone drawn this much bigger over its animation, which still turns and places
+    // it; a number for every axis or a vector, 0.25 to 4 each, on this screen only. scale(bone) ends it.
+    static int board_scale(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "board", "reskate.board.scale");
+        const int bone = bone_number(L, 1);
+        if (lua_isnoneornil(L, 2)) return result(L, game(plugin).board_scale(plugin.id(), bone, std::nullopt));
+        Vec3 size;
+        if (lua_type(L, 2) == LUA_TNUMBER) {
+            const auto k = static_cast<float>(lua_tonumber(L, 2));
+            size = {k, k, k};
+        } else size = position_of(L, 2, "a bone's size");
+        return result(L, game(plugin).board_scale(plugin.id(), bone, size));
+    }
     // park({12, 13, 14, 15}): these bones out of sight on every board, other players' too.
     static int board_park(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -2611,10 +2664,21 @@ struct WorldApi {
         return 1;
     }
     // settings.set(name, value): a game setting held at `value` while the plugin keeps it; nil lets go.
+    // Whether a game setting is about sound: how loud the game, its music, its voices and its
+    // speakers are. No plugin changes those: a plugin that turned every volume up to scare the
+    // player is why (plugin_listing.h).
+    static bool sound_setting(std::string_view name) {
+        std::string lower(name);
+        for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (const char* word : {"volume", "audio", "sound", "mute", "loud", "speaker", "voip", "voice", "sfx", "dynamicrange"})
+            if (lower.find(word) != std::string::npos) return true;
+        return false;
+    }
     static int setting_set(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "settings.write", "reskate.settings.set");
         const auto name = checked_text(L, 1, 120, "a setting's name");
+        if (sound_setting(name)) return result(L, "sound settings are the player's: no plugin changes how loud the game is");
         std::optional<std::string> value;
         if (lua_type(L, 2) == LUA_TBOOLEAN) value = lua_toboolean(L, 2) ? "true" : "false";
         else if (lua_type(L, 2) == LUA_TNUMBER) value = std::format("{}", lua_tonumber(L, 2));
@@ -2700,17 +2764,26 @@ struct WorldApi {
         lua_setfield(L, -2, "playstation");
         return 1;
     }
+    // joystick(): the first controller (a radio first); joystick(device): that one, a number
+    // joysticks() lists.
     static int input_joystick(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "input", "reskate.input.joystick");
-        const auto stick = game(plugin).joystick();
+        int device = -1;
+        if (!lua_isnoneornil(L, 1)) {
+            const double wanted = luaL_checknumber(L, 1);
+            if (!(wanted >= 0 && wanted < 16) || wanted != static_cast<double>(static_cast<int>(wanted)))
+                luaL_argerror(L, 1, "a controller's number, as reskate.input.joysticks() lists it");
+            device = static_cast<int>(wanted);
+        }
+        const auto stick = game(plugin).joystick(device);
         if (!stick) {
             lua_pushnil(L);
             return 1;
         }
-        lua_createtable(L, 0, 3);
-        lua_createtable(L, 6, 0);
-        for (int i = 0; i < 6; ++i) {
+        lua_createtable(L, 0, 4);
+        lua_createtable(L, static_cast<int>(stick->axes.size()), 0);
+        for (int i = 0; i < static_cast<int>(stick->axes.size()); ++i) {
             lua_pushnumber(L, stick->axes[static_cast<std::size_t>(i)]);
             lua_rawseti(L, -2, i + 1);
         }
@@ -2723,6 +2796,25 @@ struct WorldApi {
         lua_setfield(L, -2, "buttons");
         lua_pushlstring(L, stick->name.data(), stick->name.size());
         lua_setfield(L, -2, "name");
+        lua_pushinteger(L, stick->device);
+        lua_setfield(L, -2, "device");
+        return 1;
+    }
+    // joysticks(): {{device = n, name = "..."}, ...}, every controller plugged in.
+    static int input_joysticks(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "input", "reskate.input.joysticks");
+        const auto found = game(plugin).joysticks();
+        lua_createtable(L, static_cast<int>(found.size()), 0);
+        int n = 0;
+        for (const auto& stick : found) {
+            lua_createtable(L, 0, 2);
+            lua_pushinteger(L, stick.device);
+            lua_setfield(L, -2, "device");
+            lua_pushlstring(L, stick.name.data(), stick.name.size());
+            lua_setfield(L, -2, "name");
+            lua_rawseti(L, -2, ++n);
+        }
         return 1;
     }
     static int input_capture(lua_State* L) {
@@ -2962,7 +3054,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     lua_setfield(L, LUA_REGISTRYINDEX, "reskate.permissions");
     add_functions(L, "skater", {{"state", state}, {"noclip", noclip}, {"boost", boost}, {"freeze", freeze}, {"wipeout", wipeout}, {"xray", xray},
                                 {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}});
-    add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear},
+    add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
                                {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}});
     add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});
@@ -2973,7 +3065,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "entities", {{"set", entities_set}, {"remove", entities_remove}, {"clear", entities_clear}, {"status", entities_status},
                                   {"ready", entities_ready}, {"blueprints", entities_blueprints},
                                   {"bounds", entities_bounds}});
-    add_functions(L, "world", {{"set_time", set_time}, {"set_control", set_control}, {"set_park", set_park}, {"pick", world_pick}});
+    add_functions(L, "world", {{"set_time", set_time}, {"set_control", set_control}, {"set_park", set_park}, {"pick", world_pick}, {"probe", world_probe}});
     add_functions(L, "travel", {{"locations", locations}, {"levels", levels}, {"go", go}, {"load", load}});
     add_functions(L, "ai", {{"spawn", ai_spawn}, {"clear", ai_clear}, {"count", ai_count}});
     add_functions(L, "session", {{"skaters", skaters}, {"tag", tag}, {"nametags", nametags}, {"joint", session_joint}, {"touch", session_touch},
@@ -2999,7 +3091,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                {"game", game_current}, {"game_next", game_next}});
     add_functions(L, "progression", {{"get", progress}});
     add_functions(L, "settings", {{"game", setting}, {"names", setting_names}, {"set", setting_set}});
-    add_functions(L, "input", {{"bind", bind}, {"flight", input_flight}, {"gamepad", input_gamepad}, {"joystick", input_joystick}, {"capture", input_capture},
+    add_functions(L, "input", {{"bind", bind}, {"flight", input_flight}, {"gamepad", input_gamepad}, {"joystick", input_joystick}, {"joysticks", input_joysticks}, {"capture", input_capture},
                                {"hide", input_hide}, {"cursor", input_cursor}, {"text", input_text}});
     add_functions(L, "room", {{"open", room_open}, {"leave", room_leave}, {"state", room_state}});
     add_functions(L, "ui", {{"screen", screen}, {"open", open}, {"close", close}});

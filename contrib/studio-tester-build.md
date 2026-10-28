@@ -1,6 +1,6 @@
 # Build and validate Animator Studio
 
-This branch integrates the Studio 1.0.10 feature set into ReSkate. See [README](../README.md) for installation and the [Studio guide](animator-studio.md) for use and current limits. The fork's earlier release acceptance record is kept in [release acceptance](studio-release-checklist.md).
+This branch builds Studio 1.0.11 on official ReSkate 2.1.3. See [README](../README.md) for installation and the [Studio guide](animator-studio.md) for use and current limits. The earlier release acceptance record is kept in [release acceptance](studio-release-checklist.md).
 
 ## Local Windows build
 
@@ -20,7 +20,7 @@ python -m unittest discover -s contrib/animator-studio -p 'test_native*.py'
 python -m unittest discover -s contrib/Test -p '*tests.py'
 ```
 
-The preset enables Studio/plugin tests without forcing a fork version or disabling official updates. Outputs are under `build/ci-windows/Release`. Warnings are errors. CTest covers animation math/selection/serialization, pack rollback, native menus, arm reach, graph-probe self-tests, carry, pose placement, plugins, trick watch and board materials. Optional plugin fixture folders absent from a checkout are reported as skipped by the plugin suite.
+The preset stamps ReSkate 2.1.3 / AnimatorStudio 1.0.11 and disables binary auto-updates for this modified runtime. Outputs are under `build/ci-windows/Release`. Warnings are errors. CTest covers Studio, native menus, packs and the current upstream plugin/pose/effect/physics/viewmodel contracts. Optional plugin fixture folders absent from a checkout are reported as skipped by the plugin suite. Use the workflow's target list when building every registered test.
 
 ## CI and downloads
 

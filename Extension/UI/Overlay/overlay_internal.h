@@ -386,6 +386,7 @@ void plugin_images_lost();
 // Thunderstore packages' icons for the pause menu's Mod Manager page (store_icons.cpp), the same way,
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
 ImTextureID store_icon(const std::string& url);
+// Then a viewmodel's pictures (viewmodel.h): three for each of its at most eight materials.
 struct StoreIconUpload {
     std::string url;
     int slot{};
