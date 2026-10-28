@@ -5230,7 +5230,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         bool star_lit = false;
         if (hit("##star", star_a, star_b, &star_lit)) studio::set_pack_favorite(pack.name, !pack.favorite);
         bool open = hit("##hubcover", ca, cover_b, &lit);
-        open |= hit("##hubinfo", ImVec2(ca.x, cover_b.y), ImVec2(cb.x - 84 * k, cb.y), &info_lit);
+        open |= hit("##hubinfo", ImVec2(ca.x, cover_b.y), ImVec2(cb.x - 100 * k, cb.y), &info_lit); // the right end is PLAY
         lit |= info_lit;
         pack_cover(d, f, pack, ca, cover_b);
         if (!lit) d->AddRectFilled(ca, cover_b, IM_COL32(0, 0, 0, 50));
@@ -5249,17 +5249,17 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         }
         flat_rect(d, ImVec2(ca.x, cover_b.y), cb, lit ? IM_COL32(236, 236, 234, 252) : IM_COL32(22, 23, 26, 248), seed_of(ca), k * 0.6f);
         const ImU32 ink = lit ? IM_COL32(18, 18, 20, 255) : white, ink_soft = lit ? IM_COL32(80, 80, 86, 255) : soft;
-        text(d, f.bold, 19 * k, ImVec2(ca.x + 14 * k, cover_b.y + 12 * k), ink, elide(f.bold, 19 * k, pack.name, card_w - 100 * k));
+        text(d, f.bold, 19 * k, ImVec2(ca.x + 14 * k, cover_b.y + 12 * k), ink, elide(f.bold, 19 * k, pack.name, card_w - 116 * k));
         const auto tricks = saved_count(v, pack);
         const std::string rule = pack.pack.pop_rule.empty() ? "" : pack.pack.pop_rule == "any" ? "  /  ANY POP" : "  /  " + upper(pack.pack.pop_rule) + " POP";
         text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 40 * k), ink_soft, std::to_string(tricks) + (tricks == 1 ? " TRICK" : " TRICKS") + rule);
         {
             std::string by = pack.made_by.empty() ? std::string{} : "BY " + upper(pack.made_by);
             if (const auto when = edited_words(pack.modified); !when.empty()) by += (by.empty() ? "EDITED " : "  /  EDITED ") + when;
-            if (!by.empty()) text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 60 * k), ink_soft, elide(f.bold, 12 * k, by, card_w - 110 * k));
+            if (!by.empty()) text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 60 * k), ink_soft, elide(f.bold, 12 * k, by, card_w - 116 * k));
         }
         // PLAY / PLAYING: the whole pack in the playlist that is on, or out of it - what plays, said on the card itself.
-        if (action(d, f, "##packplay", ImVec2(cb.x - 80 * k, cover_b.y + 14 * k), ImVec2(68 * k, 30 * k), pack.playing ? "PLAYING" : "PLAY",
+        if (action(d, f, "##packplay", ImVec2(cb.x - 94 * k, cover_b.y + 14 * k), ImVec2(84 * k, 30 * k), pack.playing ? "PLAYING" : "PLAY",
                    pack.playing ? Look::blue : Look::dark, true, pack.playing)) {
             std::string m;
             studio::set_pack_playing(pack.name, !pack.playing, m);
