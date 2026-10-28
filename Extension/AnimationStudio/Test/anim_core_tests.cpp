@@ -2069,8 +2069,13 @@ void the_deck_keeps_shoes_out() {
     check(!foot_side_of_deck(0.0f, -0.2f, 0.4f, true) && foot_side_of_deck(0.0f, 0.2f, 0.4f, false), "Round the edge a foot takes the side it is on");
     check(foot_side_of_deck(0.0f, 0.105f, 0.0f, false) && !foot_side_of_deck(0.0f, -0.1f, 0.0f, true), "Over or under the deck it is that side");
     check(foot_side_of_deck(0.0f, 0.01f, 0.0f, true) && !foot_side_of_deck(0.0f, 0.01f, 0.0f, false), "and in it, as it was");
-    check(foot_on_deck(0.1f, 0.105f, 0.03f) && !foot_on_deck(0.1f, 0.4f, 0.03f) && !foot_on_deck(0.1f, 0.105f, 0.3f),
+    check(near(foot_standing_on_deck(0.1f, 0.105f, 0.03f, -1), 1) && foot_standing_on_deck(0.1f, 0.4f, 0.03f, -1) == 0 &&
+              foot_standing_on_deck(0.1f, 0.105f, 0.3f, -1) == 0,
           "A foot standing on the deck is on it; one high over it or off its side is not");
+    check(foot_standing_on_deck(0.1f, 0.105f, 0.03f, -0.5f) == 0, "nor one tilted 60 degrees to it (a board turning under it)");
+    check(near(board_level_under_him(1), 1) && board_level_under_him(0) == 0 && board_level_under_him(-1) == 0,
+          "A level board holds the feet; one on its edge or upside down does not");
+    check(deck_depth(0.0f, deck_top_flat - 0.2f, 0.0f, true) == 0, "A foot 20 cm through the deck is not pulled back through it");
     check(feet_side_of_deck(0.05f, true) && !feet_side_of_deck(0.05f, false), "and keep it while the board is edge on");
 }
 void native_playback_contracts() {

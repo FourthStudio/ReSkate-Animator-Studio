@@ -4991,7 +4991,11 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
         // 1. Off the game's clip: the studio's foot on the studio's board - the recording's body and board, the keys on
         // both, under the live placement (which drops out of the relation) - put on the drawn board.
         const float on_deck_gate = std::max(packet.feet_match, packet.deck_contact);
-        if (on_deck_gate > 0 && packet.clip->joints == skeleton_joints && !packet.clip->board.empty()) {
+        // Only on a board level under him: one turning in a flip, or on its edge, takes no foot round with it.
+        const Vec3 placement_up = rotate(compose(native[0], native[1]).rotation, Vec3{0, 1, 0});
+        const Vec3 drawn_up = rotate(board.rotation, up);
+        const float level = board_level_under_him(drawn_up[0] * placement_up[0] + drawn_up[1] * placement_up[1] + drawn_up[2] * placement_up[2]);
+        if (on_deck_gate > 0 && level > 0 && packet.clip->joints == skeleton_joints && !packet.clip->board.empty()) {
             Joint rel;
             if (packet.clip->sample_board(std::clamp(packet.time, 0.0f, packet.clip->duration()), rel)) {
                 rel = nose_forward(*packet.clip, rel);
@@ -5011,8 +5015,14 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
                     const auto on_board = relative(studio_board, world(body, foot));
                     float height = 0;
                     if (!finite(on_board) || !on_deck(on_board.position, height) || height < 0.02f) continue;
-                    // On the deck up to 13 cm (the ankle stands 10.4 cm over the mount), let go by 20.
-                    const float x = std::clamp((0.20f - height) / 0.07f, 0.0f, 1.0f);
+                    // Standing on the deck as made: at standing height and flat on it (foot_standing_on_deck).
+                    const auto p = on_board.position;
+                    const auto sole = rotate(on_board.rotation, sole_down_in_foot);
+                    const float standing = foot_standing_on_deck(p[0] * along[0] + p[1] * along[1] + p[2] * along[2], height,
+                                                                 p[0] * across[0] + p[1] * across[1] + p[2] * across[2],
+                                                                 sole[0] * up[0] + sole[1] * up[1] + sole[2] * up[2]);
+                    if (!(standing > 0)) continue;
+                    const float x = standing * level;
                     const auto want = compose(board, on_board);
                     // Only a foot already near it is put on the deck: a foot the trick has far from the drawn board (an
                     // overgap's longer air, the board still falling or turning) was pulled the whole way there and stuck to
@@ -5022,7 +5032,7 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
                                                 (want.position[1] - now_at[1]) * (want.position[1] - now_at[1]) +
                                                 (want.position[2] - now_at[2]) * (want.position[2] - now_at[2]));
                     const float near_x = std::clamp((0.30f - gap) / 0.18f, 0.0f, 1.0f);
-                    const float share = on_deck_gate * x * x * (3 - 2 * x) * near_x * near_x * (3 - 2 * near_x) * w *
+                    const float share = on_deck_gate * x * near_x * near_x * (3 - 2 * near_x) * w *
                                         std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
                     if (share <= 0) continue;
                     place_foot(edited, foot, want.position, &want.rotation, share);
@@ -5315,8 +5325,14 @@ bool glue_feet_through_fade(BodyPublicationState& body, std::span<const Joint> w
         if (wanted.size() < skeleton_joints || edited.size() < skeleton_joints || fade.started < 0) return false;
         if (body.glue_started != fade.started) {
             body.glue_started = fade.started;
-            // Where each foot stood on the board drawn on the frame before the fade (both from that frame).
-            body.glue_ok = body.last_drawn_generation == generation && now - body.last_drawn_at < 0.1;
+            // Where each foot stood on the board drawn on the frame before the fade (both from that frame) - for a fade out
+            // of something the studio drew only (a trick handing over, or one into the next): a trick starting from the
+            // game's own pose plays as made from its pop, and holding its feet to the board took the front foot round with
+            // the flip (2026-10-28).
+            bool drawn_by_studio = false;
+            for (const auto& edit : fade.from)
+                drawn_by_studio = drawn_by_studio || pose_fade_share(edit) > 0 || std::abs(edit.rotation[3]) < 0.99996f;
+            body.glue_ok = drawn_by_studio && body.last_drawn_generation == generation && now - body.last_drawn_at < 0.1;
             for (std::size_t side = 0; side < 2; ++side) {
                 body.glue_from[side] = relative(body.last_board, body.last_feet[side]);
                 body.glue_ok = body.glue_ok && finite(body.glue_from[side]);
@@ -5325,17 +5341,23 @@ bool glue_feet_through_fade(BodyPublicationState& body, std::span<const Joint> w
         const float k = std::clamp(fade.from_left, 0.0f, 1.0f);
         if (!body.glue_ok || !(k > 0)) return false;
         const DeckAxes axes(shape);
+        // Only a foot standing on the deck (foot_standing_on_deck), on a board level under him (board_level_under_him).
         const auto standing = [&](const Joint& on_board) {
             const auto p = axes.local(on_board.position);
-            return foot_on_deck(p[0], p[1], p[2]);
+            const auto sole = axes.local(rotate(on_board.rotation, sole_down_in_foot));
+            return foot_standing_on_deck(p[0], p[1], p[2], sole[1]);
         };
+        const Vec3 placement_up = rotate(compose(edited[0], edited[1]).rotation, Vec3{0, 1, 0});
+        const Vec3 drawn_up = rotate(drawn_board.rotation, axes.up);
+        const float level = board_level_under_him(drawn_up[0] * placement_up[0] + drawn_up[1] * placement_up[1] + drawn_up[2] * placement_up[2]);
+        if (!(level > 0)) return false;
         bool moved = false;
         for (std::size_t side = 0; side < 2; ++side) {
             const std::uint16_t foot = side == 0 ? left_foot_joint : right_foot_joint;
             const auto to = relative(wanted_board, world(wanted, foot));
             if (!finite(to)) continue;
             const auto& from = body.glue_from[side];
-            const float share = (standing(from) ? k : 0.0f) + (standing(to) ? 1 - k : 0.0f);
+            const float share = (standing(from) * k + standing(to) * (1 - k)) * level;
             if (!(share > 0.001f)) continue;
             const auto want = compose(drawn_board, foot_sliding_to_the_games(from, to, k));
             if (!finite(want)) continue;

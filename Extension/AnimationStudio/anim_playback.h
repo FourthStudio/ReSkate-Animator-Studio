@@ -503,8 +503,8 @@ inline constexpr float deck_top_flat = 0.019f, deck_thickness = 0.014f, deck_tip
 inline constexpr float deck_kick_from = 0.29f, deck_kick_rise = 0.045f, deck_round_from = 0.30f;
 inline constexpr float trucks_at = 0.18f, trucks_half_length = 0.04f, trucks_half_width = 0.115f, wheels_bottom = -0.087f;
 // A shoe is kept this far off the deck's edges and tips too, and never pushed for more than deck_most_depth: a leg the
-// board went right through is past helping, and pulling it all that way would throw it about.
-inline constexpr float deck_edge_margin = 0.01f, deck_most_depth = 0.3f;
+// board went right through is past helping, and pulling it all that way (0.3 m at first) would throw it about.
+inline constexpr float deck_edge_margin = 0.01f, deck_most_depth = 0.12f;
 inline constexpr float deck_middle = deck_top_flat - deck_thickness / 2;
 inline float deck_top_at(float along) noexcept {
     const float x = std::clamp((std::abs(along) - deck_kick_from) / (deck_tip - deck_kick_from), 0.0f, 1.0f);
@@ -549,11 +549,24 @@ inline bool foot_side_of_deck(float along, float up, float across, bool was_top)
     if (up < deck_top_at(along) - deck_thickness - 0.05f) return false;
     return was_top;
 }
-// A foot standing on the deck (its ankle, in the board's frame): over the deck's outline and 3 to 22 cm over the mount
-// (it stands 10.5 cm over it).
-inline bool foot_on_deck(float along, float up, float across) noexcept {
-    return std::isfinite(along) && std::isfinite(up) && std::isfinite(across) && std::abs(along) < deck_tip + 0.02f &&
-           std::abs(across) < deck_half_width + 0.05f && up > 0.03f && up < 0.22f;
+// How far a foot stands on the deck, 0 to 1: its ankle (along, up and across in the board's frame) over the deck's outline
+// at standing height (10.5 cm over the mount: all of it from 7 to 14 cm, none under 5 or over 17), and its sole flat on it
+// (`sole_up`: the sole's down, along the deck's up - -1 flat on it: all of it to 22 degrees, none from 32). Only a foot
+// that stands on the deck is held to the board: one near a board turning under it (a flip) followed it round (2026-10-28).
+inline float foot_standing_on_deck(float along, float up, float across, float sole_up) noexcept {
+    if (!std::isfinite(along) || !std::isfinite(up) || !std::isfinite(across) || !std::isfinite(sole_up)) return 0;
+    if (std::abs(along) > deck_tip + 0.02f || std::abs(across) > deck_half_width + 0.04f) return 0;
+    const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
+    const float height = std::min(ease((up - 0.05f) / 0.02f), ease((0.17f - up) / 0.03f));
+    const float flat = ease((-sole_up - 0.848f) / (0.927f - 0.848f));
+    return height * flat;
+}
+// How level the board is under him, 0 to 1 (`up_dot`: the board's up along his placement's up): all of it to 25 degrees,
+// none from 35. A board turning in a flip or standing on its edge holds no foot.
+inline float board_level_under_him(float up_dot) noexcept {
+    if (!std::isfinite(up_dot)) return 0;
+    const float x = std::clamp((up_dot - 0.819f) / (0.906f - 0.819f), 0.0f, 1.0f);
+    return x * x * (3 - 2 * x);
 }
 // Which side of the deck the feet belong on: the hips' (`hips_up`, over the board's mount), held until the hips are 10 cm
 // clear on the other side - as the board turns edge on under him it stays as it was.
