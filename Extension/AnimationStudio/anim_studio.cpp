@@ -359,6 +359,8 @@ struct State {
     std::string your_name;                         // MADE BY, remembered for new recordings and packs
     std::vector<std::string> favorite_packs;       // starred in PACKS
     bool hover_preview{true};                      // TRICKS: a hovered trick plays in a little window
+    bool catch_marker{true}, drop_preview_tool{true}; // SETTINGS > STUDIO: the catch's tools shown
+    bool guide_seen{};                             // the first-start guide was read
     std::map<std::string, std::string> keys;       // the editor's rebound keys (View::keys)
     bool playlist_on{};                            // the playlist that plays (Playlists::on), as last read
     PlaylistMode playlist_mode{PlaylistMode::fixed};
@@ -801,6 +803,9 @@ SettingsFile settings_file_of(const State& s) {
     f.editor_keys = s.keys;
     f.studio_room = s.room;
     f.play_in_game = s.play_in_game;
+    f.catch_marker = s.catch_marker;
+    f.drop_preview = s.drop_preview_tool;
+    f.guide_seen = s.guide_seen;
     return f;
 }
 void load_settings(State& s) {
@@ -823,6 +828,9 @@ void load_settings(State& s) {
         s.keys = std::move(f.editor_keys);
         s.room = f.studio_room;
         s.play_in_game = f.play_in_game;
+        s.catch_marker = f.catch_marker;
+        s.drop_preview_tool = f.drop_preview;
+        s.guide_seen = f.guide_seen;
     } catch (...) {}
 }
 void write_preset_file(const std::filesystem::path& path, const std::string& text); // below
@@ -5480,6 +5488,8 @@ Settings settings() {
     out.limits = s.limits;
     out.front_foot = s.front_foot;
     out.crossfade = s.crossfade;
+    out.catch_marker = s.catch_marker;
+    out.drop_preview_tool = s.drop_preview_tool;
     out.your_name = s.your_name;
     out.export_folder = s.export_folder;
     out.import_folder = s.import_folder;
@@ -5675,6 +5685,7 @@ View view() {
     }
     v.library = s.library;
     v.presets = s.presets;
+    const auto* playing_list = s.playlists.named(s.playlists.on);
     for (const auto& saved : s.packs) {
         const auto draft = s.pack_drafts.find(saved.name);
         const auto& pack = draft != s.pack_drafts.end() ? draft->second : saved;
@@ -5682,6 +5693,8 @@ View view() {
         v.packs.push_back({saved.name, pack.made_by, on, pack.alternate, pack.members(), pack});
         v.packs.back().favorite = std::find(s.favorite_packs.begin(), s.favorite_packs.end(), saved.name) != s.favorite_packs.end();
         v.packs.back().installed = locked_key(pack.maker_key);
+        v.packs.back().playing = playing_list && std::find(playing_list->entries.begin(), playing_list->entries.end(), PlaylistEntry{saved.name, ""}) !=
+                                                    playing_list->entries.end();
         if (const auto at = s.pack_times.find(saved.name); at != s.pack_times.end()) v.packs.back().modified = at->second;
         if (const auto picture = s.pack_pictures.find(saved.name); picture != s.pack_pictures.end()) {
             v.packs.back().thumbnail = utf8_path(pack_thumbnail_file(saved.name));
@@ -5704,6 +5717,9 @@ View view() {
         v.playlist.clear();
     }
     v.hover_preview = s.hover_preview;
+    v.catch_marker = s.catch_marker;
+    v.drop_preview_tool = s.drop_preview_tool;
+    v.guide_seen = s.guide_seen;
     v.keys = s.keys;
     v.export_folder = s.export_folder;
     v.import_folder = s.import_folder;
@@ -6997,6 +7013,21 @@ void say_locked(State& s, std::string& message, std::string said) {
     s.status = message;
     publish_locked(s, false);
 }
+// Whole packs into the playlist that is on, or - when none is - into "My packs" (made if need be), which goes on.
+// Returns the playlist's name.
+std::string put_in_playing_list(Playlists& lists, const std::vector<std::string>& packs) {
+    std::string name = lists.on;
+    if (!lists.named(name)) {
+        name = "My packs";
+        if (!lists.named(name)) lists.lists.push_back({name, PlaylistMode::shuffle, {}});
+        lists.on = name;
+    }
+    auto* list = lists.named(name);
+    for (const auto& pack : packs)
+        if (const PlaylistEntry entry{pack, ""}; std::find(list->entries.begin(), list->entries.end(), entry) == list->entries.end())
+            list->entries.push_back(entry);
+    return name;
+}
 // `name` on and any other off, or "" none on.
 void play_playlist_locked(State& s, const std::string& name, std::string& message) {
     auto lists = s.playlists;
@@ -7152,6 +7183,27 @@ bool delete_playlist(std::string& message) {
     playlists_changed_locked(s, lists, message);
     return true;
 }
+bool set_pack_playing(const std::string& pack, bool on, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (std::none_of(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name == pack; })) {
+        say_locked(s, message, "There is no pack called " + pack + ".");
+        return false;
+    }
+    auto lists = s.playlists;
+    if (on) {
+        const bool made = !lists.named(lists.on);
+        const auto name = put_in_playing_list(lists, {pack});
+        message = pack + " plays in game now: it is in " + name + (made ? ", the playlist that is on." : ".");
+    } else {
+        auto* list = lists.named(lists.on);
+        if (!list) return true;
+        std::erase(list->entries, PlaylistEntry{pack, ""});
+        message = pack + " is out of " + list->name + " and does not play now.";
+    }
+    playlists_changed_locked(s, lists, message);
+    return true;
+}
 std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -7279,6 +7331,36 @@ void set_hover_preview(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.hover_preview = on;
+    save_settings_locked(s);
+    publish_locked(s, false);
+}
+void set_catch_marker(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.catch_marker = on;
+    save_settings_locked(s);
+    s.status = on ? "The CATCH flag shows on the timeline, with CATCH HOLD in THIS TRICK."
+                  : "The CATCH flag and CATCH HOLD are hidden. A trick's catch still plays in game as it was set.";
+    publish_locked(s, false);
+}
+void set_drop_preview_tool(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.drop_preview_tool = on;
+    // Hidden, it plays nothing either: the trick shows as it is.
+    if (!on && s.drop_preview > 0) {
+        s.drop_preview = 0;
+        s.drop_real = -1;
+    }
+    save_settings_locked(s);
+    s.status = on ? "DROP PREVIEW shows in THIS TRICK." : "DROP PREVIEW is hidden and off.";
+    publish_locked(s, false);
+}
+void set_guide_seen(bool seen) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.guide_seen == seen) return;
+    s.guide_seen = seen;
     save_settings_locked(s);
     publish_locked(s, false);
 }
@@ -7831,6 +7913,20 @@ ZipContents read_pack_zip(const std::filesystem::path& path) {
     }
     return out;
 }
+// Packs just installed play at once: packs play only from the playlist that is on, and a pack installed into none
+// played nothing until it was found in PACKS and added to one, which is where most people stopped. They go in the
+// playlist that is on, or - when none is - in "My packs" (made if need be), which is switched on. Says what it did.
+std::string play_new_packs_locked(State& s, const std::vector<std::string>& packs) {
+    auto lists = s.playlists;
+    const auto name = put_in_playing_list(lists, packs);
+    try {
+        write_playlists(lists);
+    } catch (const std::exception& e) {
+        return std::string("Add it to a playlist in PACKS to play it (the playlist could not be saved: ") + e.what() + ").";
+    }
+    const auto what = packs.size() == 1 ? packs.front() + " is" : std::to_string(packs.size()) + " packs are";
+    return what + " in your playlist " + name + " and play in game now. PACKS > PLAYLIST to change what plays.";
+}
 } // namespace
 bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message,
                         std::vector<std::string>* made_packs, const std::string& replace) {
@@ -7840,6 +7936,7 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
     std::error_code error;
     std::size_t animations = 0, packs = 0, renamed = 0;
     std::vector<std::string> problems;
+    std::vector<std::string> fresh_packs; // new here, not an update of one: they go in the playlist that plays
     for (const auto& path : zips) {
         try {
             // Read it all first (under the studio's lock); nothing is written unless every file in it checks out.
@@ -7962,6 +8059,7 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                 }
                 pack.name = target;
                 new_packs.push_back(target);
+                if (!replaced) fresh_packs.push_back(target);
                 transaction.write(folder / L"presets" / (target + ".json"), pack_json(pack).dump(2));
                 if (const auto picture = pack_pictures.find(pack_name); picture != pack_pictures.end())
                     transaction.write(pack_thumbnail_file(target), picture->second);
@@ -7984,11 +8082,11 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
             problems.push_back(path.filename().string() + ": " + e.what());
         }
     }
-    s.tricks_read = false;
+    const auto played = fresh_packs.empty() ? std::string{} : " " + play_new_packs_locked(s, fresh_packs);
+    s.tricks_read = false; // the game's side takes up the new tricks and the playlist
     read_library_locked(s);
     message = std::format("Imported {} animation{} and {} pack{}{}.", animations, animations == 1 ? "" : "s", packs, packs == 1 ? "" : "s",
-                          renamed ? std::format(" ({} renamed: the name was taken)", renamed) : std::string{});
-    if (packs) message += " Add a pack to a playlist in PACKS to play it.";
+                          renamed ? std::format(" ({} renamed: the name was taken)", renamed) : std::string{}) + played;
     if (!problems.empty()) message += " Not imported: " + problems.front() + (problems.size() > 1 ? std::format(" and {} more", problems.size() - 1) : "");
     s.status = message;
     logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
@@ -8400,15 +8498,36 @@ void finish_library_build(bool failed, std::string message) {
     look_at_library_locked(b);
     b.revision = tricks_revision.load(std::memory_order_acquire);
 }
-// Renames a folder, trying again a few times: a file in it may be open for a moment (a clip being read).
-void rename_folder(const std::filesystem::path& from, const std::filesystem::path& to) {
-    for (int attempt = 0;; ++attempt) {
-        std::error_code error;
+// Renames a folder (or a file), trying again, longer each time: a file in it may be open for a moment (a clip being read,
+// or one the build has just written that an antivirus or the search indexer is looking at, which can take many seconds
+// for a few thousand new files).
+void rename_folder(const std::filesystem::path& from, const std::filesystem::path& to, DWORD budget_ms = 20'000) {
+    std::error_code error;
+    for (DWORD waited = 0, wait = 50;; waited += wait, wait = std::min<DWORD>(wait * 2, 1'000)) {
+        error.clear();
         std::filesystem::rename(from, to, error);
         if (!error) return;
-        if (attempt >= 20) throw std::runtime_error("could not move " + utf8_path(from) + ": " + error.message());
-        Sleep(100);
+        if (waited >= budget_ms) break;
+        Sleep(wait);
     }
+    throw std::runtime_error("could not move " + utf8_path(from) + ": " + error.message());
+}
+// One file of the new library put in place: moved, or else copied over (another program holding it open to read it
+// does not stop a copy), the same few seconds of trying again either way.
+void move_library_file(const std::filesystem::path& from, const std::filesystem::path& to) {
+    try {
+        rename_folder(from, to, 3'000);
+        return;
+    } catch (const std::exception&) {}
+    std::error_code error;
+    for (DWORD waited = 0, wait = 50;; waited += wait, wait = std::min<DWORD>(wait * 2, 1'000)) {
+        error.clear();
+        std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, error);
+        if (!error) break;
+        if (waited >= 8'000) throw std::runtime_error("could not put " + utf8_path(to.filename()) + " in place: " + error.message());
+        Sleep(wait);
+    }
+    std::filesystem::remove(from, error);
 }
 // The new library's files put over the old one's in place, and the old one's that the new one has not taken out: for
 // when the library's folder itself cannot be moved. Marked (.replacing) until it is done, and build-info.json - what
@@ -8430,7 +8549,7 @@ void replace_library_files(const std::filesystem::path& staging, const std::file
             continue;
         }
         std::filesystem::create_directories((target / relative).parent_path(), error);
-        rename_folder(it->path(), target / relative); // over the old file, trying again while it is open for a moment
+        move_library_file(it->path(), target / relative); // over the old file, trying again while it is open for a moment
     }
     // The new library not read to its end: nothing of the old one is taken out on a list that may be short.
     if (error) throw std::runtime_error("could not read the new library: " + error.message());
@@ -8440,7 +8559,7 @@ void replace_library_files(const std::filesystem::path& staging, const std::file
     // Deepest first, so a folder is empty when its turn comes.
     std::sort(stale.begin(), stale.end(), [](const auto& a, const auto& b) { return a.native().size() > b.native().size(); });
     for (const auto& path : stale) std::filesystem::remove(path, error);
-    rename_folder(staging / info_name, target / info_name);
+    move_library_file(staging / info_name, target / info_name);
     std::filesystem::remove(target / marker_name, error);
     std::filesystem::remove_all(staging, error);
 }
@@ -8487,14 +8606,21 @@ void run_library_build() {
                 logging::log(Level::info, Channel::skater, "Animation Studio: the library's folder is in use ({}); replacing its files instead.", e.what());
             }
         }
+        bool in_place = false;
         if (!had || moved_old) {
             try {
                 rename_folder(staging, target);
-            } catch (...) {
+                in_place = true;
+            } catch (const std::exception& e) {
+                // A file in the new library is still held by another program (an antivirus looking at what was just
+                // written): the old library goes back, and the new one's files go in one by one instead.
+                logging::log(Level::info, Channel::skater, "Animation Studio: the new library's folder could not be moved ({}); putting its files in one by one.",
+                             e.what());
                 if (moved_old) rename_folder(old, target);
-                throw;
             }
-        } else {
+        }
+        if (!in_place) {
+            std::filesystem::create_directories(target, error);
             replace_library_files(staging, target);
         }
         tricks_revision.fetch_add(1, std::memory_order_acq_rel);
@@ -8515,7 +8641,14 @@ void run_library_build() {
     } catch (const std::exception& e) {
         std::filesystem::remove_all(staging, error);
         logging::log(Level::warning, Channel::skater, "Animation Studio: the trick library could not be built: {}", e.what());
-        finish_library_build(true, std::string("The trick library could not be built: ") + e.what() + ".");
+        // Moving or writing its files is what another program holding them stops: say what to do about it.
+        const std::string_view what = e.what();
+        const bool held = what.starts_with("could not move") || what.starts_with("could not write") || what.starts_with("could not put");
+        finish_library_build(true, std::string("The trick library could not be built: ") + e.what() + "." +
+                                       (held ? " Another program had the files open (often an antivirus scanning them). Press Build again; if it keeps "
+                                               "happening, close programs looking in the game's folder, or keep the game out of a folder that syncs "
+                                               "(Desktop, Documents, OneDrive)."
+                                             : ""));
     }
 }
 } // namespace

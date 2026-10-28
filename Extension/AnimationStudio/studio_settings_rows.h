@@ -39,6 +39,9 @@ Setting info_setting(std::string label, std::string value, std::string about);
 
 // STUDIO
 Setting studio_room(const anim_studio::Settings&);
+Setting catch_marker(const anim_studio::Settings&);
+Setting drop_height_preview(const anim_studio::Settings&);
+Setting how_it_works(); // opens the first-start guide again
 Setting report_a_bug(Tell tell);
 // SKATER
 Setting editing_stance(const anim_studio::Settings&);

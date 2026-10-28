@@ -51,6 +51,22 @@ void every_saved_setting_survives_a_save_and_reload() {
     check(read.export_folder == saved.export_folder && read.import_folder == saved.import_folder && read.crossfade == 0.25f,
           "A folder or the crossfade did not come back as saved");
 }
+void the_catch_tools_and_the_guide_survive_a_save_and_reload() {
+    SettingsFile saved;
+    saved.catch_marker = false;
+    saved.drop_preview = false;
+    saved.guide_seen = true;
+    const auto read = reloaded(saved);
+    check(!read.catch_marker && !read.drop_preview, "Catch marker or Drop height preview came back on after it was saved off");
+    check(read.guide_seen, "The guide opens again after it was read");
+}
+void a_file_from_before_shows_the_catch_tools_and_the_guide() {
+    // Settings saved before these keys: the catch tools stay as they were (shown), and the guide opens once.
+    SettingsFile read;
+    read_settings_file(Json::parse(R"({"front_foot": true})"), read);
+    check(read.catch_marker && read.drop_preview, "A file without the keys hid the catch tools");
+    check(!read.guide_seen, "A file without the key does not open the guide");
+}
 void values_out_of_range_are_kept_in_it() {
     SettingsFile read;
     read_settings_file(Json::parse(R"({"stance": 7, "crossfade": 3.0})"), read);
@@ -63,6 +79,8 @@ int main() {
         a_file_from_before_keeps_both_on();
         every_saved_setting_survives_a_save_and_reload();
         values_out_of_range_are_kept_in_it();
+        the_catch_tools_and_the_guide_survive_a_save_and_reload();
+        a_file_from_before_shows_the_catch_tools_and_the_guide();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "studio settings file tests passed\n";
 }

@@ -67,6 +67,24 @@ Setting studio_room(const studio::Settings& now) {
                   "you are. Takes effect the next time it opens.",
                   [](bool on) { studio::set_room(on); });
 }
+Setting catch_marker(const studio::Settings& now) {
+    return on_off("Catch marker", now.catch_marker,
+                  "On: the CATCH flag shows on the timeline, and CATCH HOLD in THIS TRICK. Off: both are hidden, for a cleaner "
+                  "timeline. A trick's catch still plays in game as it was set.",
+                  [](bool on) { studio::set_catch_marker(on); });
+}
+Setting drop_height_preview(const studio::Settings& now) {
+    return on_off("Drop height preview", now.drop_preview_tool,
+                  "On: DROP PREVIEW shows in THIS TRICK, to play the trick here as off a drop, its catch slowed as in game. Off: "
+                  "it is hidden and the trick plays as it is. Only the studio's view: nothing in game changes.",
+                  [](bool on) { studio::set_drop_preview_tool(on); });
+}
+Setting how_it_works() {
+    return button_row("How it works",
+                      "The guide from the first start again: how packs play, Exact stance and Front foot, and how to make a "
+                      "playlist.",
+                      [] { studio::set_guide_seen(false); });
+}
 Setting report_a_bug(Tell tell) {
     return button_row("Report a bug",
                       "Something went wrong? Right after it happens, press this: the last 15 seconds, the game's log, your studio "

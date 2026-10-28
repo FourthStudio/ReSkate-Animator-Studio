@@ -513,17 +513,47 @@ std::string sha256_hex(std::string_view text) {
     }
     return hex;
 }
+bool write_whole(const std::filesystem::path& path, std::span<const std::byte> bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    return !out.fail();
+}
+// Another program can hold a file it has just seen written for a moment (an antivirus scanning it, the search indexer,
+// a folder that syncs): every step is tried again for a few seconds, longer each time, and when the new file still cannot
+// take the old one's name it is written in its place directly (the library is built in a folder of its own, so a file
+// half written there is never read).
 void write_file(const std::filesystem::path& path, std::span<const std::byte> bytes) {
     auto temp = path;
     temp += L".tmp";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!out) throw WriteFailed("could not write " + path.filename().string());
-    }
     std::error_code error;
-    std::filesystem::rename(temp, path, error);
-    if (error) throw WriteFailed("could not write " + path.filename().string() + ": " + error.message());
+    const auto again = [](DWORD& waited, DWORD& wait) {
+        if (waited >= 6'000) return false;
+        Sleep(wait);
+        waited += wait;
+        wait = std::min<DWORD>(wait * 2, 500);
+        return true;
+    };
+    bool written = false;
+    for (DWORD waited = 0, wait = 20; !(written = write_whole(temp, bytes)) && again(waited, wait);) {}
+    if (written)
+        for (DWORD waited = 0, wait = 20;;) {
+            error.clear();
+            std::filesystem::rename(temp, path, error);
+            if (!error) return;
+            if (!again(waited, wait)) break;
+        }
+    for (DWORD waited = 0, wait = 20;;) {
+        if (write_whole(path, bytes)) {
+            std::error_code ignored;
+            std::filesystem::remove(temp, ignored);
+            return;
+        }
+        if (!again(waited, wait)) break;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(temp, ignored);
+    throw WriteFailed("could not write " + path.filename().string() + (error ? ": " + error.message() : std::string{}));
 }
 void write_text(const std::filesystem::path& path, const std::string& text) {
     write_file(path, std::span<const std::byte>(reinterpret_cast<const std::byte*>(text.data()), text.size()));

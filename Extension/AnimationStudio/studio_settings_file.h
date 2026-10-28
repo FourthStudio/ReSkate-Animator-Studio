@@ -24,6 +24,8 @@ struct SettingsFile {
     std::map<std::string, std::string> editor_keys;
     bool studio_room{true};
     bool play_in_game{true};
+    bool catch_marker{true}, drop_preview{true}; // SETTINGS > STUDIO: the catch's tools shown
+    bool guide_seen{};                           // the first-start guide was read
 };
 inline void read_settings_file(const Json& root, SettingsFile& f) {
     if (!root.is_object()) return;
@@ -51,6 +53,9 @@ inline void read_settings_file(const Json& root, SettingsFile& f) {
             if (key.is_string() && action.size() < 32 && key.string().size() < 32 && f.editor_keys.size() < 64) f.editor_keys[action] = key.string();
     f.studio_room = root.value("studio_room", f.studio_room);
     f.play_in_game = root.value("play_in_game", f.play_in_game);
+    f.catch_marker = root.value("catch_marker", f.catch_marker);
+    f.drop_preview = root.value("drop_preview", f.drop_preview);
+    f.guide_seen = root.value("guide_seen", f.guide_seen);
 }
 inline Json settings_file_json(const SettingsFile& f) {
     Json root = Json::object();
@@ -72,6 +77,9 @@ inline Json settings_file_json(const SettingsFile& f) {
     }
     root["studio_room"] = f.studio_room;
     root["play_in_game"] = f.play_in_game;
+    root["catch_marker"] = f.catch_marker;
+    root["drop_preview"] = f.drop_preview;
+    root["guide_seen"] = f.guide_seen;
     return root;
 }
 }

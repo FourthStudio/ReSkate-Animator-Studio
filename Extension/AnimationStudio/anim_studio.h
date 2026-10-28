@@ -103,6 +103,7 @@ struct View {
         bool favorite{};                // starred: shown first in PACKS
         bool installed{};               // made on another PC (its maker's key is not this one's): its tricks play, not open
         std::int64_t modified{};        // when its file was last written (the file clock's count), 0 not known
+        bool playing{};                 // in the playlist that is on, as a whole pack: it plays in game
     };
     // MY TRICKS shows a trick's saves together (one card a trick: its pops and stances); these are shown on their own.
     std::set<std::string> ungrouped;
@@ -128,6 +129,9 @@ struct View {
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
+    // SETTINGS > STUDIO: the CATCH flag on the timeline with CATCH HOLD, and DROP PREVIEW, shown or not; and whether the
+    // first-start guide has been read (it opens by itself until it has).
+    bool catch_marker{true}, drop_preview_tool{true}, guide_seen{true};
     // The editor's keys rebound in SETTINGS > STUDIO > EDITOR KEYS: an action's name to its key's name (the overlay's
     // names). Only those not on their own key.
     std::map<std::string, std::string> keys;
@@ -176,6 +180,7 @@ struct Settings {
     bool game_goofy{};   // the game's own stance is goofy
     bool grab_board{}, limits{true}, front_foot{true};
     float crossfade{0.3f};
+    bool catch_marker{true}, drop_preview_tool{true};
     std::string your_name;
     std::string export_folder, import_folder; // "" the defaults
     std::string export_path, import_path;     // where they are, in full (UTF-8)
@@ -407,12 +412,19 @@ bool delete_playlist(std::string& message);     // the open one
 // Puts a whole pack or one trick in a playlist ("" a new one) and opens it. The playlist goes on when none is (one that is
 // on stays on). Returns the playlist's name ("" when it failed).
 std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message);
+// PLAY on a pack's card: the whole pack into the playlist that is on (or "My packs", switched on, when none is), or out of it.
+bool set_pack_playing(const std::string& pack, bool on, std::string& message);
 // ACTIVE on a saved trick. On: put back where it was switched off (its pack, in the playlist that is on or a pack that is
 // on), or - when it is in nothing that plays - choose_playlist: the overlay asks which playlist it goes in. In a playlist
 // already but beaten to its pop by one above it: show_playlist. Off: out of the playlist that is on, or off in its pack.
 enum class ActiveAnswer { done, show_playlist, choose_playlist };
 ActiveAnswer set_trick_active(const std::string& animation, bool on, std::string& message);
 void set_hover_preview(bool on);
+// SETTINGS > STUDIO: the catch's tools shown (View::catch_marker, drop_preview_tool). Off, DROP PREVIEW goes back to 0.
+void set_catch_marker(bool on);
+void set_drop_preview_tool(bool on);
+// The first-start guide read (true), or to open again (false).
+void set_guide_seen(bool seen);
 // The editor's rebound keys (View::keys), kept in studio-settings.json; empty puts every key back.
 void set_key_bindings(const std::map<std::string, std::string>& keys);
 std::map<std::string, std::string> key_bindings(); // the same, cheaply (the loading screen's tips name them)
