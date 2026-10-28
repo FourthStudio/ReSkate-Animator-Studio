@@ -1006,6 +1006,8 @@ std::string free_playlist_name(const Playlists& playlists) {
 }
 // How the playlist's tricks take turns, for the game's side (the trick loader sets it with the set of tricks it is for).
 std::atomic<int> playlist_turns_mode{0};
+// TEST IN GAME is on (read_custom_tricks found the tested trick): a stance version plays in its own stance only.
+std::atomic<bool> testing_tricks{false};
 std::filesystem::path pack_thumbnail_file(const std::string& name) { return library_folder() / L"presets" / (name + ".png"); }
 // A path as UTF-8 (path::string() is the ANSI code page, which throws on a name it cannot spell).
 std::string utf8_path(const std::filesystem::path& path) {
@@ -1742,6 +1744,7 @@ std::shared_ptr<const NativeModels> natives_for(TrickCache& cache, const std::st
 struct LoadedTricks {
     std::shared_ptr<const CustomTricks> tricks;
     PlaylistMode mode{PlaylistMode::shuffle};
+    bool testing{}; // TEST IN GAME: the tested trick was found
 };
 LoadedTricks read_custom_tricks(const std::string& test_trick) {
     LoadedTricks result;
@@ -1788,6 +1791,8 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
                     p.fakie = animation.fakie;
                     p.leads_right = leads_right(authored_goofy(animation), animation.switch_stance.value_or(false));
                     p.saved_at = saved_time(entry);
+                    p.made_by = animation.author;
+                    p.foreign = locked_key(animation.maker_key); // made on another PC (TEST IN GAME's stance versions)
                     meta.preset = std::move(p);
                 }
             } catch (const std::exception& e) {
@@ -1819,7 +1824,8 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
     // Test in game: that trick plays, on any pop, over whatever else there is of it in its own stance. Its other stance
     // versions (the same trick and pop made fakie, switch or switch fakie: make_stance_version) play in theirs, the newest
     // of each, so every stance is tried with its own version. (They were all stood down, and in switch the tested one
-    // played mirrored instead of the switch version made for it.)
+    // played mirrored instead of the switch version made for it.) Only the same maker's: another pack's trick of the same
+    // trick and pop was taken for one and played in turns with yours (a VersacePlug shuv-it with a tester's own, 2026-10-28).
     if (!test_trick.empty())
         if (const auto t = std::find_if(requested.begin(), requested.end(), [&](const Preset& p) { return p.name == test_trick; }); t != requested.end()) {
             const auto stance_of = [](const Preset& p) { return std::pair<bool, bool>{preset_leads_right(p), p.fakie.value_or(false)}; };
@@ -1828,6 +1834,7 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
                 if (p.trick != t->trick) continue;
                 p.active = false;
                 if (p.name == t->name || p.pop != t->pop || stance_of(p) == stance_of(*t)) continue;
+                if (p.foreign != t->foreign || p.made_by != t->made_by) continue;
                 auto& newest = others[stance_of(p)];
                 if (!newest || p.saved_at > newest->saved_at) newest = &p;
             }
@@ -1837,6 +1844,7 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
                 p->active = true;
                 p->pack_pop = std::string{};
             }
+            result.testing = true;
             logging::log(Level::info, Channel::skater, "Animation Studio: testing {} in game{}.", t->name,
                          others.empty() ? std::string{} : " (and its " + std::to_string(others.size()) + " other stance versions, each in its stance)");
         }
@@ -3761,7 +3769,12 @@ void on_animation(std::uintptr_t component) noexcept {
                         }
                         if (!candidates.empty()) break;
                     }
-                for (const auto i : choose_stance_variants(described, live, l.playback_front_foot)) variants.push_back(candidates[i]);
+                // TEST IN GAME: the stance it is ridden in first, so a stance version plays in its own stance and the tested
+                // trick everywhere else (mirrored, by Front foot) - never the two in turns.
+                std::vector<std::size_t> chosen;
+                if (l.playback_front_foot && testing_tricks.load(std::memory_order_acquire)) chosen = choose_stance_variants(described, live, false);
+                if (chosen.empty()) chosen = choose_stance_variants(described, live, l.playback_front_foot);
+                for (const auto i : chosen) variants.push_back(candidates[i]);
                 if (!variants.empty()) {
                     const bool in_turns = playlist_turns_mode.load(std::memory_order_acquire) == static_cast<int>(PlaylistMode::turns);
                     // The playlist's In turns: in the playlist's order, on every pass of the attempt (the pick is a place in it).
@@ -5250,6 +5263,7 @@ void run_trick_loader() {
         if (loaded.tricks) {
             std::lock_guard lock(s.mutex);
             playlist_turns_mode.store(static_cast<int>(loaded.mode), std::memory_order_release); // with the set it is for
+            testing_tricks.store(loaded.testing, std::memory_order_release);
             s.tricks = std::move(loaded.tricks);
             publish_locked(s);
         }
