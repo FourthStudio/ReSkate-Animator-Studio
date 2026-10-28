@@ -2053,6 +2053,28 @@ void fades_go_to_the_next_move() {
               "Without a pose drawn to start from, the old fade carries its change");
     }
 }
+// Skate leads: the trick's catch on the game's catch, its landing on the game's landing.
+void the_catch_follows_the_game() {
+    // Takeoff 0.2, landing 0.8; the game catches at 0.5, the trick at 0.6.
+    check(near(catch_aligned_time(0.1f, 0.2f, 0.5f, 0.6f, 0.8f), 0.1f), "Before the pop it is the game's time");
+    check(near(catch_aligned_time(0.5f, 0.2f, 0.5f, 0.6f, 0.8f), 0.6f), "As the game catches, the trick catches");
+    check(near(catch_aligned_time(0.35f, 0.2f, 0.5f, 0.6f, 0.8f), 0.4f), "faster on the way (4/3 times its pace)");
+    check(near(catch_aligned_time(0.8f, 0.2f, 0.5f, 0.6f, 0.8f), 0.8f) && near(catch_aligned_time(0.65f, 0.2f, 0.5f, 0.6f, 0.8f), 0.7f),
+          "and from the catch on to land as the game lands");
+    check(near(catch_aligned_time(1.0f, 0.2f, 0.5f, 0.6f, 0.8f), 1.0f), "After the landing it is the game's time again");
+    check(near(catch_aligned_time(0.5f, 0.2f, 0.5f, 0.5f, 0.8f), 0.5f), "A catch on the game's plays at the game's pace");
+    check(near(catch_aligned_time(0.5f, 0.2f, 0.25f, 0.75f, 0.8f), 0.5f), "One too far from the game's is not lined up");
+    check(near(catch_aligned_time(0.5f, 0.2f, -1, 0.6f, 0.8f), 0.5f), "nor one the game has none for");
+    // It never goes back as the game goes on.
+    float last = -1;
+    bool on = true;
+    for (float g = 0; g < 1.2f; g += 0.01f) {
+        const float t = catch_aligned_time(g, 0.2f, 0.45f, 0.62f, 0.8f);
+        on = on && t >= last - 1e-6f;
+        last = t;
+    }
+    check(on, "and it only goes forward");
+}
 // The deck's force field: a shoe standing on the deck is clear of it, a shoe sunk in is as deep as it is sunk, and the side
 // the feet belong on follows the hips.
 void the_deck_keeps_shoes_out() {
@@ -2509,6 +2531,7 @@ int main(int argc, char** argv) {
         native_playback_contracts();
         fades_go_to_the_next_move();
         the_deck_keeps_shoes_out();
+        the_catch_follows_the_game();
         fitting_the_air_keeps_the_flip();
         slow_catch_off_drops();
         landing_and_retiming();

@@ -67,7 +67,9 @@ inline constexpr std::uint16_t board_joint = 900;
 // Keys sit on whole frames of the timeline, 30 a second, never between two: anything that moves a key in
 // time puts it back on one, so the timeline never grows odd fractions of a frame between its keys.
 inline constexpr float key_fps = 30.0f;
-inline constexpr float default_catch_hold = 0.6f; // CATCH HOLD when the trick's maker set none (Animation::catch_hold)
+// CATCH HOLD when the trick's maker set none (Animation::catch_hold). 0.6 until 2026-10-28: a longer air than the trick's
+// slowed it nearly to a stop around the catch, which looked like held frames.
+inline constexpr float default_catch_hold = 0.35f;
 float on_a_frame(float seconds) noexcept;
 // The feet (343 and 10) ride this far above the board's mount, along the board's up: measured in the
 // game, riding, 2026-10-18. The board is pulled under the lower foot by this much on the ground, and

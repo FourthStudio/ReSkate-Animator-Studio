@@ -123,6 +123,9 @@ struct CustomTrick {
     bool fallback{};
     // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
+    // The game's own catch on the trick's clip (the clip with no keys: game_catch): the custom catch is lined up with it
+    // (catch_aligned_time).
+    float game_caught{-1};
 };
 // The game's own stance setting (Options, DefaultStanceIsGoofy), kept for the animation thread.
 std::atomic<bool> game_goofy{};
@@ -545,6 +548,7 @@ struct Live {
     bool raised_said{};
     double raised_asked_at{-1};
     double raised_contact_at{-1}, raised_last{-1}; // when the probe says it meets the rail; the release's last step
+    bool catch_lined_said{}; // the catch's line-up told (catch_aligned_time), once a trick
     // A trick's keys the other way round, kept so the mirror is made once rather than every frame.
     std::map<const Animation*, std::shared_ptr<const Animation>> mirrored_edits;
     bool playback_front_foot{true};
@@ -1456,6 +1460,7 @@ std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the t
 std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, const Clip& clip, const std::string& pop); // below
 namespace {
 float find_catch(const Clip& clip, const Animation& edits); // below
+float game_catch(const Clip& clip); // below
 // ---- the saved tricks the game plays ------------------------------------------------------------------
 // Read on a thread of their own (trick_loader, below): first as soon as ReSkate starts, then whenever what plays changes,
 // so neither the game nor the studio waits on them, and what played before goes on playing until the new set is ready.
@@ -1624,6 +1629,7 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
     const bool locked = locked_key(animation->maker_key) && !animation->editable;
     CustomTrick out{trick, p.name, clip, animation, goofy, right, animation->fakie, natives_for(cache, key, *clip, trick, clip_pop, locked)};
     out.caught = find_catch(*clip, *animation);
+    out.game_caught = game_catch(*clip);
     out.any_pop = animation->pop.empty();
     if (!heights || piece || clip_pop.empty()) return out;
     // The trick as made for another height: what COPY TO LOW, MID AND HIGH makes of it - one of yours moved onto the game's
@@ -1650,6 +1656,7 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
                 if (!natives) natives = natives_for(cache, clip_key, *kept, trick, height, false);
                 version.native = natives;
                 version.caught = find_catch(*kept, *version.edits);
+                version.game_caught = game_catch(*kept);
             } else {
                 auto copy = std::make_shared<Animation>(*animation);
                 copy->pop = height;
@@ -2788,6 +2795,8 @@ float auto_catch(const Clip& clip, const Animation& edits) {
     return keyed >= 0 || edits.tracks.empty() ? keyed : guess_catch(clip, Animation{});
 }
 // The catch the latch holds: the one its maker set on the timeline (CATCH) when it is in the air, else the studio's.
+// The game's own catch on a clip: the clip as the game plays it, with no keys.
+float game_catch(const Clip& clip) { return guess_catch(clip, Animation{}); }
 float find_catch(const Clip& clip, const Animation& edits) {
     if (edits.catch_at && catch_fits(clip, *edits.catch_at)) return *edits.catch_at;
     return auto_catch(clip, edits);
@@ -3677,7 +3686,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.used_pop.clear(); l.used_pop_source.clear(); l.decision.clear();
                 l.takeoff_mount_ok = false; l.raised_release = 0; l.raised_said = false; l.raised_asked_at = -1;
-                l.raised_contact_at = -1; l.raised_last = -1;
+                l.raised_contact_at = -1; l.raised_last = -1; l.catch_lined_said = false;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
                 if (l.board_ok) {
@@ -3968,8 +3977,21 @@ void on_animation(std::uintptr_t component) noexcept {
                     std::optional<double> touch;
                     if (l.episode.contact.since) touch = *l.episode.contact.since;
                     else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch = l.episode.landing;
-                    float time = reading.locked ? reading.time : -1.0f;
                     const float up = clip.takeoff, down = clip.landing;
+                    // Skate leads: where the game is in its clip is where the trick is, with its catch on the game's catch and
+                    // its landing on the game's landing (catch_aligned_time) - faster or slower in between as the two differ.
+                    float time = reading.locked ? catch_aligned_time(reading.time, up, trick->game_caught, trick->caught, down) : -1.0f;
+                    if (reading.locked && !l.catch_lined_said && trick->caught > 0 && trick->game_caught > 0) {
+                        l.catch_lined_said = true;
+                        const bool lined = catch_aligned_time(trick->game_caught, up, trick->game_caught, trick->caught, down) != trick->game_caught ||
+                                           std::abs(trick->caught - trick->game_caught) < 1e-3f;
+                        logging::log(Level::info, Channel::skater,
+                                     "Animation Studio: {} catches at {:.2f} s, the game at {:.2f} s: {}.", trick->name, trick->caught, trick->game_caught,
+                                     !lined ? "too far apart to line up (it plays at the game's pace)"
+                                            : std::abs(trick->caught - trick->game_caught) < 1e-3f ? "together"
+                                            : std::format("it plays {:.2f} times its pace to the catch and {:.2f} after it", (trick->caught - up) / (trick->game_caught - up),
+                                                          (down - trick->caught) / (down - trick->game_caught)));
+                    }
                     // On the game's clip of a higher pop than the trick was made on, the trick takes the longer air in its own
                     // time from its catch (AirStretch), as off a drop: it plays to its landing on the touchdown, or on the rail
                     // it reaches. Handed back to the game's own pose at its catch (until 2026-10-28) the board became the game's,

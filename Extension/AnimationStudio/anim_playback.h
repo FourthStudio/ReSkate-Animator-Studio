@@ -53,6 +53,21 @@ inline float fitted_air_time(float in_air, float recorded_air, float target) noe
     if (t > knee) t = knee + ease * (1 - std::exp(-(t - knee) / ease));
     return t;
 }
+// Skate leads: the trick's time for the game's (`game_time`, where the game is in its own clip, on the trick's timeline),
+// with the trick's catch (`catch_at`, its CATCH marker or AUTO CATCH) on the game's own catch (`game_catch`: the clip's,
+// with no keys) - faster or slower up to it, so the custom catch comes as the game catches, and from it to the landing on
+// the game's landing, so the landing comes as the game's does. Before the pop and after the landing, the game's own time.
+// A catch so far from the game's that it would play at under a third or over three times its pace is not lined up.
+inline float catch_aligned_time(float game_time, float takeoff, float game_catch, float catch_at, float landing) noexcept {
+    if (!std::isfinite(game_time) || !(takeoff >= 0) || !(landing > takeoff) || !(game_catch > takeoff) || !(game_catch < landing) ||
+        !(catch_at > takeoff) || !(catch_at < landing))
+        return game_time;
+    const float before = (catch_at - takeoff) / (game_catch - takeoff), after = (landing - catch_at) / (landing - game_catch);
+    if (before < 1.0f / 3 || before > 3 || after < 1.0f / 3 || after > 3) return game_time;
+    if (game_time <= takeoff || game_time >= landing) return game_time;
+    if (game_time <= game_catch) return takeoff + (game_time - takeoff) * before;
+    return catch_at + (game_time - game_catch) * after;
+}
 // After the game's touchdown, `since` seconds ago: the recording from its own landing (`down`) on, at its own
 // pace, so the landing bend happens on the ground. It was at `from` at touchdown; if that was short of its
 // landing it catches up rather than jumping, over a time that grows with how far behind it was (80 to 200 ms),
