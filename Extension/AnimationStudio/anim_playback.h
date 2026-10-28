@@ -194,34 +194,85 @@ struct EditPublicationCache {
         before = std::move(native); after = std::move(edited);
     }
 };
+// How much of a joint's edit fades as a pose rather than as a change on the game's (EditTransition, given `native`): none
+// for a small edit, which keeps the game's own motion under it, all of it from 20 degrees (or 8 cm) on. A big edit laid on
+// a new pose of the game's - a kickflip's knees on a nose slide's, already bent - bent the leg twice and put the foot
+// through the deck as the trick handed over (2026-10-28).
+inline float pose_fade_share(const Offset& edit) noexcept {
+    const float w = std::clamp(std::abs(edit.rotation[3]), 0.0f, 1.0f);
+    const float degrees = 2 * std::acos(w) * 57.2957795f;
+    const float cm = std::sqrt(edit.offset[0] * edit.offset[0] + edit.offset[1] * edit.offset[1] + edit.offset[2] * edit.offset[2]) * 100;
+    const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
+    return std::max(ease((degrees - 4) / 16), ease((cm - 2) / 6));
+}
 // Smooth only edit deltas when selection changes. Absolute skeleton/board coordinates
 // are never retained: the same delta can be composed over a moving fresh native pose.
+// Given the game's pose (`native`), a big edit is the exception (pose_fade_share): the fade starts from the pose drawn as it
+// began and goes to the pose wanted now - the game's next move as it is now, the legs going over to its legs - instead of
+// the old edit carried on top of the new move's pose.
 struct EditTransition {
     std::uint64_t generation{~std::uint64_t{0}}, episode{};
     std::uintptr_t source{};
     double started{-1}, observed{-1};
     std::vector<Offset> from, current;
+    std::vector<Joint> from_pose; // the pose drawn as the fade began (given `native`)
+    std::vector<Offset> from_now; // `from` as it stands on this update's pose of the game's
+    std::vector<Joint> drawn;     // the pose drawn on the last update (given `native`): where a fade starts from
     float from_left{}; // how much of `from` is still in `current`: 1 as a fade starts, 0 when it is done
     void reset() { *this = {}; }
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
-                                     std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f) {
+                                     std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f,
+                                     std::span<const Joint> native = {}) {
         if (!std::isfinite(now)) { reset(); return current; }
+        const bool posed = !native.empty() && native.size() == desired.size();
         if (generation != gen || current.size() != desired.size() || now < observed) {
-            generation = gen; current.assign(desired.size(), Offset{}); started = -1;
+            generation = gen; current.assign(desired.size(), Offset{}); started = -1; drawn.clear();
         }
         if (started < 0 || episode != attempt || source != selected) {
             from = current; started = now; episode = attempt; source = selected;
+            from_pose.clear();
+            if (posed) {
+                // The pose drawn on the last update: the game may already be in its next move on this one, and `from` on
+                // top of that would bend a leg twice.
+                if (drawn.size() == native.size()) from_pose = drawn;
+                else {
+                    from_pose.assign(native.begin(), native.end());
+                    for (std::size_t i = 0; i < from.size(); ++i) {
+                        from_pose[i].rotation = normalised(multiply(native[i].rotation, from[i].rotation));
+                        for (std::size_t k = 0; k < 3; ++k) from_pose[i].position[k] += from[i].offset[k];
+                    }
+                }
+            }
         }
         observed = now;
+        // Where the fade comes from on this update: the edit as it was, or - as far as it was a big one - the pose drawn
+        // then, as a change on the game's pose now.
+        from_now = from;
+        if (posed && from_pose.size() == from.size())
+            for (std::size_t i = 0; i < from.size(); ++i) {
+                const float share = pose_fade_share(from[i]);
+                if (!(share > 0)) continue;
+                const Quat turn = normalised(multiply(conjugate(native[i].rotation), from_pose[i].rotation));
+                from_now[i].rotation = slerp(from[i].rotation, turn, share);
+                for (std::size_t k = 0; k < 3; ++k)
+                    from_now[i].offset[k] = from[i].offset[k] + (from_pose[i].position[k] - native[i].position[k] - from[i].offset[k]) * share;
+            }
         // `seconds` (0.15 unless the Crossfade setting says): one trick's keys into the next, or out when a trick is
         // cut short (a new air, a bail), without a snap.
         float u = std::clamp(static_cast<float>(now - started) / std::max(seconds, 0.02f), 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
         from_left = 1 - u;
         for (std::size_t i = 0; i < desired.size(); ++i) {
-            current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from[i].rotation, desired[i].rotation, u);
+            current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from_now[i].rotation, desired[i].rotation, u);
             for (std::size_t k = 0; k < 3; ++k)
-                current[i].offset[k] = u >= 1 ? desired[i].offset[k] : from[i].offset[k] + (desired[i].offset[k] - from[i].offset[k]) * u;
+                current[i].offset[k] = u >= 1 ? desired[i].offset[k] : from_now[i].offset[k] + (desired[i].offset[k] - from_now[i].offset[k]) * u;
+        }
+        if (posed) {
+            drawn.assign(native.begin(), native.end());
+            for (std::size_t i = 0; i < current.size(); ++i) {
+                if (current[i].rotation != Quat{0, 0, 0, 1}) drawn[i].rotation = normalised(multiply(native[i].rotation, current[i].rotation));
+                for (std::size_t k = 0; k < 3; ++k) drawn[i].position[k] += current[i].offset[k];
+            }
         }
         return current;
     }
@@ -410,6 +461,74 @@ inline float drop_clip_time(const DropPlay& p, float real) noexcept {
     if (in_air <= air) return time;
     return std::min(p.duration, landed_time(in_air - air, p.land, time));
 }
+// ---- the deck's force field --------------------------------------------------------------------------------------------
+// The shoe's sole, in its foot joint's frame (the ankle; X along the foot to the toe joint, 0.112 m on). Measured in the
+// game's own clips (ollie, kickflip and heelflip at a mid pop, standing on the deck before the pop and after the landing,
+// 2026-10-28): the ankle 0.105 to 0.108 m over the board's mount, the toe joint 0.044 m, and the deck's down in the foot's
+// frame (0.54, 0.84, 0), give or take 0.05. So the sole is 0.085 m under the ankle along that down, the toe joint 0.025 m
+// over it, and the deck's top 0.019 m over the mount.
+inline constexpr Vec3 sole_down_in_foot{0.5408f, 0.8412f, 0.0f};
+inline constexpr Vec3 sole_forward_in_foot{0.8412f, -0.5408f, 0.0f};
+inline constexpr float ankle_over_sole = 0.085f;
+// Where the sole touches: the heel's two edges, the middle's, the ball's (under the toe joint) and the toe's tip (it
+// curves up a little), each in the foot's frame.
+inline std::array<Vec3, 9> sole_points() noexcept {
+    const auto at = [](float forward, float side, float raised) {
+        return Vec3{sole_down_in_foot[0] * (ankle_over_sole - raised) + sole_forward_in_foot[0] * forward,
+                    sole_down_in_foot[1] * (ankle_over_sole - raised) + sole_forward_in_foot[1] * forward, side};
+    };
+    return {at(-0.065f, 0.035f, 0), at(-0.065f, -0.035f, 0), at(0.015f, 0.045f, 0), at(0.015f, -0.045f, 0), at(0.094f, 0.05f, 0),
+            at(0.094f, -0.05f, 0), at(0.165f, 0.03f, 0.008f), at(0.165f, -0.03f, 0.008f), at(0.175f, 0, 0.012f)};
+}
+// The board, in its mount's frame along its length (0 the middle), up and across: the grip 0.019 m over the mount, the
+// deck 0.014 m thick and 0.21 m wide, its kicks curving up 0.045 m from 0.29 m out to the tips at 0.40 m (the game's back
+// foot stands on the tail 0.025 m up at 0.31 m out and 0.046 m up at 0.36: 408 standing frames of 102 of its tricks), nose
+// and tail rounded from 0.30 m; under it the trucks and wheels, 0.18 m out and 0.23 m across, down to the wheels' bottom
+// 0.087 m under the mount (board_shape).
+inline constexpr float deck_top_flat = 0.019f, deck_thickness = 0.014f, deck_tip = 0.40f, deck_half_width = 0.105f;
+inline constexpr float deck_kick_from = 0.29f, deck_kick_rise = 0.045f, deck_round_from = 0.30f;
+inline constexpr float trucks_at = 0.18f, trucks_half_length = 0.04f, trucks_half_width = 0.115f, wheels_bottom = -0.087f;
+// A shoe is kept this far off the deck's edges and tips too, and never pushed for more than deck_most_depth: a leg the
+// board went right through is past helping, and pulling it all that way would throw it about.
+inline constexpr float deck_edge_margin = 0.01f, deck_most_depth = 0.3f;
+inline constexpr float deck_middle = deck_top_flat - deck_thickness / 2;
+inline float deck_top_at(float along) noexcept {
+    const float x = std::clamp((std::abs(along) - deck_kick_from) / (deck_tip - deck_kick_from), 0.0f, 1.0f);
+    return deck_top_flat + deck_kick_rise * x * x;
+}
+inline float deck_half_width_at(float along) noexcept {
+    const float a = std::abs(along);
+    if (a <= deck_round_from) return deck_half_width;
+    if (a >= deck_tip) return 0;
+    const float x = (a - deck_round_from) / (deck_tip - deck_round_from);
+    return deck_half_width * std::sqrt(std::max(0.0f, 1 - x * x));
+}
+// How deep a point (along, up and across in the board's frame) is in the board, from the side the feet are on: over the
+// grip (`top`), or else under the deck and, where the trucks are, under the wheels. 0 when it is clear of it, or past it
+// by more than deck_most_depth.
+inline float deck_depth(float along, float up, float across, bool top) noexcept {
+    if (!std::isfinite(along) || !std::isfinite(up) || !std::isfinite(across)) return 0;
+    const float a = std::abs(along), w = std::abs(across);
+    if (a > deck_tip + deck_edge_margin) return 0;
+    if (w > deck_half_width_at(std::min(a, deck_tip)) + deck_edge_margin) return 0;
+    float depth;
+    if (top) {
+        depth = deck_top_at(along) - up;
+    } else {
+        const bool trucks = std::abs(a - trucks_at) < trucks_half_length && w < trucks_half_width;
+        depth = up - (trucks ? wheels_bottom : deck_top_at(along) - deck_thickness);
+    }
+    return depth > 0 && depth <= deck_most_depth ? depth : 0.0f;
+}
+// Which side of the deck the feet belong on: the hips' (`hips_up`, over the board's mount), held until the hips are 10 cm
+// clear on the other side - as the board turns edge on under him it stays as it was.
+inline bool feet_side_of_deck(float hips_up, bool was_top) noexcept {
+    if (!std::isfinite(hips_up)) return was_top;
+    if (hips_up > deck_middle + 0.1f) return true;
+    if (hips_up < deck_middle - 0.1f) return false;
+    return was_top;
+}
+
 // The moment off the drop that shows `clip_time` (the first: it never goes back).
 inline float drop_real_time(const DropPlay& p, float clip_time) noexcept {
     if (!p.on() || !std::isfinite(clip_time) || clip_time <= p.takeoff) return clip_time;

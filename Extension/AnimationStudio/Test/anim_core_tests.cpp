@@ -1975,6 +1975,90 @@ void native_clips_pop_where_the_game_does() {
     auto piece = make(-1, -1);
     check(!place_native_marks(piece) && piece.takeoff < 0, "and a piece with no pop gets none");
 }
+
+// The fade into the game's next move: a big edit fades from the pose drawn, a small one stays a change on the game's.
+void fades_go_to_the_next_move() {
+    const auto turn_x = [](float degrees) { return axis_angle(Vec3{1, 0, 0}, degrees * 3.14159265f / 180); };
+    const auto degrees_about_x = [](const Quat& q) { return 2 * std::atan2(q[0], q[3]) * 180 / 3.14159265f; };
+    {
+        Offset small, big;
+        small.rotation = turn_x(3);
+        big.rotation = turn_x(40);
+        check(near(pose_fade_share(small), 0) && near(pose_fade_share(big), 1), "A small edit fades as a change, a big one as a pose");
+        Offset moved;
+        moved.offset = {0, 0.1f, 0};
+        check(near(pose_fade_share(moved), 1), "and a hips move of 10 cm as a pose");
+    }
+    // A knee keyed 40 degrees round on the game's pose (0 degrees); the trick hands back as the game's next move bends that
+    // knee 50 degrees itself.
+    std::vector<Joint> before(1), after(1);
+    after[0].rotation = turn_x(50);
+    std::array<Offset, 1> keyed{}, none{};
+    keyed[0].rotation = turn_x(40);
+    {
+        EditTransition fade;
+        fade.evaluate(1, 1, 1, 10, keyed, 0.3f, before);
+        fade.evaluate(1.5, 1, 1, 10, keyed, 0.3f, before); // played to the end
+        const auto start = fade.evaluate(1.5, 1, 1, 0, none, 0.3f, after)[0];
+        // The knee as drawn: the game's 50 and the change on it.
+        const float drawn_start = degrees_about_x(normalised(multiply(after[0].rotation, start.rotation)));
+        check(near(drawn_start, 40, 0.5f), "Handing over, the knee starts where it was drawn (40), not 40 more on the next move's 50");
+        const auto half = fade.evaluate(1.65, 1, 1, 0, none, 0.3f, after)[0];
+        const float drawn_half = degrees_about_x(normalised(multiply(after[0].rotation, half.rotation)));
+        check(near(drawn_half, 45, 0.5f), "halfway it is between them (45)");
+        const auto done = fade.evaluate(1.8, 1, 1, 0, none, 0.3f, after)[0];
+        check(near(degrees_about_x(normalised(multiply(after[0].rotation, done.rotation))), 50, 0.5f), "and then the next move's own (50)");
+    }
+    {
+        // Without the game's pose (the board's fade), the change is carried as it was: 40 on top of 50.
+        EditTransition fade;
+        fade.evaluate(1, 1, 1, 10, keyed);
+        fade.evaluate(1.5, 1, 1, 10, keyed);
+        const auto start = fade.evaluate(1.5, 1, 1, 0, none, 0.3f)[0];
+        check(near(degrees_about_x(normalised(multiply(after[0].rotation, start.rotation))), 90, 0.5f),
+              "The board's fade still carries its change over the game's");
+    }
+    {
+        // A small edit (3 degrees) keeps following the game's motion under it.
+        std::array<Offset, 1> small{};
+        small[0].rotation = turn_x(3);
+        EditTransition fade;
+        fade.evaluate(1, 1, 1, 10, small, 0.3f, before);
+        fade.evaluate(1.5, 1, 1, 10, small, 0.3f, before);
+        const auto start = fade.evaluate(1.5, 1, 1, 0, none, 0.3f, after)[0];
+        check(near(degrees_about_x(normalised(multiply(after[0].rotation, start.rotation))), 53, 0.5f), "A small edit rides on the game's motion");
+    }
+}
+// The deck's force field: a shoe standing on the deck is clear of it, a shoe sunk in is as deep as it is sunk, and the side
+// the feet belong on follows the hips.
+void the_deck_keeps_shoes_out() {
+    // A foot as the game stands it on the deck (its own frame turned so the deck's down is sole_down_in_foot), ankle 0.106 m
+    // over the mount: every point of its sole within 0.5 cm over the grip.
+    const auto points = sole_points();
+    const auto sole_height = [&](const Vec3& point, float ankle) { // flat foot: down is sole_down_in_foot
+        const float down = point[0] * sole_down_in_foot[0] + point[1] * sole_down_in_foot[1] + point[2] * sole_down_in_foot[2];
+        return ankle - down;
+    };
+    for (const auto& point : points) {
+        const float h = sole_height(point, 0.106f);
+        check(h >= deck_top_flat - 0.0001f && h < deck_top_flat + 0.016f, "A shoe stood on the deck as the game stands it is on it, not in it");
+        check(deck_depth(0.05f, h, 0.02f, true) == 0, "and clear of it");
+    }
+    check(near(deck_depth(0.0f, deck_top_flat - 0.02f, 0.0f, true), 0.02f), "Sunk 2 cm in the deck, it is 2 cm deep");
+    check(deck_depth(0.0f, deck_top_flat - 0.02f, 0.2f, true) == 0, "but off the deck's side it is not");
+    check(near(deck_depth(0.0f, deck_top_flat - 0.02f, deck_half_width + 0.005f, true), 0.02f), "and just off its edge it still is");
+    check(near(deck_depth(0.38f, deck_top_flat + 0.02f, 0.0f, true), deck_top_at(0.38f) - deck_top_flat - 0.02f),
+          "On the tail the kick rises, and the shoe is kept over it");
+    check(deck_top_at(0.38f) > deck_top_flat + 0.025f && near(deck_top_at(0.25f), deck_top_flat), "The kicks rise at the ends only");
+    check(deck_depth(0.39f, 0, 0.1f, true) == 0, "The nose and the tail are round");
+    check(deck_depth(0.0f, -0.5f, 0.0f, true) == 0, "A leg the board went right through is not pulled half a metre");
+    // Under the deck: the feet on its other side (the board upside down under him).
+    check(near(deck_depth(0.0f, deck_top_flat - deck_thickness + 0.01f, 0.0f, false), 0.01f), "From under the deck, 1 cm into it");
+    check(near(deck_depth(trucks_at, wheels_bottom + 0.01f, 0.05f, false), 0.01f), "and where the trucks are, under the wheels");
+    check(deck_depth(0.0f, deck_top_flat - deck_thickness - 0.01f, 0.0f, false) == 0, "Under the deck and clear of it");
+    check(feet_side_of_deck(0.8f, false) && !feet_side_of_deck(-0.8f, true), "The feet go on the hips' side of the deck");
+    check(feet_side_of_deck(0.05f, true) && !feet_side_of_deck(0.05f, false), "and keep it while the board is edge on");
+}
 void native_playback_contracts() {
     EditTransition transition;
     std::array<Offset, 1> a{}, b{}; a[0].offset[0] = 0.4f; b[0].offset[0] = -0.4f;
@@ -2380,6 +2464,8 @@ int main(int argc, char** argv) {
         merged_library_and_timing();
         preview_trajectory_uses_the_whole_clip();
         native_playback_contracts();
+        fades_go_to_the_next_move();
+        the_deck_keeps_shoes_out();
         fitting_the_air_keeps_the_flip();
         slow_catch_off_drops();
         landing_and_retiming();
