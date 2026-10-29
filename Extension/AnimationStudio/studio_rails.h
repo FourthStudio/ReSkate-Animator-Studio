@@ -1,0 +1,82 @@
+#pragma once
+#include <array>
+#include <cmath>
+#include <string_view>
+
+// The studio's grind rail: one of the game's own straight build-kit rails, put in the studio under a grind while it is
+// open, so the board sits on it as in game (anim_studio.cpp, rail_tick). Only grinds: a flip trick never shows it.
+//
+// How they are made (their physics parts, from each item's EcsPhysicsAsset volume moments, 2026-10-29): the item's
+// origin is on the floor at the middle of the rail, and the bar runs along its own Z, with feet and posts under it.
+// The bar's top is about 0.50 m up (0.75 m on the tall ones); the studio measures it once the rail stands there and
+// uses these only until then.
+namespace dingosdk::anim_studio {
+struct StudioRail {
+    std::string_view key;   // the build-kit item
+    std::string_view name;  // as SETTINGS lists it
+    std::string_view label; // as the editor's RAIL button shows it
+    float top;              // the bar's top above the floor, metres
+    float length;           // metres
+};
+inline constexpr std::array<StudioRail, 8> studio_rails{{
+    {"own_bkrails_generic_flatrailround_00001", "Round rail, 4 m, 50 cm high", "ROUND 4M", 0.499f, 4},
+    {"own_bkrails_generic_flatrailroundlong_00001", "Round rail, 6 m, 50 cm high", "ROUND 6M", 0.499f, 6},
+    {"own_bkrails_generic_flatrailroundtall_00001", "Tall round rail, 4 m, 75 cm high", "TALL ROUND 4M", 0.749f, 4},
+    {"own_bkrails_generic_flatrailroundtalllong_00001", "Tall round rail, 6 m, 75 cm high", "TALL ROUND 6M", 0.749f, 6},
+    {"own_bkrails_generic_flatrailsquare_00001", "Square rail, 4 m, 50 cm high", "SQUARE 4M", 0.5f, 4},
+    {"own_bkrails_generic_flatrailsquarelong_00001", "Square rail, 6 m, 50 cm high", "SQUARE 6M", 0.5f, 6},
+    {"own_bkrails_generic_flatrailsquaretall_00001", "Tall square rail, 4 m, 75 cm high", "TALL SQUARE 4M", 0.75f, 4},
+    {"own_bkrails_generic_flatrailsquaretalllong_00001", "Tall square rail, 6 m, 75 cm high", "TALL SQUARE 6M", 0.75f, 6},
+}};
+inline constexpr std::string_view default_studio_rail = "own_bkrails_generic_flatrailround_00001";
+inline const StudioRail* studio_rail(std::string_view key) noexcept {
+    for (const auto& rail : studio_rails)
+        if (rail.key == key) return &rail;
+    return nullptr;
+}
+// A clip of the game's grinds and slides on a rail (animation/dingo/c_proto_onb_grind_..., the off-board feet grinds):
+// the ones whose Ground joint is where the board meets the rail. Flip tricks, manuals and the rest are not.
+inline bool grind_clip(std::string_view asset) noexcept { return asset.find("_grind_") != std::string_view::npos; }
+
+// Where the rail goes under a grind clip, from the clip's first frame as the studio draws it: its Ground joint is where
+// the board meets the rail (7.9 cm under the deck between the trucks on a 50-50, under the back truck on a 5-0, under
+// the deck on a boardslide, at the tail on a tailslide - the game's own clips, 2026-10-29), and the rail runs along the
+// way he travels, the placement's own X. `placement` the placement's turn (x y z w) and place, `ground` the Ground
+// joint's place in the placement's frame, `floor` the floor's height. The rail's origin (on the floor) and its turn
+// about up (its Z along the way he travels).
+struct RailSpot {
+    std::array<float, 3> at{};
+    std::array<float, 4> rotation{0, 0, 0, 1};
+    bool valid{};
+};
+inline RailSpot rail_spot(const std::array<float, 4>& placement_rotation, const std::array<float, 3>& placement_at,
+                          const std::array<float, 3>& ground, float floor) noexcept {
+    const auto rotate = [&](const std::array<float, 3>& v) {
+        const float x = placement_rotation[0], y = placement_rotation[1], z = placement_rotation[2], w = placement_rotation[3];
+        const std::array<float, 3> t{2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])};
+        return std::array<float, 3>{v[0] + w * t[0] + (y * t[2] - z * t[1]), v[1] + w * t[1] + (z * t[0] - x * t[2]),
+                                    v[2] + w * t[2] + (x * t[1] - y * t[0])};
+    };
+    RailSpot spot;
+    const auto contact = rotate(ground);
+    const auto along = rotate({1, 0, 0});
+    const float n = std::sqrt(along[0] * along[0] + along[2] * along[2]);
+    if (!(n > 1e-3f) || !std::isfinite(floor)) return spot;
+    const float yaw = std::atan2(along[0] / n, along[2] / n); // the turn about up that takes Z along the way he travels
+    spot.at = {placement_at[0] + contact[0], floor, placement_at[2] + contact[2]};
+    spot.rotation = {0, std::sin(yaw * 0.5f), 0, std::cos(yaw * 0.5f)};
+    spot.valid = std::isfinite(spot.at[0]) && std::isfinite(spot.at[2]);
+    return spot;
+}
+// Close enough to be the same rail where it is: within 2 cm and a degree (a rail is a line: turned half round it is the
+// same rail).
+inline bool same_rail_spot(const std::array<float, 3>& a, const std::array<float, 4>& qa, const std::array<float, 3>& b,
+                           const std::array<float, 4>& qb) noexcept {
+    const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    if (dx * dx + dy * dy + dz * dz > 0.02f * 0.02f) return false;
+    const float dot = std::abs(qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3]);
+    const float turned = 2 * std::acos(std::fmin(dot, 1.0f));
+    constexpr float degree = 0.01745329f, half_turn = 3.14159265f;
+    return turned < degree || std::abs(turned - half_turn) < degree;
+}
+} // namespace dingosdk::anim_studio

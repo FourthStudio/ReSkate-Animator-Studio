@@ -14,6 +14,7 @@
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/native_additive.h"
+#include "Extension/AnimationStudio/studio_rails.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -2053,6 +2054,33 @@ void additive_clips_go_on_their_pose() {
     check(refused, "A base of another size is refused");
 }
 
+// The studio's grind rail (studio_rails.h): only the game's grinds get one, under their Ground joint along the way he
+// travels, and the same spot is not moved again.
+void grind_rail_goes_under_the_grind() {
+    check(grind_clip("animation/dingo/c_proto_onb_grind_fs_bs_5_0_rail_loop") && grind_clip("animation/dingo/c_proto_ofb_grind_5050_feet_rail_loop") &&
+              !grind_clip("animation/dingo/c_proto_onb_trick_o_kickflip_mid") && !grind_clip("animation/dingo/c_proto_onb_manual_t_loop_med") &&
+              !grind_clip("animation/dingo/c_proto_onb_powerslide_bs_fast_loop"),
+          "Only the game's grinds and slides on a rail get the rail");
+    check(studio_rail(default_studio_rail) != nullptr && studio_rail("own_bkrails_generic_snakewavy_00005") == nullptr,
+          "The rail is one of the straight ones");
+    for (const auto& rail : studio_rails) check(rail.top > 0.4f && rail.top < 0.8f && rail.length >= 4, "Each straight rail's top and length are known");
+    // Facing as the game's own placement does (a quarter turn about up): the rail runs along his X, under the Ground joint.
+    const float h = std::sqrt(0.5f);
+    const std::array<float, 4> facing{0, -h, 0, h};
+    const auto spot = rail_spot(facing, {10, -69, 5}, {0.0f, 0.97f, 0.3f}, -69.99f);
+    check(spot.valid, "A grind has its rail");
+    // His X turned a quarter about up is the world's Z, and the Ground joint's (0, _, 0.3) lies 0.3 back along world X.
+    check(near(spot.at[0], 9.7f) && near(spot.at[1], -69.99f) && near(spot.at[2], 5.0f), "The rail stands on the floor under the Ground joint");
+    const auto bar = rotate(Quat{spot.rotation[0], spot.rotation[1], spot.rotation[2], spot.rotation[3]}, Vec3{0, 0, 1});
+    const auto along = rotate(Quat{facing[0], facing[1], facing[2], facing[3]}, Vec3{1, 0, 0});
+    check(near(std::abs(bar[0] * along[0] + bar[2] * along[2]), 1) && near(bar[1], 0), "Its bar runs the way he travels");
+    check(same_rail_spot(spot.at, spot.rotation, {spot.at[0] + 0.01f, spot.at[1], spot.at[2]}, spot.rotation) &&
+              !same_rail_spot(spot.at, spot.rotation, {spot.at[0] + 0.05f, spot.at[1], spot.at[2]}, spot.rotation),
+          "Within 2 cm it is the same spot");
+    const std::array<float, 4> half_turn{0, spot.rotation[3], 0, -spot.rotation[1]}; // turned another half round about up
+    check(same_rail_spot(spot.at, spot.rotation, spot.at, half_turn), "A rail turned half round is the same rail");
+}
+
 void fakie_mirrors_the_upper_body() {
     std::mt19937 random(7);
     std::uniform_real_distribution<float> spread(-1, 1);
@@ -2616,6 +2644,7 @@ int main(int argc, char** argv) {
         fakie_layer_goes_on_as_the_game_plays_it();
         fakie_mirrors_the_upper_body();
         additive_clips_go_on_their_pose();
+        grind_rail_goes_under_the_grind();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
         profiles_read_back_and_bad_ones_are_refused();

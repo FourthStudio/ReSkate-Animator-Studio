@@ -11,7 +11,7 @@ struct Given {
     std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, drop_preview, guide_seen, smooth;
     std::optional<int> stance;
     std::optional<float> crossfade;
-    std::optional<std::string> your_name;
+    std::optional<std::string> your_name, grind_rail;
     int bug_reports{};
     std::optional<std::string> playing, mode_of;
     std::optional<PlaylistMode> mode;
@@ -30,6 +30,7 @@ void set_catch_marker(bool on) { given.catch_marker = on; }
 void set_drop_preview_tool(bool on) { given.drop_preview = on; }
 void set_guide_seen(bool seen) { given.guide_seen = seen; }
 void set_smooth_transitions(bool on) { given.smooth = on; }
+void set_grind_rail(const std::string& key) { given.grind_rail = key; }
 void play_playlist(const std::string& name, std::string& message) {
     given.playing = name;
     message = name.empty() ? "No playlist is on." : name + " is on.";
@@ -173,6 +174,18 @@ void the_catch_tools_are_on_by_default_and_each_sets_its_own() {
     drop.pick(0);
     check(anim_studio::given.drop_preview == false, "Drop height preview OFF did not set it");
 }
+void grind_rail_lists_off_and_the_rails_this_player_has() {
+    reset();
+    anim_studio::Settings now;
+    now.grind_rail = "own_bkrails_generic_flatrailsquare_00001";
+    now.rails = {"own_bkrails_generic_flatrailround_00001", "own_bkrails_generic_flatrailsquare_00001", "own_bkrails_generic_snakewavy_00005"};
+    const auto row = grind_rail(now);
+    check(row.options.size() == 3 && row.options[0] == "OFF" && row.selected == 2, "Grind rail is not OFF and the straight rails the player has");
+    row.pick(1);
+    check(anim_studio::given.grind_rail == "own_bkrails_generic_flatrailround_00001", "Picking a rail did not set it");
+    row.pick(0);
+    check(anim_studio::given.grind_rail == "", "Picking OFF did not take the rail away");
+}
 void how_it_works_opens_the_guide_again() {
     reset();
     const auto row = how_it_works();
@@ -207,6 +220,7 @@ int main() {
         the_mode_is_the_playing_playlists_and_set_by_its_name();
         the_catch_tools_are_on_by_default_and_each_sets_its_own();
         how_it_works_opens_the_guide_again();
+        grind_rail_lists_off_and_the_rails_this_player_has();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "animation studio settings tests passed\n";
 }

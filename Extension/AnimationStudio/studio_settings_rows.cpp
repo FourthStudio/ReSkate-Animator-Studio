@@ -1,4 +1,5 @@
 #include "studio_settings_rows.h"
+#include "studio_rails.h"
 #include <algorithm>
 #include <cmath>
 #include <format>
@@ -66,6 +67,21 @@ Setting studio_room(const studio::Settings& now) {
                   "On: the studio opens in the game's own lit studio room, as skate.'s Skaters page shows it. Off: it opens where "
                   "you are. Takes effect the next time it opens.",
                   [](bool on) { studio::set_room(on); });
+}
+Setting grind_rail(const studio::Settings& now) {
+    std::vector<std::string> options{"OFF"}, keys{""};
+    int selected = 0;
+    for (const auto& key : now.rails)
+        if (const auto* rail = studio::studio_rail(key)) {
+            if (rail->key == now.grind_rail) selected = static_cast<int>(options.size());
+            options.emplace_back(rail->name);
+            keys.emplace_back(rail->key);
+        }
+    return one_of("Grind rail", std::move(options), selected,
+                  "The game's own straight rail a grind stands on in the studio: open one of the game's grinds or slides and the "
+                  "rail is put up under it, the board on its top as in game. Flip tricks and everything else have none. It "
+                  "stands in your park only while the grind is open, only in the Studio room, and never in an online session.",
+                  [keys](int picked) { studio::set_grind_rail(keys[static_cast<std::size_t>(picked)]); });
 }
 Setting catch_marker(const studio::Settings& now) {
     return on_off("Catch marker", now.catch_marker,

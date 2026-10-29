@@ -2,6 +2,7 @@
 #include "skate_style.h"
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
+#include "Extension/AnimationStudio/studio_rails.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
@@ -7419,6 +7420,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
     switch (page) {
     case 0: {
         rows.push_back(studio::settings_rows::studio_room(now));
+        rows.push_back(studio::settings_rows::grind_rail(now));
         rows.push_back(choice("Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))].name,
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
                               "him and above, as he stands when you pick it; BOARD is close on the deck, CINEMATIC wide and low, FILMER "
@@ -9574,6 +9576,21 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     if (tool("##joints", "JOINTS", key_of("joints").c_str(), !u.hide_joints, "The dots on his joints and the gizmo. Off shows the pose clean.")) u.hide_joints = !u.hide_joints;
     y += row;
     if (tool("##follow", "FOLLOW", key_of("follow").c_str(), false, "The camera keeps the chosen joint in the middle. Again: the whole skater.")) studio::focus_joint(u.selected);
+    // A grind of the game's open: the rail it stands on, one press to the next (OFF and the straight rails).
+    if (v.grind_open) {
+        y += row;
+        group("RAIL");
+        const auto now = studio::settings();
+        std::vector<std::string> keys{""};
+        for (const auto& key : now.rails)
+            if (studio::studio_rail(key)) keys.push_back(key);
+        const auto chosen = std::find(keys.begin(), keys.end(), v.grind_rail);
+        const std::size_t i = chosen == keys.end() ? 0 : static_cast<std::size_t>(chosen - keys.begin());
+        const auto* rail = studio::studio_rail(keys[i]);
+        if (tool("##rail", rail ? std::string(rail->label).c_str() : "OFF", "", rail != nullptr,
+                 "The game's rail this grind stands on, its board on the top. Press for the next one. SETTINGS > STUDIO > Grind rail."))
+            studio::set_grind_rail(keys[(i + 1) % keys.size()]);
+    }
     if (!u.tool_tip.empty()) {
         const float tw = 300 * k;
         const auto measured = sharp(f.bold, 14 * k)->CalcTextSizeA(14 * k, FLT_MAX, tw - 28 * k, u.tool_tip_text.c_str());
