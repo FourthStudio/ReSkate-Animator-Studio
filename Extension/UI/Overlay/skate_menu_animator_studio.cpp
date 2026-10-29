@@ -99,42 +99,46 @@ float since_opened() {
     return static_cast<float>(now - opened);
 }
 
-// The banner: the studio's backdrop under grain, the blue brush wiping in behind ANIMATOR STUDIO, the brush face's line
-// under it, the kickflipping board at the right, and what plays as chips coming in one by one.
+// The banner: the studio's picture (its own logo: reskate. animator studio) shown whole, settling in from dark each time
+// the page opens, with the kickflipping board sliding in at its right and a blue line wiping in under it; under that, what
+// plays as chips coming in one by one, and the brush face's line at the right. Nothing is drawn over the picture's logo.
 void banner(SkateMenu& menu, const anim_studio::MenuSummary& now, const anim_studio::Settings& settings, float t) {
     auto* d = ImGui::GetWindowDrawList();
     const auto a = ImGui::GetCursorScreenPos();
-    const float w = ImGui::GetContentRegionAvail().x, h = px(console_style() ? 200.0f : 176.0f);
+    // Tall enough for the logo and its splashes (the built-in picture is 3072 x 1296, the logo in its middle 60%).
+    const float w = ImGui::GetContentRegionAvail().x, h = std::clamp(w * 0.29f, px(210), px(320));
     const ImVec2 b(a.x + w, a.y + h);
     ImGui::Dummy(ImVec2(w, h));
     d->PushClipRect(a, b, true);
-    if (!draw_studio_backdrop_cover(d, a, b, IM_COL32(255, 255, 255, 255))) d->AddRectFilled(a, b, IM_COL32(20, 21, 24, 255));
-    // Dark at the left for the words, the picture coming through at the right.
-    d->AddRectFilledMultiColor(a, b, IM_COL32(0, 0, 0, 215), IM_COL32(0, 0, 0, 60), IM_COL32(0, 0, 0, 60), IM_COL32(0, 0, 0, 215));
-    draw_studio_picture(d, StudioPicture::grain, a, b, IM_COL32(255, 255, 255, 46));
-    // The brush wipes in from the left behind the name.
-    const float in = ease((t - 0.05f) / 0.35f);
-    const ImVec2 ba(a.x + px(10), a.y + px(22)), bb(a.x + std::min(w * 0.62f, px(520)), a.y + px(98));
-    d->PushClipRect(ba, ImVec2(ba.x + (bb.x - ba.x) * in, bb.y), true);
-    if (!draw_studio_brush(d, ba, bb, skate_theme::blue)) d->AddRectFilled(ba, bb, skate_theme::blue);
-    d->PopClipRect();
-    // ANIMATOR STUDIO, stamped on.
-    const float stamp = ease((t - 0.18f) / 0.22f);
-    const float size = px(46) * (1 + 0.18f * (1 - stamp));
-    words(d, anton(menu, size), size, ImVec2(a.x + px(26), a.y + px(32) - (size - px(46)) * 0.5f), paper, "ANIMATOR STUDIO", stamp);
-    words(d, marker(menu, px(22)), px(22), ImVec2(a.x + px(30), a.y + px(104)), blue_light, "your tricks, your way.", ease((t - 0.35f) / 0.3f));
+    // The picture comes in from dark and a little close, and settles.
+    const float settle = ease(t / 0.7f);
+    const float grow = 0.06f * (1 - settle);
+    const ImVec2 middle((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+    const ImVec2 pa(middle.x - (w * 0.5f) * (1 + grow), middle.y - (h * 0.5f) * (1 + grow)), pb(middle.x + (w * 0.5f) * (1 + grow), middle.y + (h * 0.5f) * (1 + grow));
+    if (!draw_studio_backdrop_cover(d, pa, pb, IM_COL32(255, 255, 255, 255))) d->AddRectFilled(a, b, IM_COL32(20, 21, 24, 255));
+    draw_studio_picture(d, StudioPicture::grain, a, b, IM_COL32(255, 255, 255, 30));
+    if (settle < 1) d->AddRectFilled(a, b, IM_COL32(0, 0, 0, static_cast<int>(255 * (1 - settle))));
     // The board kickflipping at the right, sliding in.
-    const float board_in = ease((t - 0.1f) / 0.4f);
-    const float side = std::min(h - px(30), px(150));
-    const ImVec2 ka(b.x - side - px(24) + (1 - board_in) * px(70), a.y + (h - side) * 0.5f);
+    const float board_in = ease((t - 0.25f) / 0.45f);
+    const float side = std::min(h * 0.55f, px(150));
+    const ImVec2 ka(b.x - side - px(28) + (1 - board_in) * px(80), a.y + (h - side) * 0.5f);
     draw_studio_kickflip(d, ka, ImVec2(ka.x + side, ka.y + side), ImGui::GetTime(), IM_COL32(255, 255, 255, static_cast<int>(255 * board_in)));
-    // What plays, one chip after another.
-    float x = a.x + px(26);
-    const float y = b.y - px(40);
+    d->PopClipRect();
+    // The blue line under it, wiping in from the left.
+    const float line = ease((t - 0.15f) / 0.45f);
+    d->AddRectFilled(ImVec2(a.x, b.y), ImVec2(a.x + w * line, b.y + px(4)), skate_theme::blue);
+    ImGui::Dummy(ImVec2(w, px(4)));
+
+    // What plays, one chip after another, under the picture.
+    ImGui::Dummy(ImVec2(0, px(6)));
+    const auto row = ImGui::GetCursorScreenPos();
+    const float row_h = px(26);
+    ImGui::Dummy(ImVec2(w, row_h));
+    float x = row.x;
     int i = 0;
     const auto next = [&](const std::string& label, ImU32 fill) {
-        const float alpha = ease((t - 0.5f - 0.07f * static_cast<float>(i++)) / 0.25f);
-        if (alpha > 0) x += chip(d, menu, ImVec2(x, y), label, fill, alpha) + px(8);
+        const float alpha = ease((t - 0.45f - 0.07f * static_cast<float>(i++)) / 0.25f);
+        if (alpha > 0) x += chip(d, menu, ImVec2(x, row.y), label, fill, alpha) + px(8);
     };
     if (!settings.play_in_game) next("YOUR TRICKS ARE OFF IN GAME", red);
     else if (now.playing.empty()) next("NO PLAYLIST IS ON", red);
@@ -145,7 +149,13 @@ void banner(SkateMenu& menu, const anim_studio::MenuSummary& now, const anim_stu
              IM_COL32(40, 42, 48, 235));
     next(std::format("{} TRICKS IN PLAY", now.in_play), IM_COL32(40, 42, 48, 235));
     next(settings.smooth_transitions ? "SMOOTH" : "CLASSIC", IM_COL32(40, 42, 48, 235));
-    d->PopClipRect();
+    // The brush face's line at the right, when it fits beside the chips.
+    const float size = px(20);
+    auto* hand = marker(menu, size);
+    const char* motto = "your tricks, your way.";
+    const auto mw = hand->CalcTextSizeA(size, FLT_MAX, 0, motto);
+    if (x + px(16) + mw.x < row.x + w)
+        words(d, hand, size, ImVec2(row.x + w - mw.x - px(4), row.y + (row_h - mw.y) * 0.5f), blue_light, motto, ease((t - 0.8f) / 0.35f));
     ImGui::Dummy(ImVec2(0, px(10)));
 }
 
