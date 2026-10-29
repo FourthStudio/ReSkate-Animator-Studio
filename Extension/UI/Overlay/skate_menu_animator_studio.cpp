@@ -225,7 +225,8 @@ void studio_card_end(const StudioCard& card) {
     ImGui::Dummy(ImVec2(0, px(12)));
 }
 
-// The last tricks done, the newest first: the game's trick and pop, and yours that played it or the game's own.
+// The last tricks done, the newest first: yours that played it by the name you gave it (STEEZFLIP TRE), or the game's
+// trick when its own played; the pop, and at the right the game's trick yours stood in for.
 void last_tricks(SkateMenu& menu, const anim_studio::MenuSummary& now) {
     auto* d = ImGui::GetWindowDrawList();
     if (now.recent.empty()) {
@@ -242,16 +243,19 @@ void last_tricks(SkateMenu& menu, const anim_studio::MenuSummary& now) {
         if (i == 0) d->AddRectFilled(a, ImVec2(a.x + px(4), b.y), skate_theme::blue);
         float x = a.x + px(12);
         if (!r.pop.empty()) x += chip(d, menu, ImVec2(x, a.y + px(4)), r.pop == "low" ? "LOW" : r.pop == "mid" ? "MID" : r.pop == "high" ? "HIGH" : r.pop, IM_COL32(50, 52, 60, 255), 1) + px(10);
-        d->AddText(menu.bold, px(15), ImVec2(x, a.y + px(8)), paper, r.label.c_str());
+        const std::string& title = r.played.empty() ? r.label : r.played;
+        d->AddText(menu.bold, px(15), ImVec2(x, a.y + px(8)), paper, title.c_str());
         // Who played it, at the right.
         const std::string who = r.played.empty() ? std::string("THE GAME'S OWN")
-                                                 : "YOURS: " + r.played + (r.choices > 1 ? std::format("  ({} TO CHOOSE FROM)", r.choices) : std::string{});
+                                                 : "YOURS, FOR " + r.label + (r.choices > 1 ? std::format("  ({} TO CHOOSE FROM)", r.choices) : std::string{});
         const std::string ago = r.ago < 60 ? std::format("{:.0f}s", r.ago) : std::format("{:.0f}m", r.ago / 60);
         const auto aw = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, ago.c_str());
         d->AddText(menu.bold, px(12), ImVec2(b.x - aw.x - px(12), a.y + px(10)), muted, ago.c_str());
         const auto ww = menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, who.c_str());
-        d->PushClipRect(ImVec2(x + px(120), a.y), ImVec2(b.x - aw.x - px(20), b.y), true);
-        d->AddText(menu.bold, px(13), ImVec2(std::max(x + px(120), b.x - aw.x - px(24) - ww.x), a.y + px(9)), r.played.empty() ? muted : blue_light, who.c_str());
+        // After the name, however long the name you gave it is.
+        const float from = x + std::max(px(120), menu.bold->CalcTextSizeA(px(15), FLT_MAX, 0, title.c_str()).x + px(16));
+        d->PushClipRect(ImVec2(from, a.y), ImVec2(b.x - aw.x - px(20), b.y), true);
+        d->AddText(menu.bold, px(13), ImVec2(std::max(from, b.x - aw.x - px(24) - ww.x), a.y + px(9)), r.played.empty() ? muted : blue_light, who.c_str());
         d->PopClipRect();
         ImGui::Dummy(ImVec2(0, px(2)));
     }

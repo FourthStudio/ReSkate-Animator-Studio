@@ -422,6 +422,7 @@ struct MenuSummary {
     std::vector<Pack> packs;
     std::size_t own{}, in_play{}; // tricks of yours, and those that play now
     struct Done {
+        // The game's trick, its name for it, the pop, and yours that played it by the name you gave it ("" the game's own).
         std::string trick, label, pop, played;
         int choices{};
         double ago{-1}; // seconds since

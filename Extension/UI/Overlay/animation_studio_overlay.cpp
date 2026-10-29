@@ -3935,6 +3935,7 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         }
         for (const auto& pack : v.packs) {
             const bool in = std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end();
+            if (pack.installed && !in) continue; // another maker's pack: only its maker adds to it
             const float cw = chip_width(f, pack.name);
             if (cx + cw > x + w) cx = x, y += 36 * k;
             ImGui::PushID(pack.name.c_str());
@@ -5129,7 +5130,8 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     }
     y += pack_duplicates(d, f, v, pack, ImVec2(x, y), w);
     heading(d, f, ImVec2(x, y + 10 * k), w - 230 * k, "Tricks in this pack", std::to_string(count));
-    if (action(d, f, "##addtricks", ImVec2(x + w - 210 * k, y), ImVec2(210 * k, 40 * k), "+ ADD TRICKS", Look::blue)) {
+    // Only into your own packs: one got from the MARKET or imported is its maker's.
+    if (!pack.installed && action(d, f, "##addtricks", ImVec2(x + w - 210 * k, y), ImVec2(210 * k, 40 * k), "+ ADD TRICKS", Look::blue)) {
         u.pack_adding = true;
         u.adding_scroll = 0;
     }
@@ -5352,8 +5354,24 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
             y += 50 * k;
         }
     }
-    // ---- every playlist, a chip each (the one on wears ON; the open one is blue), and a new one ----
+    // ---- + ADD OWN TRICKS (your own tricks, one by one, into the open playlist) and + NEW PLAYLIST ----
     {
+        const float nw = 170 * k, aw = w - nw - 10 * k;
+        if (action(d, f, "##addowntricks", ImVec2(x, y), ImVec2(aw, 40 * k), "+ ADD OWN TRICKS", Look::blue)) {
+            u.pack_settings = true;
+            u.pack_page = false;
+            u.playlist_pick_scroll = 0;
+            u.playlist_open.erase("*mine"); // MY TRICKS open
+        }
+        if (action(d, f, "##newlist", ImVec2(x + aw + 10 * k, y), ImVec2(nw, 40 * k), "+ NEW PLAYLIST", Look::dark)) {
+            std::string m;
+            studio::new_playlist(m);
+            say(m);
+        }
+        y += 52 * k;
+    }
+    // ---- with more than one playlist, a chip each to open it (the one on wears ON; the open one is blue) ----
+    if (v.playlists.size() > 1) {
         float cx = x;
         const float chip_h = 36 * k;
         const auto chip = [&](const char* id, const std::string& label, bool open, bool on_tag) {
@@ -5382,16 +5400,11 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
             }
             ImGui::PopID();
         }
-        if (chip("##newlist", "+ NEW PLAYLIST", false, false)) {
-            std::string m;
-            studio::new_playlist(m);
-            say(m);
-        }
         y += chip_h + 18 * k;
     }
     if (v.playlist_open.empty()) {
         y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, soft,
-                       "No playlist yet. + NEW PLAYLIST makes one, + ADD on the right puts your own tricks or packs in a first one, and "
+                       "No playlist yet. + NEW PLAYLIST makes one, + ADD OWN TRICKS or + ADD on a pack puts them in a first one, and "
                        "+ PLAYLIST on a trick in MY TRICKS asks which playlist it goes in. Packs and tricks play from the playlist that is on.") + 14 * k;
     } else {
         // The open one: its name, SET to rename it, DELETE (pressed twice), and its switch.
@@ -5453,7 +5466,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     float ly = la.y - u.pack_settings_scroll;
     if (v.playlist.empty() && !v.playlist_open.empty())
         ly += paragraph(d, f.bold, 15 * k, ImVec2(x, ly), w - 14 * k, soft,
-                        "Empty. + ADD on a pack puts it in, and MY TRICKS (beside it) your own tricks one by one.") + 10 * k;
+                        "Empty. + ADD on a pack puts it in, and + ADD OWN TRICKS your own tricks one by one.") + 10 * k;
     for (std::size_t i = 0; i < v.playlist.size(); ++i) {
         const auto& e = v.playlist[i];
         ImGui::PushID(static_cast<int>(i));
@@ -8025,6 +8038,7 @@ float pack_chips(ImDrawList* d, const Fonts& f, const studio::View& v, const std
         return paragraph(d, f.bold, 14 * k, at, width, soft, "Another maker's trick: it plays for you, but only your own tricks go in your packs.") + 8 * k;
     for (const auto& pack : v.packs) {
         const bool in = std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end();
+        if (pack.installed && !in) continue; // another maker's pack (got from the MARKET or imported): only its maker adds to it
         const float w = chip_width(f, pack.name);
         if (x + w > at.x + width) x = at.x, y += 38 * k;
         ImGui::PushID(pack.name.c_str());
@@ -8869,6 +8883,7 @@ void delete_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
         u.trick_page.clear();
     }
 }
+float open_trick_tags(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at); // the editor's, below
 void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     const float k = f.k;
@@ -8876,6 +8891,9 @@ void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 92 * k;
     const auto name = v.name;
+    // What it was saved as, so you know which trick this is: the trick, its pop and its stance.
+    open_trick_tags(d, f, v, ImVec2(x, y));
+    y += 36 * k;
     y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "It is in MY TRICKS. Give it a name you will know it by.") + 14 * k;
     y += in_game_row(d, f, v, name, ImVec2(x, y), w) + 18 * k;
     heading(d, f, ImVec2(x, y), w, "Name it");
@@ -9435,6 +9453,18 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
 // ---- the editor -----------------------------------------------------------------------------------
 // The skater in the middle; along the top MENU, the trick's name, the camera, and TEST IN GAME and SAVE; the tools down
 // the left; the chosen joint's card on the right; the timeline along the bottom with KEY in it.
+// The open trick's tags: the game's trick, its pop and its stance (blue when it is not normal). Returns where they end.
+float open_trick_tags(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at) {
+    const float k = f.k;
+    float tx = at.x;
+    if (!v.trick.empty()) tx += tag(d, f, ImVec2(tx, at.y), upper(trick_label(v.trick)), IM_COL32(255, 255, 255, 36)) + 6 * k;
+    tx += tag(d, f, ImVec2(tx, at.y), pop_words(v.pop), IM_COL32(255, 255, 255, 36)) + 6 * k;
+    if (v.trick_stance >= 0) {
+        static constexpr std::array<const char*, 4> stances{"NORMAL", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+        tx += tag(d, f, ImVec2(tx, at.y), stances[static_cast<std::size_t>(v.trick_stance)], v.trick_stance == 0 ? IM_COL32(255, 255, 255, 36) : blue) + 6 * k;
+    }
+    return tx;
+}
 void editor_top(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, float left, float right) {
     const float k = f.k, h = 78 * k;
     const ImU32 dark = IM_COL32(8, 8, 10, 215), none = IM_COL32(8, 8, 10, 0);
@@ -9451,13 +9481,7 @@ void editor_top(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
     const float title_x = left + 172 * k;
     const float title_w = std::max(120 * k, display.x * 0.5f - 160 * k - title_x);
     text(d, f.title, 30 * k, ImVec2(title_x, y - 4 * k), white, elide(f.title, 30 * k, title_of(v), title_w));
-    float tx = title_x;
-    if (!v.trick.empty()) tx += tag(d, f, ImVec2(tx, y + 32 * k), upper(trick_label(v.trick)), IM_COL32(255, 255, 255, 36)) + 6 * k;
-    tx += tag(d, f, ImVec2(tx, y + 32 * k), pop_words(v.pop), IM_COL32(255, 255, 255, 36)) + 6 * k;
-    if (v.trick_stance >= 0) {
-        static constexpr std::array<const char*, 4> stances{"NORMAL", "FAKIE", "SWITCH", "SWITCH FAKIE"};
-        tx += tag(d, f, ImVec2(tx, y + 32 * k), stances[static_cast<std::size_t>(v.trick_stance)], v.trick_stance == 0 ? IM_COL32(255, 255, 255, 36) : blue) + 6 * k;
-    }
+    const float tx = open_trick_tags(d, f, v, ImVec2(title_x, y + 32 * k));
     if (v.dirty) tag(d, f, ImVec2(tx, y + 32 * k), "NOT SAVED", skate_theme::warning, IM_COL32(18, 18, 20, 255));
     shot_switch(d, f, v, ImVec2(display.x * 0.5f, y + 23 * k));
     float x = right - 20 * k;

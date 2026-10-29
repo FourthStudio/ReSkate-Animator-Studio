@@ -662,8 +662,8 @@ constexpr float grind_ease_min = 0.18f, grind_ease_max = 0.3f, grind_feet_on_dec
 constexpr std::array<std::uint16_t, 9> grind_lower_body{7, 8, 9, 10, 11, 341, 342, 343, 344};
 // Onto a rail or a ledge: landing on something this much higher than the board took off from (metres), the board, hips and
 // legs go to the game's pose over the last raised_lead seconds before it, never in less than raised_min_ease (test.4's 0.15 s
-// lead was still a fraction of a second too quick, 2026-10-27).
-constexpr float raised_landing = 0.12f, raised_lead = 0.25f, raised_min_ease = 0.12f;
+// lead was still a fraction of a second too quick, 2026-10-27; 0.12 s still snapped and clipped going onto a rail, 2026-10-29).
+constexpr float raised_landing = 0.12f, raised_lead = 0.25f, raised_min_ease = 0.18f;
 std::atomic<bool> overrides_allowed{true};
 // SETTINGS > TRICKS > Transitions: SMOOTH (true) hands a trick over to a grind the way the game does its own (Handover);
 // CLASSIC is 1.0.16's, kept to compare.
@@ -682,8 +682,10 @@ std::atomic<float> guard_in_mm{0}, guard_out_mm{0}, guard_round_mm{0};
 // not known), this update: the lean onto a rail goes by them as well as by the board turning.
 std::atomic<bool> game_targeting_grind{};
 std::atomic<float> game_time_to_land{-1};
-// SMOOTH: the next trick asked for while ours plays on the board or a rail leans its legs and board over in this long.
-constexpr float intent_release_seconds = 0.1f;
+// SMOOTH: the next trick asked for while ours plays on the board or a rail leans its legs and board over in the Crossfade
+// (the trick's own or the main one), never less than 0.2 s. It was 0.1 s whatever the Crossfade: the hand-back to the game's
+// next trick snapped, and a leg went through the deck on the way (2026-10-29: "it happens too fast ... more subtle").
+float intent_release_seconds() noexcept { return std::max(0.2f, std::clamp(trick_blend.load(std::memory_order_relaxed) * 2, 0.1f, 0.8f)); }
 Live& live();
 struct GameplayPackets {
     std::mutex mutex;
@@ -3106,7 +3108,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     packet->board_owned = true;
     packet->motion = motion;
     if (l.intent_release_at >= 0) {
-        const float u = std::clamp(static_cast<float>(at - l.intent_release_at) / intent_release_seconds, 0.0f, 1.0f);
+        const float u = std::clamp(static_cast<float>(at - l.intent_release_at) / intent_release_seconds(), 0.0f, 1.0f);
         packet->lower_release = u * u * (3 - 2 * u);
     }
     if (play.board_frame_ok && l.board_ok) {
@@ -3907,11 +3909,13 @@ void on_animation(std::uintptr_t component) noexcept {
                                                                                            : std::string("its own pop"),
                                              found->leads_right == live.leads_right ? "" : ", mirrored",
                                              variants.size() > 1 ? std::format(", one of {}", variants.size()) : std::string());
-                // The menu's feed: the trick and who played it (once a trick; its pop graded later takes its place).
+                // The menu's feed: the trick and who played it, by the name it was given in the studio (once a trick; its pop
+                // graded later takes its place).
                 if (!name.empty()) {
                     const bool again = l.recent_episode == l.episode.id;
                     l.recent_episode = l.episode.id;
-                    remember_trick_done(name, pop, found ? found->name : std::string{}, static_cast<int>(variants.size()), at, again);
+                    const std::string played_as = !found ? std::string{} : found->edits && !found->edits->label.empty() ? found->edits->label : found->name;
+                    remember_trick_done(name, pop, played_as, static_cast<int>(variants.size()), at, again);
                 }
                 if (found) {}
                 else if (!name.empty())
@@ -4323,7 +4327,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->limits = snap->limits;
                     packet->lower_release = l.raised_release;
                     if (l.intent_release_at >= 0) {
-                        const float u = std::clamp(static_cast<float>(at - l.intent_release_at) / intent_release_seconds, 0.0f, 1.0f);
+                        const float u = std::clamp(static_cast<float>(at - l.intent_release_at) / intent_release_seconds(), 0.0f, 1.0f);
                         packet->lower_release = std::max(packet->lower_release, u * u * (3 - 2 * u));
                     }
                     packet->motion = motion;
@@ -4881,10 +4885,12 @@ bool handover_running(Handover& h, double now, std::uint64_t generation, MotionS
         h.outgoing.reset();
     }
     // Every move the trick hands over to, not only a grind (2026-10-29): its end on the ground, the next pop, out of a grind
-    // loop. Into a grind at the game's own speeds; otherwise as long as the Crossfade says (trick_blend: 0.15 s is the game's).
+    // loop. Into a grind at the game's own speeds; otherwise as long as the Crossfade says, half as long again as the game's
+    // own at the main Crossfade (trick_blend 0.15: legs 0.2 s, hips and arms 0.38 s, back and head 0.6 s) - at the game's
+    // speeds a trick of ours snapped back to its pose (2026-10-29).
     if (h.started < 0 && smooth_transitions.load(std::memory_order_relaxed) && h.outgoing && h.outgoing->edits && now - h.outgoing_seen < 0.15) {
         h.started = now;
-        h.scale = motion == MotionState::rail ? 1.0f : std::clamp(trick_blend.load(std::memory_order_relaxed) / 0.15f, 0.6f, 2.6f);
+        h.scale = motion == MotionState::rail ? 1.0f : std::clamp(trick_blend.load(std::memory_order_relaxed) / 0.1f, 1.0f, 4.0f);
         h.board = now - h.air_board_at < 0.15 ? h.air_board : Joint{};
         h.feet_taken = h.feet_ok = false;
     }
@@ -7471,6 +7477,15 @@ bool set_pack_member(const std::string& pack_name, const std::string& animation,
         publish_locked(s, false);
         return false;
     }
+    // A pack got from the MARKET or imported is its maker's: only its maker puts tricks in it.
+    if (const auto pack = std::find_if(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name == pack_name; });
+        in && pack != s.packs.end() && locked_key(pack->maker_key)) {
+        message = pack_name + " is " + (pack->made_by.empty() ? std::string("another maker") : pack->made_by) +
+                  "'s pack: only its maker puts tricks in it. + NEW PACK makes one of your own.";
+        s.status = message;
+        publish_locked(s, false);
+        return false;
+    }
     const auto slot = found != s.presets.end() ? preset_slot(found->trick, found->pop) : std::string{};
     message = in ? "Put " + shown_name(s, animation) + " in " + pack_name + ": it plays in game when the pack is in the playlist that is on."
                  : "Took " + shown_name(s, animation) + " out of " + pack_name + ".";
@@ -7705,11 +7720,26 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
         const auto anim = from_json(text);
         Clip source_clip = clip_from_bytes(std::vector<std::uint8_t>(clip.begin(), clip.end()));
         if (anim.source.kind == "native_asset") place_native_marks(source_clip);
-        std::vector<std::string> copies;
+        std::vector<std::string> copies, skipped;
         int on_game_clips = 0;
+        const std::string own_pop = root.value("pop", "");
+        // A copy of it already there under that pop's name (made before): the same trick on that pop.
+        const auto copied_before = [&](const std::string& stem, const char* pop) {
+            try {
+                const auto other = Json::parse(saved_text(stem));
+                return other.is_object() && other.value("trick", "") == root.value("trick", "") && other.value("pop", "") == pop;
+            } catch (...) {
+                return false;
+            }
+        };
         for (const char* pop : {"low", "mid", "high"}) {
             const std::string suffix = std::string(" ") + pop;
             const auto stem = utf8_prefix(base, 48 - suffix.size()) + suffix;
+            // Never the pop it is on already, nor one it was copied to before: those would be duplicates.
+            if (own_pop == pop || (stem != safe && copied_before(stem, pop))) {
+                skipped.push_back(pop);
+                continue;
+            }
             std::string name = stem;
             unsigned number = 2;
             while (std::filesystem::exists(folder / name) || std::filesystem::exists(folder / (name + ".json")))
@@ -7734,12 +7764,21 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
             }
             copies.push_back(name);
         }
+        const auto pops_of = [](const std::vector<std::string>& pops) {
+            std::string out;
+            for (std::size_t i = 0; i < pops.size(); ++i) out += (i == 0 ? "" : i + 1 == pops.size() ? " and " : ", ") + pops[i];
+            return out;
+        };
+        if (copies.empty()) throw std::runtime_error(animation + " already has its " + pops_of(skipped) + ": nothing new to copy.");
         read_library_locked(s);
         const int packs = locked ? 0 : add_copies_to_packs_locked(s, safe, copies); // not into its maker's pack
         s.tricks_read = false;
-        message = "Made " + copies[0] + ", " + copies[1] + " and " + copies[2] + (packs ? ", in " + std::to_string(packs) + (packs == 1 ? " pack" : " packs") + " with it" : std::string{}) +
+        std::string made;
+        for (std::size_t i = 0; i < copies.size(); ++i) made += (i == 0 ? "" : i + 1 == copies.size() ? " and " : ", ") + copies[i];
+        message = "Made " + made + (packs ? ", in " + std::to_string(packs) + (packs == 1 ? " pack" : " packs") + " with it" : std::string{}) +
                   (locked ? ". Each plays as made on its own pop, and stays its maker's: locked, not shared."
-                   : on_game_clips ? ". Each is on the game's own clip of its pop and plays on that pop." : ". Each plays on its own pop.");
+                   : on_game_clips ? ". Each is on the game's own clip of its pop and plays on that pop." : ". Each plays on its own pop.") +
+                  (skipped.empty() ? std::string{} : " Not " + pops_of(skipped) + ": it has that already.");
         s.status = message;
         publish_locked(s, false);
         return true;
