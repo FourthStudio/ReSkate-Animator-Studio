@@ -35,7 +35,7 @@ std::string_view ease_name(Ease ease) noexcept {
     return ease == Ease::linear ? "linear" : ease == Ease::step ? "step" : "smooth";
 }
 
-constexpr std::array<EditableJoint, 25> joints{{
+constexpr std::array<EditableJoint, 55> joints{{
     {board_joint, "Board", true},
     {7, "Hips", true},
     {42, "Lower back", false},
@@ -53,14 +53,46 @@ constexpr std::array<EditableJoint, 25> joints{{
     {341, "Left leg", false},
     {342, "Left knee", false},
     {343, "Left foot", true},
-    {344, "Left toes", false},
+    {344, "Left toes", false, JointGroup::advanced},
     {8, "Right leg", false},
     {9, "Right knee", false},
     {10, "Right foot", true},
-    {11, "Right toes", false},
-    {43, "Middle back", false},
-    {45, "Upper chest", false},
-    {102, "Upper neck", false},
+    {11, "Right toes", false, JointGroup::advanced},
+    {43, "Middle back", false, JointGroup::advanced},
+    {45, "Upper chest", false, JointGroup::advanced},
+    {102, "Upper neck", false, JointGroup::advanced},
+    // The fingers, each in its three joints from the knuckle out (the game's clips key all of them; the twist, face and eye
+    // joints are left out: the game moves those itself, a key there would not show).
+    {51, "Right thumb 1", false, JointGroup::fingers},
+    {52, "Right thumb 2", false, JointGroup::fingers},
+    {53, "Right thumb 3", false, JointGroup::fingers},
+    {63, "Right index 1", false, JointGroup::fingers},
+    {64, "Right index 2", false, JointGroup::fingers},
+    {65, "Right index 3", false, JointGroup::fingers},
+    {55, "Right middle 1", false, JointGroup::fingers},
+    {56, "Right middle 2", false, JointGroup::fingers},
+    {57, "Right middle 3", false, JointGroup::fingers},
+    {67, "Right ring 1", false, JointGroup::fingers},
+    {68, "Right ring 2", false, JointGroup::fingers},
+    {69, "Right ring 3", false, JointGroup::fingers},
+    {59, "Right pinky 1", false, JointGroup::fingers},
+    {60, "Right pinky 2", false, JointGroup::fingers},
+    {61, "Right pinky 3", false, JointGroup::fingers},
+    {296, "Left thumb 1", false, JointGroup::fingers},
+    {297, "Left thumb 2", false, JointGroup::fingers},
+    {298, "Left thumb 3", false, JointGroup::fingers},
+    {289, "Left index 1", false, JointGroup::fingers},
+    {290, "Left index 2", false, JointGroup::fingers},
+    {291, "Left index 3", false, JointGroup::fingers},
+    {285, "Left middle 1", false, JointGroup::fingers},
+    {286, "Left middle 2", false, JointGroup::fingers},
+    {287, "Left middle 3", false, JointGroup::fingers},
+    {293, "Left ring 1", false, JointGroup::fingers},
+    {294, "Left ring 2", false, JointGroup::fingers},
+    {295, "Left ring 3", false, JointGroup::fingers},
+    {280, "Left pinky 1", false, JointGroup::fingers},
+    {281, "Left pinky 2", false, JointGroup::fingers},
+    {282, "Left pinky 3", false, JointGroup::fingers},
 }};
 } // namespace
 
@@ -502,7 +534,8 @@ void apply_authored_edit_layer(const Animation& animation, float seconds, std::s
     if (match_rest > 0 && studio.size() >= skeleton_joints && native.size() >= skeleton_joints) {
         const float rest = std::min(match_rest, 1.0f) * weight;
         for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
-            if (!gameplay_body_joint(j) || !editable(j)) continue;
+            // Not the fingers: they stay the game's, with their keys on top (as before they could be keyed).
+            if (!gameplay_body_joint(j) || !editable(j) || editable(j)->group == JointGroup::fingers) continue;
             const float share = limbs ? rest * std::clamp(limbs->of(j), 0.0f, 1.0f) : rest;
             if (share <= 0) continue;
             native[j].rotation = slerp(native[j].rotation, studio[j].rotation, share);
@@ -729,13 +762,27 @@ void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native) 
         for (std::size_t k = 0; k < 3; ++k) native[i].position[k] += deltas[i].offset[k];
     }
 }
-Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& ground, bool mirror) {
-    if (!std::isfinite(seconds) || seconds < edits.start || (edits.end >= 0 && seconds > edits.end)) return board;
+std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror) {
+    if (!std::isfinite(seconds) || seconds < edits.start || (edits.end >= 0 && seconds > edits.end)) return std::nullopt;
     const auto* track = edits.track(board_joint);
-    if (!track || track->hidden || track->keys.empty()) return board;
+    if (!track || track->hidden || track->keys.empty()) return std::nullopt;
     auto edit = evaluate(*track, seconds);
-    if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 && edit.offset == Vec3{}) return board;
+    if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 && edit.offset == Vec3{}) return std::nullopt;
     if (mirror) { edit.rotation = mirror_board_rotation(edit.rotation); edit.offset = mirror_board_vector(edit.offset); }
+    return edit;
+}
+Quat scaled_turn(const Quat& q, float k) noexcept {
+    const float w = std::clamp(q[3], -1.0f, 1.0f);
+    const float sine = std::sqrt(std::max(0.0f, 1 - w * w));
+    if (!(sine > 1e-6f) || !std::isfinite(k)) return w >= 0 || !(k > 0) ? Quat{0, 0, 0, 1} : q;
+    const float half = std::acos(w) * k, f = std::sin(half) / sine;
+    return {q[0] * f, q[1] * f, q[2] * f, std::cos(half)};
+}
+Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& ground, bool mirror) {
+    const auto edit = board_key(edits, seconds, mirror);
+    return edit ? board_edited_by(board, *edit, ground) : board;
+}
+Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& ground) noexcept {
     auto out = board;
     const auto moved = rotate(ground, edit.offset);
     for (std::size_t i = 0; i < 3; ++i) out.position[i] += moved[i];
@@ -978,12 +1025,14 @@ std::string to_json(const Animation& animation) {
     if (animation.board_backwards) root["board_backwards"] = *animation.board_backwards;
     if (animation.keep_leads_right) root["leads"] = *animation.keep_leads_right ? "right" : "left";
     if (!animation.maker_key.empty()) root["maker_key"] = animation.maker_key;
+    if (!animation.maker_team.empty()) root["maker_team"] = animation.maker_team;
     if (animation.editable) root["editable"] = true;
     if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     if (animation.catch_at) root["catch"] = *animation.catch_at;
     if (animation.crossfade) root["crossfade"] = *animation.crossfade;
     if (animation.catch_hold) root["catch_hold"] = *animation.catch_hold;
+    root["fakie_upper"] = "mirrored"; // its keys are as a trick set to fakie mirrors its upper body (from_json)
     root["start"] = animation.start;
     root["end"] = animation.end;
     root["duration"] = animation.clip.duration();
@@ -1025,6 +1074,7 @@ Animation from_json(std::string_view text) {
     result.trick = root.value("trick", "");
     result.author = root.value("author", "");
     result.maker_key = root.value("maker_key", "").substr(0, 64);
+    result.maker_team = root.value("maker_team", "").substr(0, 64);
     result.editable = root.value("editable", false);
     result.label = utf8_prefix(root.value("label", ""), 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
@@ -1134,6 +1184,10 @@ Animation from_json(std::string_view text) {
     // A piece of the game's own animation (a grind's loop, a grab's hold) is known by the clip it came from: one
     // saved before pieces were given that name gets it here, so it plays in game like one saved since.
     if (result.trick.empty() && result.source.kind == "native_asset" && !result.source.asset.empty()) result.trick = "native:" + result.source.asset;
+    // A trick set to fakie saved before its upper body was mirrored (mirror_upper_body, 2026-10-29): its upper body's keys
+    // were made over the game's fakie layer, which left the arms as they were, or copied from the trick in its own stance.
+    // They go to the other side here, so it shows as the mirror of what it was, the arms too. Saved with the mark since.
+    if (fakie_mirrored(result) && root.value("fakie_upper", "") != "mirrored") mirror_upper_keys(result);
     return result;
 }
 
@@ -1288,6 +1342,15 @@ namespace dingosdk::anim_studio {
 // the same as reflecting the whole skeleton, as the left/right table keeps the hierarchy.
 Quat mirror_rotation(const Quat& q) noexcept { return {-q[0], -q[1], q[2], q[3]}; }
 Vec3 mirror_vector(const Vec3& v) noexcept { return {v[0], v[1], -v[2]}; }
+void apply_fakie_layer(std::span<Joint> pose, std::span<const Quat> layer, bool mirrored) noexcept {
+    for (std::size_t j = 0; j < skeleton_joints && j < layer.size(); ++j) {
+        const auto& turn = layer[j];
+        if (turn == Quat{0, 0, 0, 1}) continue;
+        const std::size_t at = mirrored ? mirror_joint[j] : j;
+        if (at >= pose.size()) continue;
+        pose[at].rotation = normalised(multiply(pose[at].rotation, mirrored ? mirror_rotation(turn) : turn));
+    }
+}
 Joint mirror_pose(const Joint& joint) noexcept {
     Joint out = joint;
     out.rotation = mirror_rotation(joint.rotation);
@@ -1602,6 +1665,80 @@ Animation mirror_animation(const Animation& animation) {
     }
     return out;
 }
+// ---- fakie: the upper body mirrored ---------------------------------------------------------------
+namespace {
+constexpr std::uint16_t lower_back_joint = 42, right_thigh_joint = 8, left_thigh_joint = 341;
+const std::array<bool, skeleton_joints>& upper_body() noexcept {
+    static const auto table = [] {
+        std::array<bool, skeleton_joints> upper{};
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+            if (!gameplay_body_joint(j)) continue;
+            for (int at = j; at >= 0; at = parent(static_cast<std::uint16_t>(at)))
+                if (at == lower_back_joint) {
+                    upper[j] = true;
+                    break;
+                }
+        }
+        return upper;
+    }();
+    return table;
+}
+} // namespace
+bool upper_body_joint(std::uint16_t joint) noexcept { return joint < skeleton_joints && upper_body()[joint]; }
+void mirror_upper_body(std::span<Joint> pose) noexcept {
+    if (pose.size() < skeleton_joints) return;
+    const auto& upper = upper_body();
+    // His middle: the plane across the hips with the line between the thighs (both hang off the hips) as its normal,
+    // in the placement's frame, where mirror_rotation reflects across Z = 0.
+    const auto place = world(pose, placement_joint), hips = world(pose, hips_joint);
+    const Vec3 between{pose[right_thigh_joint].position[0] - pose[left_thigh_joint].position[0],
+                       pose[right_thigh_joint].position[1] - pose[left_thigh_joint].position[1],
+                       pose[right_thigh_joint].position[2] - pose[left_thigh_joint].position[2]};
+    auto across = rotate(conjugate(place.rotation), rotate(hips.rotation, between));
+    const float length = std::sqrt(across[0] * across[0] + across[1] * across[1] + across[2] * across[2]);
+    if (!(length > 1e-4f) || !std::isfinite(length)) return;
+    for (auto& c : across) c /= length;
+    // Reflected across that plane is reflected across Z = 0 (mirror_rotation) and then turned: two reflections make a
+    // turn, across * z as quaternions (a pure quaternion each).
+    const Quat turn = normalised(Quat{across[1], -across[0], 0, -across[2]});
+    const std::vector<Joint> before(pose.begin(), pose.begin() + skeleton_joints);
+    // The lower back hangs off the hips, which stay: its turn in the placement's frame reflected, against the hips.
+    const auto back = world(before, lower_back_joint);
+    const Quat in_place = multiply(conjugate(place.rotation), back.rotation);
+    const Quat reflected = normalised(multiply(place.rotation, multiply(turn, mirror_rotation(in_place))));
+    pose[lower_back_joint].rotation = normalised(multiply(conjugate(hips.rotation), reflected));
+    // Above it each joint takes its opposite number's pose, reflected: between a joint and its parent the turn drops out.
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        if (!upper[j] || j == lower_back_joint) continue;
+        const auto other = mirror_joint[j];
+        if (other >= skeleton_joints || !upper[other]) continue;
+        pose[j].rotation = mirror_rotation(before[other].rotation);
+        pose[j].position = mirror_vector(before[other].position);
+    }
+}
+void match_upper_body(std::span<Joint> pose, std::span<const Joint> to, float share, const LimbWeights* limbs) noexcept {
+    if (!(share > 0) || pose.size() < skeleton_joints || to.size() < skeleton_joints) return;
+    share = std::min(share, 1.0f);
+    const auto& upper = upper_body();
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        if (!upper[j]) continue;
+        const float k = limbs ? share * std::clamp(limbs->of(j), 0.0f, 1.0f) : share;
+        if (k > 0) pose[j].rotation = slerp(pose[j].rotation, to[j].rotation, k);
+    }
+}
+void mirror_upper_keys(Animation& animation) noexcept {
+    for (auto& track : animation.tracks) {
+        if (!upper_body_joint(track.joint) || !upper_body_joint(mirror_joint[track.joint])) continue;
+        track.joint = mirror_joint[track.joint];
+        for (auto& key : track.keys) {
+            key.rotation = mirror_rotation(key.rotation);
+            key.offset = mirror_vector(key.offset);
+        }
+    }
+}
+bool fakie_mirrored(const Animation& animation) noexcept {
+    return animation.fakie.value_or(false) && animation.source.kind == "native_asset";
+}
 } // namespace dingosdk::anim_studio
 
 namespace dingosdk::anim_studio {
@@ -1863,7 +2000,7 @@ std::vector<NativeModels::Model> native_models_of(const Clip& clip, std::size_t 
         std::vector<std::uint16_t> picked;
         for (const auto& e : editable_joints())
             if (e.index < native_body_joints && e.index < skeleton_joints && gameplay_body_joint(e.index) &&
-                mirror_joint[e.index] < native_body_joints)
+                mirror_joint[e.index] < native_body_joints && e.group != JointGroup::fingers)
                 picked.push_back(e.index);
         return picked;
     }();

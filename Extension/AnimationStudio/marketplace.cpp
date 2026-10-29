@@ -297,6 +297,11 @@ struct Market {
     std::string team_checked;  // the team that state is of
     int account_state{};       // View::account_state
     std::string account_checked; // the team that state is of
+    // The last check that said yes (account.json "verified"): the team and a fingerprint of its token (never the token).
+    // While Thunderstore cannot be reached, or is still being asked, that yes stands for the same token: creators were told
+    // their own packs were not theirs whenever the check failed to get through (2026-10-27).
+    std::string verified_as, verified_token;
+    std::string token_print; // the linked token's fingerprint, worked out once
     Job job;
     Detail detail;
     std::deque<std::string> icon_queue;
@@ -353,8 +358,23 @@ void read_settings_locked(Market& m) {
                 if (std::filesystem::exists(folder() / L"settings.json", error)) std::filesystem::remove(folder() / L"market.json", error);
             }
         }
-        if (const auto text = read_file(account_file()); !text.empty()) m.team = Json::parse(text).value("team", "");
+        if (const auto text = read_file(account_file()); !text.empty()) {
+            const auto root = Json::parse(text);
+            m.team = root.value("team", "");
+            if (root.contains("verified") && root.at("verified").is_object()) {
+                m.verified_as = root.at("verified").value("team", "");
+                m.verified_token = root.at("verified").value("token", "");
+            }
+        }
     } catch (...) {}
+}
+// A fingerprint of a token, to know a later check is of the same one: not the token, and not enough to make one.
+std::string token_fingerprint(const std::string& token) {
+    if (token.empty()) return {};
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    for (const unsigned char b : md5("reskate-animator-studio/token/" + token)) out += hex[b >> 4], out += hex[b & 15];
+    return out.substr(0, 16);
 }
 std::vector<Pack> read_listing(const std::string& text) {
     std::vector<Pack> out;
@@ -1037,6 +1057,7 @@ bool link_account(const std::string& team, const std::string& token, std::string
         m.team_checked.clear();
         m.account_state = 0;
         m.account_checked.clear();
+        m.verified_as.clear(); m.verified_token.clear(); m.token_print.clear(); // a new token is checked afresh
     }
     message = "Linked to the Thunderstore team " + team + ". Your packs can be published from PACKS.";
     check_team(true); // a pack's name typed for the team is found out now, not when a publish fails (and its token checked)
@@ -1055,6 +1076,7 @@ void unlink_account() {
     m.team_checked.clear();
     m.account_state = 0;
     m.account_checked.clear();
+    m.verified_as.clear(); m.verified_token.clear(); m.token_print.clear();
     account_changed();
 }
 void check_team(bool again) {
@@ -1105,7 +1127,9 @@ void verify_account(bool again) {
     }
     std::thread([team] {
         int state = 3;
+        std::string print;
         if (const auto token = read_token(); !token.empty()) {
+            print = token_fingerprint(token);
             // Thunderstore's own check of a package before an upload: first of all whether the token may upload under the
             // team ("Missing privileges to upload under author ..."). A made-up package, so nothing else stands in its way;
             // nothing is uploaded.
@@ -1134,9 +1158,26 @@ void verify_account(bool again) {
             std::lock_guard lock(m.mutex);
             if (m.account_checked != team) return;
             m.account_state = state;
+            if (!print.empty()) m.token_print = print;
+            // A yes is remembered for this token (account.json), a no forgets it; Thunderstore not reached changes nothing.
+            if (state == 2 || state == 3) {
+                m.verified_as = state == 2 ? team : std::string();
+                m.verified_token = state == 2 ? print : std::string();
+                try {
+                    Json root{{"team", m.team}};
+                    if (state == 2) root["verified"] = Json{{"team", team}, {"token", print}};
+                    write_file(account_file(), root.dump(2));
+                } catch (...) {}
+            }
         }
         account_changed();
     }).detach();
+}
+// The team's earlier yes, for the token linked now (while Thunderstore is still being asked, or cannot be reached).
+bool verified_before_locked(Market& m) {
+    if (m.verified_as.empty() || m.verified_token.empty() || _stricmp(m.verified_as.c_str(), m.team.c_str()) != 0) return false;
+    if (m.token_print.empty()) m.token_print = token_fingerprint(read_token());
+    return m.token_print == m.verified_token;
 }
 std::string verified_team() {
     bool ask = false;
@@ -1147,7 +1188,10 @@ std::string verified_team() {
         read_settings_locked(m);
         if (m.team.empty()) return {};
         if (m.account_checked != m.team || m.account_state == 0) ask = true;
-        else if (m.account_state == 2) out = m.team;
+        if (m.account_checked == m.team && m.account_state == 2) out = m.team;
+        else if ((m.account_checked != m.team || m.account_state == 0 || m.account_state == 1 || m.account_state == 4) &&
+                 verified_before_locked(m))
+            out = m.team;
     }
     if (ask) verify_account();
     return out;
@@ -1181,6 +1225,7 @@ std::string export_package(const std::string& pack_name, std::string& message, c
         const auto path = pack_export_folder() / widen(market().team.empty() ? package.file_name : market().team + "-" + package.file_name);
         write_file(path, package.zip);
         message = "Made " + utf8(path.filename()) + " for Thunderstore: upload it on thunderstore.io/c/reskate, or publish it from here with a linked team.";
+        if (!pack.left_out.empty()) message += " " + left_out_note(pack.left_out);
         ShellExecuteW(nullptr, L"open", path.parent_path().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return utf8(path);
     } catch (const std::exception& e) {
@@ -1288,6 +1333,7 @@ void publish(const std::string& pack_name, const std::string& wanted_version, co
         result.url = std::string(site) + "/c/" + community + "/p/" + team + "/" + package.name + "/";
         result.message = (pack.published.empty() ? "Published " : "Updated ") + pack.name + " to " + version + " on Thunderstore as " + team + "-" +
                          package.name + ". It shows in the MARKET within a minute.";
+        if (!pack.left_out.empty()) result.message += " " + left_out_note(pack.left_out);
         progress(1);
         refresh(true);
     });

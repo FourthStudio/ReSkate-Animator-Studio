@@ -61,6 +61,11 @@ struct View {
     std::size_t source_pose_count{};
     float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
+    // The open trick is one of the game's grinds (studio_rails.h grind_clip): it stands on the grind rail, and the editor
+    // shows the RAIL button. grind_rail: the rail chosen ("" none).
+    bool grind_open{};
+    std::string grind_rail;
+    float grind_rail_size{0.6f};
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
     // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
     // and its name. Opening another trick to edit drops it, so ask first.
@@ -74,6 +79,7 @@ struct View {
     bool own_lead_right{}; // the skater's own stance leads with the right foot (goofy): stance versions are told apart by it
     bool showing_goofy{};
     bool grab_board{};   // a hand near the deck closes its fingers on it
+    bool advanced_bones{}, finger_bones{}; // SETTINGS > SKATER: the advanced bones' and the fingers' rows shown (JointGroup)
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
     bool limits{true};     // Joint limits: keyed joints stay inside the range the game's own animation uses
     float crossfade{0.3f}; // seconds a trick takes to hand back to the game's next move in game (Crossfade)
@@ -103,6 +109,7 @@ struct View {
         bool favorite{};                // starred: shown first in PACKS
         bool installed{};               // made on another PC (its maker's key is not this one's): its tricks play, not open
         std::int64_t modified{};        // when its file was last written (the file clock's count), 0 not known
+        bool playing{};                 // in the playlist that is on, as a whole pack: it plays in game
     };
     // MY TRICKS shows a trick's saves together (one card a trick: its pops and stances); these are shown on their own.
     std::set<std::string> ungrouped;
@@ -128,6 +135,9 @@ struct View {
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
+    // SETTINGS > STUDIO: the CATCH flag on the timeline with CATCH HOLD, and DROP PREVIEW, shown or not; and whether the
+    // first-start guide has been read (it opens by itself until it has).
+    bool catch_marker{true}, drop_preview_tool{true}, guide_seen{true};
     // The editor's keys rebound in SETTINGS > STUDIO > EDITOR KEYS: an action's name to its key's name (the overlay's
     // names). Only those not on their own key.
     std::map<std::string, std::string> keys;
@@ -168,6 +178,28 @@ std::string toggle_stance_readout();
 std::string research_trace(const std::string& action);
 // Cheap, any thread: whether the studio has the screen.
 bool is_open() noexcept;
+// The studio's settings (SETTINGS), cheaply, for a page that shows them with the studio closed: no trick, joint or
+// library is read or copied. Each is changed by its setter below.
+struct Settings {
+    bool room{true}, play_in_game{true};
+    int stance_choice{}; // 0 the game's, 1 regular, 2 goofy (set_stance)
+    bool game_goofy{};   // the game's own stance is goofy
+    bool grab_board{}, limits{true}, front_foot{true};
+    bool advanced_bones{}, finger_bones{};
+    int open_combo{}; // open_combo_names
+    float crossfade{0.3f};
+    bool catch_marker{true}, drop_preview_tool{true};
+    bool smooth_transitions{true}; // SETTINGS > TRICKS > Transitions: SMOOTH or CLASSIC
+    // SETTINGS > STUDIO > Grind rail: the game's straight rail a grind stands on in the studio (studio_rails.h), "" none,
+    // and the ones this player's build kit can place (all of studio_rails until the game has said).
+    std::string grind_rail;
+    float grind_rail_size{0.6f}; // Rail size: how big it is put up (studio_rail_sizes)
+    std::vector<std::string> rails;
+    std::string your_name;
+    std::string export_folder, import_folder; // "" the defaults
+    std::string export_path, import_path;     // where they are, in full (UTF-8)
+};
+Settings settings();
 // The studio's room (studio_room.h). Any thread.
 bool room_wanted() noexcept;       // the Studio room row is on
 void watch_room(bool on) noexcept; // look for the menu's skater in the room
@@ -211,11 +243,22 @@ void set_stance(int choice);
 // A hand brought near the board closes its fingers round the deck, by how near it is. The fingers are not
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
+void set_advanced_bones(bool on); // SETTINGS > SKATER > Advanced bones
+// SETTINGS > STUDIO > Controller combo: what held on a controller opens and closes the studio (another mod may want L3 + R3,
+// 2026-10-29). 0 L3 + R3 (as before), 1 LB + R3, 2 RB + L3, 3 none (F8, or the ReSkate menu's ADDONS > ANIMATOR STUDIO).
+inline constexpr std::array<const char*, 4> open_combo_names{"L3 + R3", "LB + R3", "RB + L3", "OFF"};
+inline constexpr std::array<std::uint16_t, 4> open_combo_buttons{0x0040 | 0x0080, 0x0100 | 0x0080, 0x0200 | 0x0040, 0};
+void set_open_combo(int combo);
+int open_combo() noexcept; // any thread, every frame
+void set_finger_bones(bool on);   // SETTINGS > SKATER > Fingers
 // How many times the Studio room setting was switched: the client opens the studio in the room, or leaves it, at once.
 std::uint64_t room_changes() noexcept;
 // In game: how long a trick takes to fade out into the game's next move (a manual, the next trick), 0.1 to 0.8 s;
 // one trick's keys blend into the next's over half of it. Saved with the studio's settings.
 void set_crossfade(float seconds);
+// Transitions: SMOOTH, a trick hands over to a grind the way the game hands over its own (the board and legs first, then the
+// arms, then the back and head, the trick going on meanwhile); CLASSIC, as 1.0.16 did.
+void set_smooth_transitions(bool on);
 // Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
 // elbows bend one way, nothing twists round), while you pose and in game. Off, joints go where you push them.
 void set_joint_limits(bool on);
@@ -331,7 +374,11 @@ struct SharedPack {
     std::vector<std::pair<std::string, std::string>> files; // path in the zip, bytes
     std::vector<std::string> tricks;
     std::string picture;
+    // Tricks the pack names whose files are not on this PC: not in what is shared, and not named in its pack file either.
+    std::vector<std::string> left_out;
 };
+// "2 tricks the pack names were not found and are not in it: A, B." ("" none.)
+std::string left_out_note(const std::vector<std::string>& names);
 bool share_pack(const std::string& pack, SharedPack& out, std::string& message);
 // It went up on Thunderstore as this version of this package (Team-Name): its next update goes to the same package.
 void pack_published(const std::string& pack, const std::string& version, const std::string& published_as);
@@ -355,11 +402,12 @@ struct UnpackedTrick {
 bool unpack_preview(const std::filesystem::path& zip, const std::filesystem::path& into, std::vector<UnpackedTrick>& tricks, std::string& message);
 std::filesystem::path studio_folder();       // ReSkate.Tricks
 std::filesystem::path pack_export_folder();  // where exports go
-// A trick in a pack switched off (it stays in the pack, but does not play) or on again.
-bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
 // PLAY (MY TRICKS): on, the trick plays in game on its own, whichever packs are on; off, it does not play at all - from
 // its packs neither (it is switched off in each). A trick saved or put in a pack starts switched off.
 bool set_trick_play(const std::string& animation, bool on, std::string& message);
+// ACTIVE on a trick in a pack: on, it plays with the pack (when the pack is in the playlist that is on); off, it stays in
+// the pack but does not play.
+bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
 void set_pack_favorite(const std::string& pack, bool favorite); // starred packs come first in PACKS
 // Whether others may open the pack's tricks to edit and copy them once it is shared (its maker's choice; locked unless
 // set). It goes with the pack when it is exported.
@@ -368,6 +416,45 @@ bool set_pack_editable(const std::string& pack, bool editable, std::string& mess
 // on play), how its tricks take turns, and what is in it.
 void set_playlist_on(bool on, std::string& message);
 void set_playlist_mode(PlaylistMode mode, std::string& message);
+// The same for a playlist by its name, whichever one PACKS has open: `name` on and any other off ("" none on), and how
+// its tricks take turns.
+void play_playlist(const std::string& name, std::string& message);
+void set_playlist_mode(const std::string& name, PlaylistMode mode, std::string& message);
+// The playlists, cheaply, for a page that switches them with the studio closed: their names, how many entries each
+// has, how its tricks take turns, and the one on ("" none). The trick library is read the first time, as the studio does.
+struct PlaylistsNow {
+    struct Entry {
+        std::string name;
+        std::size_t size{};
+        PlaylistMode mode{PlaylistMode::fixed};
+    };
+    std::vector<Entry> lists;
+    std::string on;
+};
+PlaylistsNow playlists_now();
+// The ReSkate menu's ANIMATOR STUDIO page, cheaply, any thread: what plays, the packs and whether each is in the playlist
+// that is on, and the last tricks done (the newest first, at most 5): the game's trick, its pop, and which of yours played it
+// ("" the game's own), with how many there were to choose from.
+struct MenuSummary {
+    std::string playing; // the playlist that is on ("" none)
+    std::size_t entries{};
+    PlaylistMode mode{PlaylistMode::fixed};
+    struct Pack {
+        std::string name;
+        bool in{};
+        std::size_t tricks{};
+    };
+    std::vector<Pack> packs;
+    std::size_t own{}, in_play{}; // tricks of yours, and those that play now
+    struct Done {
+        // The game's trick, its name for it, the pop, and yours that played it by the name you gave it ("" the game's own).
+        std::string trick, label, pop, played;
+        int choices{};
+        double ago{-1}; // seconds since
+    };
+    std::vector<Done> recent;
+};
+MenuSummary menu_summary();
 bool playlist_add(const PlaylistEntry& entry, std::string& message); // makes Playlist 1 when there is none
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
@@ -378,12 +465,17 @@ bool delete_playlist(std::string& message);     // the open one
 // Puts a whole pack or one trick in a playlist ("" a new one) and opens it. The playlist goes on when none is (one that is
 // on stays on). Returns the playlist's name ("" when it failed).
 std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message);
-// ACTIVE on a saved trick. On: put back where it was switched off (its pack, in the playlist that is on or a pack that is
-// on), or - when it is in nothing that plays - choose_playlist: the overlay asks which playlist it goes in. In a playlist
-// already but beaten to its pop by one above it: show_playlist. Off: out of the playlist that is on, or off in its pack.
-enum class ActiveAnswer { done, show_playlist, choose_playlist };
-ActiveAnswer set_trick_active(const std::string& animation, bool on, std::string& message);
+// PLAY on a pack's card: the whole pack into the playlist that is on (or "My packs", switched on, when none is), or out of it.
+bool set_pack_playing(const std::string& pack, bool on, std::string& message);
 void set_hover_preview(bool on);
+// SETTINGS > STUDIO: the catch's tools shown (View::catch_marker, drop_preview_tool). Off, DROP PREVIEW goes back to 0.
+void set_catch_marker(bool on);
+// The grind rail (studio_rails.h key, "" none): a game grind opened in the studio stands on that rail.
+void set_grind_rail(const std::string& key);
+void set_grind_rail_size(float size); // one of studio_rail_sizes (the nearest)
+void set_drop_preview_tool(bool on);
+// The first-start guide read (true), or to open again (false).
+void set_guide_seen(bool seen);
 // The editor's rebound keys (View::keys), kept in studio-settings.json; empty puts every key back.
 void set_key_bindings(const std::map<std::string, std::string>& keys);
 std::map<std::string, std::string> key_bindings(); // the same, cheaply (the loading screen's tips name them)
@@ -440,13 +532,16 @@ bool export_diagnostics(std::string& message);
 bool report_bug(std::string& message);
 bool load_game_trick(const GameTrick& trick, std::string& message);
 // A trick done by the skater himself for a look (TRICKS' hover preview), over whatever is open, which stays as it is:
-// it plays once from the start and holds its end, until end_peek. It is read, decoded and turned into the studio's
+// once read it stands on its first frame (peek_playing) until peek_go, so the camera is at his side and the window open
+// before it moves; then it plays once from the start and holds its end, until end_peek. It is read, decoded and turned into the studio's
 // stance on a thread of its own (a library clip is hundreds of KB: read on the frame, it stuttered the game), and the
 // last few are kept, so one looked at again starts at once. `play`: it starts as soon as it is ready; without, it is
 // only made ready (the mouse is settling on its card). False when it cannot be asked for.
 bool peek_game_trick(const GameTrick& trick, bool play = true);
 bool peek_saved(const std::string& animation, bool play = true);
-bool peek_playing();   // the trick asked to play is playing
+bool peek_playing();   // the trick asked to play is ready and shown (held on its first frame until peek_go)
+void peek_go();        // it starts playing from its first frame now
+bool peek_ready();     // all of it is there to be seen: its first frame, and for a grind the studio rail standing under it
 void end_peek();       // and one asked for that is not ready yet does not start
 float peek_duration(); // the trick being looked at, in seconds (0 none)
 // Deletes a saved trick and takes it out of every pack it is in. A pack got from someone else (the MARKET, an import)

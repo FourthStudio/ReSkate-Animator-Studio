@@ -75,6 +75,7 @@ struct PresetPack {
     // pop, or "low", "mid" or "high" only.
     std::string pop_rule;
     std::string maker_key;     // the key of the PC it was made on (export_pack), so its tricks stay its maker's
+    std::string maker_team;    // the Thunderstore team its maker was signed in as when it went out: theirs on any PC signed in so
     std::set<std::string> off; // members switched off: kept in the pack, but they do not play
     // Its maker lets others open its tricks to edit and copy them. Off (the default), they play for others, but are locked.
     bool editable{};
@@ -379,6 +380,7 @@ inline Json pack_json(const PresetPack& pack) {
     if (!pack.unlinked.empty()) out["unlinked"] = Json(std::vector<std::string>(pack.unlinked.begin(), pack.unlinked.end()));
     if (!pack.pop_rule.empty()) out["pop_rule"] = pack.pop_rule;
     if (!pack.maker_key.empty()) out["maker_key"] = pack.maker_key;
+    if (!pack.maker_team.empty()) out["maker_team"] = pack.maker_team;
     if (!pack.off.empty()) out["off"] = Json(std::vector<std::string>(pack.off.begin(), pack.off.end()));
     if (pack.editable) out["editable"] = true;
     if (!pack.description.empty()) out["description"] = pack.description;
@@ -413,6 +415,7 @@ inline PresetPack read_pack_json(const Json& root) {
             if (name.is_string() && !name.string().empty()) out.unlinked.insert(name.string());
     if (const auto rule = root.value("pop_rule", ""); rule == "any" || rule == "low" || rule == "mid" || rule == "high") out.pop_rule = rule;
     out.maker_key = root.value("maker_key", "").substr(0, 64);
+    out.maker_team = root.value("maker_team", "").substr(0, 64);
     out.editable = root.value("editable", false);
     out.description = utf8_prefix(root.value("description", ""), 2000);
     out.version = root.value("release", "1.0.0").substr(0, 32);

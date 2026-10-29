@@ -46,6 +46,8 @@ void set_plugin_velocity(const std::array<float, 3>& velocity, bool add) noexcep
 // rate that gives it, 1 on the ground).
 void set_air_gravity(std::uintptr_t client, std::uintptr_t entity, float factor, float landing = 0, float timing = 0) noexcept;
 float air_animation_rate() noexcept;
+// The gravity in the air on the board now, as a multiple of the game's own (the trainer's while it holds one; 1 when not).
+float air_gravity_in_force() noexcept;
 std::uint32_t air_gravity_steps() noexcept;
 // Trainer: the game has just launched a flight with this trajectory object (any skater's; any thread).
 void note_flight_record(std::uintptr_t trajectory) noexcept;

@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <array>
-#include <functional>
 #include <imgui_internal.h>
 #include <string>
 
@@ -14,12 +13,9 @@
 namespace dingosdk::overlay::menu {
 using namespace theme;
 namespace {
-// A tile for an addon on ALL ADDONS: what it is, whether it is on, and a way in.
-void quietly(const CallbacksV3& callbacks, const std::string& command); // a console line, defined below
-// `addon` is the page the tile opens. A tile with `run` set does that instead: it is a thing to do, not
-// a page to go to (the Animator Studio, which takes the screen itself).
+// A tile for an addon on ALL ADDONS: what it is, whether it is on, and a way in. `addon` is the page the tile opens.
 void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* about, const char* state, ImU32 state_colour,
-                int addon, const std::function<void()>& run = {}) {
+                int addon) {
     if (console_style()) {
         // Full screen: a tile as the pause menu's, A opens the addon.
         const auto at = ImGui::GetCursorScreenPos();
@@ -42,10 +38,7 @@ void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* 
         draw->AddText(menu.body, px(16), ImVec2(at.x + px(20), at.y + px(66)), lit ? paper : muted, about, nullptr, size.x - px(40));
         draw->PopClipRect();
         ImGui::PopID();
-        if (pressed) {
-            if (run) run();
-            else open_page(menu, page_addons, addon);
-        }
+        if (pressed) open_page(menu, page_addons, addon);
         return;
     }
     begin_card(menu, id, title);
@@ -55,22 +48,17 @@ void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* 
     }
     note(about);
     ImGui::Dummy(ImVec2(0, px(2)));
-    if (ImGui::Button((std::string("OPEN ") + title + "##" + id).c_str(), ImVec2(-FLT_MIN, px(34)))) {
-        if (run) run();
-        else open_page(menu, page_addons, addon);
-    }
+    if (ImGui::Button((std::string("OPEN ") + title + "##" + id).c_str(), ImVec2(-FLT_MIN, px(34)))) open_page(menu, page_addons, addon);
     end_card();
 }
 
-void all_addons(SkateMenu& menu, const CallbacksV3& callbacks) {
+void all_addons(SkateMenu& menu) {
     addon_tile(menu, "addon-music", "MUSIC", "Spotify, YouTube Music, your own files and online radio through the game's music player.",
                nullptr, 0, addon_music);
     if (console_style()) ImGui::SameLine(0, px(12));
-    // Not a page of its own: it takes the screen, the way it does from F8.
     addon_tile(menu, "addon-animator-studio", "ANIMATOR STUDIO",
-               "Edit the game's animations frame by frame and play your saved tricks. F8 opens it too.",
-               callbacks.queue_console_command ? "OPEN" : "NOT AVAILABLE", skate_theme::tile_light, addon_music,
-               [&callbacks] { quietly(callbacks, "animstudio open"); });
+               "Edit the game's animations frame by frame and play your saved tricks. How they play in game is set here too. F8 opens it.",
+               nullptr, 0, addon_animator_studio);
 }
 }
 
@@ -80,7 +68,7 @@ void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
     // A window lists the addons in its side rail; full screen has no rail, so they are tabs here
     // (LT / RT on a controller).
     if (menu.fullscreen_drawn) {
-        static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "MUSIC"};
+        static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "MUSIC", "ANIMATOR STUDIO"};
         std::vector<const char*> labels(names.begin(), names.end());
         category_tabs(menu, menu.addon, labels, "addon-tabs");
         menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
@@ -88,9 +76,10 @@ void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
     ImGui::PushID(menu.addon);
     switch (menu.addon) {
     case addon_music: music_page(menu, model, callbacks); break;
+    case addon_animator_studio: animator_studio_page(menu, model, callbacks); break;
     default:
         ImGui::BeginChild("addon", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-        all_addons(menu, callbacks);
+        all_addons(menu);
         ImGui::EndChild();
         break;
     }
@@ -158,12 +147,6 @@ void heading(SkateMenu& menu, const char* text) {
     ImGui::TextUnformatted(text);
     ImGui::PopFont();
     ImGui::Dummy(ImVec2(0, px(2)));
-}
-// A console line, without its reply on the page (a quick control says what it did by its tile).
-void quietly(const CallbacksV3& callbacks, const std::string& command) {
-    if (!callbacks.queue_console_command) return;
-    std::array<char, 256> reply{};
-    callbacks.queue_console_command(callbacks.user, command.c_str(), reply.data(), reply.size());
 }
 }
 

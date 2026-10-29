@@ -30,6 +30,19 @@ struct DiagnosticSample {
     double skater_age{-1}, board_age{-1};
     double render_at{-1}, render_board_at{-1};
     std::string trick, preset;
+    // The pop the studio chose by, where it came from ("grade": the game's, "air": the air time's guess) and why it picked
+    // what it picked (or nothing), so a dump says it rather than leaving it to be worked out.
+    std::string pop, pop_source, decision;
+    // SMOOTH transitions: how far the board and legs leaned over to the game's ahead of a rail, and how far into a handover
+    // (seconds since the rail's lock, -1 none).
+    float lean{}, handover{-1};
+    // The board's force field: how deep (mm) a shoe was in a deck before it pushed and after (-1: it did not run then).
+    float guard_in_mm{-1}, guard_out_mm{-1};
+    float guard_round_mm{-1}; // how far the force field moved a foot (mm, besides its turn at the ankle)
+    // What the game's animation said (trainer::read_studio_states; -1 not read): its trick phase, the trick input, aiming for
+    // a grind, its time to land.
+    float game_phase{-1}, time_to_land{-1};
+    int trick_intent{-1}, targeting_grind{-1};
     std::optional<Joint> native_board, desired_board, render_board;
     std::vector<Joint> native, desired, render_native;
     std::string observed_phase, entry, source_kind;
@@ -40,6 +53,11 @@ struct DiagnosticSample {
     std::vector<Joint> source, board_rig;
     double board_rig_at{-1};
     std::optional<Joint> source_board;
+    // Every update, not only with the poses (feet.csv): the hips, legs, feet and toes in the world and the board's mount,
+    // as drawn and as the game had them - a shoe in the board for a few frames falls between the poses' tenths of a second.
+    std::vector<std::pair<std::uint16_t, Joint>> feet_drawn, feet_native;
+    std::optional<Joint> feet_drawn_board, feet_native_board;
+    double feet_at{-1};
 };
 struct DiagnosticBuffer {
     static constexpr std::size_t capacity = 4096;
@@ -71,7 +89,8 @@ inline std::string diagnostic_csv(std::string_view text) {
 inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std::filesystem::path& folder) {
     std::filesystem::create_directories(folder);
     std::ofstream timeline(folder / "timeline.csv"), poses(folder / "poses.csv"), board(folder / "board.csv");
-    std::ofstream rig(folder / "board-rig.csv");
+    std::ofstream rig(folder / "board-rig.csv"), feet(folder / "feet.csv");
+    feet.exceptions(std::ios::badbit | std::ios::failbit); feet.imbue(std::locale::classic()); feet << std::setprecision(9);
     rig.exceptions(std::ios::badbit | std::ios::failbit); rig.imbue(std::locale::classic()); rig << std::setprecision(12);
     timeline.exceptions(std::ios::badbit | std::ios::failbit);
     poses.exceptions(std::ios::badbit | std::ios::failbit);
@@ -80,10 +99,11 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     timeline << std::setprecision(12);
     poses << std::setprecision(12);
     board << std::setprecision(12);
-    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg\n";
+    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land,guard_in_mm,guard_out_mm,guard_round_mm\n";
     const std::string columns = "seconds,sequence,stage,joint,sx,sy,sz,qx,qy,qz,qw,px,py,pz\n";
     poses << columns; board << columns;
     rig << columns;
+    feet << columns;
     const double origin = history.samples.empty() ? 0 : history.samples.front().at;
     double previous = origin, max_gap = 0, max_position_delta = 0, max_angle = 0;
     std::size_t captured = 0, invalid = 0;
@@ -107,7 +127,10 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
                  << s.skater_publications << ',' << s.board_publications << ',' << s.skater_age << ',' << s.board_age << ',' << !s.native.empty() << ','
                  << diagnostic_csv(s.observed_phase) << ',' << diagnostic_csv(s.entry) << ',' << diagnostic_csv(s.source_kind) << ','
                  << s.episode << ',' << s.render_edit_sequence << ',' << s.render_presentation << ',' << s.board_edit_sequence << ',' << s.board_presentation << ',' << s.reverse_facing << ',' << s.source_timing
-                 << ',' << diagnostic_csv(s.clock_state) << ',' << s.clock_clip << ',' << s.clock_error << '\n';
+                 << ',' << diagnostic_csv(s.clock_state) << ',' << s.clock_clip << ',' << s.clock_error
+                 << ',' << diagnostic_csv(s.pop) << ',' << diagnostic_csv(s.pop_source) << ',' << diagnostic_csv(s.decision)
+                 << ',' << s.lean << ',' << s.handover << ',' << s.game_phase << ',' << s.trick_intent << ',' << s.targeting_grind << ','
+                 << s.time_to_land << ',' << s.guard_in_mm << ',' << s.guard_out_mm << ',' << s.guard_round_mm << '\n';
         if (!s.native.empty()) ++captured;
         for (std::size_t j = 0; j < s.native.size(); ++j) joint_row(poses, s.at, s.sequence, "animation_native", j, s.native[j]);
         for (std::size_t j = 0; j < s.desired.size(); ++j) {
@@ -129,8 +152,12 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
         if (s.desired_board) joint_row(board, s.at, s.sequence, "desired", board_joint, *s.desired_board);
         if (s.render_board) joint_row(board, s.render_board_at, s.sequence, "render_before_override", board_joint, *s.render_board);
         if (s.render_edited_board) joint_row(board, s.render_edited_board_at, s.sequence, "render_after_edits", board_joint, *s.render_edited_board);
+        for (const auto& [index, j] : s.feet_drawn) joint_row(feet, s.feet_at, s.sequence, "drawn", index, j);
+        if (s.feet_drawn_board) joint_row(feet, s.feet_at, s.sequence, "drawn", board_joint, *s.feet_drawn_board);
+        for (const auto& [index, j] : s.feet_native) joint_row(feet, s.feet_at, s.sequence, "native", index, j);
+        if (s.feet_native_board) joint_row(feet, s.feet_at, s.sequence, "native", board_joint, *s.feet_native_board);
     }
-    timeline.flush(); poses.flush(); board.flush(); rig.flush();
+    timeline.flush(); poses.flush(); board.flush(); rig.flush(); feet.flush();
     Json summary = Json::object();
     summary["schema"] = 3;
     summary["samples"] = history.samples.size();

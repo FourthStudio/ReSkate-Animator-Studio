@@ -1,4 +1,5 @@
 #include "native_library.h"
+#include "native_additive.h"
 #include "Engine/Game/Build/20260929/skater_skeleton.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Vfs/game_bundles.h"
@@ -14,6 +15,7 @@
 #include <numbers>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <variant>
@@ -217,6 +219,7 @@ Decoded decode_pose(std::span<const std::byte> blob, const std::vector<std::stri
     const auto ticks = static_cast<std::size_t>(end_frame) + 1;
     Decoded out;
     out.frames.resize(ticks * names.size());
+    out.animated.assign(names.size(), 0);
     for (std::size_t f = 0; f < ticks; ++f) std::copy(defaults.begin(), defaults.end(), out.frames.begin() + static_cast<std::ptrdiff_t>(f * names.size()));
     const auto quaternions = decode_quaternions(blob, channels);
     const auto vectors = decode_vectors(blob, channels);
@@ -224,6 +227,7 @@ Decoded decode_pose(std::span<const std::byte> blob, const std::vector<std::stri
     for (const auto& [name, track] : quaternions) {
         const auto found = index.find(name.substr(0, name.size() - 2));
         if (found == index.end()) continue;
+        out.animated[found->second] |= tracks_rotation;
         for (std::size_t f = 0; f < ticks; ++f) {
             const auto q = sample(track, static_cast<double>(f));
             auto& joint = out.frames[f * names.size() + found->second];
@@ -235,6 +239,7 @@ Decoded decode_pose(std::span<const std::byte> blob, const std::vector<std::stri
         const auto found = index.find(name.substr(0, name.size() - 2));
         if (found == index.end()) continue;
         const std::size_t start = ends_with(name, ".t") ? 7 : 0;
+        if (start == 7) out.animated[found->second] |= tracks_position;
         for (std::size_t f = 0; f < ticks; ++f) {
             auto& joint = out.frames[f * names.size() + found->second];
             for (std::size_t c = 0; c < 3; ++c) joint[start + c] = static_cast<float>(interp(static_cast<double>(f), track.frames, track.values, c));
@@ -513,17 +518,47 @@ std::string sha256_hex(std::string_view text) {
     }
     return hex;
 }
+bool write_whole(const std::filesystem::path& path, std::span<const std::byte> bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    return !out.fail();
+}
+// Another program can hold a file it has just seen written for a moment (an antivirus scanning it, the search indexer,
+// a folder that syncs): every step is tried again for a few seconds, longer each time, and when the new file still cannot
+// take the old one's name it is written in its place directly (the library is built in a folder of its own, so a file
+// half written there is never read).
 void write_file(const std::filesystem::path& path, std::span<const std::byte> bytes) {
     auto temp = path;
     temp += L".tmp";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!out) throw WriteFailed("could not write " + path.filename().string());
-    }
     std::error_code error;
-    std::filesystem::rename(temp, path, error);
-    if (error) throw WriteFailed("could not write " + path.filename().string() + ": " + error.message());
+    const auto again = [](DWORD& waited, DWORD& wait) {
+        if (waited >= 6'000) return false;
+        Sleep(wait);
+        waited += wait;
+        wait = std::min<DWORD>(wait * 2, 500);
+        return true;
+    };
+    bool written = false;
+    for (DWORD waited = 0, wait = 20; !(written = write_whole(temp, bytes)) && again(waited, wait);) {}
+    if (written)
+        for (DWORD waited = 0, wait = 20;;) {
+            error.clear();
+            std::filesystem::rename(temp, path, error);
+            if (!error) return;
+            if (!again(waited, wait)) break;
+        }
+    for (DWORD waited = 0, wait = 20;;) {
+        if (write_whole(path, bytes)) {
+            std::error_code ignored;
+            std::filesystem::remove(temp, ignored);
+            return;
+        }
+        if (!again(waited, wait)) break;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(temp, ignored);
+    throw WriteFailed("could not write " + path.filename().string() + (error ? ": " + error.message() : std::string{}));
 }
 void write_text(const std::filesystem::path& path, const std::string& text) {
     write_file(path, std::span<const std::byte>(reinterpret_cast<const std::byte*>(text.data()), text.size()));
@@ -582,6 +617,7 @@ struct Row {
 struct ClipSource {
     std::string asset;
     bool timing_ok{}, looping{};
+    bool additive{}; // DofMode 1: a change laid over another clip, not a pose (native_additive.h)
     std::size_t eclipse_count{};
     std::string rig, channel_map;
     std::uint64_t resource{};
@@ -694,6 +730,7 @@ Report build(const std::filesystem::path& game_root, const std::filesystem::path
                     if (const auto* root = root_object(doc)) {
                         clip.timing_ok = as_number(field(*root, "FPS")) == 60.0 && as_number(field(*root, "TickOffset")).value_or(0) == 0;
                         clip.looping = as_bool(field(*root, "IsLooping"));
+                        clip.additive = as_int(field(*root, "DofMode")).value_or(0) == 1;
                         clip.rig = partition_of(doc, field(*root, "RigRef"));
                     }
                     clips.push_back(std::move(clip));
@@ -872,10 +909,28 @@ Report build(const std::filesystem::path& game_root, const std::filesystem::path
             trick_assets.emplace(asset, &family);
             trick_pop.emplace(asset, pop);
         }
+    // The additive clips last, so the poses they go on are decoded by then.
     std::sort(clips.begin(), clips.end(), [](const ClipSource& a, const ClipSource& b) {
         const auto busy = [](const std::string& s) { return has(s, "grind") || has(s, "manual") || has(s, "grab") || has(s, "trick"); };
-        return std::pair{!busy(a.asset), a.asset} < std::pair{!busy(b.asset), b.asset};
+        return std::tuple{a.additive, !busy(a.asset), a.asset} < std::tuple{b.additive, !busy(b.asset), b.asset};
     });
+    // Which whole poses the additive clips go on (native_additive.h additive_bases): their first pose is kept as it is
+    // decoded (base_poses), with whether it has the board.
+    std::unordered_map<std::string, std::vector<std::string>> bases_of;
+    std::set<std::string> wanted_bases;
+    {
+        std::set<std::string> whole;
+        for (const auto& clip : clips)
+            if (!clip.additive) whole.insert(clip.asset);
+        for (const auto& clip : clips) {
+            if (!clip.additive) continue;
+            auto& bases = bases_of[clip.asset];
+            for (auto& base : additive_bases(clip.asset))
+                if (whole.contains(base) && std::find(bases.begin(), bases.end(), base) == bases.end()) bases.push_back(std::move(base));
+            wanted_bases.insert(bases.begin(), bases.end());
+        }
+    }
+    std::unordered_map<std::string, std::pair<std::vector<Joint10>, bool>> base_poses;
     Json catalog = Json::array();
     std::vector<std::tuple<std::string, std::string, std::string, Json>> entries; // sort key, then the entry
     for (std::size_t c = 0; c < clips.size(); ++c) {
@@ -900,7 +955,22 @@ Report build(const std::filesystem::path& game_root, const std::filesystem::path
             require(source.rig == rig_row.partition, "Unsupported preview rig");
             require(source.end_frame.has_value(), "Unsupported native frame range");
             require(source.trim_offset == 0 && source.trimmed_duration.value_or(*source.end_frame) == *source.end_frame, "Unsupported trimmed native clip");
-            const auto decoded = decode_pose(blob, channels, defaults, names, *source.end_frame);
+            auto decoded = decode_pose(blob, channels, defaults, names, *source.end_frame);
+            // An additive clip goes over the first of its bases there is; a whole pose one of them goes on is kept.
+            std::string laid_on;
+            if (source.additive) {
+                for (const auto& base : bases_of[source.asset]) {
+                    const auto found = base_poses.find(base);
+                    if (found == base_poses.end()) continue;
+                    add_onto(decoded.frames, names.size(), found->second.first, decoded.animated);
+                    decoded.board = decoded.board || found->second.second;
+                    laid_on = base;
+                    break;
+                }
+            } else if (wanted_bases.contains(source.asset)) {
+                base_poses.emplace(source.asset, std::pair{std::vector<Joint10>(decoded.frames.begin(), decoded.frames.begin() + static_cast<std::ptrdiff_t>(names.size())),
+                                                           decoded.board});
+            }
             const auto trick = trick_assets.find(source.asset);
             Json entry;
             float takeoff = -1, landing = -1;
@@ -921,6 +991,7 @@ Report build(const std::filesystem::path& game_root, const std::filesystem::path
                 entry = {{"category", entry_category}, {"label", label}, {"trick", "native:" + source.asset}, {"pop", ""}, {"file", file},
                          {"asset", source.asset}, {"preview_only", true}, {"position_codec", "native-piec-v1-extent"}, {"native_looping", source.looping}};
             }
+            if (source.additive) entry["additive_on"] = laid_on; // "" when none of its bases was there: as decoded
             const auto bytes = encode_clip(decoded, takeoff, landing);
             write_file(output / std::filesystem::path(file), bytes);
             // The resource's details, for the inspector (the bytes themselves stay in the game).
@@ -937,6 +1008,8 @@ Report build(const std::filesystem::path& game_root, const std::filesystem::path
             }
             row.state = "decoded";
             row.detail = std::to_string(decoded.times.size()) + " poses at 60 Hz; " + (decoded.board ? "body and board" : "body only") + "; no live phase binding";
+            if (source.additive)
+                row.detail += laid_on.empty() ? "; additive, shown as it is (no pose to lay it over)" : "; additive, laid over " + laid_on.substr(laid_on.rfind('/') + 1);
             entries.emplace_back(entry_category, label, pop, std::move(entry));
             ++report.clips;
         } catch (const Stopped&) {

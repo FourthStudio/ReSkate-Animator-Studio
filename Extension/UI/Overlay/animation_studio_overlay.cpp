@@ -2,12 +2,15 @@
 #include "skate_style.h"
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
+#include "Extension/AnimationStudio/studio_rails.h"
+#include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "studio_cover_maker.h"
 #include "studio_market_art.h"
 #include "studio_torn.h"
+#include "Extension/AnimationStudio/studio_settings_rows.h"
 #include <shlobj.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -102,17 +105,18 @@ struct Ui {
     bool catch_drag{}, catch_began{}; // CATCH is held; its undo step is taken
     float catch_dragged_to{-1};       // the frame it was last moved to
     bool trick_panel{};               // THIS TRICK is open
+    int guide_page{};                 // the HOW IT WORKS guide's page
     std::string delete_card;          // a saved trick in a pack about to be deleted: the card asks first
     bool account{};                   // MARKET > ACCOUNT is open: the Thunderstore team signed in, and changing it
     bool menu_after_preview{};        // leaving a preview: the menu it goes back to stays open when the trick open before comes back
-    std::set<std::string> playlist_open; // PACK SETTINGS: the packs unfolded in the playlist's list ("*loose" your tricks in no pack)
+    std::set<std::string> playlist_open; // PACK SETTINGS: the packs unfolded in the playlist's list ("*mine" MY TRICKS folded shut)
     std::string reshare_pack;         // SHARE pressed on someone else's pack (or one holding others' tricks): the card says no
     std::set<std::string> packs_open; // FROM PACKS: the packs unfolded (a pack's name; "*loose" the tricks with no pack)
     std::vector<std::pair<ImVec2, ImVec2>> cards_laid; // TRICKS: every card laid out this frame (card_under_peek)
     std::map<std::string, std::string> keys; // the editor's rebound keys (View::keys), as of this frame
     std::string binding;                     // EDITOR KEYS: the action waiting for its new key ("" none)
     std::string packs_group;                 // FROM PACKS: the trick group open in a pack ("pack|trick"; "" none)
-    std::string playlist_for;                // ACTIVE on a trick in nothing that plays: the card asks which playlist it goes in
+    std::string playlist_for;                // + PLAYLIST on a trick with no playlist on: the card asks which playlist it goes in
     studio::PlaylistEntry playlist_for_entry;
     std::array<char, 64> playlist_name{};    // PACKS > PLAYLIST: the open playlist's name, being typed
     std::string playlist_name_for, playlist_delete_armed;
@@ -299,7 +303,6 @@ struct Ui {
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
     float clear_force{1.0f};     // how wide the body is taken to be: 0 nothing, 1 the full shapes
     float ground_force{0.6f};    // the ground force field (SETTINGS): how much of a joint's thickness is kept above the floor; 0 off
-    float crossfade_slider{};    // the Crossfade setting on its slider, 0 to 1 (0.1 to 0.8 s), from the studio each frame
     bool controls_open{true};    // the shortcuts panel out (its tab at its side, or F1, slides it in and out)
     float controls_t{1};         // how far out it is, eased
     bool shove_limbs{true};      // a limb that is run into gives way as well, not only what you move
@@ -336,8 +339,8 @@ struct Ui {
         double since{-1};
         ImVec2 a{}, b{};
         std::function<bool(bool)> start; // asks for the trick: true plays it once it is ready, false only readies it
-        bool readied{}, tried{}, peeking{}, done{};
-        double asked{-1};
+        bool readied{}, tried{}, peeking{}, going{}, done{};
+        double asked{-1}, ready_at{-1}, go_at{-1};
         float duration{};
         studio::Orbit orbit; // the camera as it was, put back after
     } hover;
@@ -368,6 +371,28 @@ void say(std::string text) {
 const studio::JointView* joint_view(const studio::View& v, std::uint16_t joint) {
     for (const auto& j : v.joints) if (j.joint == joint) return &j;
     return nullptr;
+}
+const studio::TrackView* track_view(const studio::View& v, std::uint16_t joint); // below
+// Whether a joint's row and dot show (SETTINGS > SKATER): the usual joints always, the advanced bones and the fingers when
+// their setting is on, and any joint keyed away from the game's pose whatever the setting (a key is never hidden).
+bool joint_shown(const studio::View& v, const studio::EditableJoint& e) {
+    if (e.group == studio::JointGroup::usual) return true;
+    if (e.group == studio::JointGroup::advanced ? v.advanced_bones : v.finger_bones) return true;
+    if (const auto* t = track_view(v, e.index))
+        for (const auto& key : t->keys)
+            if (key.rotation != studio::Quat{0, 0, 0, 1} || key.offset != studio::Vec3{}) return true;
+    return false;
+}
+bool joint_shown(const studio::View& v, std::uint16_t joint) {
+    const auto* e = studio::editable(joint);
+    return e && joint_shown(v, *e);
+}
+// The joints shown, in the timeline's order.
+std::vector<studio::EditableJoint> shown_joints(const studio::View& v) {
+    std::vector<studio::EditableJoint> out;
+    for (const auto& e : studio::editable_joints())
+        if (joint_shown(v, e)) out.push_back(e);
+    return out;
 }
 const studio::TrackView* track_view(const studio::View& v, std::uint16_t joint) {
     for (const auto& t : v.tracks) if (t.joint == joint) return &t;
@@ -1912,9 +1937,16 @@ bool toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, bool on, f
     if (lit && nav().keys) d->AddRect(ImVec2(at.x - 3 * k, at.y - 3 * k), ImVec2(b.x + 3 * k, b.y + 3 * k), white, h * 0.5f + 3 * k, 0, 2 * k);
     return clicked;
 }
-// ACTIVE: whether a trick is activated, so it plays in game, as a tick box: blue with a tick when it is, an empty box when
-// it is not. (It said PLAY with a play mark: read as "play it now".) The label shrinks to fit a narrow one (a pack's rows).
-bool play_toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, bool on) {
+// + PLAYLIST on a saved trick: it goes in the playlist that is on (with none on, the card asks which). IN PLAYLIST when it
+// is in the playlist that is on, as itself or in a whole pack there: pressed, that playlist opens. (It was an ACTIVE tick
+// box: a switch of its own beside the playlist, which is what says what plays - testers read it as two settings.)
+bool playlist_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, bool in) {
+    return action(d, f, id, at, size, in ? "IN PLAYLIST" : "+ PLAYLIST", in ? Look::ghost : Look::blue);
+}
+// ACTIVE on a trick in a pack, as a tick box: blue with a tick when it plays with the pack, an empty box when it is
+// switched off there (it stays in the pack). Only in a pack's rows: the playlist says what plays, the pack which of its
+// tricks. The label shrinks to fit a narrow row.
+bool active_toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, bool on) {
     const float k = f.k;
     const ImVec2 b(at.x + size.x, at.y + size.y);
     bool lit = false;
@@ -2466,7 +2498,7 @@ void reset_picked(const studio::View& v) {
 }
 // The next or previous joint, in the timeline's order (the D-pad, the arrow keys).
 void step_joint(int by) {
-    const auto joints = studio::editable_joints();
+    const auto joints = shown_joints(studio::view());
     if (joints.empty()) return;
     auto& u = ui();
     std::size_t i = 0;
@@ -2481,7 +2513,7 @@ bool any_card_open(const studio::View& v) {
     const auto& u = ui();
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
            !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account || !u.reshare_pack.empty() ||
-           !u.playlist_for.empty() || !u.binding.empty();
+           !u.playlist_for.empty() || !u.binding.empty() || !v.guide_seen;
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -2645,17 +2677,21 @@ void controller(const studio::View& v, const Projector& p) {
     if (pressed || sticks) u.pad_mode = true;
     const float dt = std::min(ImGui::GetIO().DeltaTime, 0.1f);
 
-    // L3 + R3 held: close the studio (the same hold opens it from the game).
-    if ((buttons & pad_l3) && (buttons & pad_r3)) {
+    // The controller combo held (SETTINGS > STUDIO, L3 + R3 unless changed): close the studio (the same hold opens it).
+    const unsigned combo = studio::open_combo_buttons[static_cast<std::size_t>(studio::open_combo())];
+    if (combo && (buttons & combo) == combo) {
         u.l3_combo = true;
-        if (u.combo_armed && held_for(pad_l3) > 0.5 && held_for(pad_r3) > 0.5) {
+        bool long_enough = true;
+        for (unsigned bit = 1; bit < 0x10000; bit <<= 1)
+            if ((combo & bit) && held_for(bit) <= 0.5) long_enough = false;
+        if (u.combo_armed && long_enough) {
             studio::request_close();
             u.combo_armed = false;
         }
         return;
     }
     if (u.l3_combo) {
-        if (!(buttons & (pad_l3 | pad_r3))) {
+        if (!combo || !(buttons & combo)) {
             u.l3_combo = false;
             u.combo_armed = true;
         }
@@ -3103,7 +3139,7 @@ void keyboard(const studio::View& v) {
 // skate.'s own full-screen menus, in the studio's colours: the tabs in the middle at the top (Q / E, LB / RB), the
 // page under them, and what the buttons do along the bottom. TRICKS is where a trick is picked to edit, PACKS where
 // your packs are kept, SETTINGS how the studio works.
-constexpr std::array<const char*, 5> menu_tabs{"TRICKS", "PACKS", "MARKET", "SETTINGS", "ABOUT"};
+constexpr std::array<const char*, 5> menu_tabs{"TRICKS", "LIBRARY", "MARKET", "SETTINGS", "ABOUT"};
 static_assert(menu_tabs.size() == 5, "switch_menu_tab counts the tabs");
 const studio::Preset* preset_named(const studio::View& v, const std::string& name) {
     const auto found = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == name; });
@@ -3122,14 +3158,22 @@ std::string shown_name(const studio::View& v, const std::string& name) {
 std::string pop_words(const std::string& pop) { return pop.empty() ? "ANY POP" : upper(pop) + " POP"; }
 // A saved trick's tags: the pop it plays on, the stance it was made in and how it was done - what to do in game to see
 // it play. Drawn leftwards from `right`, which is left where they stop.
+// A nollie trick (popped off the nose): set to FAKIE it is what the game plays popping off the nose riding fakie, which
+// looks like switch - the way the game does switch tricks riding fakie (a tester found it, 2026-10-29; GAME_STANCE_NOTES:
+// nollie is clips of its own, fakie a layer over them). Its stance is named so wherever stances are named.
+bool nollie_trick(const std::string& trick) { return trick == "nollie" || trick.starts_with("n_"); }
+const char* stance_word(int version, bool nollie) {
+    static constexpr std::array<const char*, 4> words{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+    if (nollie && version == 1) return "SWITCH (FAKIE NOLLIE)";
+    return words[static_cast<std::size_t>(std::clamp(version, 0, 3))];
+}
 std::vector<std::pair<std::string, ImU32>> tags_of(const studio::Preset& p, const std::string& pop_rule = {}) {
     std::vector<std::pair<std::string, ImU32>> tags;
     const std::string pop = pop_rule.empty() ? p.pop : pop_rule == "any" ? std::string{} : pop_rule;
     tags.emplace_back(pop.empty() ? "ANY POP: LOW / MID / HIGH" : upper(pop) + " POP", blue);
     // Its stance as you ride: nothing for your own, else fakie, switch or switch fakie.
-    static constexpr std::array<const char*, 4> stances{"", "FAKIE", "SWITCH", "SWITCH FAKIE"};
     if (const auto version = studio::stance_version(p, ui().own_lead_right); version > 0)
-        tags.emplace_back(stances[static_cast<std::size_t>(version)], IM_COL32(196, 104, 0, 255));
+        tags.emplace_back(stance_word(version, nollie_trick(p.trick)), IM_COL32(196, 104, 0, 255));
     if (p.entry == "rail") tags.emplace_back("OFF A RAIL", IM_COL32(36, 150, 76, 255));
     return tags;
 }
@@ -3400,19 +3444,28 @@ void tick_box(ImDrawList* d, ImVec2 c, float half, bool ticked, ImU32 colour, fl
 // The stance versions of a trick: your own stance, fakie, switch and switch fakie, ticked where there is one (among
 // `among`, or all your saved tricks when empty). A ticked one opens it; an empty one makes it from `name` and opens it.
 // Returns the height it took.
-float stance_versions(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 at, float w,
-                      const std::vector<std::string>& among = {}, const std::string& pack = {}, bool* acted = nullptr) {
-    const auto* p = preset_named(v, name);
-    if (!p || p->trick.starts_with("native:")) return 0;
-    const float k = f.k;
+// The saved versions of a trick (its trick and pop) by stance: own, fakie, switch, switch fakie ("" none), among `among`
+// or all your saved tricks when empty. `name` itself where it is one.
+std::array<std::string, 4> stance_versions_of(const studio::View& v, const std::string& name, const std::vector<std::string>& among = {}) {
     std::array<std::string, 4> have{};
+    const auto* p = preset_named(v, name);
+    if (!p) return have;
     for (const auto& q : v.presets) {
         if (q.trick != p->trick || q.pop != p->pop) continue;
         if (!among.empty() && std::find(among.begin(), among.end(), q.name) == among.end()) continue;
         const auto version = static_cast<std::size_t>(studio::stance_version(q, v.own_lead_right));
         if (have[version].empty() || q.name == name) have[version] = q.name;
     }
-    static constexpr std::array<const char*, 4> labels{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+    return have;
+}
+float stance_versions(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 at, float w,
+                      const std::vector<std::string>& among = {}, const std::string& pack = {}, bool* acted = nullptr) {
+    const auto* p = preset_named(v, name);
+    if (!p || p->trick.starts_with("native:")) return 0;
+    const float k = f.k;
+    const auto have = stance_versions_of(v, name, among);
+    const bool nollie = nollie_trick(p->trick);
+    const std::array<const char*, 4> labels{stance_word(0, nollie), stance_word(1, nollie), stance_word(2, nollie), stance_word(3, nollie)};
     float x = at.x, y = at.y;
     text(d, f.bold, 11 * k, ImVec2(x, y + 9 * k), faint, "STANCES");
     x += 70 * k;
@@ -3642,58 +3695,65 @@ std::string listed(const std::vector<std::string>& names) {
     for (std::size_t i = 0; i < names.size(); ++i) out += (i == 0 ? "" : i + 1 == names.size() ? " and " : ", ") + names[i];
     return out;
 }
-// A saved trick's ACTIVE: ticked when it plays in game now - from the playlist that is on, or with none on from a pack that
-// is on - so it never says one thing and the ACTIVE tag another. (It was ticked for a pack that is on while a playlist
-// played instead, and not for a trick the playlist played.)
-bool play_lit(const studio::View&, const studio::Preset& p) { return p.active; }
-// PACKS > PLAYLIST, on a playlist ("" the one it shows already).
+// A saved trick is in the playlist that is on: as itself, or in a whole pack there (select_playlist).
+bool in_playing_list(const studio::Preset& p) { return p.included; }
+// The LIBRARY, on a playlist ("" the one it shows already): NOW PLAYING at its left shows it, the packs at its right.
 void open_playlist_page(const std::string& name) {
     auto& u = ui();
     if (!name.empty()) studio::open_playlist(name);
     open_menu(1);
     u.pack_page = false;
-    u.pack_settings = true;
+    u.pack_settings = false;
     u.pack_settings_scroll = 0;
     u.playlist_name_for.clear();
 }
-// ACTIVE pressed on a saved trick: on or off where it plays; one in nothing that plays asks which playlist it goes in
-// (playlist_card).
-void press_active(const studio::View& v, const std::string& name, bool lit) {
+// + PLAYLIST pressed on a saved trick: into the playlist that is on; with none on, the card asks which (playlist_card).
+// IN PLAYLIST pressed: that playlist's page, to move it or take it out.
+void press_playlist(const studio::View& v, const std::string& name, bool in) {
     auto& u = ui();
-    std::string m;
-    const auto answer = studio::set_trick_active(name, !lit, m);
-    if (answer == studio::ActiveAnswer::choose_playlist) {
-        u.playlist_for = name;
-        // One from a pack you got goes in with its pack, so that pack's pop rule holds; your own go in as themselves.
-        const auto holding = packs_holding(v, name);
-        const auto installed = std::find_if(holding.begin(), holding.end(), [](const auto* pack) { return pack->installed; });
-        u.playlist_for_entry = {installed == holding.end() ? std::string{} : (*installed)->name, name};
+    if (in) {
+        open_playlist_page(v.playlist_playing);
         return;
     }
+    // One from a pack you got goes in with its pack, so that pack's pop rule holds; your own go in as themselves.
+    const auto holding = packs_holding(v, name);
+    const auto installed = std::find_if(holding.begin(), holding.end(), [](const auto* pack) { return pack->installed; });
+    const studio::PlaylistEntry entry{installed == holding.end() ? std::string{} : (*installed)->name, name};
+    if (v.playlist_playing.empty()) {
+        u.playlist_for = name;
+        u.playlist_for_entry = entry;
+        return;
+    }
+    std::string m;
+    studio::add_to_playlist(v.playlist_playing, entry, m);
     say(m);
-    if (answer == studio::ActiveAnswer::show_playlist) open_playlist_page(v.playlist_playing);
 }
-// The SAVED and BACK IN THE STUDIO cards: whether the trick plays in game now (or which of yours plays on its pop
-// instead), and its PLAY. Returns how tall it is.
+// The SAVED and BACK IN THE STUDIO cards: whether the trick is in the playlist that is on and plays (or which of yours
+// plays first on its pop), and + PLAYLIST. Returns how tall it is.
 float in_game_row(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 at, float w) {
     const float k = f.k;
     const auto* p = preset_named(v, name);
     if (!p) return 0;
-    std::string words = "It is not active yet: tick ACTIVE to put it in a playlist and play it in game.";
-    if (p->active) words = "It is active: it plays in game when you do the trick.";
-    else {
+    const bool in = in_playing_list(*p);
+    const std::string pop = p->pop.empty() ? "any pop" : "a " + p->pop + " pop";
+    std::string words = v.playlist_playing.empty() ? "Not in a playlist yet: + PLAYLIST puts it in one, and it plays in game."
+                                                   : "Not in " + v.playlist_playing + " yet: + PLAYLIST puts it in, and it plays in game.";
+    if (in && p->active) words = "In " + v.playlist_playing + ": it plays in game when you do the trick on " + pop + ".";
+    else if (in) {
+        words = "In " + v.playlist_playing + ", but another of its trick, pop and stance is higher up and plays first: move it up there, "
+                "or set the playlist to IN TURNS or SHUFFLE.";
         const auto slot = studio::preset_slot(p->trick, p->pop) + studio::stance_part(*p);
         for (const auto& o : v.presets)
             if (o.name != name && o.active && studio::preset_slot(o.trick, o.pop) + studio::stance_part(o) == slot) {
-                words = shown_name(v, o.name) + " plays on its pop now: tick ACTIVE to play this one instead.";
+                words = "In " + v.playlist_playing + ", but " + shown_name(v, o.name) + " is higher up and plays first on " + pop +
+                        ": move it up there, or set the playlist to IN TURNS or SHUFFLE.";
                 break;
             }
     }
-    const float play_w = 80 * k;
-    const float hgt = paragraph(d, f.bold, 16 * k, ImVec2(at.x, at.y + 5 * k), w - play_w - 20 * k, p->active ? white : soft, words);
+    const float button_w = 120 * k;
+    const float hgt = paragraph(d, f.bold, 16 * k, ImVec2(at.x, at.y + 5 * k), w - button_w - 20 * k, in && p->active ? white : soft, words);
     ImGui::PushID(("ingame|" + name).c_str());
-    const bool on = play_lit(v, *p);
-    if (play_toggle(d, f, "##play", ImVec2(at.x + w - play_w, at.y), ImVec2(play_w, 30 * k), on)) press_active(v, name, on);
+    if (playlist_button(d, f, "##playlist", ImVec2(at.x + w - button_w, at.y), ImVec2(button_w, 30 * k), in)) press_playlist(v, name, in);
     ImGui::PopID();
     return std::max(hgt + 5 * k, 30 * k);
 }
@@ -3715,9 +3775,9 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     flat_rect(d, a, b, page ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
     if (name == v.name && v.has_clip) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
     float right_edge = b.x - 14 * k;
-    if (p && p->active) {
-        right_edge -= tag_width(f, "ACTIVE");
-        tag(d, f, ImVec2(right_edge, a.y + 14 * k), "ACTIVE", IM_COL32(36, 150, 76, 255));
+    if (p && in_playing_list(*p)) {
+        right_edge -= tag_width(f, "IN PLAYLIST");
+        tag(d, f, ImVec2(right_edge, a.y + 14 * k), "IN PLAYLIST", IM_COL32(36, 150, 76, 255));
         right_edge -= 6 * k;
     }
     if (p && p->locked) {
@@ -3734,14 +3794,22 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     }
     text(d, f.bold, 21 * k, ImVec2(a.x + 18 * k, a.y + 14 * k), white, elide(f.bold, 21 * k, shown_name(v, name), right_edge - a.x - 26 * k));
     std::string what = p ? upper(trick_label(p->trick)) : std::string("A PIECE OF THE GAME'S ANIMATION");
+    // Its stance has a tag of its own below (2026-10-29: "I'm missing a tag in which stance it's been made").
+    const int version = p ? std::clamp(studio::stance_version(*p, u.own_lead_right), 0, 3) : 0;
     if (p)
-        for (const auto& [label, colour] : tags_of(*p)) what += "  /  " + label;
+        for (const auto& [label, colour] : tags_of(*p))
+            if (version == 0 || label != stance_word(version, nollie_trick(p->trick))) what += "  /  " + label;
     if (p)
         if (const auto when = edited_words(p->saved_at); !when.empty()) what += "  /  EDITED " + when;
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 42 * k), soft, elide(f.bold, 12 * k, what, size.x - 36 * k));
+    if (p) {
+        // The stance it was made in, as you ride: NORMAL (your own), FAKIE, SWITCH or SWITCH FAKIE, as the editor names it.
+        const std::string stance = version == 0 ? std::string("NORMAL") : stance_word(version, nollie_trick(p->trick));
+        tag(d, f, ImVec2(a.x + 18 * k, a.y + 64 * k), stance, version == 0 ? IM_COL32(255, 255, 255, 36) : IM_COL32(196, 104, 0, 255));
+    }
     if (lit && nav().keys) chosen_outline(d, a, ImVec2(b.x, b.y - strip), k);
-    // EDIT, TEST IN GAME, and ACTIVE: ticked, it plays in game (on its own, or from a pack that is on); not, it does not.
-    const float play_w = 80 * k, bw = (size.x - 28 * k - 16 * k - play_w) / 2;
+    // EDIT, TEST IN GAME, and + PLAYLIST (IN PLAYLIST when it is in the playlist that is on).
+    const float play_w = 120 * k, bw = (size.x - 28 * k - 16 * k - play_w) / 2;
     if (p && p->locked) {
         if (action(d, f, "##edit", ImVec2(a.x + 14 * k, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "PREVIEW", Look::blue)) preview_trick({}, name, false);
     } else if (action(d, f, "##edit", ImVec2(a.x + 14 * k, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "EDIT", Look::blue))
@@ -3753,9 +3821,9 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         say(m);
     }
     if (p) {
-        const bool play_on = play_lit(v, *p);
-        if (play_toggle(d, f, "##play", ImVec2(b.x - 14 * k - play_w, b.y - strip + 6 * k), ImVec2(play_w, 30 * k), play_on))
-            press_active(v, name, play_on);
+        const bool in = in_playing_list(*p);
+        if (playlist_button(d, f, "##playlist", ImVec2(b.x - 14 * k - play_w, b.y - strip + 6 * k), ImVec2(play_w, 30 * k), in))
+            press_playlist(v, name, in);
     }
     ImGui::PopID();
 }
@@ -3784,9 +3852,8 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
     for (const auto& name : names)
         if (const auto* p = preset_named(v, name)) {
             pops.insert(p->pop.empty() ? std::string("ANY") : upper(p->pop));
-            static constexpr std::array<const char*, 4> words{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
-            stances.insert(words[static_cast<std::size_t>(std::clamp(studio::stance_version(*p, v.own_lead_right), 0, 3))]);
-            playing += p->active;
+            stances.insert(stance_word(studio::stance_version(*p, v.own_lead_right), nollie_trick(p->trick)));
+            playing += in_playing_list(*p);
             newest = std::max(newest, p->saved_at);
         }
     float right_edge = b.x - 14 * k;
@@ -3795,7 +3862,7 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
     tag(d, f, ImVec2(right_edge, a.y + 14 * k), count, IM_COL32(255, 255, 255, 36));
     right_edge -= 6 * k;
     if (playing) {
-        const auto plays = std::to_string(playing) + " ACTIVE";
+        const auto plays = std::to_string(playing) + " IN PLAYLIST";
         right_edge -= tag_width(f, plays);
         tag(d, f, ImVec2(right_edge, a.y + 14 * k), plays, IM_COL32(36, 150, 76, 255));
     }
@@ -3805,7 +3872,7 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
         if (pops.contains(pop)) pop_line += (pop_line.empty() ? "" : " / ") + std::string(pop) + " POP";
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 44 * k), soft, elide(f.bold, 12 * k, pop_line, size.x - 36 * k));
     std::string stance_line;
-    for (const char* stance : {"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"})
+    for (const char* stance : {"OWN STANCE", "FAKIE", "SWITCH (FAKIE NOLLIE)", "SWITCH", "SWITCH FAKIE"})
         if (stances.contains(stance)) stance_line += (stance_line.empty() ? "" : " / ") + std::string(stance);
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 62 * k), soft, elide(f.bold, 12 * k, stance_line, size.x - 36 * k));
     const auto when = edited_words(newest);
@@ -3867,9 +3934,14 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
     y += 32 * k;
     if (p && p->trick.starts_with("native:")) {
         // A piece of the game's animation (a grind's loop, a grab's hold) is not popped: it plays when the game plays it.
+        // One of the game's grinds plays only on the grinds its clip is for, as the game names the one he is doing.
+        const auto grinds = studio::grind_types_of(p->trick.substr(7));
         y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, soft,
-                       "Whenever the game plays this piece, " + piece_label(p->trick) + ": the studio knows it by the skater's pose. "
-                       "Pieces have no pop, so there is nothing to copy to low, mid and high.");
+                       grinds.empty() ? "Whenever the game plays this piece, " + piece_label(p->trick) + ": the studio knows it by the skater's pose. "
+                                        "Pieces have no pop, so there is nothing to copy to low, mid and high."
+                                      : "Only when you do a " + studio::grind_types_words(grinds) + ": the game says which grind you are doing, "
+                                        "and no other grind plays it (anything else is the game's own). Pieces have no pop, so there is "
+                                        "nothing to copy to low, mid and high.");
         y += 18 * k;
     } else {
         const std::string pop = p ? p->pop : std::string{};
@@ -3889,9 +3961,9 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         }
         y += 44 * k;
         y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint,
-                       "Any pop: it plays on every pop height, each the way COPY TO LOW, MID AND HIGH makes it - done for you in game, "
-                       "and it follows every change you make. Set to one pop, it plays on that pop, and on the other heights the same way "
-                       "only when nothing of yours is saved for that pop. Copy makes the three as tricks of their own, to change each on its own.");
+                       "ANY POP: it plays on every pop height, fitted to each the way COPY TO LOW, MID AND HIGH makes it - done for you in "
+                       "game, and it follows every change you make. LOW, MID or HIGH: it plays on that pop only, and the game's own trick "
+                       "plays on the other heights. Copy makes the three as tricks of their own, to change each on its own.");
         y += 16 * k;
     }
     // Another maker's trick never goes in your packs, so it has none to choose.
@@ -3904,6 +3976,7 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         }
         for (const auto& pack : v.packs) {
             const bool in = std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end();
+            if (pack.installed && !in) continue; // another maker's pack: only its maker adds to it
             const float cw = chip_width(f, pack.name);
             if (cx + cw > x + w) cx = x, y += 36 * k;
             ImGui::PushID(pack.name.c_str());
@@ -4219,11 +4292,18 @@ void hover_preview(const Fonts& f, const studio::View& v) {
             return;
         }
     }
-    if (!h.peeking) {
-        if (!studio::peek_playing()) {
-            if (now - h.asked > 4.0) h.done = true; // it could not be read
+    // Its window comes up as soon as it is asked for, covered, with a loading bar, and opens once the trick (and a grind's
+    // rail) is there (2026-10-29: "can you add a loading bar for the previews of the grinds").
+    bool reading = false;
+    if (!h.peeking && !studio::peek_playing()) {
+        if (now - h.asked > 4.0) { // it could not be read
+            cover_peek_hole();
+            stop_hover_peek();
+            h.done = true;
             return;
         }
+        reading = true;
+    } else if (!h.peeking) {
         h.peeking = true;
         h.since = now;
         h.duration = std::max(0.3f, studio::peek_duration());
@@ -4238,8 +4318,20 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         studio::set_focus(studio::all_joints);
         studio::set_orbit(orbit);
     }
-    if (!h.peeking) return;
-    const float k = f.k, played = static_cast<float>(now - h.since);
+    // He stands on the trick's first frame while the camera gets to his side, and the window opens once all of it is there
+    // (studio::peek_ready: for a grind, the studio rail standing under it - never a rail coming up in front of you); the
+    // trick starts once the window is open: seen whole from its start. (It started as soon as it was read, behind the opening
+    // window and under a camera still swinging round: its first moments were never seen and the window opened on him mid-move.)
+    constexpr float camera_first = 0.12f, opens_in = 0.18f, waits_at_most = 1.6f;
+    const float k = f.k, since = reading ? 0.0f : static_cast<float>(now - h.since);
+    if (!reading && h.ready_at < 0 && since >= camera_first && (studio::peek_ready() || since >= waits_at_most)) h.ready_at = now;
+    const float open_for = h.ready_at < 0 ? 0.0f : static_cast<float>(now - h.ready_at);
+    if (!h.going && h.ready_at >= 0 && open_for >= opens_in) {
+        studio::peek_go();
+        h.going = true;
+        h.go_at = now;
+    }
+    const float played = h.going ? static_cast<float>(now - h.go_at) : -1.0f;
     if (played > h.duration + 0.9f) { // done, and the window closes until another card is held
         cover_peek_hole();
         stop_hover_peek();
@@ -4275,13 +4367,28 @@ void hover_preview(const Fonts& f, const studio::View& v) {
     const ImVec2 middle((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f + 40 * k);
     studio::set_view_shift((display.y * 0.5f - middle.y) / display.y, (middle.x - display.x * 0.5f) / display.y);
     auto* d = ImGui::GetForegroundDrawList();
-    const float fade_in = std::clamp(played / 0.25f, 0.0f, 1.0f);
+    const float fade_in = reading ? std::clamp(static_cast<float>(now - h.asked) / 0.25f, 0.0f, 1.0f) : std::clamp(since / 0.25f, 0.0f, 1.0f);
     // The first moments and the last are covered, fading: the camera takes a frame or two to get to his side, and he
     // goes back after. The window opens on him already in place and is closed again before anything moves back.
-    const float opening = std::clamp((played - 0.12f) / 0.18f, 0.0f, 1.0f);
+    const float opening = std::clamp(open_for / opens_in, 0.0f, 1.0f);
     const float closing = std::clamp((h.duration + 0.9f - played) / 0.2f, 0.0f, 1.0f);
-    if (const float cover = 1 - std::min(opening, closing); cover > 0)
+    if (const float cover = 1 - std::min(opening, closing); cover > 0) {
         d->AddRectFilled(a, b, IM_COL32(10, 10, 12, static_cast<int>(252 * cover)), 6 * k);
+        // While it gets ready: what it waits for, and a bar that fills as it comes (full once it is there).
+        if (h.ready_at < 0 || opening < 1) {
+            const bool rail = !reading && h.ready_at < 0 && since >= camera_first;
+            const char* label = reading ? "LOADING THE TRICK" : rail ? "PUTTING UP THE RAIL" : "READY";
+            const float waited = static_cast<float>(now - h.asked);
+            const float fill = h.ready_at >= 0 ? 1.0f : std::min(0.95f, 1 - std::exp(-waited / 0.7f));
+            const auto alpha = [&](int full) { return static_cast<int>(static_cast<float>(full) * cover * fade_in); };
+            const float bar_w = std::min(260 * k, w - 60 * k), mid_y = (a.y + b.y) * 0.5f;
+            const ImVec2 bar_a((a.x + b.x - bar_w) * 0.5f, mid_y + 6 * k), bar_b(bar_a.x + bar_w, bar_a.y + 6 * k);
+            const auto size = text_size(f.heading, 13 * k, label);
+            text(d, f.heading, 13 * k, ImVec2((a.x + b.x - size.x) * 0.5f, mid_y - 22 * k), IM_COL32(150, 196, 255, alpha(255)), label);
+            d->AddRectFilled(bar_a, bar_b, IM_COL32(255, 255, 255, alpha(30)), 3 * k);
+            d->AddRectFilled(bar_a, ImVec2(bar_a.x + bar_w * fill, bar_b.y), IM_COL32(1, 131, 255, alpha(255)), 3 * k);
+        }
+    }
     // Its frame: the name across the top, how far it has got along the bottom.
     d->AddRect(a, b, IM_COL32(1, 131, 255, static_cast<int>(200 * fade_in)), 6 * k, 0, 3 * k);
     d->AddRectFilled(ImVec2(a.x, a.y), ImVec2(b.x, a.y + 40 * k), IM_COL32(12, 12, 14, 235), 6 * k, ImDrawFlags_RoundCornersTop);
@@ -4794,7 +4901,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
         y += paragraph(d, f.bold, 15 * k, ImVec2(a.x, y), width, soft, "No tricks in it yet. ADD TRICKS puts your saved tricks in it.");
         return y - a.y;
     }
-    // At the end of each row: watch it, switch it off in this pack (it stays in it), take it out.
+    // At the end of each row: watch it, switch it off in this pack (ACTIVE: it stays in it), take it out.
     const auto out_button = [&](const std::string& member, float row_y, float row_h) {
         ImGui::PushID(member.c_str());
         const float by = row_y + (row_h - 30 * k) * 0.5f;
@@ -4804,12 +4911,12 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
             say(m);
         }
         const bool on = !pack.pack.off.contains(member);
-        if (play_toggle(d, f, "##trickon", ImVec2(a.x + width - 140 * k, by), ImVec2(66 * k, 30 * k), on)) {
+        if (active_toggle(d, f, "##trickon", ImVec2(a.x + width - 166 * k, by), ImVec2(88 * k, 30 * k), on)) {
             std::string m;
             studio::set_pack_trick_on(pack.name, member, !on, m);
             say(m);
         }
-        if (action(d, f, "##preview", ImVec2(a.x + width - 236 * k, by), ImVec2(92 * k, 30 * k), "PREVIEW", Look::dark))
+        if (action(d, f, "##preview", ImVec2(a.x + width - 266 * k, by), ImVec2(92 * k, 30 * k), "PREVIEW", Look::dark))
             preview_trick(pack.name, member, true);
         ImGui::PopID();
     };
@@ -4835,14 +4942,13 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 const float row_h = 46 * k;
                 const auto& member = s.members.front();
                 bool lit = false;
-                if (hit("##one", ImVec2(a.x, y), ImVec2(a.x + width - 246 * k, y + row_h), &lit)) open_or_preview(v, member, pack.name);
+                if (hit("##one", ImVec2(a.x, y), ImVec2(a.x + width - 276 * k, y + row_h), &lit)) open_or_preview(v, member, pack.name);
                 flat_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + row_h), lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(26, 27, 30, 240),
                                         seed_of(ImVec2(a.x, y)), k * 0.7f);
                 if (lit && nav().keys) chosen_outline(d, ImVec2(a.x, y), ImVec2(a.x + width - 80 * k, y + row_h), k);
-                float right = a.x + width - 250 * k;
-                const bool member_on = !pack.pack.off.contains(member);
+                float right = a.x + width - 280 * k;
                 if (const auto* p = preset_named(v, member)) trick_tags(d, f, *p, forced, right, y + 13 * k);
-                text(d, f.bold, 17 * k, ImVec2(a.x + 16 * k, y + 12 * k), member_on ? white : faint,
+                text(d, f.bold, 17 * k, ImVec2(a.x + 16 * k, y + 12 * k), pack.pack.off.contains(member) ? faint : white,
                      elide(f.bold, 17 * k, shown_name(v, member), right - a.x - 30 * k));
                 out_button(member, y, row_h);
                 y += row_h + 4 * k;
@@ -4870,7 +4976,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 const auto& member = s.members[i];
                 const float row_h = 40 * k;
                 ImGui::PushID(member.c_str());
-                const ImVec2 ra(a.x + 26 * k, y), rb(a.x + width - 246 * k, y + row_h);
+                const ImVec2 ra(a.x + 26 * k, y), rb(a.x + width - 276 * k, y + row_h);
                 bool lit = false;
                 const bool in_cycle = !pack.pack.unlinked.contains(member);
                 const bool plays = cycle ? in_cycle : i == 0;
@@ -4903,7 +5009,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                     right -= 14 * k;
                 }
                 if (const auto* p = preset_named(v, member)) trick_tags(d, f, *p, forced, right, ra.y + 10 * k);
-                text(d, f.bold, 15 * k, ImVec2(ra.x + 38 * k, ra.y + 11 * k), plays ? white : soft,
+                text(d, f.bold, 15 * k, ImVec2(ra.x + 38 * k, ra.y + 11 * k), pack.pack.off.contains(member) ? faint : plays ? white : soft,
                      elide(f.bold, 15 * k, shown_name(v, member), right - ra.x - 50 * k));
                 out_button(member, y, row_h);
                 ImGui::PopID();
@@ -4962,7 +5068,7 @@ float pack_duplicates(ImDrawList* d, const Fonts& f, const studio::View& v, cons
 void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::View::PackView& pack, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     const float k = f.k;
-    if (action(d, f, "##backtopacks", a, ImVec2(190 * k, 36 * k), "< MY PACKS", Look::ghost)) {
+    if (action(d, f, "##backtopacks", a, ImVec2(190 * k, 36 * k), "< LIBRARY", Look::ghost)) {
         u.pack_page = false;
         return;
     }
@@ -5099,7 +5205,8 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     }
     y += pack_duplicates(d, f, v, pack, ImVec2(x, y), w);
     heading(d, f, ImVec2(x, y + 10 * k), w - 230 * k, "Tricks in this pack", std::to_string(count));
-    if (action(d, f, "##addtricks", ImVec2(x + w - 210 * k, y), ImVec2(210 * k, 40 * k), "+ ADD TRICKS", Look::blue)) {
+    // Only into your own packs: one got from the MARKET or imported is its maker's.
+    if (!pack.installed && action(d, f, "##addtricks", ImVec2(x + w - 210 * k, y), ImVec2(210 * k, 40 * k), "+ ADD TRICKS", Look::blue)) {
         u.pack_adding = true;
         u.adding_scroll = 0;
     }
@@ -5117,10 +5224,9 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
 void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     const float k = f.k;
-    page_heading(d, f, a, "MY PACKS",
-                 // Packs play from the playlist that is on (since 2026-10-25), not by a switch of their own.
-                 v.packs.empty() ? std::string("Packs group your tricks to play and share together. Make one, then put your tricks in it.")
-                                 : std::string("A pack plays once it is in the playlist that is on (PLAYLIST). Open a pack to see and change what is in it."));
+    page_heading(d, f, a, "LIBRARY",
+                 // Packs and tricks play from the playlist at the left (NOW PLAYING), not by a switch of their own.
+                 std::string("+ ADD puts a pack in the playlist at the left, and it plays in game. MY TRICKS adds your own one by one. Open a pack to change it."));
     {
         float x = b.x;
         const auto button = [&](const char* id, float w, const char* label, Look look) {
@@ -5134,10 +5240,6 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             make_pack(v);
             u.pack_page = true;
         }
-        if (button("##packsettings", 150 * k, "PLAYLIST", Look::paper)) {
-            u.pack_settings = true;
-            u.pack_settings_scroll = 0;
-        }
     }
     float y = a.y + 84 * k;
     // The search, and the playlist's state when it is on (it decides what plays then, not the packs that are on).
@@ -5147,7 +5249,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         for (const auto& l : v.playlists)
             if (l.name == v.playlist_playing) size = l.size;
         const std::string line = "PLAYLIST " + upper(v.playlist_playing) + " IS ON (" + std::to_string(size) +
-                                 "): it decides what plays in game. PLAYLIST to change it.";
+                                 "): it decides what plays in game. Change it at the left.";
         text(d, f.bold, 13 * k, ImVec2(a.x + std::min(420 * k, b.x - a.x) + 20 * k, y + 9 * k), blue_light, elide(f.bold, 13 * k, line, b.x - a.x - 460 * k));
     }
     y += 50 * k;
@@ -5185,7 +5287,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
     const float card_w = 290 * k, info_h = 92 * k, card_h = card_w + info_h, gap = 26 * k;
     const float room = b.x - a.x - 14 * k;
     const int columns = std::max(1, static_cast<int>((room + gap) / (card_w + gap)));
-    const std::size_t count = shown.size() + 1;
+    const std::size_t count = shown.size() + 2; // MY TRICKS first, NEW PACK last
     const int used = static_cast<int>(std::min<std::size_t>(count, static_cast<std::size_t>(columns)));
     const float grid_w = static_cast<float>(used) * card_w + static_cast<float>(used - 1) * gap;
     const float x0 = a.x + std::max(0.0f, (room - grid_w) * 0.5f);
@@ -5198,7 +5300,29 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
                         top + static_cast<float>(i / static_cast<std::size_t>(columns)) * (card_h + gap));
         const ImVec2 cover_b(ca.x + card_w, ca.y + card_w), cb(ca.x + card_w, ca.y + card_h);
         ImGui::PushID(static_cast<int>(i));
-        if (i == shown.size()) {
+        if (i == 0) {
+            // MY TRICKS: every trick of yours, to put in the playlist one by one (no pack needed).
+            std::size_t own = 0;
+            for (const auto& p : v.presets) own += !p.foreign;
+            bool lit = false;
+            const bool pressed = hit("##mytrickscard", ca, cb, &lit);
+            flat_rect(d, ca, cover_b, lit ? IM_COL32(30, 70, 130, 250) : IM_COL32(18, 52, 98, 246), seed_of(ca), k);
+            const auto t = text_size(f.heading, 34 * k, "MY TRICKS");
+            text(d, f.heading, 34 * k, ImVec2(ca.x + (card_w - t.x) * 0.5f, ca.y + card_w * 0.42f), white, "MY TRICKS");
+            flat_rect(d, ImVec2(ca.x, cover_b.y), cb, lit ? IM_COL32(236, 236, 234, 252) : IM_COL32(22, 23, 26, 248), seed_of(cover_b), k * 0.6f);
+            const ImU32 ink = lit ? IM_COL32(18, 18, 20, 255) : white, ink_soft = lit ? IM_COL32(80, 80, 86, 255) : soft;
+            text(d, f.bold, 19 * k, ImVec2(ca.x + 14 * k, cover_b.y + 12 * k), ink, "Your own tricks");
+            text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 40 * k), ink_soft,
+                 elide(f.bold, 12 * k, std::to_string(own) + (own == 1 ? " TRICK" : " TRICKS") + "  /  ONE BY ONE, NO PACK", card_w - 28 * k));
+            if (pressed) {
+                u.pack_settings = true;
+                u.playlist_pick_scroll = 0;
+            }
+            if (lit && n.keys) chosen_outline(d, ca, cb, k);
+            ImGui::PopID();
+            continue;
+        }
+        if (i == count - 1) {
             bool lit = false;
             if (hit("##newpackcard", ca, cover_b, &lit)) {
                 make_pack(v);
@@ -5221,7 +5345,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             ImGui::PopID();
             continue;
         }
-        const auto& pack = *shown[i];
+        const auto& pack = *shown[i - 1];
         ImGui::PushID(pack.name.c_str());
         bool lit = false, info_lit = false;
         // The star: pressed, the pack is starred and comes first.
@@ -5229,7 +5353,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         bool star_lit = false;
         if (hit("##star", star_a, star_b, &star_lit)) studio::set_pack_favorite(pack.name, !pack.favorite);
         bool open = hit("##hubcover", ca, cover_b, &lit);
-        open |= hit("##hubinfo", ImVec2(ca.x, cover_b.y), ImVec2(cb.x - 84 * k, cb.y), &info_lit);
+        open |= hit("##hubinfo", ImVec2(ca.x, cover_b.y), ImVec2(cb.x - 126 * k, cb.y), &info_lit); // the right end is + ADD
         lit |= info_lit;
         pack_cover(d, f, pack, ca, cover_b);
         if (!lit) d->AddRectFilled(ca, cover_b, IM_COL32(0, 0, 0, 50));
@@ -5248,14 +5372,21 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         }
         flat_rect(d, ImVec2(ca.x, cover_b.y), cb, lit ? IM_COL32(236, 236, 234, 252) : IM_COL32(22, 23, 26, 248), seed_of(ca), k * 0.6f);
         const ImU32 ink = lit ? IM_COL32(18, 18, 20, 255) : white, ink_soft = lit ? IM_COL32(80, 80, 86, 255) : soft;
-        text(d, f.bold, 19 * k, ImVec2(ca.x + 14 * k, cover_b.y + 12 * k), ink, elide(f.bold, 19 * k, pack.name, card_w - 100 * k));
+        text(d, f.bold, 19 * k, ImVec2(ca.x + 14 * k, cover_b.y + 12 * k), ink, elide(f.bold, 19 * k, pack.name, card_w - 140 * k));
         const auto tricks = saved_count(v, pack);
         const std::string rule = pack.pack.pop_rule.empty() ? "" : pack.pack.pop_rule == "any" ? "  /  ANY POP" : "  /  " + upper(pack.pack.pop_rule) + " POP";
         text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 40 * k), ink_soft, std::to_string(tricks) + (tricks == 1 ? " TRICK" : " TRICKS") + rule);
         {
             std::string by = pack.made_by.empty() ? std::string{} : "BY " + upper(pack.made_by);
             if (const auto when = edited_words(pack.modified); !when.empty()) by += (by.empty() ? "EDITED " : "  /  EDITED ") + when;
-            if (!by.empty()) text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 60 * k), ink_soft, elide(f.bold, 12 * k, by, card_w - 110 * k));
+            if (!by.empty()) text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 60 * k), ink_soft, elide(f.bold, 12 * k, by, card_w - 140 * k));
+        }
+        // + ADD / IN PLAYLIST: the whole pack in the playlist that is on (NOW PLAYING), or out of it.
+        if (action(d, f, "##packplay", ImVec2(cb.x - 120 * k, cover_b.y + 14 * k), ImVec2(110 * k, 30 * k), pack.playing ? "IN PLAYLIST" : "+ ADD",
+                   pack.playing ? Look::blue : Look::dark, true, pack.playing)) {
+            std::string m;
+            studio::set_pack_playing(pack.name, !pack.playing, m);
+            say(m);
         }
         if (lit && n.keys) chosen_outline(d, ca, cb, k);
         if (open) open_pack_page(pack.name);
@@ -5265,21 +5396,57 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
     const float rows = static_cast<float>((count + static_cast<std::size_t>(columns) - 1) / static_cast<std::size_t>(columns));
     end_region(d, ga, gb, rows * (card_h + gap) + 20 * k, u.hub_scroll, k);
 }
-// PACKS > SETTINGS: the playlist - whole packs and single tricks, in order, and how the same trick from more than one of
-// them takes turns. On, it decides what plays in game; off, the packs that are on do.
-void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
+// The LIBRARY's playlist: whole packs and single tricks, in order, and how the same trick from more than one of them takes
+// turns. On, it decides what plays in game. `panel`: NOW PLAYING, at the Library's left, always there (it was a page of its
+// own most people never found - a tester's playlist was on and empty, 2026-10-28); `adder`: the tricks and packs to put in
+// it, at the Library's right.
+enum class PlaylistPart { panel, adder };
+void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b, PlaylistPart part) {
     auto& u = ui();
     const float k = f.k;
-    if (action(d, f, "##backfromsettings", a, ImVec2(190 * k, 36 * k), "< MY PACKS", Look::ghost)) {
-        u.pack_settings = false;
-        return;
-    }
-    title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, "PLAYLISTS");
-    const float col = std::min(760 * k, (b.x - a.x) * 0.52f);
-    const float x = a.x, w = col;
-    float y = a.y + 116 * k;
-    // ---- every playlist, a chip each (the one on wears ON; the open one is blue), and a new one ----
+    const bool panel = part == PlaylistPart::panel;
+    if (!panel) {
+        if (action(d, f, "##backfromsettings", a, ImVec2(190 * k, 36 * k), "< LIBRARY", Look::ghost)) {
+            u.pack_settings = false;
+            return;
+        }
+        title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, "ADD TRICKS");
+    } else title_text(d, f, 38 * k, ImVec2(a.x, a.y + 2 * k), white, "NOW PLAYING");
+    const float x = a.x, w = b.x - a.x;
+    float y = a.y + 62 * k;
+    if (panel) {
+    // Nothing of yours plays: said at once, in red.
     {
+        std::size_t playing_size = 0;
+        for (const auto& l : v.playlists)
+            if (l.name == v.playlist_playing) playing_size = l.size;
+        if (v.playlist_playing.empty() || playing_size == 0) {
+            const ImVec2 wa(x, y), wb(x + w, y + 40 * k);
+            flat_rect(d, wa, wb, IM_COL32(120, 30, 32, 245), seed_of(wa), k * 0.6f);
+            text(d, f.bold, 13 * k, ImVec2(wa.x + 14 * k, wa.y + 12 * k), white,
+                 elide(f.bold, 13 * k, v.playlist_playing.empty() ? std::string("NO PLAYLIST IS ON: NONE OF YOUR TRICKS PLAY")
+                                                                  : upper(v.playlist_playing) + " IS EMPTY: NONE OF YOUR TRICKS PLAY", w - 28 * k));
+            y += 50 * k;
+        }
+    }
+    // ---- + ADD OWN TRICKS (your own tricks, one by one, into the open playlist) and + NEW PLAYLIST ----
+    {
+        const float nw = 170 * k, aw = w - nw - 10 * k;
+        if (action(d, f, "##addowntricks", ImVec2(x, y), ImVec2(aw, 40 * k), "+ ADD OWN TRICKS", Look::blue)) {
+            u.pack_settings = true;
+            u.pack_page = false;
+            u.playlist_pick_scroll = 0;
+            u.playlist_open.erase("*mine"); // MY TRICKS open
+        }
+        if (action(d, f, "##newlist", ImVec2(x + aw + 10 * k, y), ImVec2(nw, 40 * k), "+ NEW PLAYLIST", Look::dark)) {
+            std::string m;
+            studio::new_playlist(m);
+            say(m);
+        }
+        y += 52 * k;
+    }
+    // ---- with more than one playlist, a chip each to open it (the one on wears ON; the open one is blue) ----
+    if (v.playlists.size() > 1) {
         float cx = x;
         const float chip_h = 36 * k;
         const auto chip = [&](const char* id, const std::string& label, bool open, bool on_tag) {
@@ -5308,17 +5475,12 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
             }
             ImGui::PopID();
         }
-        if (chip("##newlist", "+ NEW PLAYLIST", false, false)) {
-            std::string m;
-            studio::new_playlist(m);
-            say(m);
-        }
         y += chip_h + 18 * k;
     }
     if (v.playlist_open.empty()) {
         y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, soft,
-                       "No playlist yet. + NEW PLAYLIST makes one, + ADD on the right puts something in a first one, and ACTIVE on a trick "
-                       "asks which playlist it goes in. Packs and tricks play from the playlist that is on.") + 14 * k;
+                       "No playlist yet. + NEW PLAYLIST makes one, + ADD OWN TRICKS or + ADD on a pack puts them in a first one, and "
+                       "+ PLAYLIST on a trick in MY TRICKS asks which playlist it goes in. Packs and tricks play from the playlist that is on.") + 14 * k;
     } else {
         // The open one: its name, SET to rename it, DELETE (pressed twice), and its switch.
         if (u.playlist_name_for != v.playlist_open && !ImGui::IsAnyItemActive()) {
@@ -5359,9 +5521,10 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
                            : "Off: " + v.playlist_playing + " is on. Switching this one on switches that one off: one playlist plays at a time.") + 14 * k;
     }
     if (!v.playlist_open.empty()) {
-        text(d, f.heading, 14 * k, ImVec2(x, y + 9 * k), white, "THE SAME TRICK MORE THAN ONCE");
+        text(d, f.heading, 14 * k, ImVec2(x, y + 2 * k), white, "WHICH VERSION PLAYS");
+        y += 26 * k;
         const int chosen = static_cast<int>(v.playlist_mode);
-        const int picked = segmented(d, f, "##playlistmode", ImVec2(x + 300 * k, y), w - 300 * k, 36 * k, {"FIXED", "IN TURNS", "SHUFFLE"}, chosen);
+        const int picked = segmented(d, f, "##playlistmode", ImVec2(x, y), w, 36 * k, {"FIXED", "IN TURNS", "SHUFFLE"}, chosen);
         if (picked >= 0 && picked != chosen) {
             std::string m;
             studio::set_playlist_mode(static_cast<studio::PlaylistMode>(picked), m);
@@ -5377,7 +5540,8 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     begin_region(57, la, lb, u.pack_settings_scroll, k);
     float ly = la.y - u.pack_settings_scroll;
     if (v.playlist.empty() && !v.playlist_open.empty())
-        ly += paragraph(d, f.bold, 15 * k, ImVec2(x, ly), w - 14 * k, soft, "Empty. Add whole packs or single tricks from the right.") + 10 * k;
+        ly += paragraph(d, f.bold, 15 * k, ImVec2(x, ly), w - 14 * k, soft,
+                        "Empty. + ADD on a pack puts it in, and + ADD OWN TRICKS your own tricks one by one.") + 10 * k;
     for (std::size_t i = 0; i < v.playlist.size(); ++i) {
         const auto& e = v.playlist[i];
         ImGui::PushID(static_cast<int>(i));
@@ -5387,7 +5551,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         const std::string what = e.animation.empty() ? "PACK" : "TRICK";
         tag(d, f, ImVec2(ra.x + 44 * k, ra.y + 14 * k), what, e.animation.empty() ? blue : IM_COL32(255, 255, 255, 46));
         const std::string label = e.animation.empty() ? e.pack : shown_name(v, e.animation) + (e.pack.empty() ? "" : "   from " + e.pack);
-        text(d, f.bold, 16 * k, ImVec2(ra.x + 110 * k, ra.y + 13 * k), white, elide(f.bold, 16 * k, label, rb.x - ra.x - 300 * k));
+        text(d, f.bold, 16 * k, ImVec2(ra.x + 110 * k, ra.y + 13 * k), white, elide(f.bold, 16 * k, label, rb.x - ra.x - 296 * k));
         if (action(d, f, "##up", ImVec2(rb.x - 176 * k, ra.y + 8 * k), ImVec2(50 * k, 32 * k), "UP", Look::ghost, i > 0)) studio::playlist_move(i, -1);
         if (action(d, f, "##down", ImVec2(rb.x - 120 * k, ra.y + 8 * k), ImVec2(56 * k, 32 * k), "DOWN", Look::ghost, i + 1 < v.playlist.size()))
             studio::playlist_move(i, 1);
@@ -5396,8 +5560,10 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         ly += 54 * k;
     }
     end_region(d, la, lb, ly + u.pack_settings_scroll - la.y, u.pack_settings_scroll, k);
-    // ---- what can go in it: each pack whole, or any one of its tricks; and your own tricks ----
-    const float px = x + w + 40 * k, pw = b.x - px;
+    return;
+    }
+    // ---- what can go in it: your own tricks first, as themselves (no pack needed); then each pack whole, or any one of its tricks ----
+    const float px = a.x, pw = b.x - px;
     float py = a.y + 116 * k;
     heading(d, f, ImVec2(px, py), pw, v.playlist_open.empty() ? std::string("Add to a first playlist") : "Add to " + v.playlist_open);
     py += 36 * k;
@@ -5422,8 +5588,9 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     };
     // A pack's row folds its tricks away and out again (folded at first): the list stays short however many packs there
     // are. Its arrow and the row fold it; + ADD adds the whole pack.
-    const auto fold = [&](const std::string& key, float row_top, float row_bottom, float button_left) {
-        const bool open = u.playlist_open.contains(key);
+    // `open_at_first`: open until it is folded (MY TRICKS), else folded until it is opened (a pack).
+    const auto fold = [&](const std::string& key, float row_top, float row_bottom, float button_left, bool open_at_first = false) {
+        const bool open = u.playlist_open.contains(key) != open_at_first;
         const ImVec2 fa(px, row_top), fb(button_left - 8 * k, row_bottom);
         ImGui::PushID(("fold|" + key).c_str());
         if (hit("##fold", fa, fb)) {
@@ -5436,27 +5603,31 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         else d->AddTriangleFilled(ImVec2(cx - s * 0.55f, cy - s), ImVec2(cx + s * 0.75f, cy), ImVec2(cx - s * 0.55f, cy + s), white);
         return open;
     };
+    {
+        // MY TRICKS: every trick of yours (in a pack of yours or in none), and anything else in no pack, open at first. Each goes
+        // in as itself, with its pop: a trick of yours needs no pack to play.
+        std::vector<const studio::Preset*> mine;
+        for (const auto& p : v.presets)
+            if (!p.foreign || std::none_of(v.packs.begin(), v.packs.end(), [&](const auto& pack) { return pack.pack.has(p.name); }))
+                mine.push_back(&p);
+        if (!mine.empty()) {
+            const ImVec2 ra(px, qy), rb(px + pw - 14 * k, qy + 44 * k);
+            flat_rect(d, ra, rb, IM_COL32(30, 32, 38, 244), seed_of(ra), k * 0.6f);
+            text(d, f.heading, 15 * k, ImVec2(ra.x + 14 * k, ra.y + 13 * k), white, "      MY TRICKS  (" + std::to_string(mine.size()) + ")");
+            const bool open = fold("*mine", ra.y, rb.y, rb.x, true);
+            qy = rb.y + 6 * k;
+            if (open)
+                for (const auto* p : mine)
+                    add_row({"", p->name}, shown_name(v, p->name) + "   /   " + (p->pop.empty() ? std::string("ANY POP") : upper(p->pop) + " POP"), false);
+            qy += 8 * k;
+        }
+    }
     for (const auto& pack : v.packs) {
         const float row_top = qy;
         add_row({pack.name, ""}, "      " + upper(pack.name) + "  (WHOLE PACK, " + std::to_string(pack.members.size()) + ")", true);
         if (fold(pack.name, row_top, row_top + 44 * k, px + pw - 14 * k - 110 * k))
             for (const auto& member : pack.members) add_row({pack.name, member}, shown_name(v, member), false);
         qy += 8 * k;
-    }
-    {
-        // Your own tricks that are in no pack: a row of their own, folding as a pack's does.
-        std::vector<std::string> loose;
-        for (const auto& p : v.presets)
-            if (std::none_of(v.packs.begin(), v.packs.end(), [&](const auto& pack) { return pack.pack.has(p.name); })) loose.push_back(p.name);
-        if (!loose.empty()) {
-            const ImVec2 ra(px, qy), rb(px + pw - 14 * k, qy + 44 * k);
-            flat_rect(d, ra, rb, IM_COL32(30, 32, 38, 244), seed_of(ra), k * 0.6f);
-            text(d, f.heading, 15 * k, ImVec2(ra.x + 14 * k, ra.y + 13 * k), white, "      YOUR TRICKS IN NO PACK  (" + std::to_string(loose.size()) + ")");
-            const bool open = fold("*loose", ra.y, rb.y, rb.x);
-            qy = rb.y + 6 * k;
-            if (open)
-                for (const auto& name : loose) add_row({"", name}, shown_name(v, name), false);
-        }
     }
     end_region(d, pa, pb, qy + u.playlist_pick_scroll - pa.y, u.playlist_pick_scroll, k);
 }
@@ -7278,88 +7449,54 @@ void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     }
 }
 
+// The LIBRARY: what plays (NOW PLAYING, the playlist) always at the left; the packs - or a pack's page, or the tricks to add
+// - at the right.
 void packs_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
+    const float k = f.k;
     want_pack_pictures(v);
+    const float panel_w = std::clamp((b.x - a.x) * 0.3f, 380 * k, 500 * k);
+    pack_settings_page(d, f, v, a, ImVec2(a.x + panel_w, b.y), PlaylistPart::panel);
+    d->AddLine(ImVec2(a.x + panel_w + 15 * k, a.y), ImVec2(a.x + panel_w + 15 * k, b.y), IM_COL32(255, 255, 255, 34), 1.5f * k);
+    const ImVec2 right(a.x + panel_w + 32 * k, a.y);
     if (u.pack_settings) {
-        pack_settings_page(d, f, v, a, b);
+        pack_settings_page(d, f, v, right, b, PlaylistPart::adder);
         return;
     }
     if (u.pack_page)
         if (const auto* pack = pack_named(v, v.open_pack)) {
-            pack_page(d, f, v, *pack, a, b);
+            pack_page(d, f, v, *pack, right, b);
             return;
         }
     u.pack_page = false;
-    packs_hub(d, f, v, a, b);
+    packs_hub(d, f, v, right, b);
 }
 // ---- SETTINGS -------------------------------------------------------------------------------------
 // As the game's own: a tile for each part (a picture and what it holds), and in each the settings as rows, a value at
 // the right with arrows either side or a bar to slide, and what the chosen one does in a box beside them.
-struct Setting {
-    enum class Kind { choice, slider, action, folder, name, info, key, heading };
-    Kind kind{};
-    std::string label, value, about;
-    std::function<void(int)> step;    // choice: one along, -1 or 1
-    float amount{};                   // slider: 0 to 1
-    std::function<void(float)> slide; // slider: set it
-    std::function<void()> act;        // action
-    bool exporting{};                 // folder: which one
-    bool enabled{true};
-    std::string key_id, own;          // key: the action (key_actions) and its own key, as written
-};
+// The rows the ReSkate menu shows too are written once, in Extension/AnimationStudio/studio_settings_rows.cpp.
+using studio::settings_rows::Setting;
+using studio::settings_rows::choice;
+using studio::settings_rows::on_off;
+using studio::settings_rows::slider;
+using studio::settings_rows::button_row;
+using studio::settings_rows::info_setting;
 constexpr std::array<const char*, 4> settings_pages{"STUDIO", "SKATER", "TRICKS", "PACKS"};
 constexpr std::array<const char*, 4> settings_blurbs{"The room, the camera, playback and the studio's own tools.",
                                                      "How the skater is posed: limits, keeping clear, the ground, his stance.",
                                                      "How your tricks play in game: on or off, the crossfade, matching, your name.",
                                                      "Where packs are exported to and imported from, and bringing them in."};
-Setting choice(std::string label, std::string value, std::string about, std::function<void(int)> step) {
-    Setting s;
-    s.kind = Setting::Kind::choice;
-    s.label = std::move(label);
-    s.value = std::move(value);
-    s.about = std::move(about);
-    s.step = std::move(step);
-    return s;
-}
-Setting on_off(std::string label, bool on, std::string about, std::function<void(bool)> set) {
-    return choice(std::move(label), on ? "ON" : "OFF", std::move(about), [on, set = std::move(set)](int) { set(!on); });
-}
-Setting slider(std::string label, float amount, std::string value, std::string about, std::function<void(float)> slide) {
-    Setting s;
-    s.kind = Setting::Kind::slider;
-    s.label = std::move(label);
-    s.amount = amount;
-    s.value = std::move(value);
-    s.about = std::move(about);
-    s.slide = std::move(slide);
-    return s;
-}
-Setting button_row(std::string label, std::string about, std::function<void()> act) {
-    Setting s;
-    s.kind = Setting::Kind::action;
-    s.label = std::move(label);
-    s.about = std::move(about);
-    s.act = std::move(act);
-    return s;
-}
-Setting info_setting(std::string label, std::string value, std::string about) {
-    Setting s;
-    s.kind = Setting::Kind::info;
-    s.label = std::move(label);
-    s.value = std::move(value);
-    s.about = std::move(about);
-    return s;
-}
 std::vector<Setting> settings_of(int page, const studio::View& v) {
     auto& u = ui();
+    const auto now = studio::settings();
+    const studio::settings_rows::Tell tell = [](const std::string& m) { say(m); };
     std::vector<Setting> rows;
     switch (page) {
     case 0: {
-        rows.push_back(on_off("Studio room", v.room,
-                              "On: the studio opens in the game's own lit studio room, as skate.'s Skaters page shows it. Off: it opens where "
-                              "you are. Takes effect the next time it opens.",
-                              [](bool on) { studio::set_room(on); }));
+        rows.push_back(studio::settings_rows::studio_room(now));
+        rows.push_back(studio::settings_rows::grind_rail(now));
+        rows.push_back(studio::settings_rows::rail_size(now));
+        rows.push_back(studio::settings_rows::controller_combo(now));
         rows.push_back(choice("Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))].name,
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
                               "him and above, as he stands when you pick it; BOARD is close on the deck, CINEMATIC wide and low, FILMER "
@@ -7375,15 +7512,9 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               [](bool on) { ui().hide_joints = !on; }));
         rows.push_back(on_off("Shortcuts panel", u.controls_open, "The list of keys (or buttons) at the editor's lower right. Key: " + key_of("shortcuts") + ".",
                               [](bool on) { ui().controls_open = on; }));
-        rows.push_back(button_row("Report a bug",
-                                  "Something went wrong? Right after it happens, press this: the last 15 seconds, the game's log, your studio "
-                                  "settings and which build this is go into one zip, and Explorer shows it. Send that zip to us with what "
-                                  "happened, the trick and your stance. Nothing is sent by itself.",
-                                  [] {
-                                      std::string m;
-                                      studio::report_bug(m);
-                                      say(m);
-                                  }));
+        rows.push_back(studio::settings_rows::catch_marker(now));
+        rows.push_back(studio::settings_rows::how_it_works());
+        rows.push_back(studio::settings_rows::report_a_bug(tell));
         rows.push_back(button_row("Export diagnostics",
                                   "Reproduce a problem, open the studio, then export: the last 15 seconds of poses, stances, timings, the board and "
                                   "the tricks in play, as text files to send.",
@@ -7431,19 +7562,11 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 1: {
-        rows.push_back(choice("Editing stance", v.stance_choice == 1 ? "REGULAR" : v.stance_choice == 2 ? "GOOFY" : v.showing_goofy ? "THE GAME'S (GOOFY)" : "THE GAME'S (REGULAR)",
-                              "Which foot leads while you edit, in the studio only: your stance in game is the game's own option. A trick "
-                              "made leading with the other foot is mirrored into this stance the way the game mirrors its own, so the leg "
-                              "you grab is the leg that moves. The game's: the stance set in the game's own options.",
-                              [c = v.stance_choice](int by) { studio::set_stance((c + by + 3) % 3); }));
-        rows.push_back(on_off("Hands grab the board", v.grab_board,
-                              "A hand brought near the deck closes its fingers round it, more the nearer it gets. Shown only: the fingers are "
-                              "not keyed or saved.",
-                              [](bool on) { studio::set_grab(on); }));
-        rows.push_back(on_off("Joint limits", v.limits,
-                              "On: knees and elbows bend one way and every joint stays in the range the game's own animation uses, while you "
-                              "pose and in game. Off: joints go wherever you push them.",
-                              [](bool on) { studio::set_joint_limits(on); }));
+        rows.push_back(studio::settings_rows::editing_stance(now));
+        rows.push_back(studio::settings_rows::hands_grab_the_board(now));
+        rows.push_back(studio::settings_rows::advanced_bones(now));
+        rows.push_back(studio::settings_rows::finger_bones(now));
+        rows.push_back(studio::settings_rows::joint_limits(now));
         rows.push_back(slider("Keep clear", u.anti_clip ? u.clear_force : 0.0f,
                               !u.anti_clip || u.clear_force <= 0.005f ? "OFF" : std::format("{:.0f}%", u.clear_force * 100),
                               "What you move is kept out of his body and off the deck. How wide his body is taken to be: low keeps the limbs "
@@ -7472,30 +7595,10 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 2: {
-        rows.push_back(on_off("Custom tricks in game", v.play_in_game,
-                              "On: your saved tricks play in game. The game leads: it says which clip it plays and how far into it it is, and "
-                              "your keys go onto its pose there, so the trick looks as the studio shows it and lands when the game lands.",
-                              [](bool on) { studio::set_play_in_game(on); }));
-        {
-            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.crossfade_slider = std::clamp((v.crossfade - 0.1f) / 0.7f, 0.0f, 1.0f);
-            const float seconds = 0.1f + u.crossfade_slider * 0.7f;
-            rows.push_back(slider("Crossfade", u.crossfade_slider, std::format("{:.2f} s", seconds),
-                                  "How smoothly your trick hands back to the game when it goes into its next move - a manual, a push, the "
-                                  "next trick. Short is snappy, long is buttery.",
-                                  [](float amount) {
-                                      ui().crossfade_slider = amount;
-                                      static float said = -1;
-                                      const float s = std::round((0.1f + amount * 0.7f) * 100) / 100;
-                                      if (std::abs(s - said) > 0.005f) {
-                                          said = s;
-                                          studio::set_crossfade(s);
-                                      }
-                                  }));
-        }
-        rows.push_back(choice("Trick matching", v.front_foot ? "FRONT FOOT" : "EXACT STANCE",
-                              "Front foot: a trick plays in every stance, mirrored onto your front foot when the other foot leads, as the game "
-                              "does. Exact stance: only the one made on the foot that leads now; the game's own otherwise.",
-                              [on = v.front_foot](int) { studio::set_front_foot(!on); }));
+        rows.push_back(studio::settings_rows::custom_tricks_in_game(now));
+        rows.push_back(studio::settings_rows::crossfade(now));
+        rows.push_back(studio::settings_rows::trick_matching(now));
+        rows.push_back(studio::settings_rows::transitions(now));
         {
             const auto build = studio::library_build();
             Setting s = button_row("Trick library",
@@ -7510,36 +7613,12 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                                             : "BUILT " + build.built + "  -  REBUILD";
             rows.push_back(std::move(s));
         }
-        {
-            Setting s;
-            s.kind = Setting::Kind::name;
-            s.label = "Made by";
-            s.about = "Your name. It goes with every trick you save and every pack you make, so a trick passed on says whose it is.";
-            rows.push_back(std::move(s));
-        }
+        rows.push_back(studio::settings_rows::made_by(now, tell));
         break;
     }
     default: {
-        {
-            Setting s;
-            s.kind = Setting::Kind::folder;
-            s.label = "Export folder";
-            s.exporting = true;
-            s.value = v.export_path;
-            s.about = "Where EXPORT PACK and EXPORT ALL TRICKS put their zip. It opens by itself after an export. CHOOSE picks "
-                      "another folder, DEFAULT goes back to ReSkate.Tricks\\exports.";
-            rows.push_back(std::move(s));
-        }
-        {
-            Setting s;
-            s.kind = Setting::Kind::folder;
-            s.label = "Import folder";
-            s.exporting = false;
-            s.value = v.import_path;
-            s.about = "Where IMPORT looks for packs: put a pack's zip there (your Downloads folder works well) and press IMPORT. "
-                      "Imported zips are moved into an imported folder inside it.";
-            rows.push_back(std::move(s));
-        }
+        rows.push_back(studio::settings_rows::pack_folder(now, true));
+        rows.push_back(studio::settings_rows::pack_folder(now, false));
         rows.push_back(button_row("Import packs now", "Takes in every pack zip in the import folder: checked first, names already used get the next number.", [] {
             std::string m;
             studio::import_packs(m);
@@ -7770,20 +7849,18 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         }
         case Setting::Kind::name: {
             if (!u.your_name_filled && !ImGui::IsAnyItemActive()) {
-                std::snprintf(u.your_name.data(), u.your_name.size(), "%s", v.your_name.c_str());
+                std::snprintf(u.your_name.data(), u.your_name.size(), "%s", row.value.c_str());
                 u.your_name_filled = true;
             }
             bool edited = false;
-            if (field(f, "##yourname", u.your_name, ImVec2(control_x, mid_y - 17 * k), 400 * k, "your name", &edited) || edited) {
-                studio::set_your_name(u.your_name.data());
-                say(std::string("Made by ") + u.your_name.data() + " from now on.");
-            }
+            if ((field(f, "##yourname", u.your_name, ImVec2(control_x, mid_y - 17 * k), 400 * k, "your name", &edited) || edited) && row.edit)
+                row.edit(u.your_name.data());
             break;
         }
         case Setting::Kind::folder: {
             text(d, f.bold, 14 * k, ImVec2(control_x, a1.y + 18 * k), lit ? white : soft, elide(f.bold, 14 * k, row.value, b1.x - control_x - 20 * k));
             const float by = a1.y + 58 * k, bw = 118 * k;
-            const bool custom = !(row.exporting ? v.export_folder : v.import_folder).empty();
+            const bool custom = row.custom;
             if (action(d, f, "##choosefolder", ImVec2(b1.x - 3 * (bw + 8 * k) - 6 * k, by), ImVec2(bw, 34 * k), "CHOOSE", Look::paper))
                 open_browser(v, row.exporting ? 1 : 2, {});
             if (action(d, f, "##openfolder", ImVec2(b1.x - 2 * (bw + 8 * k) - 6 * k, by), ImVec2(bw, 34 * k), "OPEN")) studio::open_pack_folder(row.exporting);
@@ -8041,6 +8118,7 @@ float pack_chips(ImDrawList* d, const Fonts& f, const studio::View& v, const std
         return paragraph(d, f.bold, 14 * k, at, width, soft, "Another maker's trick: it plays for you, but only your own tricks go in your packs.") + 8 * k;
     for (const auto& pack : v.packs) {
         const bool in = std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end();
+        if (pack.installed && !in) continue; // another maker's pack (got from the MARKET or imported): only its maker adds to it
         const float w = chip_width(f, pack.name);
         if (x + w > at.x + width) x = at.x, y += 38 * k;
         ImGui::PushID(pack.name.c_str());
@@ -8554,7 +8632,7 @@ void key_card(ImDrawList* d, const Fonts& f, const studio::View&, ImVec2 display
     }
     if (action(d, f, "##keysave", ImVec2(x + bw + 12 * k, by), ImVec2(bw, 46 * k), "SAVE", Look::blue, !waiting && u.binding_key != now)) save();
 }
-// ACTIVE on a trick that is in nothing that plays: which playlist it goes in, or a new one. One playlist plays at a time; the
+// + PLAYLIST on a trick with no playlist on: which playlist it goes in, or a new one. One playlist plays at a time; the
 // page (PACKS > PLAYLIST) opens on the one it went in.
 void playlist_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
@@ -8577,7 +8655,7 @@ void playlist_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
                        "You have not made a playlist yet. Would you like to add " + shown_name(v, name) + " to a new playlist?") + 14 * k;
         paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, soft,
                   "A playlist decides what plays in game: whole packs and single tricks, in order. Make as many as you like and switch "
-                  "between them in PACKS > PLAYLIST: one plays at a time.");
+                  "between them at the left of the LIBRARY: one plays at a time.");
     } else {
         y += paragraph(d, f.bold, 19 * k, ImVec2(x, y), w, white, "Which playlist should " + shown_name(v, name) + " go in?") + 16 * k;
         for (std::size_t i = 0; i < listed_now; ++i) {
@@ -8633,7 +8711,26 @@ void reshare_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
     const auto [a, b] = card_box(d, f, display, 860 * k, 440 * k, "WOAAHH, WAIT THERE...");
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 96 * k;
-    if (pack->installed) {
+    // Your own, made on another PC (a new PC, a Windows reinstall, EXPORT ALL and back): its maker is you by name, or it went
+    // out with your team. Then the card says so, where your sign-in stands and what to do - creators were told their own
+    // pack was "Fourth's, not yours" (2026-10-27).
+    const auto m = studio::market::view();
+    const auto same = [](const std::string& a, const std::string& b) { return !a.empty() && _stricmp(a.c_str(), b.c_str()) == 0; };
+    const bool looks_mine = pack->installed && (same(pack->made_by, v.your_name) || same(pack->pack.maker_team, m.team));
+    if (looks_mine) {
+        y += paragraph(d, f.bold, 19 * k, ImVec2(x, y), w, white, pack->name + " looks like yours, made on another PC.") + 14 * k;
+        y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
+                       "Every pack carries the key of the PC it was made on. This one came from another PC (or from before a Windows "
+                       "reinstall), so the studio can't tell it's yours by the PC alone. Your Thunderstore team can.") + 14 * k;
+        const std::string status =
+            m.team.empty() ? "You're not signed in to the MARKET here. Sign in with the Thunderstore team that published it (MARKET > ACCOUNT): "
+                             "then it's yours to share and update on this PC."
+            : m.account_state == 3 ? "Your token can't publish for " + m.team + ". Link the team's token again in MARKET > ACCOUNT."
+            : m.account_state == 2 ? "You're signed in as " + m.team + ", but this pack went out under another team (or came in as a file). "
+                                     "Sign in with the team that published it. From now on, what you share carries your team, so this won't happen again."
+                                   : "Your team " + m.team + " is still being checked with Thunderstore. Try again in a moment.";
+        paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint, status);
+    } else if (pack->installed) {
         y += paragraph(d, f.bold, 19 * k, ImVec2(x, y), w, white,
                        "That's not very nice: trying to reshare someone else's pack!") + 14 * k;
         y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
@@ -8847,7 +8944,8 @@ void delete_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
     y += paragraph(d, f.bold, 17 * k, ImVec2(x, y), w, white,
                    "You're about to delete " + shown_name(v, name) + " from " + (in.size() == 1 ? "the pack " : "the packs ") + listed(in) + ".") + 12 * k;
     y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, soft,
-                   "It is taken out of " + std::string(in.size() == 1 ? "that pack" : "those packs") + " and deleted from your tricks. Do you wish to continue?") + 12 * k;
+                   "It is taken out of " + std::string(in.size() == 1 ? "that pack" : "those packs") +
+                       " and every playlist it is in, and deleted from your tricks. Do you wish to continue?") + 12 * k;
     if (!emptied.empty())
         paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, skate_theme::warning,
                   "It is the last trick of " + listed(emptied) + ", which you got from the MARKET or an import: " +
@@ -8865,6 +8963,7 @@ void delete_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
         u.trick_page.clear();
     }
 }
+float open_trick_tags(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at); // the editor's, below
 void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     const float k = f.k;
@@ -8872,6 +8971,9 @@ void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 92 * k;
     const auto name = v.name;
+    // What it was saved as, so you know which trick this is: the trick, its pop and its stance.
+    open_trick_tags(d, f, v, ImVec2(x, y));
+    y += 36 * k;
     y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "It is in MY TRICKS. Give it a name you will know it by.") + 14 * k;
     y += in_game_row(d, f, v, name, ImVec2(x, y), w) + 18 * k;
     heading(d, f, ImVec2(x, y), w, "Name it");
@@ -9213,6 +9315,77 @@ void test_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
         u.label_for.clear();
     }
 }
+// HOW IT WORKS: opens by itself the first time (until it is read to the end or skipped), and again from SETTINGS >
+// STUDIO > How it works. What people asked about most: why a pack they installed did not play (packs play from the
+// playlist that is on), Exact stance against Front foot, and making a playlist.
+void guide_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
+    auto& u = ui();
+    const float k = f.k;
+    struct Page {
+        const char *title, *where;
+        std::array<const char*, 4> lines;
+    };
+    static constexpr std::array<Page, 4> pages{{
+        {"YOUR LIBRARY AND ITS PLAYLIST", "LIBRARY",
+         {"A pack is a set of tricks. Get packs in the MARKET (GET IT) or with a mod manager: a new pack goes straight into the "
+          "playlist that is on, and plays in game.",
+          "In the LIBRARY, NOW PLAYING at the left is your playlist: what is in it plays. + ADD on a pack puts it in; IN PLAYLIST "
+          "says it is. Open a pack and untick ACTIVE on a trick to keep it in the pack without playing it.",
+          "Only the playlist that is on plays. With no playlist on, none of your custom tricks play.",
+          "Installed a pack and nothing changed? In SETTINGS > TRICKS, Custom tricks in game should be ON and Trick matching on "
+          "FRONT FOOT (next page)."}},
+        {"EXACT STANCE OR FRONT FOOT", "SETTINGS  >  TRICKS  >  TRICK MATCHING",
+         {"Every trick is made riding one way round: regular or goofy.",
+          "FRONT FOOT, best for most people: every trick plays whichever way you ride, mirrored onto your front foot the way the "
+          "game mirrors its own. Pick this when a pack plays for other people but not for you.",
+          "EXACT STANCE: a trick plays only when you ride the same way round it was made. The rest of the time the game's own "
+          "trick plays.",
+          "A trick also has its own stance in THIS TRICK (NORMAL, FAKIE, SWITCH, SW FAKIE): it plays when you ride that way. Your "
+          "stance in game is the game's own option."}},
+        {"YOUR TRICKS IN A PLAYLIST", "LIBRARY  >  MY TRICKS",
+         {"Your own tricks need no pack: press + PLAYLIST on a trick in MY TRICKS and it goes straight into the playlist that is "
+          "on. With none on, the studio asks which one, or makes a new one.",
+          "Or in the LIBRARY: the MY TRICKS card lists every trick you made, to add one by one, and the packs are beside it. "
+          "+ NEW PLAYLIST at the left makes another playlist; UP and DOWN put what is in one in order.",
+          "Switch it ON: one playlist plays at a time. The same trick twice in it? WHICH VERSION PLAYS: FIXED the highest one, "
+          "IN TURNS one after another, SHUFFLE at random.",
+          "While you skate, the ReSkate menu's ADDONS > ANIMATOR STUDIO switches playlists and these settings without opening "
+          "the studio."}},
+        {"POP HEIGHTS", "THIS TRICK  >  PLAYS ON",
+         {"The game grades every pop by how you flick it: LOW is a quick little hop, MID a normal pop, HIGH a big floaty one.",
+          "A trick set to LOW, MID or HIGH plays on that pop only: on the other heights the game's own trick plays. A trick "
+          "opened from one of the game's clips starts on that clip's pop (Kickflip low: LOW).",
+          "ANY POP plays it on every height, fitted to each. COPY TO LOW, MID AND HIGH makes three of it, to change each on "
+          "its own.",
+          "A pack can set it for all of its tricks: EVERY TRICK PLAYS ON in the pack. SETTINGS > STUDIO > How it works opens "
+          "this guide again."}},
+    }};
+    u.guide_page = std::clamp(u.guide_page, 0, static_cast<int>(pages.size()) - 1);
+    const auto& page = pages[static_cast<std::size_t>(u.guide_page)];
+    const auto [a, b] = card_box(d, f, display, 960 * k, 700 * k, std::format("HOW IT WORKS   {} / {}", u.guide_page + 1, pages.size()));
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 96 * k;
+    title_text(d, f, 38 * k, ImVec2(x, y), white, page.title);
+    y += 54 * k;
+    text(d, f.heading, 14 * k, ImVec2(x, y), blue_light, page.where);
+    y += 36 * k;
+    for (const auto* line : page.lines) {
+        d->AddRectFilled(ImVec2(x, y + 7 * k), ImVec2(x + 8 * k, y + 15 * k), blue);
+        y += paragraph(d, f.bold, 16 * k, ImVec2(x + 22 * k, y), w - 22 * k, soft, line) + 14 * k;
+    }
+    const auto close = [&] {
+        u.guide_page = 0;
+        studio::set_guide_seen(true);
+    };
+    const bool last = u.guide_page + 1 == static_cast<int>(pages.size());
+    const float bw = 180 * k, by = b.y - 70 * k;
+    if (!last && action(d, f, "##guideskip", ImVec2(x, by), ImVec2(bw, 46 * k), "SKIP", Look::ghost)) close();
+    if (u.guide_page > 0 && action(d, f, "##guideback", ImVec2(b.x - 30 * k - 2 * bw - 12 * k, by), ImVec2(bw, 46 * k), "BACK", Look::dark)) --u.guide_page;
+    if (action(d, f, "##guidenext", ImVec2(b.x - 30 * k - bw, by), ImVec2(bw, 46 * k), last ? "GOT IT" : "NEXT", Look::blue)) {
+        if (last) close();
+        else ++u.guide_page;
+    }
+}
 // Packs that are on with their own animation of the same trick: which one plays it, or turns at random.
 void conflicts_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
@@ -9353,12 +9526,25 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (!u.reshare_pack.empty()) reshare_card(d, f, v, display);
     else if (u.save_card) save_card(d, f, v, display);
     else if (!v.test_returned.empty()) test_card(d, f, v, display);
+    else if (!v.guide_seen) guide_card(d, f, display);
     end_card();
 }
 
 // ---- the editor -----------------------------------------------------------------------------------
 // The skater in the middle; along the top MENU, the trick's name, the camera, and TEST IN GAME and SAVE; the tools down
 // the left; the chosen joint's card on the right; the timeline along the bottom with KEY in it.
+// The open trick's tags: the game's trick, its pop and its stance (blue when it is not normal). Returns where they end.
+float open_trick_tags(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at) {
+    const float k = f.k;
+    float tx = at.x;
+    if (!v.trick.empty()) tx += tag(d, f, ImVec2(tx, at.y), upper(trick_label(v.trick)), IM_COL32(255, 255, 255, 36)) + 6 * k;
+    tx += tag(d, f, ImVec2(tx, at.y), pop_words(v.pop), IM_COL32(255, 255, 255, 36)) + 6 * k;
+    if (v.trick_stance >= 0) {
+        static constexpr std::array<const char*, 4> stances{"NORMAL", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+        tx += tag(d, f, ImVec2(tx, at.y), stances[static_cast<std::size_t>(v.trick_stance)], v.trick_stance == 0 ? IM_COL32(255, 255, 255, 36) : blue) + 6 * k;
+    }
+    return tx;
+}
 void editor_top(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, float left, float right) {
     const float k = f.k, h = 78 * k;
     const ImU32 dark = IM_COL32(8, 8, 10, 215), none = IM_COL32(8, 8, 10, 0);
@@ -9375,13 +9561,7 @@ void editor_top(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
     const float title_x = left + 172 * k;
     const float title_w = std::max(120 * k, display.x * 0.5f - 160 * k - title_x);
     text(d, f.title, 30 * k, ImVec2(title_x, y - 4 * k), white, elide(f.title, 30 * k, title_of(v), title_w));
-    float tx = title_x;
-    if (!v.trick.empty()) tx += tag(d, f, ImVec2(tx, y + 32 * k), upper(trick_label(v.trick)), IM_COL32(255, 255, 255, 36)) + 6 * k;
-    tx += tag(d, f, ImVec2(tx, y + 32 * k), pop_words(v.pop), IM_COL32(255, 255, 255, 36)) + 6 * k;
-    if (v.trick_stance >= 0) {
-        static constexpr std::array<const char*, 4> stances{"NORMAL", "FAKIE", "SWITCH", "SWITCH FAKIE"};
-        tx += tag(d, f, ImVec2(tx, y + 32 * k), stances[static_cast<std::size_t>(v.trick_stance)], v.trick_stance == 0 ? IM_COL32(255, 255, 255, 36) : blue) + 6 * k;
-    }
+    const float tx = open_trick_tags(d, f, v, ImVec2(title_x, y + 32 * k));
     if (v.dirty) tag(d, f, ImVec2(tx, y + 32 * k), "NOT SAVED", skate_theme::warning, IM_COL32(18, 18, 20, 255));
     shot_switch(d, f, v, ImVec2(display.x * 0.5f, y + 23 * k));
     float x = right - 20 * k;
@@ -9474,6 +9654,32 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     if (tool("##joints", "JOINTS", key_of("joints").c_str(), !u.hide_joints, "The dots on his joints and the gizmo. Off shows the pose clean.")) u.hide_joints = !u.hide_joints;
     y += row;
     if (tool("##follow", "FOLLOW", key_of("follow").c_str(), false, "The camera keeps the chosen joint in the middle. Again: the whole skater.")) studio::focus_joint(u.selected);
+    // A grind of the game's open: the rail it stands on, one press to the next (OFF and the straight rails).
+    if (v.grind_open) {
+        y += row;
+        group("RAIL");
+        const auto now = studio::settings();
+        std::vector<std::string> keys{""};
+        for (const auto& key : now.rails)
+            if (studio::studio_rail(key)) keys.push_back(key);
+        const auto chosen = std::find(keys.begin(), keys.end(), v.grind_rail);
+        const std::size_t i = chosen == keys.end() ? 0 : static_cast<std::size_t>(chosen - keys.begin());
+        const auto* rail = studio::studio_rail(keys[i]);
+        if (tool("##rail", rail ? std::string(rail->label).c_str() : "OFF", "", rail != nullptr,
+                 "The game's rail this grind stands on, its board on the top. Press for the next one. SETTINGS > STUDIO > Grind rail."))
+            studio::set_grind_rail(keys[(i + 1) % keys.size()]);
+        if (rail) {
+            y += row;
+            const auto& sizes = studio::studio_rail_sizes;
+            std::size_t at_size = 0;
+            for (std::size_t s = 0; s < sizes.size(); ++s)
+                if (std::abs(sizes[s] - v.grind_rail_size) < 0.001f) at_size = s;
+            const auto label = std::format("SIZE {:.0f}%", sizes[at_size] * 100);
+            if (tool("##railsize", label.c_str(), "", false,
+                     "How big the rail is: lower, thinner and shorter together. Press for the next size. SETTINGS > STUDIO > Rail size."))
+                studio::set_grind_rail_size(sizes[(at_size + 1) % sizes.size()]);
+        }
+    }
     if (!u.tool_tip.empty()) {
         const float tw = 300 * k;
         const auto measured = sharp(f.bold, 14 * k)->CalcTextSizeA(14 * k, FLT_MAX, tw - 28 * k, u.tool_tip_text.c_str());
@@ -9730,7 +9936,7 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
     using Line = std::tuple<std::optional<Glyph>, std::string, const char*>;
     std::vector<Line> list;
     const char* move = u.move_mode ? "Move (L3: turn)" : u.axis < 0 ? "Turn (L3: axis)" : u.axis == 0 ? "Turn X (L3)" : u.axis == 1 ? "Turn Y (L3)" : "Turn Z (L3)";
-    if (u.pad_mode)
+    if (u.pad_mode) {
         list = {{Glyph::ls, "", move},
                 {Glyph::rs, "", u.stick_zoom ? "Zoom / pan (R3)" : "Orbit (R3: zoom)"},
                 {Glyph::rt, "", "Play forward"},
@@ -9745,9 +9951,15 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
                 {Glyph::view, "", "Menu"},
                 {Glyph::lb, "", "Zoom timeline (RB)"},
                 {Glyph::lb, "", "+ LS: start anim."},
-                {Glyph::rb, "", "+ RS: end anim."},
-                {Glyph::l3, "", "+ R3 hold: back"}};
-    else
+                {Glyph::rb, "", "+ RS: end anim."}};
+        // The controller combo back to skating, as SETTINGS > STUDIO has it (none: OFF).
+        switch (studio::open_combo()) {
+        case 0: list.push_back({Glyph::l3, "", "+ R3 hold: back"}); break;
+        case 1: list.push_back({Glyph::lb, "", "+ R3 hold: back"}); break;
+        case 2: list.push_back({Glyph::rb, "", "+ L3 hold: back"}); break;
+        default: break;
+        }
+    } else
         list = {{std::nullopt, "LMB", "Pick / turn"},
                 {std::nullopt, "RMB", "Orbit"},
                 {std::nullopt, key_of("view_up") + " " + key_of("view_left") + " " + key_of("view_down") + " " + key_of("view_right"), "Turn the view"},
@@ -9923,7 +10135,10 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     }
     if (!u.trick_panel) return;
     const float w = 420 * k, row = 76 * k;
-    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + (show_catch_tools ? 4 : 2) * row);
+    // (DROP PREVIEW is gone, 2026-10-29: it played the trick as off a drop here, which read as a setting of the trick and led to
+    // wrong keys.)
+    const bool catch_hold_shown = show_catch_tools && v.catch_marker;
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + (3 + (catch_hold_shown ? 1 : 0)) * row);
     skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
     const float x = a.x + 20 * k, bw = w - 40 * k;
@@ -9944,12 +10159,54 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
             const bool on = v.trick_stance == i;
             ImGui::PushID(i);
             if (action(d, f, "##trickstance", ImVec2(x + static_cast<float>(i) * (sw + gap), y + 22 * k), ImVec2(sw, 28 * k), names[static_cast<std::size_t>(i)],
-                       on ? Look::blue : Look::ghost, can, on) && !on)
+                       on ? Look::blue : Look::ghost, can, on) && !on) {
+                studio::begin_change(); // into fakie or out of it the upper body's keys go to the other side: undone as one
                 studio::set_trick_stance(i);
+            }
+            ImGui::PopID();
+        }
+        // On a nollie trick FAKIE is the switch trick riding fakie (nollie_trick).
+        const char* says = !can ? "A piece of the game's animation: it has no stance of its own."
+                           : nollie_trick(v.trick) && v.trick_stance == 1
+                               ? "Fakie nollie: plays when you pop off the nose riding fakie - the game's switch trick there."
+                           : v.trick_stance % 2 == 1 ? "Fakie: mirrored from the waist up, the arms too, as it plays riding fakie."
+                           : nollie_trick(v.trick) ? "Saved this way, it plays when you ride this way. FAKIE here is switch riding fakie."
+                                                   : "Saved this way, it plays when you ride this way.";
+        text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint, elide(f.bold, 11 * k, says, bw));
+        y += row;
+    }
+    // A copy in another stance, keys and all, opened in that stance at once (make_stance_version: fakie mirrors it from the
+    // waist up, switch onto the other foot). Saved first, so the copy has what is open now. A lit one is yours: it opens.
+    {
+        const bool can = v.trick_stance >= 0 && !v.previewing;
+        const auto have = can ? stance_versions_of(v, v.name) : std::array<std::string, 4>{};
+        static constexpr std::array<const char*, 4> names{"NORMAL", "FAKIE", "SWITCH", "SW FAKIE"};
+        text(d, f.bold, 14 * k, ImVec2(x, y), can ? white : faint, "COPY TO");
+        const float gap = 6 * k, sw = (bw - 3 * gap) / 4;
+        for (int i = 0; i < 4; ++i) {
+            const auto at = static_cast<std::size_t>(i);
+            const bool self = v.trick_stance == i, done = !self && !have[at].empty();
+            const ImVec2 ba(x + static_cast<float>(i) * (sw + gap), y + 22 * k);
+            ImGui::PushID(i);
+            const std::string label = self || done ? std::string(names[at]) : std::string("+ ") + names[at];
+            if (action(d, f, "##stancecopy", ba, ImVec2(sw, 28 * k), label, done ? Look::ghost : Look::dark, can && !self, done)) {
+                std::string m;
+                if (done) open_or_preview(v, have[at], {});
+                else {
+                    const bool known = !v.name.empty() && std::find(v.library.begin(), v.library.end(), v.name) != v.library.end();
+                    if ((v.dirty || !known) && !studio::save(m)) say(m);
+                    else {
+                        std::string made;
+                        if (studio::make_stance_version(studio::view().name, i, made, m)) open_saved(made);
+                        say(m);
+                    }
+                }
+            }
             ImGui::PopID();
         }
         text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint,
-             elide(f.bold, 11 * k, can ? "Saved this way, it plays when you ride this way." : "A piece of the game's animation: it has no stance of its own.", bw));
+             elide(f.bold, 11 * k, can ? "+ copies this trick, keys and all, into that stance and opens it. Lit: you have one."
+                                       : "A piece of the game's animation: it has no stance of its own.", bw));
         y += row;
     }
     // Its own Crossfade, or the main one.
@@ -9969,8 +10226,8 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         note(own ? "This trick hands over to the game's next move at its own pace." : "OWN: a crossfade for this trick alone. Off: the main one in SETTINGS.");
         y += row;
     }
-    // CATCH HOLD.
-    if (show_catch_tools) {
+    // CATCH HOLD (SETTINGS > STUDIO > Catch marker).
+    if (catch_hold_shown) {
         const bool can = v.catch_air && v.catch_at >= 0;
         head("CATCH HOLD", !v.catch_air ? "NO AIR" : v.catch_at < 0 ? "NO CATCH" : std::format("{:.0f}%", v.catch_hold * 100), can, x + bw);
         bool began = false;
@@ -9978,17 +10235,6 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         if (began) studio::begin_change();
         if (amount >= 0) studio::set_catch_hold(amount);
         note("Off big drops: high keeps the catch long and reaches for the ground late.");
-        y += row;
-    }
-    // DROP PREVIEW.
-    if (show_catch_tools) {
-        const bool can = v.catch_air && v.catch_at >= 0;
-        const std::string value = !can ? "NEEDS A CATCH" : v.drop_preview < 0.05f ? "OFF"
-                                                                                   : std::format("{:.1f} m   +{:.2f} s AIR", v.drop_preview, std::max(0.0f, v.drop_extra));
-        head("DROP PREVIEW", value, can, x + bw);
-        const float amount = panel_slider(d, f, "##droppreview", ImVec2(x, y + 30 * k), bw, v.drop_preview / 4.0f, can, nullptr);
-        if (amount >= 0) studio::set_drop_preview(amount * 4.0f);
-        note("Plays it here as off a drop this high, the catch slowed as in game.");
         y += row;
     }
     // The rest of the panel takes the mouse, so a click on it does not reach the skater behind it.
@@ -10158,8 +10404,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     key_mark(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft, round_key(key));
     d->PopClipRect();
     // Rows, one per joint, and under a joint that is opened (its name clicked, or T) a row for each of its
-    // channels - rotation X, Y, Z and, for what can be moved, location X, Y, Z - each with its curve.
-    const auto joints = studio::editable_joints();
+    // channels - rotation X, Y, Z and, for what can be moved, location X, Y, Z - each with its curve. The advanced bones and
+    // the fingers only when SETTINGS > SKATER shows them (or they have keys).
+    const auto joints = shown_joints(v);
     const float rows_top = summary_y + summary_h + 6 * k;
     const float rows_h = at.y + size.y - rows_top;
     const float ch_h = 30 * k, ch_gap = 3 * k;
@@ -10705,7 +10952,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     // its landing. The studio finds it (AUTO CATCH); drag the flag to the frame to hold, double-click it for the
     // studio's again. Its flag hangs under the frame numbers, out of the brackets' way, pointing back into the air.
     bool on_catch = false;
-    if (show_catch_tools && v.has_clip && v.catch_air) {
+    if (show_catch_tools && v.catch_marker && v.has_clip && v.catch_air) {
         auto& io = ImGui::GetIO();
         const bool none = v.catch_at < 0;
         const float t = none ? std::round((v.takeoff + (v.landing - v.takeoff) * 0.6f) * fps) / fps : v.catch_at;
@@ -10869,7 +11116,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     float best = 22 * k;
     if (!u.pad_mode && !joints_hidden)
         for (const auto& j : v.joints)
-            if (const auto at = project(j.position)) {
+            if (const auto at = joint_shown(v, j.joint) ? project(j.position) : std::nullopt) {
                 const float dist = std::hypot(at->x - mouse.x, at->y - mouse.y);
                 if (inside && dist < best) {
                     best = dist;
@@ -10878,6 +11125,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
             }
     if (!joints_hidden)
         for (const auto& j : v.joints) {
+            if (!joint_shown(v, j.joint)) continue;
             const auto at = project(j.position);
             if (!at || j.joint == u.selected) continue;
             const bool hot = hovered && *hovered == j.joint;
@@ -11092,12 +11340,14 @@ void open_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
 
 bool animation_studio_open() { return studio::is_open(); }
 
-// Closed, the studio still listens for L3 + R3 held on a controller, which opens it.
+// Closed, the studio still listens for its controller combo held (L3 + R3 unless SETTINGS > STUDIO says otherwise), which opens it.
 void poll_animation_studio_controller() {
     static double since = 0;
     static bool fired = false;
     const auto pad = read_gamepad();
-    const bool both = pad.valid && (pad.buttons & pad_l3) && (pad.buttons & pad_r3);
+    // The combo SETTINGS > STUDIO says (L3 + R3 unless changed; none: OFF).
+    const unsigned combo = studio::open_combo_buttons[static_cast<std::size_t>(studio::open_combo())];
+    const bool both = pad.valid && combo && (pad.buttons & combo) == combo;
     const double now = GetTickCount64() / 1000.0;
     if (!both) {
         since = 0;

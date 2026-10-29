@@ -38,8 +38,11 @@ void draw_notices() {
             dingosdk::reskate_release_build ? "ReSkate " + std::string(dingosdk::reskate_version) + " loaded"
                                             : std::string("ReSkate loaded (development build)"),
             "Press " + name(keys.menu) + " for the menu and " + name(keys.console) + " for the console." +
+                // The mod's own name and its version as players read them ("Animator Studio 1.0.10"): what follows a '+' in
+                // the version is build metadata ("+reskate.2.1.2"), kept in crash reports and the log, not shown here.
                 (dingosdk::reskate_modified_build
-                    ? " Modified build: " + std::string(dingosdk::reskate_mod_id) + " " + std::string(dingosdk::reskate_mod_version) +
+                    ? " Modified build: " + std::string(dingosdk::reskate_mod_name) + " " +
+                          std::string(dingosdk::reskate_mod_version.substr(0, dingosdk::reskate_mod_version.find('+'))) +
                           ". If the game crashes, the report says so."
                     : std::string()));
     }

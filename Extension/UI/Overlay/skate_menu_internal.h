@@ -127,6 +127,8 @@ void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);
 void developer_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Music/music_page.cpp
 void music_page(SkateMenu&, const Model&, const CallbacksV3&);
+// ADDONS > ANIMATOR STUDIO: its in-game settings, with the studio closed, and a way into it (skate_menu_animator_studio.cpp).
+void animator_studio_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Trainer/trainer_page.cpp: the SANDBOX page (once the Trainer).
 void trainer_page(SkateMenu&, const Model&, const CallbacksV3&);
 bool trainer_page_wanted();
@@ -143,6 +145,9 @@ void set_time_of_day(SkateMenu&, const Model&, const CallbacksV3&, int next, boo
 // The PLUGINS section (plugins_page.cpp): the plugins with a page, as last published (held for the
 // frame); the one the menu shows (the first when its choice is gone; nullptr for none); and its page.
 std::shared_ptr<const std::vector<plugin_ui::PageEntry>> plugin_pages();
+// What menu.plugin_page holds while the PLUGIN MANAGER, the first entry of PLUGINS, is shown: no mod id can start with this.
+inline constexpr const char* plugin_manager_entry = "" "plugin-manager";
+// The plugin page shown, or null while that is the PLUGIN MANAGER (also when the page chosen is gone).
 const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu);
 void plugins_page(SkateMenu& menu);
 // The fullscreen menu's first page: a tile for each part of the menu (skate_menu_addons.cpp).
@@ -158,6 +163,6 @@ enum Page {
     page_home, page_map, page_build, page_skater, page_sandbox, page_addons, page_plugins, page_online, page_progress, page_mods,
     page_settings, page_developer, page_count
 };
-enum Addon { addon_all, addon_music, addon_count, addon_first = addon_music };
+enum Addon { addon_all, addon_music, addon_animator_studio, addon_count, addon_first = addon_music };
 void open_page(SkateMenu&, int page, int addon = -1);
 }
