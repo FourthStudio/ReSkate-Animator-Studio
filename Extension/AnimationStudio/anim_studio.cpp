@@ -862,6 +862,8 @@ std::filesystem::path library_folder() {
 // The studio's settings, kept beside the animations in ReSkate.Tricks so they survive a restart. It is not an
 // animation: the library listings pass over it.
 constexpr const wchar_t* settings_file = L"studio-settings.json";
+// The grind rail's note of where it stands (rail_tick), beside the settings: like them, never read as a trick.
+constexpr const wchar_t* rail_records_file = L"studio-rail.json";
 // The state's own values are kept for a key the file does not have.
 SettingsFile settings_file_of(const State& s) {
     SettingsFile f;
@@ -1296,7 +1298,8 @@ std::vector<std::filesystem::path> saved_jsons(const std::filesystem::path& fold
     std::vector<std::filesystem::path> out, loose;
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
-        if (entry.is_regular_file(error) && entry.path().extension() == L".json" && entry.path().filename() != settings_file)
+        if (entry.is_regular_file(error) && entry.path().extension() == L".json" && entry.path().filename() != settings_file &&
+            entry.path().filename() != rail_records_file)
             loose.push_back(entry.path());
         else if (entry.is_directory(error) && !reserved_name(entry.path().filename().string())) {
             auto own = entry.path() / entry.path().filename();
@@ -6307,7 +6310,7 @@ struct RailPlaced {
     float top{};
     std::string leftovers_map, said;
 };
-std::filesystem::path rail_file() { return library_folder() / L"studio-rail.json"; }
+std::filesystem::path rail_file() { return library_folder() / rail_records_file; }
 // studio-rail.json: the rails standing now, one a map ({map, id, item, at}), so one left by a game that ended with the
 // studio open is taken away when its map is back.
 Json rail_records() {
