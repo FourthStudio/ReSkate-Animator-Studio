@@ -5205,14 +5205,18 @@ constexpr Vec3 down{0.5408f, 0.8412f, 0}, forward{0.8412f, -0.5408f, 0};
 constexpr float ankle_over_sole = 0.085f;
 constexpr float top = 0.019f, tip = 0.40f, half = 0.105f, kick_from = 0.29f, kick_rise = 0.045f, round_from = 0.30f;
 constexpr float shin_radius = 0.045f, deepest = 0.12f; // deeper than that the leg is under the board, not in it
+// The field round the shoe: its rubber and outline past the sole's points (chunky skate shoes), and how far clear a shoe
+// that was in is put. Any shoe in the deck at all (deeper than the game's own pose has it) goes out and a little over.
+constexpr float sole_skin = 0.005f, clear_by = 0.004f;
 Vec3 shoe(float ahead, float side, float over_sole) noexcept {
     const float d = ankle_over_sole - over_sole;
     return {down[0] * d + forward[0] * ahead, down[1] * d + forward[1] * ahead, side};
 }
-const std::array<Vec3, 9>& sole() noexcept {
-    static const std::array<Vec3, 9> points{shoe(-0.065f, 0.035f, 0), shoe(-0.065f, -0.035f, 0), shoe(0.015f, 0.045f, 0), shoe(0.015f, -0.045f, 0),
-                                            shoe(0.094f, 0.05f, 0), shoe(0.094f, -0.05f, 0), shoe(0.165f, 0.03f, 0.008f),
-                                            shoe(0.165f, -0.03f, 0.008f), shoe(0.175f, 0, 0.012f)};
+const std::array<Vec3, 11>& sole() noexcept {
+    static const std::array<Vec3, 11> points{shoe(-0.07f, 0.035f, 0),        shoe(-0.07f, -0.035f, 0),       shoe(0.015f, 0.048f, 0),
+                                             shoe(0.015f, -0.048f, 0),       shoe(0.094f, 0.055f, 0),        shoe(0.094f, -0.055f, 0),
+                                             shoe(0.165f, 0.035f, 0.008f),   shoe(0.165f, -0.035f, 0.008f),  shoe(0.19f, 0.018f, 0.014f),
+                                             shoe(0.19f, -0.018f, 0.014f),   shoe(-0.075f, 0, 0.004f)};
     return points;
 }
 float deck_top(float along) noexcept {
@@ -5258,7 +5262,7 @@ Push leg_in_deck(std::span<const Joint> pose, const Joint& board, std::uint16_t 
     };
     const auto f = world(pose, foot);
     for (const auto& point : sole())
-        if (const auto push = into(on_board(f, point), 0); push.depth > worst.depth) worst = push;
+        if (const auto push = into(on_board(f, point), sole_skin); push.depth > worst.depth) worst = push;
     const auto k = world(pose, knee);
     for (const float along : {0.14f, 0.24f, 0.34f})
         if (const auto push = into(on_board(k, Vec3{along, 0, 0}), shin_radius); push.depth > worst.depth) worst = push;
@@ -5278,13 +5282,14 @@ void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint
         for (const auto& [foot, knee] : {std::pair<std::uint16_t, std::uint16_t>{left_foot_joint, 342}, std::pair<std::uint16_t, std::uint16_t>{right_foot_joint, 9}}) {
             // As deep as the game's own pose has it in its own board is the game's: only what is deeper is ours to move.
             const float own = games_ok ? deck_guard::leg_in_deck(native, games, foot, knee).depth : 0.0f;
-            for (int pass = 0; pass < 2; ++pass) {
+            // A few goes: the leg bends to reach, and a push out of one side can leave another point in.
+            for (int pass = 0; pass < 4; ++pass) {
                 const auto push = deck_guard::leg_in_deck(edited, drawn_board, foot, knee);
-                const float excess = push.depth - std::max(own, 0.005f);
-                if (!(excess > 0)) break;
+                const float excess = push.depth - std::max(own, deck_guard::sole_skin);
+                if (!(excess > 0.0005f)) break;
                 const auto way = rotate(drawn_board.rotation, push.way);
                 const auto at = world(edited, foot);
-                const float by = excess + 0.003f;
+                const float by = excess + deck_guard::clear_by;
                 place_foot(edited, foot, Vec3{at.position[0] + way[0] * by, at.position[1] + way[1] * by, at.position[2] + way[2] * by}, &at.rotation, 1.0f);
             }
         }
