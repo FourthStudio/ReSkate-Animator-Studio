@@ -389,6 +389,23 @@ Joint mirror_pose(const Joint& joint) noexcept;
 // additive on it - the back, neck and head turned to look the way he rolls): `layer`, each joint's turn after its own
 // (identity where it does not reach), as the game's clips stand (goofy); `mirrored` for a pose standing the other way.
 void apply_fakie_layer(std::span<Joint> pose, std::span<const Quat> layer, bool mirrored) noexcept;
+// FAKIE (2026-10-29, after the game's fakie layer): a trick set to fakie or switch fakie stands with its upper body - the
+// lower back and all of the body above it - mirrored across his own middle (the plane across the hips, between the
+// thighs), the hips and legs as they are, so the arm that led towards the nose leads towards the tail. Measured on the
+// game's own riding poses (normal, slow, fast, pump against their fakie poses) it halves how far the plain pose is from
+// the game's fakie one, and it carries the arms, which the game's layer (made for one riding pose) did not. Mirroring
+// twice gives the pose back. Only on a trick made on one of the game's clips (fakie_mirrored): a recording made riding
+// fakie already stands so.
+bool upper_body_joint(std::uint16_t joint) noexcept;
+void mirror_upper_body(std::span<Joint> pose) noexcept;
+// `pose`'s upper body turned to `to`'s, `share` of the way (each limb as far as `limbs` gives it): in game, the trick's
+// mirrored upper body in place of the game's own fakie one.
+void match_upper_body(std::span<Joint> pose, std::span<const Joint> to, float share, const LimbWeights* limbs = nullptr) noexcept;
+// The keys on the upper body moved to the other side as mirror_upper_body mirrors the pose (a trick turned fakie, or
+// back): each one to its joint's opposite number, reflected. The pose under them mirrored and these on it come to the
+// mirror of the pose with the keys on it.
+void mirror_upper_keys(Animation& animation) noexcept;
+bool fakie_mirrored(const Animation& animation) noexcept; // set to fakie or switch fakie, on one of the game's clips
 // The board under the game's mirror: not turned end for end, its offset across reflected.
 Joint mirror_board_pose(const Joint& board) noexcept;
 // A board key (in the board's own frame) under the game's mirror: across is what reflects.

@@ -1995,6 +1995,92 @@ void fakie_layer_goes_on_as_the_game_plays_it() {
     check(same(other[mirror_joint[47]].rotation, mirror_rotation(layer[47])) && same(other[47].rotation, Quat{0, 0, 0, 1}),
           "Standing the other way round, it goes on the other arm, reflected");
 }
+// FAKIE (2026-10-29): a trick set to fakie stands with its upper body mirrored across the plane between the thighs, the
+// hips and legs as they are; twice is the pose back; the keys mirrored with it come to the mirror of the keyed pose; a file
+// saved before has its upper body's keys mirrored once as it is read.
+void fakie_mirrors_the_upper_body() {
+    std::mt19937 random(7);
+    std::uniform_real_distribution<float> spread(-1, 1);
+    const auto any_turn = [&] { return normalised(Quat{spread(random), spread(random), spread(random), 1.5f + spread(random)}); };
+    // A skeleton as wide on both sides (a pair's bones mirror each other), turned every which way.
+    std::vector<Joint> pose(skeleton_joints);
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        const auto other = mirror_joint[j];
+        if (other < j) continue;
+        Vec3 bone{0.05f + 0.1f * std::abs(spread(random)), 0.1f * spread(random), other == j ? 0.0f : 0.04f + 0.08f * std::abs(spread(random))};
+        pose[j].position = bone;
+        pose[other].position = mirror_vector(bone);
+        pose[j].rotation = any_turn();
+        pose[other].rotation = any_turn();
+    }
+    const auto same_turn = [](const Quat& a, const Quat& b) { return std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) > 1 - 1e-5f; };
+    const auto same_place = [](const Vec3& a, const Vec3& b) { return std::abs(a[0] - b[0]) + std::abs(a[1] - b[1]) + std::abs(a[2] - b[2]) < 1e-4f; };
+    auto once = pose;
+    mirror_upper_body(once);
+    bool legs_kept = true, upper_moved = false;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        if (upper_body_joint(j)) upper_moved = upper_moved || !same_turn(once[j].rotation, pose[j].rotation);
+        else legs_kept = legs_kept && same_turn(once[j].rotation, pose[j].rotation) && same_place(once[j].position, pose[j].position);
+    }
+    check(upper_moved && legs_kept, "Fakie mirrors the upper body and leaves the hips and legs as they are");
+    // Each hand goes where the other was, reflected across the plane between the thighs through the lower back.
+    const auto hips = world(pose, hips_joint);
+    auto across = rotate(hips.rotation, Vec3{pose[8].position[0] - pose[341].position[0], pose[8].position[1] - pose[341].position[1],
+                                             pose[8].position[2] - pose[341].position[2]});
+    const float n = std::sqrt(across[0] * across[0] + across[1] * across[1] + across[2] * across[2]);
+    for (auto& c : across) c /= n;
+    const auto back = world(pose, 42).position;
+    const auto reflect = [&](const Vec3& p) {
+        const Vec3 d{p[0] - back[0], p[1] - back[1], p[2] - back[2]};
+        const float along = d[0] * across[0] + d[1] * across[1] + d[2] * across[2];
+        return Vec3{back[0] + d[0] - 2 * along * across[0], back[1] + d[1] - 2 * along * across[1], back[2] + d[2] - 2 * along * across[2]};
+    };
+    check(same_place(world(once, right_hand_joint).position, reflect(world(pose, left_hand_joint).position)) &&
+              same_place(world(once, left_hand_joint).position, reflect(world(pose, right_hand_joint).position)),
+          "and the right hand goes where the left was, reflected across his middle, and back");
+    auto twice = once;
+    mirror_upper_body(twice);
+    bool back_again = true;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j)
+        back_again = back_again && same_turn(twice[j].rotation, pose[j].rotation) && same_place(twice[j].position, pose[j].position);
+    check(back_again, "Mirrored twice, it is the pose it was");
+    // The keys mirrored on the mirrored pose: the keyed pose mirrored.
+    Animation keyed;
+    for (const std::uint16_t joint : {std::uint16_t{42}, std::uint16_t{right_hand_joint}, std::uint16_t{276}}) {
+        Track track{joint, {}, false, false};
+        Key key;
+        key.rotation = any_turn();
+        track.keys.push_back(key);
+        keyed.tracks.push_back(track);
+    }
+    auto with_keys = pose;
+    apply_edits(keyed, 0, with_keys);
+    mirror_upper_body(with_keys);
+    auto mirrored_keys = keyed;
+    mirror_upper_keys(mirrored_keys);
+    auto keys_on_mirror = pose;
+    mirror_upper_body(keys_on_mirror);
+    apply_edits(mirrored_keys, 0, keys_on_mirror);
+    bool same = true;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) same = same && same_turn(world(with_keys, j).rotation, world(keys_on_mirror, j).rotation);
+    check(same, "Its keys mirrored with it on the mirrored pose come to the keyed pose mirrored");
+    check(mirrored_keys.track(left_hand_joint) && !mirrored_keys.track(right_hand_joint) && mirrored_keys.track(42),
+          "A key on the right hand goes to the left one");
+    // A fakie trick saved before: its upper keys go to the other side once, as it is read; saved since, they stay.
+    Animation file;
+    file.fakie = true;
+    file.source.kind = "native_asset";
+    file.tracks.push_back(Track{right_hand_joint, {Key{}}, false, false});
+    auto text = to_json(file);
+    check(from_json(text).track(right_hand_joint) != nullptr, "A fakie trick saved since keeps its keys where they are");
+    text.replace(text.find("\"fakie_upper\""), 13, "\"fakie_upperx\"");
+    check(from_json(text).track(left_hand_joint) != nullptr && !from_json(text).track(right_hand_joint),
+          "and one saved before has them mirrored once, as it is read");
+    file.source.kind = "render_capture";
+    text = to_json(file);
+    text.replace(text.find("\"fakie_upper\""), 13, "\"fakie_upperx\"");
+    check(from_json(text).track(right_hand_joint) != nullptr, "A recording made riding fakie is left as it is");
+}
 void smooth_transitions_contracts() {
     const auto about_x = [](float degrees) {
         const float h = degrees * 3.14159265f / 360;
@@ -2473,6 +2559,7 @@ int main(int argc, char** argv) {
         keys_can_be_dragged_in_time();
         smooth_transitions_contracts();
         fakie_layer_goes_on_as_the_game_plays_it();
+        fakie_mirrors_the_upper_body();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
         profiles_read_back_and_bad_ones_are_refused();

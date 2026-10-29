@@ -999,6 +999,7 @@ std::string to_json(const Animation& animation) {
     if (animation.catch_at) root["catch"] = *animation.catch_at;
     if (animation.crossfade) root["crossfade"] = *animation.crossfade;
     if (animation.catch_hold) root["catch_hold"] = *animation.catch_hold;
+    root["fakie_upper"] = "mirrored"; // its keys are as a trick set to fakie mirrors its upper body (from_json)
     root["start"] = animation.start;
     root["end"] = animation.end;
     root["duration"] = animation.clip.duration();
@@ -1150,6 +1151,10 @@ Animation from_json(std::string_view text) {
     // A piece of the game's own animation (a grind's loop, a grab's hold) is known by the clip it came from: one
     // saved before pieces were given that name gets it here, so it plays in game like one saved since.
     if (result.trick.empty() && result.source.kind == "native_asset" && !result.source.asset.empty()) result.trick = "native:" + result.source.asset;
+    // A trick set to fakie saved before its upper body was mirrored (mirror_upper_body, 2026-10-29): its upper body's keys
+    // were made over the game's fakie layer, which left the arms as they were, or copied from the trick in its own stance.
+    // They go to the other side here, so it shows as the mirror of what it was, the arms too. Saved with the mark since.
+    if (fakie_mirrored(result) && root.value("fakie_upper", "") != "mirrored") mirror_upper_keys(result);
     return result;
 }
 
@@ -1626,6 +1631,80 @@ Animation mirror_animation(const Animation& animation) {
         }
     }
     return out;
+}
+// ---- fakie: the upper body mirrored ---------------------------------------------------------------
+namespace {
+constexpr std::uint16_t lower_back_joint = 42, right_thigh_joint = 8, left_thigh_joint = 341;
+const std::array<bool, skeleton_joints>& upper_body() noexcept {
+    static const auto table = [] {
+        std::array<bool, skeleton_joints> upper{};
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+            if (!gameplay_body_joint(j)) continue;
+            for (int at = j; at >= 0; at = parent(static_cast<std::uint16_t>(at)))
+                if (at == lower_back_joint) {
+                    upper[j] = true;
+                    break;
+                }
+        }
+        return upper;
+    }();
+    return table;
+}
+} // namespace
+bool upper_body_joint(std::uint16_t joint) noexcept { return joint < skeleton_joints && upper_body()[joint]; }
+void mirror_upper_body(std::span<Joint> pose) noexcept {
+    if (pose.size() < skeleton_joints) return;
+    const auto& upper = upper_body();
+    // His middle: the plane across the hips with the line between the thighs (both hang off the hips) as its normal,
+    // in the placement's frame, where mirror_rotation reflects across Z = 0.
+    const auto place = world(pose, placement_joint), hips = world(pose, hips_joint);
+    const Vec3 between{pose[right_thigh_joint].position[0] - pose[left_thigh_joint].position[0],
+                       pose[right_thigh_joint].position[1] - pose[left_thigh_joint].position[1],
+                       pose[right_thigh_joint].position[2] - pose[left_thigh_joint].position[2]};
+    auto across = rotate(conjugate(place.rotation), rotate(hips.rotation, between));
+    const float length = std::sqrt(across[0] * across[0] + across[1] * across[1] + across[2] * across[2]);
+    if (!(length > 1e-4f) || !std::isfinite(length)) return;
+    for (auto& c : across) c /= length;
+    // Reflected across that plane is reflected across Z = 0 (mirror_rotation) and then turned: two reflections make a
+    // turn, across * z as quaternions (a pure quaternion each).
+    const Quat turn = normalised(Quat{across[1], -across[0], 0, -across[2]});
+    const std::vector<Joint> before(pose.begin(), pose.begin() + skeleton_joints);
+    // The lower back hangs off the hips, which stay: its turn in the placement's frame reflected, against the hips.
+    const auto back = world(before, lower_back_joint);
+    const Quat in_place = multiply(conjugate(place.rotation), back.rotation);
+    const Quat reflected = normalised(multiply(place.rotation, multiply(turn, mirror_rotation(in_place))));
+    pose[lower_back_joint].rotation = normalised(multiply(conjugate(hips.rotation), reflected));
+    // Above it each joint takes its opposite number's pose, reflected: between a joint and its parent the turn drops out.
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        if (!upper[j] || j == lower_back_joint) continue;
+        const auto other = mirror_joint[j];
+        if (other >= skeleton_joints || !upper[other]) continue;
+        pose[j].rotation = mirror_rotation(before[other].rotation);
+        pose[j].position = mirror_vector(before[other].position);
+    }
+}
+void match_upper_body(std::span<Joint> pose, std::span<const Joint> to, float share, const LimbWeights* limbs) noexcept {
+    if (!(share > 0) || pose.size() < skeleton_joints || to.size() < skeleton_joints) return;
+    share = std::min(share, 1.0f);
+    const auto& upper = upper_body();
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        if (!upper[j]) continue;
+        const float k = limbs ? share * std::clamp(limbs->of(j), 0.0f, 1.0f) : share;
+        if (k > 0) pose[j].rotation = slerp(pose[j].rotation, to[j].rotation, k);
+    }
+}
+void mirror_upper_keys(Animation& animation) noexcept {
+    for (auto& track : animation.tracks) {
+        if (!upper_body_joint(track.joint) || !upper_body_joint(mirror_joint[track.joint])) continue;
+        track.joint = mirror_joint[track.joint];
+        for (auto& key : track.keys) {
+            key.rotation = mirror_rotation(key.rotation);
+            key.offset = mirror_vector(key.offset);
+        }
+    }
+}
+bool fakie_mirrored(const Animation& animation) noexcept {
+    return animation.fakie.value_or(false) && animation.source.kind == "native_asset";
 }
 } // namespace dingosdk::anim_studio
 

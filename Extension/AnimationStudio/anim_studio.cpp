@@ -222,7 +222,6 @@ constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
-    std::shared_ptr<const std::vector<Quat>> fakie_layer; // the game's fakie layer (fakie_layer_of), on a fakie trick
     std::shared_ptr<const Animation> edits; // tracks only; its clip is empty
     float time{};
     // A trick looked at (peek_game_trick): shown instead of the open one while it is set, played from peek_since.
@@ -267,10 +266,6 @@ struct State {
     // The casual stance shown until a trick is picked: the end of the game's mid ollie, standing on the board.
     std::shared_ptr<const Clip> idle_clip;
     bool idle_read{};
-    // The game's fakie layer, read once the studio opens (fakie_layer_of): the studio shows a trick set to fakie with it,
-    // as the game plays one riding fakie, and keys it over it.
-    std::shared_ptr<const std::vector<Quat>> fakie_layer;
-    bool fakie_layer_read{};
     Animation edits;
     std::string saved_as; // the library name it was loaded from or saved to
     bool dirty{};
@@ -1499,7 +1494,6 @@ void read_library_locked(State& s) {
 
 } // namespace
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
-std::shared_ptr<const std::vector<Quat>> fakie_layer_of();   // the game's fakie layer, below
 std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, const Clip& clip, const std::string& pop); // below
 namespace {
 float find_catch(const Clip& clip, const Animation& edits); // below
@@ -2003,7 +1997,6 @@ void publish_locked(State& s, bool edits_changed = true) {
     auto snap = std::make_shared<Snapshot>();
     snap->clip = s.clip;
     snap->idle = s.idle_clip;
-    snap->fakie_layer = s.fakie_layer;
     snap->tricks = s.tricks;
     if (edits_changed || !s.published_edits) s.published_edits = std::make_shared<const Animation>(s.edits);
     snap->edits = s.published_edits;
@@ -3643,9 +3636,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.pose[i].rotation = normalised(multiply(turn, l.pose[i].rotation));
                 }
             }
-            // A trick set to fakie stands as the game plays it riding fakie: its fakie layer on (editor_base).
-            if (has_trick && shown_edits.fakie.value_or(false) && snap->fakie_layer)
-                apply_fakie_layer(l.pose, *snap->fakie_layer, !clip_leads_right(*shown).value_or(authored_goofy(shown_edits)));
+            // A trick set to fakie or switch fakie stands with its upper body mirrored (editor_base), as it plays in game.
+            if (has_trick && fakie_mirrored(shown_edits)) mirror_upper_body(l.pose);
             apply_edits(shown_edits, shown_time, l.pose);
             if (snap->limits) limit_keyed_joints(shown_edits, shown_time, l.pose);
             // Standing him the other way round: his body is reflected across its own middle, so the foot
@@ -4632,6 +4624,22 @@ void hide_in_room(std::uintptr_t animation_interface, bool skater) noexcept {
 // for that moment: the recording with its keys, mirrored the game's way when played mirrored, keyed joints in
 // their limits. The drawn pose is read back from the skater's buffer after the board is drawn, so nothing the
 // game does after our write can hide. One line per trick in ReSkate.Tricks/research/playback-verify.txt.
+// FAKIE in game: a trick set to fakie or switch fakie stands on its clip with the upper body mirrored, as the studio shows
+// it (mirror_upper_body): the game's own fakie upper body under it gives way to that, as far as the trick is on, and the
+// keys go on it. Returns the studio's pose at `t`, mirrored the same way, when there is one: made for the mirror, or
+// asked for to match (`match`).
+std::vector<Joint> fakie_upper_base(const GameplayPacket& p, float t, float weight, std::span<Joint> pose, bool match) {
+    std::vector<Joint> studio;
+    if (!p.clip || p.clip->joints != skeleton_joints || !p.edits) return studio;
+    const bool fakie = fakie_mirrored(*p.edits);
+    if (!fakie && !match) return studio;
+    studio = studio_pose(*p.clip, t, p.mirrored);
+    if (fakie) {
+        mirror_upper_body(studio);
+        match_upper_body(pose, studio, weight, &p.limbs);
+    }
+    return studio;
+}
 namespace playback_verify {
 bool on() {
     static const bool enabled = [] {
@@ -4696,7 +4704,8 @@ void stash(const GameplayPacket& packet, std::uint64_t presentation, const std::
     std::lock_guard lock(mutex);
     if (totals.frames && (totals.episode != packet.episode || now - totals.last_at > 0.3)) flush_locked();
     if (packet.weight < 0.98f) return;
-    const auto studio = studio_pose(*packet.clip, packet.time, packet.mirrored);
+    auto studio = studio_pose(*packet.clip, packet.time, packet.mirrored);
+    if (fakie_mirrored(*packet.edits)) mirror_upper_body(studio);
     auto pose = native;
     for (std::uint16_t j = 0; j < skeleton_joints; ++j)
         if (gameplay_body_joint(j) && editable(j)) pose[j] = studio[j];
@@ -4870,8 +4879,7 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
         float t = out.time + static_cast<float>(std::max(0.0, now - out.at));
         if (out.clip) t = std::min(t, out.clip->duration());
         std::vector<Joint> leaving(native.begin(), native.end());
-        std::vector<Joint> studio;
-        if (out.match > 0 && out.clip && out.clip->joints == skeleton_joints) studio = studio_pose(*out.clip, t, out.mirrored);
+        const auto studio = fakie_upper_base(out, t, out.weight, leaving, out.match > 0);
         apply_authored_edit_layer(*out.edits, t, leaving, out.weight, &out.limbs, studio, out.match, out.match_rest);
         if (out.limits) limit_keyed_joints(*out.edits, t, leaving);
         auto left = pose_edit_deltas(native, leaving);
@@ -4949,9 +4957,8 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
         else playback_verify::idle(now_seconds());
         auto edited = native;
         if (packet) {
-            std::vector<Joint> studio;
-            if (packet->match > 0 && packet->clip && packet->clip->joints == skeleton_joints)
-                studio = studio_pose(*packet->clip, packet->time, packet->mirrored);
+            // A trick set to fakie or switch fakie: its upper body mirrored in first (fakie_upper_base).
+            const auto studio = fakie_upper_base(*packet, packet->time, packet->weight, edited, packet->match > 0);
             apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs, studio, packet->match,
                                       packet->match_rest);
             if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
@@ -5963,18 +5970,6 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
                 logging::log(Level::warning, Channel::skater, "Animation Studio: no casual stance: {}", e.what());
             }
         }
-        bool read_fakie{};
-        {
-            std::lock_guard lock(s.mutex);
-            read_fakie = !s.fakie_layer_read;
-            s.fakie_layer_read = true;
-        }
-        if (read_fakie)
-            if (auto layer = fakie_layer_of()) {
-                std::lock_guard lock(s.mutex);
-                s.fakie_layer = std::move(layer);
-                publish_locked(s);
-            }
     }
     static bool installed = false;
     if (needs_listener && !installed && base) {
@@ -6567,12 +6562,11 @@ std::vector<std::uint16_t> solo_children(const State& s, std::uint16_t joint) {
     }
     return children;
 }
-// What the editor keys a trick over: its clip, and on a trick set to fakie the game's fakie layer, as the game plays it
-// riding fakie (keyed over the plain clip, a hand dragged to a place landed elsewhere once the layer turned the body).
+// What the editor keys a trick over: its clip, and on a trick set to fakie or switch fakie with its upper body mirrored
+// (mirror_upper_body), as it plays in game (keyed over the plain clip, a hand dragged to a place landed elsewhere).
 void editor_base(const State& s, float at, std::vector<Joint>& pose) {
     s.clip->sample(at, pose);
-    if (s.edits.fakie.value_or(false) && s.fakie_layer)
-        apply_fakie_layer(pose, *s.fakie_layer, !clip_leads_right(*s.clip).value_or(authored_goofy(s.edits)));
+    if (fakie_mirrored(s.edits)) mirror_upper_body(pose);
 }
 // The way each of those joints faces in the world, with the edits as they stand.
 std::vector<Quat> facing_of(const State& s, std::span<const std::uint16_t> children) {
@@ -6796,7 +6790,11 @@ void set_trick_stance(int version) {
     const auto lead = s.edits.keep_leads_right ? s.edits.keep_leads_right : clip_leads_right(*s.clip);
     if (s.edits.keep_leads_right && lead && *lead == want_right && s.edits.fakie.value_or(false) == want_fakie) return;
     s.edits.keep_leads_right = want_right;
+    // Into fakie or out of it, the upper body's keys go to the other side with the pose under them (mirror_upper_body), so
+    // what was made shows mirrored, the arms too.
+    const bool was_mirrored = fakie_mirrored(s.edits);
     s.edits.fakie = want_fakie;
+    if (fakie_mirrored(s.edits) != was_mirrored) mirror_upper_keys(s.edits);
     s.edits.switch_stance = authored_goofy(s.edits) != want_right; // its label (set again from the clip if it is mirrored)
     static constexpr std::array<const char*, 4> said{"your own stance", "fakie", "switch", "switch fakie"};
     static constexpr std::array<const char*, 4> ride{"normal", "fakie", "switch", "switch fakie"};
@@ -7484,7 +7482,11 @@ bool make_stance_version(const std::string& animation, int version, std::string&
             anim.clip = timing;
         }
         anim.switch_stance = authored_goofy(anim) != want_right;
+        // Made fakie from a trick that is not (or back), its upper body's keys go to the other side with the pose under
+        // them (mirror_upper_body): the copy is the trick's mirror from the waist up, the arms too.
+        const bool was_mirrored = fakie_mirrored(anim);
         anim.fakie = want_fakie;
+        if (fakie_mirrored(anim) != was_mirrored) mirror_upper_keys(anim);
         anim.keep_leads_right = want_right;
         // "Kickflip mid" makes "Kickflip mid switch"; a version of a version is named from the trick itself.
         static constexpr std::array<const char*, 4> suffix{" normal", " fakie", " switch", " switch fakie"};
@@ -9333,31 +9335,6 @@ float opening_time(const Clip& clip) noexcept {
 // fakie riding pose over its regular one (every joint, 0.0 degrees, 2026-10-29), on the upper body only - the lower
 // back and all above it (the trick layer is masked so), each joint's turn after its own. None when the library has
 // not got it yet.
-std::shared_ptr<const std::vector<Quat>> fakie_layer_of() {
-    try {
-        const auto tricks = game_tricks();
-        const auto found = std::find_if(tricks->begin(), tricks->end(), [](const GameTrick& t) {
-            return t.asset == "animation/dingo/c_proto_onb_idle_rolling_regular_to_fakie_pose_addi";
-        });
-        if (found == tricks->end()) return {};
-        const auto clip = read_game_clip(*found);
-        if (!clip || clip->empty() || clip->joints != skeleton_joints) return {};
-        const auto frame = clip->frame(0);
-        auto layer = std::make_shared<std::vector<Quat>>(skeleton_joints, Quat{0, 0, 0, 1});
-        constexpr std::uint16_t lower_back = 42;
-        for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
-            bool upper = false;
-            for (std::int16_t at = static_cast<std::int16_t>(j); at >= 0; at = parent(static_cast<std::uint16_t>(at)))
-                if (at == lower_back) { upper = true; break; }
-            if (upper && j < frame.size()) (*layer)[j] = normalised(frame[j].rotation);
-        }
-        logging::log(Level::info, Channel::skater, "Animation Studio: the game's fakie layer is read: a trick set to fakie shows as the game plays it.");
-        return layer;
-    } catch (const std::exception& e) {
-        logging::log(Level::warning, Channel::skater, "Animation Studio: no fakie layer: {}", e.what());
-        return {};
-    }
-}
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     if (!safe_library_clip(trick.file)) throw std::runtime_error("invalid local library clip name");
     if (trick.position_codec != "native-piec-v1-extent")
