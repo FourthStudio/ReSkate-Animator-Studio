@@ -1304,6 +1304,15 @@ namespace dingosdk::anim_studio {
 // the same as reflecting the whole skeleton, as the left/right table keeps the hierarchy.
 Quat mirror_rotation(const Quat& q) noexcept { return {-q[0], -q[1], q[2], q[3]}; }
 Vec3 mirror_vector(const Vec3& v) noexcept { return {v[0], v[1], -v[2]}; }
+void apply_fakie_layer(std::span<Joint> pose, std::span<const Quat> layer, bool mirrored) noexcept {
+    for (std::size_t j = 0; j < skeleton_joints && j < layer.size(); ++j) {
+        const auto& turn = layer[j];
+        if (turn == Quat{0, 0, 0, 1}) continue;
+        const std::size_t at = mirrored ? mirror_joint[j] : j;
+        if (at >= pose.size()) continue;
+        pose[at].rotation = normalised(multiply(pose[at].rotation, mirrored ? mirror_rotation(turn) : turn));
+    }
+}
 Joint mirror_pose(const Joint& joint) noexcept {
     Joint out = joint;
     out.rotation = mirror_rotation(joint.rotation);

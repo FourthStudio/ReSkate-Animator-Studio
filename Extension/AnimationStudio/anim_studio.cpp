@@ -221,6 +221,7 @@ constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
+    std::shared_ptr<const std::vector<Quat>> fakie_layer; // the game's fakie layer (fakie_layer_of), on a fakie trick
     std::shared_ptr<const Animation> edits; // tracks only; its clip is empty
     float time{};
     // A trick looked at (peek_game_trick): shown instead of the open one while it is set, played from peek_since.
@@ -265,6 +266,10 @@ struct State {
     // The casual stance shown until a trick is picked: the end of the game's mid ollie, standing on the board.
     std::shared_ptr<const Clip> idle_clip;
     bool idle_read{};
+    // The game's fakie layer, read once the studio opens (fakie_layer_of): the studio shows a trick set to fakie with it,
+    // as the game plays one riding fakie, and keys it over it.
+    std::shared_ptr<const std::vector<Quat>> fakie_layer;
+    bool fakie_layer_read{};
     Animation edits;
     std::string saved_as; // the library name it was loaded from or saved to
     bool dirty{};
@@ -1471,6 +1476,7 @@ void read_library_locked(State& s) {
 
 } // namespace
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
+std::shared_ptr<const std::vector<Quat>> fakie_layer_of();   // the game's fakie layer, below
 std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, const Clip& clip, const std::string& pop); // below
 namespace {
 float find_catch(const Clip& clip, const Animation& edits); // below
@@ -1974,6 +1980,7 @@ void publish_locked(State& s, bool edits_changed = true) {
     auto snap = std::make_shared<Snapshot>();
     snap->clip = s.clip;
     snap->idle = s.idle_clip;
+    snap->fakie_layer = s.fakie_layer;
     snap->tricks = s.tricks;
     if (edits_changed || !s.published_edits) s.published_edits = std::make_shared<const Animation>(s.edits);
     snap->edits = s.published_edits;
@@ -3587,6 +3594,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.pose[i].rotation = normalised(multiply(turn, l.pose[i].rotation));
                 }
             }
+            // A trick set to fakie stands as the game plays it riding fakie: its fakie layer on (editor_base).
+            if (has_trick && shown_edits.fakie.value_or(false) && snap->fakie_layer)
+                apply_fakie_layer(l.pose, *snap->fakie_layer, !clip_leads_right(*shown).value_or(authored_goofy(shown_edits)));
             apply_edits(shown_edits, shown_time, l.pose);
             if (snap->limits) limit_keyed_joints(shown_edits, shown_time, l.pose);
             // Standing him the other way round: his body is reflected across its own middle, so the foot
@@ -5693,6 +5703,18 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
                 logging::log(Level::warning, Channel::skater, "Animation Studio: no casual stance: {}", e.what());
             }
         }
+        bool read_fakie{};
+        {
+            std::lock_guard lock(s.mutex);
+            read_fakie = !s.fakie_layer_read;
+            s.fakie_layer_read = true;
+        }
+        if (read_fakie)
+            if (auto layer = fakie_layer_of()) {
+                std::lock_guard lock(s.mutex);
+                s.fakie_layer = std::move(layer);
+                publish_locked(s);
+            }
     }
     static bool installed = false;
     if (needs_listener && !installed && base) {
@@ -6285,11 +6307,18 @@ std::vector<std::uint16_t> solo_children(const State& s, std::uint16_t joint) {
     }
     return children;
 }
+// What the editor keys a trick over: its clip, and on a trick set to fakie the game's fakie layer, as the game plays it
+// riding fakie (keyed over the plain clip, a hand dragged to a place landed elsewhere once the layer turned the body).
+void editor_base(const State& s, float at, std::vector<Joint>& pose) {
+    s.clip->sample(at, pose);
+    if (s.edits.fakie.value_or(false) && s.fakie_layer)
+        apply_fakie_layer(pose, *s.fakie_layer, !clip_leads_right(*s.clip).value_or(authored_goofy(s.edits)));
+}
 // The way each of those joints faces in the world, with the edits as they stand.
 std::vector<Quat> facing_of(const State& s, std::span<const std::uint16_t> children) {
     const float at = key_time_locked(s);
     std::vector<Joint> pose(skeleton_joints);
-    s.clip->sample(at, pose);
+    editor_base(s, at, pose);
     apply_edits(s.edits, at, pose);
     std::vector<Quat> facing;
     facing.reserve(children.size());
@@ -6301,7 +6330,7 @@ std::vector<Quat> facing_of(const State& s, std::span<const std::uint16_t> child
 void hold_facing(State& s, std::span<const std::uint16_t> children, std::span<const Quat> before) {
     const float at = key_time_locked(s);
     std::vector<Joint> pose(skeleton_joints);
-    s.clip->sample(at, pose);
+    editor_base(s, at, pose);
     apply_edits(s.edits, at, pose);
     for (std::size_t i = 0; i < children.size() && i < before.size(); ++i) {
         const auto child = children[i];
@@ -6325,7 +6354,7 @@ void limit_key(State& s, std::uint16_t joint, float at) {
     const auto* t = s.edits.track(joint);
     if (!t || t->locked || t->keys.empty()) return;
     std::vector<Joint> native(s.clip->joints);
-    s.clip->sample(at, native);
+    editor_base(s, at, native);
     if (joint >= native.size()) return;
     auto key = evaluate(*t, at);
     const auto posed = normalised(multiply(native[joint].rotation, key.rotation));
@@ -6385,7 +6414,7 @@ Vec3 limb_position(std::uint16_t joint) {
     if (!s.clip || s.clip->empty() || !editable(joint)) return {};
     const float at = key_time_locked(s);
     std::vector<Joint> native(skeleton_joints);
-    s.clip->sample(at, native);
+    editor_base(s, at, native);
     std::vector<Joint> posed(native);
     apply_edits(s.edits, at, posed);
     const auto now = world(posed, joint).position, rest = world(native, joint).position;
@@ -6405,7 +6434,7 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
     if (!chain) return;
     const float at = key_time_locked(s);
     std::vector<Joint> native(skeleton_joints);
-    s.clip->sample(at, native);
+    editor_base(s, at, native);
     const auto rest = world(native, joint).position;
     const Vec3 target{rest[0] + offset[0], rest[1] + offset[1], rest[2] + offset[2]};
     try {
@@ -6566,7 +6595,7 @@ void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     }
     const float at = key_time_locked(s);
     std::vector<Joint> native(s.clip->joints);
-    s.clip->sample(at, native);
+    editor_base(s, at, native);
     // The target is in the view's frame (the joints' frame); the solver works in the clip's. Both frames have
     // the placement joint in them: a point is moved from the view's placement to the clip's.
     std::vector<Joint> posed(native);
@@ -8968,6 +8997,35 @@ float opening_time(const Clip& clip) noexcept {
     const float d = clip.duration();
     const float t = clip.takeoff >= 0 && clip.takeoff < d ? clip.takeoff : d * 0.25f;
     return std::round(t * 60) / 60;
+}
+// The game's fakie layer (GAME_STANCE_NOTES): its additive regular-to-fakie riding pose, which is exactly the game's
+// fakie riding pose over its regular one (every joint, 0.0 degrees, 2026-10-29), on the upper body only - the lower
+// back and all above it (the trick layer is masked so), each joint's turn after its own. None when the library has
+// not got it yet.
+std::shared_ptr<const std::vector<Quat>> fakie_layer_of() {
+    try {
+        const auto tricks = game_tricks();
+        const auto found = std::find_if(tricks->begin(), tricks->end(), [](const GameTrick& t) {
+            return t.asset == "animation/dingo/c_proto_onb_idle_rolling_regular_to_fakie_pose_addi";
+        });
+        if (found == tricks->end()) return {};
+        const auto clip = read_game_clip(*found);
+        if (!clip || clip->empty() || clip->joints != skeleton_joints) return {};
+        const auto frame = clip->frame(0);
+        auto layer = std::make_shared<std::vector<Quat>>(skeleton_joints, Quat{0, 0, 0, 1});
+        constexpr std::uint16_t lower_back = 42;
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+            bool upper = false;
+            for (std::int16_t at = static_cast<std::int16_t>(j); at >= 0; at = parent(static_cast<std::uint16_t>(at)))
+                if (at == lower_back) { upper = true; break; }
+            if (upper && j < frame.size()) (*layer)[j] = normalised(frame[j].rotation);
+        }
+        logging::log(Level::info, Channel::skater, "Animation Studio: the game's fakie layer is read: a trick set to fakie shows as the game plays it.");
+        return layer;
+    } catch (const std::exception& e) {
+        logging::log(Level::warning, Channel::skater, "Animation Studio: no fakie layer: {}", e.what());
+        return {};
+    }
 }
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     if (!safe_library_clip(trick.file)) throw std::runtime_error("invalid local library clip name");

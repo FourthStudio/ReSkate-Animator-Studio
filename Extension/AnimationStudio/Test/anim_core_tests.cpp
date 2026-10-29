@@ -1977,6 +1977,24 @@ void native_clips_pop_where_the_game_does() {
 }
 // SMOOTH transitions (2026-10-29): part of a flip past half a turn goes on round, a jump inside one trick is eased, and in
 // a handover the legs go over first, then the hips and arms, then the back and head.
+// The game's fakie layer goes on each joint it reaches, after its own turn; on a pose standing the other way it goes on
+// the other side, reflected (2026-10-29).
+void fakie_layer_goes_on_as_the_game_plays_it() {
+    const auto same = [](const Quat& a, const Quat& b) {
+        return std::abs(std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) - 1) < 1e-5f;
+    };
+    std::vector<Quat> layer(skeleton_joints, Quat{0, 0, 0, 1});
+    layer[103] = Quat{0, std::sin(0.4f), 0, std::cos(0.4f)};
+    layer[47] = Quat{std::sin(0.2f), 0, 0, std::cos(0.2f)};
+    std::vector<Joint> pose(skeleton_joints);
+    apply_fakie_layer(pose, layer, false);
+    check(same(pose[103].rotation, layer[103]) && same(pose[47].rotation, layer[47]), "The fakie layer turns each joint it reaches");
+    check(same(pose[10].rotation, Quat{0, 0, 0, 1}), "and leaves the rest as they were");
+    std::vector<Joint> other(skeleton_joints);
+    apply_fakie_layer(other, layer, true);
+    check(same(other[mirror_joint[47]].rotation, mirror_rotation(layer[47])) && same(other[47].rotation, Quat{0, 0, 0, 1}),
+          "Standing the other way round, it goes on the other arm, reflected");
+}
 void smooth_transitions_contracts() {
     const auto about_x = [](float degrees) {
         const float h = degrees * 3.14159265f / 360;
@@ -2454,6 +2472,7 @@ int main(int argc, char** argv) {
         blend_in_eases_in_from_the_game();
         keys_can_be_dragged_in_time();
         smooth_transitions_contracts();
+        fakie_layer_goes_on_as_the_game_plays_it();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
         profiles_read_back_and_bad_ones_are_refused();

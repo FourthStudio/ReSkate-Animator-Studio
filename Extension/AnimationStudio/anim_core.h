@@ -385,6 +385,10 @@ void place_foot(std::vector<Joint>& pose, std::uint16_t foot, const Vec3& to, co
 Quat mirror_rotation(const Quat& q) noexcept;
 Vec3 mirror_vector(const Vec3& v) noexcept;
 Joint mirror_pose(const Joint& joint) noexcept;
+// The game's fakie layer on a pose (GAME_STANCE_NOTES: riding fakie it plays the same trick clip with an upper-body
+// additive on it - the back, neck and head turned to look the way he rolls): `layer`, each joint's turn after its own
+// (identity where it does not reach), as the game's clips stand (goofy); `mirrored` for a pose standing the other way.
+void apply_fakie_layer(std::span<Joint> pose, std::span<const Quat> layer, bool mirrored) noexcept;
 // The board under the game's mirror: not turned end for end, its offset across reflected.
 Joint mirror_board_pose(const Joint& board) noexcept;
 // A board key (in the board's own frame) under the game's mirror: across is what reflects.

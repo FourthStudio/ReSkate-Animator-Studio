@@ -3130,14 +3130,22 @@ std::string shown_name(const studio::View& v, const std::string& name) {
 std::string pop_words(const std::string& pop) { return pop.empty() ? "ANY POP" : upper(pop) + " POP"; }
 // A saved trick's tags: the pop it plays on, the stance it was made in and how it was done - what to do in game to see
 // it play. Drawn leftwards from `right`, which is left where they stop.
+// A nollie trick (popped off the nose): set to FAKIE it is what the game plays popping off the nose riding fakie, which
+// looks like switch - the way the game does switch tricks riding fakie (a tester found it, 2026-10-29; GAME_STANCE_NOTES:
+// nollie is clips of its own, fakie a layer over them). Its stance is named so wherever stances are named.
+bool nollie_trick(const std::string& trick) { return trick == "nollie" || trick.starts_with("n_"); }
+const char* stance_word(int version, bool nollie) {
+    static constexpr std::array<const char*, 4> words{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+    if (nollie && version == 1) return "SWITCH (FAKIE NOLLIE)";
+    return words[static_cast<std::size_t>(std::clamp(version, 0, 3))];
+}
 std::vector<std::pair<std::string, ImU32>> tags_of(const studio::Preset& p, const std::string& pop_rule = {}) {
     std::vector<std::pair<std::string, ImU32>> tags;
     const std::string pop = pop_rule.empty() ? p.pop : pop_rule == "any" ? std::string{} : pop_rule;
     tags.emplace_back(pop.empty() ? "ANY POP: LOW / MID / HIGH" : upper(pop) + " POP", blue);
     // Its stance as you ride: nothing for your own, else fakie, switch or switch fakie.
-    static constexpr std::array<const char*, 4> stances{"", "FAKIE", "SWITCH", "SWITCH FAKIE"};
     if (const auto version = studio::stance_version(p, ui().own_lead_right); version > 0)
-        tags.emplace_back(stances[static_cast<std::size_t>(version)], IM_COL32(196, 104, 0, 255));
+        tags.emplace_back(stance_word(version, nollie_trick(p.trick)), IM_COL32(196, 104, 0, 255));
     if (p.entry == "rail") tags.emplace_back("OFF A RAIL", IM_COL32(36, 150, 76, 255));
     return tags;
 }
@@ -3420,7 +3428,8 @@ float stance_versions(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         const auto version = static_cast<std::size_t>(studio::stance_version(q, v.own_lead_right));
         if (have[version].empty() || q.name == name) have[version] = q.name;
     }
-    static constexpr std::array<const char*, 4> labels{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+    const bool nollie = nollie_trick(p->trick);
+    const std::array<const char*, 4> labels{stance_word(0, nollie), stance_word(1, nollie), stance_word(2, nollie), stance_word(3, nollie)};
     float x = at.x, y = at.y;
     text(d, f.bold, 11 * k, ImVec2(x, y + 9 * k), faint, "STANCES");
     x += 70 * k;
@@ -3799,8 +3808,7 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
     for (const auto& name : names)
         if (const auto* p = preset_named(v, name)) {
             pops.insert(p->pop.empty() ? std::string("ANY") : upper(p->pop));
-            static constexpr std::array<const char*, 4> words{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
-            stances.insert(words[static_cast<std::size_t>(std::clamp(studio::stance_version(*p, v.own_lead_right), 0, 3))]);
+            stances.insert(stance_word(studio::stance_version(*p, v.own_lead_right), nollie_trick(p->trick)));
             playing += in_playing_list(*p);
             newest = std::max(newest, p->saved_at);
         }
@@ -3820,7 +3828,7 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
         if (pops.contains(pop)) pop_line += (pop_line.empty() ? "" : " / ") + std::string(pop) + " POP";
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 44 * k), soft, elide(f.bold, 12 * k, pop_line, size.x - 36 * k));
     std::string stance_line;
-    for (const char* stance : {"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"})
+    for (const char* stance : {"OWN STANCE", "FAKIE", "SWITCH (FAKIE NOLLIE)", "SWITCH", "SWITCH FAKIE"})
         if (stances.contains(stance)) stance_line += (stance_line.empty() ? "" : " / ") + std::string(stance);
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 62 * k), soft, elide(f.bold, 12 * k, stance_line, size.x - 36 * k));
     const auto when = edited_words(newest);
@@ -9963,8 +9971,13 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
                 studio::set_trick_stance(i);
             ImGui::PopID();
         }
-        text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint,
-             elide(f.bold, 11 * k, can ? "Saved this way, it plays when you ride this way." : "A piece of the game's animation: it has no stance of its own.", bw));
+        // On a nollie trick FAKIE is the switch trick riding fakie (nollie_trick).
+        const char* says = !can ? "A piece of the game's animation: it has no stance of its own."
+                           : nollie_trick(v.trick) && v.trick_stance == 1
+                               ? "Fakie nollie: plays when you pop off the nose riding fakie - the game's switch trick there."
+                           : nollie_trick(v.trick) ? "Saved this way, it plays when you ride this way. FAKIE here is switch riding fakie."
+                                                   : "Saved this way, it plays when you ride this way.";
+        text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint, elide(f.bold, 11 * k, says, bw));
         y += row;
     }
     // Its own Crossfade, or the main one.
