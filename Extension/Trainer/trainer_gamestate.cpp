@@ -137,6 +137,17 @@ StateObject grind_objects[]{
 };
 // Transition skating: what the physics says about the lip, in the order of TransitionState (four flags, a number, an
 // enumeration, three vectors).
+// The Animator Studio's (read_studio_states): what the game's animation is doing, read every update. The ids are the
+// assets' GUIDs as the game holds them (the first three parts little-endian): the decoded animation graph names them
+// (Team A, 2026-10-29; Float.Anim.TrickFlipSpeed's, 086c7bb0-e742-c7ef-..., gives flip_speed_object's bytes exactly).
+StateObject studio_objects[]{
+    {{0xb7, 0xfb, 0x17, 0x34, 0xe9, 0x38, 0xd6, 0xbd, 0x34, 0x17, 0xfb, 0xb7, 0x38, 0xe9, 0xbd, 0xd6}, "Animation/Dingo/Float.Anim.TrickPhase"},
+    {{0x35, 0xc2, 0x8d, 0xe8, 0x37, 0x79, 0x75, 0xb8, 0xe8, 0x8d, 0xc2, 0x35, 0x79, 0x37, 0xb8, 0x75}, "Animation/Dingo/Bool.Intent.Trick"},
+    {{0xb5, 0x81, 0x42, 0x7d, 0x06, 0x80, 0x60, 0xd3, 0x7d, 0x42, 0x81, 0xb5, 0x80, 0x06, 0xd3, 0x60}, "Animation/Dingo/Bool.Physics.IsTargetingGrind"},
+    {{0x6e, 0x5e, 0x96, 0x1e, 0x7b, 0xf0, 0x7f, 0x61, 0x1e, 0x96, 0x5e, 0x6e, 0xf0, 0x7b, 0x61, 0x7f}, "Animation/Dingo/Float.Physics.TimeToLand"},
+    {{0xcc, 0x07, 0x71, 0xc5, 0xbd, 0xf9, 0x0b, 0xea, 0xc5, 0x71, 0x07, 0xcc, 0xf9, 0xbd, 0xea, 0x0b}, "Animation/Dingo/Bool.State.Is.TrickInAir"},
+    {{0x79, 0x18, 0xb4, 0x97, 0x34, 0x2f, 0x2f, 0xa8, 0x97, 0xb4, 0x18, 0x79, 0x2f, 0x34, 0xa8, 0x2f}, "Animation/Dingo/Bool.State.Is.GrindInto"},
+};
 StateObject transition_objects[]{
     {{0x7d, 0xbc, 0xc5, 0x80, 0xd7, 0xd9, 0xb2, 0xed, 0x80, 0xc5, 0xbc, 0x7d, 0xd9, 0xd7, 0xed, 0xb2}, "Animation/Dingo/Bool.Physics.FoundLipTrick"},
     {{0xf7, 0x40, 0x6e, 0xeb, 0x30, 0x84, 0x8a, 0x2f, 0xeb, 0x6e, 0x40, 0xf7, 0x84, 0x30, 0x2f, 0x8a}, "Animation/Dingo/Bool.Physics.IsLipTricking"},
@@ -241,6 +252,7 @@ const std::array<std::uint64_t, 64> &state_id_filter() noexcept {
         for (const auto &object : grind_objects) mark(object);
         for (const auto &object : grind_control_objects) mark(object);
         for (const auto &object : transition_objects) mark(object);
+        for (const auto &object : studio_objects) mark(object);
         for (const auto &band : underflip_bands) {
             std::uint32_t first;
             std::memcpy(&first, band.id, 4);
@@ -276,6 +288,7 @@ void find_state_objects(std::uintptr_t start, std::size_t size) noexcept {
             for (auto &object : grind_objects) look(object, i);
             for (auto &object : grind_control_objects) look(object, i);
             for (auto &object : transition_objects) look(object, i);
+            for (auto &object : studio_objects) look(object, i);
             for (auto &band : underflip_bands) {
                 std::uint32_t first;
                 std::memcpy(&first, band.id, 4);
@@ -322,6 +335,61 @@ int scale_underflip_bands(float low_factor, float high_factor) noexcept {
             ++found;
         }
     return found;
+}
+bool studio_states_found() noexcept {
+    for (const auto &object : studio_objects)
+        if (object.at.load(std::memory_order_relaxed)) return true;
+    return false;
+}
+StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noexcept {
+    StudioStates out;
+    if (!studio_states_found()) return out;
+    const auto block = states_block(base, entity);
+    if (!block) return out;
+    const auto number = [&](StateObject &object, std::optional<float> &into) {
+        const auto at = value_address(object, block);
+        float value{};
+        if (at && peek(at, value) && std::isfinite(value)) into = value;
+    };
+    const auto flag = [&](StateObject &object, std::optional<bool> &into) {
+        const auto at = value_address(object, block);
+        std::uint8_t value{};
+        if (at && peek(at, value)) into = value != 0;
+    };
+    number(studio_objects[0], out.trick_phase);
+    flag(studio_objects[1], out.trick_intent);
+    flag(studio_objects[2], out.targeting_grind);
+    number(studio_objects[3], out.time_to_land);
+    flag(studio_objects[4], out.trick_in_air);
+    flag(studio_objects[5], out.grind_into);
+    return out;
+}
+namespace {
+std::atomic<bool> studio_searching{};
+// Every writable region of the game's memory, handed to find_state_objects: the trainer's own search does this with
+// everything else it looks for, but runs only when a trainer setting needs it.
+DWORD WINAPI studio_search(void *) noexcept {
+    __try {
+        MEMORY_BASIC_INFORMATION info{};
+        for (std::uintptr_t at = 0x10000; at < 0x7fffffff0000ull && VirtualQuery(reinterpret_cast<void *>(at), &info, sizeof(info)) == sizeof(info);
+             at = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize) {
+            if (info.State != MEM_COMMIT || info.Protect != PAGE_READWRITE || info.Type == MEM_IMAGE) continue;
+            find_state_objects(reinterpret_cast<std::uintptr_t>(info.BaseAddress), info.RegionSize);
+        }
+    } __except (1) {}
+    studio_searching.store(false, std::memory_order_release);
+    return 0;
+}
+}
+void find_studio_states() noexcept {
+    if (studio_searching.exchange(true, std::memory_order_acq_rel)) return;
+    const auto thread = CreateThread(nullptr, 0, studio_search, nullptr, 0, nullptr);
+    if (thread) {
+        SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL);
+        CloseHandle(thread);
+    } else {
+        studio_searching.store(false, std::memory_order_release);
+    }
 }
 bool flip_states_found() noexcept {
     return flip_speed_object.at.load(std::memory_order_relaxed) && flip_trick_object.at.load(std::memory_order_relaxed);

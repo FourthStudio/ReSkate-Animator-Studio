@@ -33,6 +33,19 @@ FlipState read_flip_state(std::uintptr_t base, std::uintptr_t entity) noexcept;
 // every region it reads to this, which keeps the ones it knows. True once both are known.
 void find_state_objects(std::uintptr_t start, std::size_t size) noexcept;
 bool flip_states_found() noexcept;
+// For the Animator Studio: what the game's animation is doing now, each empty where the level has not got it or the skater
+// has none: the trick's phase (Float.Anim.TrickPhase), the trick input (Bool.Intent.Trick), aiming for a grind
+// (Bool.Physics.IsTargetingGrind), the time to land (Float.Physics.TimeToLand), and the graph's trick-in-air and
+// grind-into states.
+struct StudioStates {
+    std::optional<float> trick_phase, time_to_land;
+    std::optional<bool> trick_intent, targeting_grind, trick_in_air, grind_into;
+};
+StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noexcept;
+// Whether any of them is known (the level's objects), and a search of the game's memory for them (off the game's threads,
+// one at a time; a few seconds). The trainer's own search finds them too.
+bool studio_states_found() noexcept;
+void find_studio_states() noexcept;
 // The skater's pages of game states (0 where there is none).
 std::array<std::uintptr_t, 6> state_pages(std::uintptr_t base, std::uintptr_t entity) noexcept;
 bool write_flip_speed(const FlipState &state, float speed) noexcept;

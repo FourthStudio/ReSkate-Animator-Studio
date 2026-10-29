@@ -186,7 +186,7 @@ Setting playing_playlist(const studio::PlaylistsNow& now, Tell tell) {
     }
     Setting s = one_of("Playing", std::move(options), selected,
                        "The playlist that decides what of yours plays in game, from the top down. One plays at a time; NONE: "
-                       "nothing of yours plays. Playlists are made in the studio: PACKS > PLAYLIST.",
+                       "nothing of yours plays. Playlists are made in the studio: the LIBRARY.",
                        [lists = now.lists, tell = std::move(tell)](int picked) {
                            std::string m;
                            studio::play_playlist(picked == 0 ? std::string{} : lists[static_cast<std::size_t>(picked - 1)].name, m);
