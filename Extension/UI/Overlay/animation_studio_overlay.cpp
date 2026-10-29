@@ -1919,6 +1919,39 @@ bool toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, bool on, f
 bool playlist_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, bool in) {
     return action(d, f, id, at, size, in ? "IN PLAYLIST" : "+ PLAYLIST", in ? Look::ghost : Look::blue);
 }
+// ACTIVE on a trick in a pack, as a tick box: blue with a tick when it plays with the pack, an empty box when it is
+// switched off there (it stays in the pack). Only in a pack's rows: the playlist says what plays, the pack which of its
+// tricks. The label shrinks to fit a narrow row.
+bool active_toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, bool on) {
+    const float k = f.k;
+    const ImVec2 b(at.x + size.x, at.y + size.y);
+    bool lit = false;
+    const bool pressed = hit(id, at, b, &lit);
+    const ImU32 fill = on ? (lit ? IM_COL32(40, 152, 255, 255) : blue) : lit ? IM_COL32(255, 255, 255, 26) : IM_COL32(5, 6, 8, 110);
+    d->AddRectFilled(at, b, fill);
+    if (!on) d->AddRect(at, b, IM_COL32(255, 255, 255, lit ? 200 : 110), 0, 0, 1.4f * k);
+    if (lit && nav().keys) chosen_outline(d, at, b, k);
+    const ImU32 ink = on ? white : soft;
+    constexpr const char* label = "ACTIVE";
+    float fs = std::min(12 * k, size.y * 0.4f), spacing = 1.2f * k, box = fs * 0.95f, gap = 6 * k;
+    float tw = spaced_width(mont(f, fs), fs, label, spacing);
+    if (const float room = size.x - 12 * k; box + gap + tw > room && room > 0) {
+        const float s = room / (box + gap + tw);
+        fs *= s, spacing *= s, box *= s, gap *= s;
+        tw = spaced_width(mont(f, fs), fs, label, spacing);
+    }
+    ImFont* font = mont(f, fs);
+    const auto [ct, cf] = caps_of(font, fs);
+    const float cy = at.y + size.y * 0.5f, x = at.x + (size.x - box - gap - tw) * 0.5f;
+    const ImVec2 ba(x, cy - box * 0.5f), bb(x + box, cy + box * 0.5f);
+    if (on) {
+        d->AddRectFilled(ba, bb, white, 2 * k);
+        d->AddLine(ImVec2(ba.x + box * 0.2f, cy), ImVec2(ba.x + box * 0.43f, bb.y - box * 0.22f), blue, 1.8f * k);
+        d->AddLine(ImVec2(ba.x + box * 0.43f, bb.y - box * 0.22f), ImVec2(bb.x - box * 0.18f, ba.y + box * 0.24f), blue, 1.8f * k);
+    } else d->AddRect(ba, bb, ink, 2 * k, 0, 1.4f * k);
+    text_spaced(d, font, fs, ImVec2(x + box + gap, cy - (cf - ct) * 0.5f - ct), ink, label, spacing);
+    return pressed;
+}
 // A typed field, chosen like anything else; pressing it (A, Enter) puts the keyboard in it. Returns true on Enter.
 bool field(const Fonts& f, const char* id, std::array<char, 64>& buffer, ImVec2 at, float width, const char* hint, bool* edited = nullptr) {
     const float k = f.k;
@@ -4776,7 +4809,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
         y += paragraph(d, f.bold, 15 * k, ImVec2(a.x, y), width, soft, "No tricks in it yet. ADD TRICKS puts your saved tricks in it.");
         return y - a.y;
     }
-    // At the end of each row: watch it, take it out. (A pack's tricks all play with it: pick single tricks in the playlist.)
+    // At the end of each row: watch it, switch it off in this pack (ACTIVE: it stays in it), take it out.
     const auto out_button = [&](const std::string& member, float row_y, float row_h) {
         ImGui::PushID(member.c_str());
         const float by = row_y + (row_h - 30 * k) * 0.5f;
@@ -4785,7 +4818,13 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
             studio::set_pack_member(pack.name, member, false, m);
             say(m);
         }
-        if (action(d, f, "##preview", ImVec2(a.x + width - 166 * k, by), ImVec2(92 * k, 30 * k), "PREVIEW", Look::dark))
+        const bool on = !pack.pack.off.contains(member);
+        if (active_toggle(d, f, "##trickon", ImVec2(a.x + width - 166 * k, by), ImVec2(88 * k, 30 * k), on)) {
+            std::string m;
+            studio::set_pack_trick_on(pack.name, member, !on, m);
+            say(m);
+        }
+        if (action(d, f, "##preview", ImVec2(a.x + width - 266 * k, by), ImVec2(92 * k, 30 * k), "PREVIEW", Look::dark))
             preview_trick(pack.name, member, true);
         ImGui::PopID();
     };
@@ -4811,13 +4850,13 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 const float row_h = 46 * k;
                 const auto& member = s.members.front();
                 bool lit = false;
-                if (hit("##one", ImVec2(a.x, y), ImVec2(a.x + width - 246 * k, y + row_h), &lit)) open_or_preview(v, member, pack.name);
+                if (hit("##one", ImVec2(a.x, y), ImVec2(a.x + width - 276 * k, y + row_h), &lit)) open_or_preview(v, member, pack.name);
                 flat_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + row_h), lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(26, 27, 30, 240),
                                         seed_of(ImVec2(a.x, y)), k * 0.7f);
                 if (lit && nav().keys) chosen_outline(d, ImVec2(a.x, y), ImVec2(a.x + width - 80 * k, y + row_h), k);
-                float right = a.x + width - 250 * k;
+                float right = a.x + width - 280 * k;
                 if (const auto* p = preset_named(v, member)) trick_tags(d, f, *p, forced, right, y + 13 * k);
-                text(d, f.bold, 17 * k, ImVec2(a.x + 16 * k, y + 12 * k), white,
+                text(d, f.bold, 17 * k, ImVec2(a.x + 16 * k, y + 12 * k), pack.pack.off.contains(member) ? faint : white,
                      elide(f.bold, 17 * k, shown_name(v, member), right - a.x - 30 * k));
                 out_button(member, y, row_h);
                 y += row_h + 4 * k;
@@ -4845,7 +4884,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 const auto& member = s.members[i];
                 const float row_h = 40 * k;
                 ImGui::PushID(member.c_str());
-                const ImVec2 ra(a.x + 26 * k, y), rb(a.x + width - 246 * k, y + row_h);
+                const ImVec2 ra(a.x + 26 * k, y), rb(a.x + width - 276 * k, y + row_h);
                 bool lit = false;
                 const bool in_cycle = !pack.pack.unlinked.contains(member);
                 const bool plays = cycle ? in_cycle : i == 0;
@@ -4878,7 +4917,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                     right -= 14 * k;
                 }
                 if (const auto* p = preset_named(v, member)) trick_tags(d, f, *p, forced, right, ra.y + 10 * k);
-                text(d, f.bold, 15 * k, ImVec2(ra.x + 38 * k, ra.y + 11 * k), plays ? white : soft,
+                text(d, f.bold, 15 * k, ImVec2(ra.x + 38 * k, ra.y + 11 * k), pack.pack.off.contains(member) ? faint : plays ? white : soft,
                      elide(f.bold, 15 * k, shown_name(v, member), right - ra.x - 50 * k));
                 out_button(member, y, row_h);
                 ImGui::PopID();
@@ -9129,7 +9168,8 @@ void guide_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
         {"PACKS PLAY FROM YOUR PLAYLIST", "PACKS",
          {"A pack is a set of tricks. Get packs in the MARKET (GET IT) or with a mod manager: a new pack goes straight into the "
           "playlist that is on, and plays in game.",
-          "In PACKS a pack that plays says PLAYING on its card. Press PLAYING to stop it, or PLAY on another pack to play that one too.",
+          "In PACKS a pack that plays says PLAYING on its card (press it to stop). Open a pack and untick ACTIVE on a trick to "
+          "keep it in the pack without playing it.",
           "Only the playlist that is on plays. With no playlist on, none of your custom tricks play.",
           "Installed a pack and nothing changed? In SETTINGS > TRICKS, Custom tricks in game should be ON and Trick matching on "
           "FRONT FOOT (next page)."}},

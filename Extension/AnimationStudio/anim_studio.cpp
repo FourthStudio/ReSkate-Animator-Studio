@@ -1044,15 +1044,26 @@ ConflictChoices read_conflict_choices() {
     } catch (...) {}
     return out;
 }
+// A pack's members that are not saved here (their files gone) are left out of it, and one named twice is named once:
+// a pack updated again and again (VersacePlug 1.0.20, 2026-10-29) named 38 tricks that were not there, so the slots
+// that were to take turns had a trick or two to go round, and it did not seem to shuffle.
+void drop_missing_members(PresetPack& pack) {
+    std::set<std::string> seen;
+    std::error_code error;
+    for (auto& [slot, names] : pack.slots)
+        std::erase_if(names, [&](const std::string& name) {
+            return !seen.insert(name).second || !std::filesystem::is_regular_file(saved_json(name), error);
+        });
+    std::erase_if(pack.slots, [](const auto& slot) { return slot.second.empty(); });
+    std::erase_if(pack.off, [&](const std::string& name) { return !seen.contains(name); });
+    std::erase_if(pack.unlinked, [&](const std::string& name) { return !seen.contains(name); });
+}
 PresetPack read_pack_file(const std::string& name) {
     std::ifstream in(pack_file(name), std::ios::binary);
     if (!in) throw std::runtime_error("The pack " + name + " is missing.");
     auto pack = read_pack_json(Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>())));
     pack.name = name;
-    // A pack's tricks all play with it: the ACTIVE switch that turned one off inside a pack is gone (2026-10-28), so one
-    // switched off before plays again (and the file loses it the next time the pack is saved). Pick single tricks in the
-    // playlist instead.
-    pack.off.clear();
+    drop_missing_members(pack);
     return pack;
 }
 // Every pack there is (the playlist can take from any of them, on or not).
@@ -6940,6 +6951,17 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
 }
+bool set_pack_trick_on(const std::string& pack_name, const std::string& animation, bool on, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    message = shown_name(s, animation) + (on ? " is ACTIVE in " + pack_name + " again: it plays when the pack is in the playlist that is on."
+                                             : " is off in " + pack_name + ": it stays in the pack, but does not play.");
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
+        if (!pack.has(animation)) throw std::runtime_error(animation + " is not in " + pack_name + ".");
+        if (on) pack.off.erase(animation);
+        else pack.off.insert(animation);
+    });
+}
 bool set_trick_play(const std::string& animation, bool on, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -7107,7 +7129,7 @@ bool playlist_add(const PlaylistEntry& entry, std::string& message) {
     auto lists = s.playlists;
     if (!lists.named(s.playlist_open)) { // none yet: Playlist 1, open
         s.playlist_open = free_playlist_name(lists);
-        lists.lists.push_back({s.playlist_open, PlaylistMode::fixed, {}});
+        lists.lists.push_back({s.playlist_open, PlaylistMode::shuffle, {}});
     }
     auto* open = lists.named(s.playlist_open);
     if (std::find(open->entries.begin(), open->entries.end(), entry) != open->entries.end()) {
@@ -7150,8 +7172,10 @@ bool new_playlist(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     auto lists = s.playlists;
+    // A new playlist shuffles: the versions of a trick go round, as people expect of a pack (on FIXED only the highest
+    // plays, and a new playlist that did not shuffle was taken for a bug).
     const auto name = free_playlist_name(lists);
-    lists.lists.push_back({name, PlaylistMode::fixed, {}});
+    lists.lists.push_back({name, PlaylistMode::shuffle, {}});
     s.playlist_open = name;
     playlists_changed_locked(s, lists, "Made " + name + ": add whole packs or single tricks to it, then switch it on.");
     message = s.status;
@@ -7225,7 +7249,7 @@ std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& en
     std::string name = playlist;
     if (name.empty()) {
         name = free_playlist_name(lists);
-        lists.lists.push_back({name, PlaylistMode::fixed, {}});
+        lists.lists.push_back({name, PlaylistMode::shuffle, {}});
     }
     auto* list = lists.named(name);
     if (!list) {
@@ -7959,6 +7983,18 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     target = replace;
                     for (const auto& name : replaced->off)
                         if (pack.has(name)) pack.off.insert(name);
+                    // And how its slots go round as set here: FIXED or CYCLE, the tricks left out of a cycle, and EVERY
+                    // TRICK PLAYS ON. An update took the maker's again, so a slot set to take turns played its first trick
+                    // only after it ("it does not shuffle after an update", 2026-10-29). New slots keep the maker's.
+                    pack.alternate = replaced->alternate;
+                    for (const auto& [slot, alternate] : replaced->slot_alternate) pack.slot_alternate[slot] = alternate;
+                    const auto old_members = replaced->members();
+                    std::erase_if(pack.unlinked, [&](const std::string& name) {
+                        return std::find(old_members.begin(), old_members.end(), name) != old_members.end();
+                    });
+                    for (const auto& name : replaced->unlinked)
+                        if (pack.has(name)) pack.unlinked.insert(name);
+                    pack.pop_rule = replaced->pop_rule;
                     for (const auto& [slot, names] : replaced->slots)
                         for (const auto& name : names) {
                             std::error_code missing;
@@ -7970,6 +8006,23 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                         if (read_whole(folder / L"presets" / (target + ".json")) == pack_json(pack).dump(2)) break;
                         target = variation_name(file_safe(pack_name), n);
                     }
+                }
+                // Only the tricks there will be: in this zip, or saved here and staying (a pack can name tricks its zip
+                // does not carry, and an update must not keep names whose files it removes). Each named once.
+                {
+                    std::set<std::string> written, seen;
+                    for (const auto& [original, target_name] : rename) written.insert(target_name);
+                    std::error_code missing;
+                    for (auto& [slot, names] : pack.slots)
+                        std::erase_if(names, [&](const std::string& name) {
+                            const bool there = written.contains(name) ||
+                                               (!transaction.removing(saved_json(name)) && std::filesystem::is_regular_file(saved_json(name), missing));
+                            return !there || !seen.insert(name).second;
+                        });
+                    std::erase_if(pack.slots, [](const auto& slot) { return slot.second.empty(); });
+                    std::erase_if(pack.off, [&](const std::string& name) { return !seen.contains(name); });
+                    std::erase_if(pack.unlinked, [&](const std::string& name) { return !seen.contains(name); });
+                    std::erase_if(pack.slot_alternate, [&](const auto& mode) { return !pack.slots.contains(mode.first); });
                 }
                 pack.name = target;
                 new_packs.push_back(target);
