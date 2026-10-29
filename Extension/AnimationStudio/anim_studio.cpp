@@ -4527,7 +4527,7 @@ struct BodyPublicationState {
     // guard_going, when a move was last going over.
     double guard_since{-1}, guard_going{-1};
     std::uint64_t guard_generation{~std::uint64_t{0}};
-    bool guard_round{}; // a foot was still going round the deck (guard_legs_from_the_board) last frame
+    bool guard_round{}; // the force field was still giving a foot a turn or a move (guard_legs_from_the_board) last frame
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 // While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
@@ -4788,7 +4788,7 @@ bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept;
 bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater, Joint& out) noexcept;
 bool board_as_drawn_now(Joint& out) noexcept;
 // The board's force field: the legs kept out of the deck as drawn (and, going over to the game's, the game's own and the one
-// halfway); a foot under the deck goes round it. True while a foot is still being turned out to go round.
+// halfway), each foot pushed back out of the face it is on. True while it is still giving a foot a turn or a move.
 bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games) noexcept;
 // SMOOTH transitions: the handover into a grind. At a rail's lock the trick it leaves (the last packet) goes on playing at
 // its own pace over the game's fresh pose, never held, and each joint goes over to the game's at its own speed
@@ -5252,37 +5252,33 @@ namespace deck_guard {
 constexpr Vec3 down{0.5408f, 0.8412f, 0}, forward{0.8412f, -0.5408f, 0};
 constexpr float ankle_over_sole = 0.085f;
 constexpr float top = 0.019f, tip = 0.40f, half = 0.105f, kick_from = 0.29f, kick_rise = 0.045f, round_from = 0.30f;
-constexpr float shin_radius = 0.045f, deepest = 0.12f; // deeper than that the leg is under the board, not in it
+constexpr float shin_radius = 0.045f, deepest = 0.12f; // how far through the deck a foot still counts as in it
 // The field round the shoe: its rubber and outline past the sole's points (chunky skate shoes), and how far clear a shoe
 // that was in is put.
 constexpr float sole_skin = 0.005f, clear_by = 0.004f;
-// The deck is a plate (grip to underside), not a block: a shoe under it goes round it. From `funnel` under the underside a
-// shoe heading up is turned out to the deck's edge (or end), all the way past it (by `round_margin`) by the time it would
-// meet it; the turn lets go over `detour_fade`, so it glides back in over the grip.
-constexpr float thickness = 0.016f, funnel = 0.10f, round_margin = 0.015f, detour_fade = 0.12f;
-Vec3 shoe(float ahead, float side, float over_sole) noexcept {
+// The deck is a plate (grip to underside). A toe or a heel in it may first be lifted out by the foot turning at the ankle,
+// as a foot gives on a board (up to `pivot_most`, for a point at least `pivot_lever` from the ankle), when that clearly
+// does it with less. What a foot is given glides to what it needs at up to `glide` m/s and `turn_glide` rad/s, and looks
+// `ahead` seconds on along the way the board is turning, so a foot gives before the deck gets to it.
+constexpr float thickness = 0.016f, pivot_most = 0.35f, pivot_lever = 0.06f, glide = 1.5f, turn_glide = 8.4f, ahead = 0.05f;
+Vec3 shoe(float ahead_of_ankle, float side, float over_sole) noexcept {
     const float d = ankle_over_sole - over_sole;
-    return {down[0] * d + forward[0] * ahead, down[1] * d + forward[1] * ahead, side};
+    return {down[0] * d + forward[0] * ahead_of_ankle, down[1] * d + forward[1] * ahead_of_ankle, side};
 }
-const std::array<Vec3, 11>& sole() noexcept {
-    static const std::array<Vec3, 11> points{shoe(-0.07f, 0.035f, 0),        shoe(-0.07f, -0.035f, 0),       shoe(0.015f, 0.048f, 0),
-                                             shoe(0.015f, -0.048f, 0),       shoe(0.094f, 0.055f, 0),        shoe(0.094f, -0.055f, 0),
-                                             shoe(0.165f, 0.035f, 0.008f),   shoe(0.165f, -0.035f, 0.008f),  shoe(0.19f, 0.018f, 0.014f),
-                                             shoe(0.19f, -0.018f, 0.014f),   shoe(-0.075f, 0, 0.004f)};
-    return points;
-}
-// The top of the shoe over its sole (the collar, the laces, the toe cap): what meets the deck's underside first from under it.
-const std::array<Vec3, 7>& upper() noexcept {
-    static const std::array<Vec3, 7> points{shoe(-0.06f, 0.035f, 0.085f), shoe(-0.06f, -0.035f, 0.085f), shoe(0.03f, 0, 0.08f),
-                                            shoe(0.11f, 0.035f, 0.055f),  shoe(0.11f, -0.035f, 0.055f),  shoe(0.17f, 0, 0.04f),
-                                            shoe(0.19f, 0, 0.025f)};
+// The sole, and the top of the shoe over it (the collar, the laces, the toe cap).
+const std::array<Vec3, 18>& shoe_points() noexcept {
+    static const std::array<Vec3, 18> points{
+        shoe(-0.07f, 0.035f, 0),       shoe(-0.07f, -0.035f, 0),      shoe(0.015f, 0.048f, 0),       shoe(0.015f, -0.048f, 0),
+        shoe(0.094f, 0.055f, 0),       shoe(0.094f, -0.055f, 0),      shoe(0.165f, 0.035f, 0.008f),  shoe(0.165f, -0.035f, 0.008f),
+        shoe(0.19f, 0.018f, 0.014f),   shoe(0.19f, -0.018f, 0.014f),  shoe(-0.075f, 0, 0.004f),
+        shoe(-0.06f, 0.035f, 0.085f),  shoe(-0.06f, -0.035f, 0.085f), shoe(0.03f, 0, 0.08f),         shoe(0.11f, 0.035f, 0.055f),
+        shoe(0.11f, -0.035f, 0.055f),  shoe(0.17f, 0, 0.04f),         shoe(0.19f, 0, 0.025f)};
     return points;
 }
 float deck_top(float along) noexcept {
     const float x = std::clamp((std::abs(along) - kick_from) / (tip - kick_from), 0.0f, 1.0f);
     return top + kick_rise * x * x;
 }
-float deck_bottom(float along) noexcept { return deck_top(along) - thickness; }
 float deck_middle(float along) noexcept { return deck_top(along) - thickness * 0.5f; }
 float half_width(float along) noexcept {
     const float a = std::abs(along);
@@ -5291,205 +5287,262 @@ float half_width(float along) noexcept {
     const float x = (a - round_from) / (tip - round_from);
     return half * std::sqrt(std::max(0.0f, 1 - x * x));
 }
-// A point of a joint (in its own frame) in `board`'s frame: x across, y up, z along.
+// A point of a joint (in its own frame) in `board`'s frame: x across, y up from the grip, z along.
 Vec3 on_board(const Joint& board, const Joint& j, const Vec3& v) noexcept {
     const auto w = rotate(j.rotation, v);
     return rotate(conjugate(board.rotation), Vec3{j.position[0] + w[0] - board.position[0], j.position[1] + w[1] - board.position[1],
                                                   j.position[2] + w[2] - board.position[2]});
 }
-// How far out a point must go, and which way. `from_above`: only a point over the deck's middle is in it (a board this foot
-// is not known to be over: what is under it is not its to push up through).
-struct Push {
-    float depth{};
-    Vec3 way{};
+float dot_of(const Vec3& a, const Vec3& b) noexcept { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+float length_of(const Vec3& v) noexcept { return std::sqrt(dot_of(v, v)); }
+Vec3 cross_of(const Vec3& a, const Vec3& b) noexcept { return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; }
+// The six ways out of the deck, in the board's frame: up off the grip, down off the underside, out of either edge, past the
+// nose or the tail.
+constexpr std::array<Vec3, 6> ways{{{0, 1, 0}, {0, -1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}}};
+// How far the whole leg must go each way to be out of `board`'s deck: the shoe as one (a rigid shoe, not point by point: point
+// by point a shoe across the tail was pushed one way at the toe and another at the heel and stayed in), and the shin. A foot
+// on top (`on_top`, over the deck along his up) counts as in it down to `deepest` under the deck, one under it up to that
+// over it, so a foot gone through it in a frame is still in it. `deepest_point`: the shoe's point that is furthest in each way.
+struct Exits {
+    std::array<float, 6> need{};
+    std::array<Vec3, 6> point{}; // the world
+    bool in{};
 };
-Push into(const Vec3& p, float radius, bool from_above) noexcept {
-    Push out;
-    if (std::abs(p[2]) > tip) return out;
-    const float width = half_width(p[2]) + radius;
-    if (std::abs(p[0]) > width) return out;
-    if (from_above && p[1] < deck_middle(p[2])) return out;
-    const float over = deck_top(p[2]) - (p[1] - radius);
-    if (!(over > 0) || over > deepest) return out;
-    const float side = width - std::abs(p[0]);
-    if (side < over) {
-        out.depth = side;
-        out.way = {p[0] >= 0 ? 1.0f : -1.0f, 0, 0};
-    } else {
-        out.depth = over;
-        out.way = {0, 1, 0};
-    }
+Exits exits_of(std::span<const Joint> pose, const Joint& board, std::uint16_t foot, std::uint16_t knee, bool on_top, const Vec3& up) noexcept {
+    Exits out;
+    const float grip_up = dot_of(rotate(board.rotation, Vec3{0, 1, 0}), up);
+    const auto f = world(pose, foot);
+    const auto k = world(pose, knee);
+    const auto check = [&](const Joint& j, const Vec3& local, float radius) {
+        const auto q = on_board(board, j, local);
+        if (std::abs(q[2]) >= tip + radius) return;
+        const float w = half_width(std::min(std::abs(q[2]), tip)) + radius;
+        if (std::abs(q[0]) >= w) return;
+        float low = deck_top(q[2]) - thickness - radius, high = deck_top(q[2]) + radius;
+        // The deck thickened on its far side from the foot (along his up).
+        if ((on_top && grip_up > 0.3f) || (!on_top && grip_up < -0.3f)) low -= deepest;
+        else if ((on_top && grip_up < -0.3f) || (!on_top && grip_up > 0.3f)) high += deepest;
+        if (!(q[1] > low && q[1] < high)) return;
+        out.in = true;
+        const std::array<float, 6> outs{high - q[1], q[1] - low, w - q[0], w + q[0], tip + radius - q[2], tip + radius + q[2]};
+        const auto at = rotate(j.rotation, local);
+        for (std::size_t i = 0; i < 6; ++i)
+            if (outs[i] > out.need[i]) {
+                out.need[i] = outs[i];
+                out.point[i] = {j.position[0] + at[0], j.position[1] + at[1], j.position[2] + at[2]};
+            }
+    };
+    for (const auto& point : shoe_points()) check(f, point, sole_skin);
+    for (const float along : {0.14f, 0.24f, 0.34f}) check(k, Vec3{along, 0, 0}, shin_radius);
     return out;
 }
-// The deepest a leg's shoe or shin is in the deck of `board`, from over it.
-Push leg_in_deck(std::span<const Joint> pose, const Joint& board, std::uint16_t foot, std::uint16_t knee, bool from_above) noexcept {
-    Push worst;
-    const auto f = world(pose, foot);
-    for (const auto& point : sole())
-        if (const auto push = into(on_board(board, f, point), sole_skin, from_above); push.depth > worst.depth) worst = push;
-    const auto k = world(pose, knee);
-    for (const float along : {0.14f, 0.24f, 0.34f})
-        if (const auto push = into(on_board(board, k, Vec3{along, 0, 0}), shin_radius, from_above); push.depth > worst.depth) worst = push;
-    return worst;
+// The way out it takes: the least of the ways that keep the foot on its side of the board (one on top is never pushed down
+// past it, one under it never up through it), and the way it took last while that is not much more.
+int way_out(const Exits& e, const Joint& board, bool on_top, const Vec3& up, int last) noexcept {
+    int best = -1;
+    const auto allowed = [&](int i) {
+        const float rise = dot_of(rotate(board.rotation, ways[static_cast<std::size_t>(i)]), up);
+        return on_top ? rise > -0.3f : rise < 0.3f;
+    };
+    for (int i = 0; i < 6; ++i)
+        if (allowed(i) && (best < 0 || e.need[static_cast<std::size_t>(i)] < e.need[static_cast<std::size_t>(best)])) best = i;
+    if (best < 0) return -1;
+    if (last >= 0 && last != best && allowed(last) && e.need[static_cast<std::size_t>(last)] * 0.7f <= e.need[static_cast<std::size_t>(best)]) best = last;
+    return best;
 }
-// Each foot against the board as drawn, frame to frame (the body pass only): which side of the deck it is on, which way it
-// goes round coming up from under it, and the turn out it was given last.
-struct FootSide {
-    int side{};   // +1 over the grip, -1 under the deck, 0 not known yet
-    float way{};  // round the edge on this side across (+1 / -1), 0 not chosen
-    float end{};  // or round this end along (+1 / -1) when that is nearer, 0 the edge
-    Vec3 detour{}; // the last turn out, in the board's frame
+// The board's force field, frame to frame (the body pass only): each foot on top of the board or under it, the way out it
+// took last, and what it is given (a turn at the ankle and a move, the world), which glides to what it needs; the board
+// as drawn last frame, for the way it is turning.
+struct FootField {
+    int on_top{}; // +1 on top of the board (along his up), -1 under it, 0 not known yet
+    int way{-1};
+    Quat turn{0, 0, 0, 1};
+    Vec3 move{};
 };
-struct Sides {
-    std::array<FootSide, 2> feet{};
+struct Field {
+    std::array<FootField, 2> feet{};
+    Joint board_before{};
+    bool board_before_ok{};
     double last{-1};
 };
-Sides& sides() noexcept {
-    static Sides value;
+Field& field() noexcept {
+    static Field value;
     return value;
 }
-// Which side a shoe is on: +1 its sole over the grip, -1 its top under the underside, 0 level with the deck; and whether
-// its ankle is off the deck's edge or end (`beside`), and over the deck's middle (`higher`).
-int side_of(const Joint& board, const Joint& f, bool& beside, bool& higher) noexcept {
-    float sole_low = 1e9f, top_high = -1e9f;
-    for (const auto& point : sole()) {
-        const auto p = on_board(board, f, point);
-        sole_low = std::min(sole_low, p[1] - deck_top(p[2]));
-    }
-    for (const auto& point : upper()) {
-        const auto p = on_board(board, f, point);
-        top_high = std::max(top_high, p[1] - deck_bottom(p[2]));
-    }
-    const auto ankle = on_board(board, f, {0, 0, 0});
-    beside = std::abs(ankle[2]) > tip + 0.02f || std::abs(ankle[0]) > half_width(ankle[2]) + 0.02f;
-    higher = ankle[1] > deck_middle(ankle[2]);
-    return sole_low > 0 ? 1 : top_high < 0 ? -1 : 0;
+// The foot turned by `turn` (the world) about its ankle, and moved by `move`.
+void give(std::vector<Joint>& pose, std::uint16_t foot, const Quat& turn, const Vec3& move) noexcept {
+    const auto at = world(pose, foot);
+    const auto turned = normalised(multiply(turn, at.rotation));
+    place_foot(pose, foot, Vec3{at.position[0] + move[0], at.position[1] + move[1], at.position[2] + move[2]}, &turned, 1.0f);
 }
-// Coming up from under the deck: how far (the board's frame) the shoe must be turned out to the edge it goes round (or the
-// end, when that is nearer), all the way past it from where its top would meet the underside, none from `funnel` under it.
-Vec3 round_from_under(const Joint& board, const Joint& f, FootSide& state) noexcept {
-    const auto ankle = on_board(board, f, {0, 0, 0});
-    if (state.way == 0 && state.end == 0) {
-        const float across = half_width(ankle[2]) + round_margin - std::abs(ankle[0]);
-        const float along = tip + round_margin - std::abs(ankle[2]);
-        if (along < across * 0.7f) state.end = ankle[2] >= 0 ? 1.0f : -1.0f;
-        else state.way = ankle[0] >= 0 ? 1.0f : -1.0f;
-    }
-    float need = 0;
-    const auto weigh = [&](const Vec3& p) {
-        const float gap = deck_bottom(p[2]) - (p[1] + sole_skin);
-        float k = std::clamp(1 - gap / funnel, 0.0f, 1.0f);
-        k = k * k * (3 - 2 * k);
-        if (k <= 0) return;
-        const float short_of = state.end != 0 ? tip + sole_skin + round_margin - state.end * p[2]
-                                              : half_width(p[2]) + sole_skin + round_margin - state.way * p[0];
-        if (short_of > 0) need = std::max(need, short_of * k);
-    };
-    for (const auto& point : upper()) weigh(on_board(board, f, point));
-    for (const auto& point : sole()) weigh(on_board(board, f, point));
-    return state.end != 0 ? Vec3{0, 0, state.end * need} : Vec3{state.way * need, 0, 0};
-}
-float length_of(const Vec3& v) noexcept { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
 } // namespace deck_guard
 bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games) noexcept {
-    bool going_round = false;
+    bool giving = false;
     try {
         if (edited.size() < skeleton_joints || native.size() < skeleton_joints || !finite(drawn_board)) return false;
-        auto& memory = deck_guard::sides();
+        auto& memory = deck_guard::field();
         const double now = now_seconds();
-        const float dt = memory.last >= 0 ? static_cast<float>(std::clamp(now - memory.last, 0.0, 0.1)) : 0.0f;
-        if (memory.last < 0 || now - memory.last > 0.25) memory.feet = {}; // a new move: nothing known of where the feet were
+        const float dt = memory.last >= 0 ? static_cast<float>(std::clamp(now - memory.last, 0.001, 0.1)) : 1.0f / 60;
+        if (memory.last < 0 || now - memory.last > 0.25) memory = {}; // a new move: nothing known of where the feet were
         memory.last = now;
+        // His up (the placement's), which says on top and under, and which ways out keep a foot on its side.
+        const auto placement = compose(edited[0], edited[1]);
+        const auto up = rotate(placement.rotation, Vec3{0, 1, 0});
+        // The board as it will be a moment on, turning the way it is turning: a foot gives before the deck gets to it.
+        Joint coming = drawn_board;
+        if (memory.board_before_ok) {
+            auto step = normalised(multiply(drawn_board.rotation, conjugate(memory.board_before.rotation)));
+            if (step[3] < 0) step = Quat{-step[0], -step[1], -step[2], -step[3]}; // the short way: a frame's turn
+            coming.rotation = normalised(multiply(scaled_turn(step, deck_guard::ahead / dt), drawn_board.rotation));
+        }
+        memory.board_before = drawn_board;
+        memory.board_before_ok = true;
         Joint games;
         const bool games_ok = games_board_now(live().board_holder.load(std::memory_order_acquire), games) && finite(games);
-        // The other boards to keep out of from over them, going over to the game's: its own and the one halfway, so a board
-        // drawn a little off where this reckons it (the board's pass has its own fade) is not gone through either. Only
-        // with him over their deck.
-        std::array<Joint, 2> others{};
-        std::size_t count = 0;
-        const auto hips = world(edited, hips_joint).position;
-        const auto keep_out_of = [&](const Joint& board) {
-            const auto over = rotate(conjugate(board.rotation), Vec3{hips[0] - board.position[0], hips[1] - board.position[1], hips[2] - board.position[2]});
-            if (finite(board) && over[1] > deck_guard::top) others[count++] = board;
-        };
+        // Going over to the game's, its own board and the one halfway too (a board drawn a little off where this reckons it is
+        // not gone through either).
+        std::array<Joint, 3> boards{drawn_board};
+        std::size_t count = 1;
         if (toward_games && games_ok) {
-            keep_out_of(games);
+            boards[count++] = games;
             Joint halfway;
             halfway.rotation = slerp(drawn_board.rotation, games.rotation, 0.5f);
             for (std::size_t k = 0; k < 3; ++k) halfway.position[k] = (drawn_board.position[k] + games.position[k]) * 0.5f;
-            keep_out_of(halfway);
+            boards[count++] = halfway;
         }
-        // How deep a shoe was in a deck before and after (mm past its field), and how far it was turned out to go round
-        // one, for the bug report (guard_in_mm, guard_out_mm, guard_round_mm).
-        float deepest_in = 0, deepest_out = 0, round_out = 0;
+        // For the bug report: how far a foot was in a deck before and after (mm), and how far the field moved it.
+        float deepest_in = 0, deepest_out = 0, moved = 0;
         constexpr std::array<std::pair<std::uint16_t, std::uint16_t>, 2> legs{{{left_foot_joint, 342}, {right_foot_joint, 9}}};
         for (std::size_t i = 0; i < legs.size(); ++i) {
             const auto [foot, knee] = legs[i];
             auto& state = memory.feet[i];
-            // Which side of the deck it is on, when not known: its ankle over the deck's middle or under it.
-            bool beside = false, higher = false;
-            if (state.side == 0) {
-                const int now_side = deck_guard::side_of(drawn_board, world(edited, foot), beside, higher);
-                state.side = now_side != 0 ? now_side : higher ? 1 : -1;
+            if (state.on_top == 0) {
+                const auto a = world(edited, foot).position;
+                state.on_top = deck_guard::dot_of(Vec3{a[0] - drawn_board.position[0], a[1] - drawn_board.position[1], a[2] - drawn_board.position[2]}, up) >= 0 ? 1 : -1;
             }
-            // 1. Under the deck it goes round it (round_from_under), never up through it; a turn out lets go gently.
+            const bool on_top = state.on_top > 0;
+            // Out of every deck on `pose`, the least that does it: a toe or a heel by the foot turning at the ankle when that
+            // clearly takes less, then the foot the way out; a few goes. What it took, a turn (about the ankle) and a move.
+            const auto fit = [&](std::vector<Joint>& pose, std::span<const Joint> against, Quat& turn, Vec3& move, float& left) {
+                turn = Quat{0, 0, 0, 1};
+                move = {};
+                left = 0;
+                for (int pass = 0; pass < 4; ++pass) {
+                    bool any = false;
+                    for (const auto& board : against) {
+                        auto e = deck_guard::exits_of(pose, board, foot, knee, on_top, up);
+                        if (!e.in) continue;
+                        int way = deck_guard::way_out(e, board, on_top, up, &board == &against[0] ? state.way : -1);
+                        if (way < 0) continue;
+                        float need = e.need[static_cast<std::size_t>(way)];
+                        if (!(need > 0.0005f)) continue;
+                        any = true;
+                        if (&board == &against[0]) state.way = way;
+                        const auto out_way = rotate(board.rotation, deck_guard::ways[static_cast<std::size_t>(way)]);
+                        // The turn at the ankle, only when it clearly takes less than moving the foot.
+                        if (pass == 0) {
+                            const auto at = world(pose, foot);
+                            const auto& point = e.point[static_cast<std::size_t>(way)];
+                            const Vec3 arm{point[0] - at.position[0], point[1] - at.position[1], point[2] - at.position[2]};
+                            const auto axis = deck_guard::cross_of(arm, out_way);
+                            const float lever = deck_guard::length_of(axis);
+                            if (lever > deck_guard::pivot_lever) {
+                                const float angle = std::min((need + deck_guard::clear_by) / lever, deck_guard::pivot_most);
+                                const float h = angle * 0.5f, sn = std::sin(h) / lever;
+                                const Quat lift = normalised(Quat{axis[0] * sn, axis[1] * sn, axis[2] * sn, std::cos(h)});
+                                std::vector<Joint> tried(pose.begin(), pose.end());
+                                deck_guard::give(tried, foot, lift, {});
+                                const auto after = deck_guard::exits_of(tried, board, foot, knee, on_top, up);
+                                const int way_after = after.in ? deck_guard::way_out(after, board, on_top, up, way) : -1;
+                                const float need_after = way_after < 0 ? 0.0f : after.need[static_cast<std::size_t>(way_after)];
+                                if (need_after < 0.7f * need) {
+                                    pose.swap(tried);
+                                    turn = normalised(multiply(lift, turn));
+                                    if (!(need_after > 0.0005f)) continue;
+                                    way = way_after;
+                                    need = need_after;
+                                }
+                            }
+                        }
+                        const auto way_world = rotate(board.rotation, deck_guard::ways[static_cast<std::size_t>(way)]);
+                        const float by = need + deck_guard::clear_by;
+                        const Vec3 step{way_world[0] * by, way_world[1] * by, way_world[2] * by};
+                        deck_guard::give(pose, foot, Quat{0, 0, 0, 1}, step);
+                        for (std::size_t c = 0; c < 3; ++c) move[c] += step[c];
+                    }
+                    if (!any) break;
+                }
+                for (const auto& board : against) {
+                    const auto e = deck_guard::exits_of(pose, board, foot, knee, on_top, up);
+                    if (!e.in) continue;
+                    const int way = deck_guard::way_out(e, board, on_top, up, -1);
+                    if (way >= 0) left = std::max(left, e.need[static_cast<std::size_t>(way)]);
+                }
+            };
+            // 1. What the foot needs, from where it wants to be: the least that takes it out of the deck as drawn and as it will
+            // be a moment on, whichever needs more.
+            Quat need_turn;
+            Vec3 need_move;
             {
-                const auto at = world(edited, foot);
-                const Vec3 need = state.side < 0 ? deck_guard::round_from_under(drawn_board, at, state) : Vec3{};
-                const float keep = std::max(0.0f, 1 - dt / deck_guard::detour_fade);
-                const Vec3 left_of{state.detour[0] * keep, state.detour[1] * keep, state.detour[2] * keep};
-                state.detour = deck_guard::length_of(need) >= deck_guard::length_of(left_of) ? need : left_of;
-                const float by = deck_guard::length_of(state.detour);
-                round_out = std::max(round_out, by);
-                if (by > 0.0005f) {
-                    const auto way = rotate(drawn_board.rotation, state.detour);
-                    place_foot(edited, foot, Vec3{at.position[0] + way[0], at.position[1] + way[1], at.position[2] + way[2]}, &at.rotation, 1.0f);
+                float left = 0;
+                std::vector<Joint> wanted(edited.begin(), edited.end());
+                const auto e = deck_guard::exits_of(wanted, drawn_board, foot, knee, on_top, up);
+                if (e.in)
+                    if (const int way = deck_guard::way_out(e, drawn_board, on_top, up, state.way); way >= 0)
+                        deepest_in = std::max(deepest_in, e.need[static_cast<std::size_t>(way)]);
+                fit(wanted, std::span<const Joint>(&drawn_board, 1), need_turn, need_move, left);
+                std::vector<Joint> later(edited.begin(), edited.end());
+                Quat later_turn;
+                Vec3 later_move;
+                const int way_before = state.way;
+                fit(later, std::span<const Joint>(&coming, 1), later_turn, later_move, left);
+                state.way = way_before;
+                if (deck_guard::length_of(later_move) > deck_guard::length_of(need_move)) {
+                    need_move = later_move;
+                    need_turn = later_turn;
                 }
-                going_round = going_round || by > 0.005f;
             }
-            // 2. No shoe or shin in a deck from over it, whoever put it there (the game's own depth was let through until
-            // 1.0.22: in the air its board passes its own feet mid-flip, which read as deep). The board as drawn when the
-            // foot is over it; the others from over them. A few goes: the leg bends to reach, and a push out of one side (or
-            // one board) can leave another point in.
-            for (int pass = 0; pass < 6; ++pass) {
-                deck_guard::Push push;
-                const Joint* board = nullptr;
-                if (state.side > 0)
-                    if (const auto in = deck_guard::leg_in_deck(edited, drawn_board, foot, knee, false); in.depth > push.depth) {
-                        push = in;
-                        board = &drawn_board;
-                    }
-                for (std::size_t b = 0; b < count; ++b)
-                    if (const auto in = deck_guard::leg_in_deck(edited, others[b], foot, knee, true); in.depth > push.depth) {
-                        push = in;
-                        board = &others[b];
-                    }
-                const float excess = push.depth - deck_guard::sole_skin;
-                if (pass == 0) deepest_in = std::max(deepest_in, excess);
-                if (!board || !(excess > 0.0005f)) {
-                    deepest_out = std::max(deepest_out, std::max(excess, 0.0f));
-                    break;
-                }
-                if (pass == 5) deepest_out = std::max(deepest_out, excess);
-                const auto way = rotate(board->rotation, push.way);
-                const auto at = world(edited, foot);
-                const float by = excess + deck_guard::clear_by;
-                place_foot(edited, foot, Vec3{at.position[0] + way[0] * by, at.position[1] + way[1] * by, at.position[2] + way[2] * by}, &at.rotation, 1.0f);
+            // 2. What it is given glides to that, so the foot gives and comes back like a foot, never in a jump.
+            {
+                const Vec3 gap{need_move[0] - state.move[0], need_move[1] - state.move[1], need_move[2] - state.move[2]};
+                const float short_of = deck_guard::length_of(gap), most = deck_guard::glide * dt;
+                const float k = short_of > most ? most / short_of : 1.0f;
+                for (std::size_t c = 0; c < 3; ++c) state.move[c] += gap[c] * k;
+                const float apart = 2 * std::acos(std::clamp(std::abs(state.turn[0] * need_turn[0] + state.turn[1] * need_turn[1] +
+                                                                      state.turn[2] * need_turn[2] + state.turn[3] * need_turn[3]), 0.0f, 1.0f));
+                const float turn_most = deck_guard::turn_glide * dt;
+                state.turn = apart > turn_most ? slerp(state.turn, need_turn, turn_most / apart) : need_turn;
             }
-            // 3. Which side it is on now: clear of the deck on one side, or off its edge or end (then by its ankle). Level
-            // with the deck over it, it stays the side it was.
-            const int now_side = deck_guard::side_of(drawn_board, world(edited, foot), beside, higher);
-            if (now_side != 0) state.side = now_side;
-            else if (beside) state.side = higher ? 1 : -1;
-            if (state.side > 0) state.way = state.end = 0;
+            deck_guard::give(edited, foot, state.turn, state.move);
+            // 3. Never in a deck, whatever the glide has not caught up with yet: the rest at once, kept in what it is given.
+            {
+                Quat extra_turn;
+                Vec3 extra_move;
+                float left = 0;
+                fit(edited, std::span<const Joint>(boards.data(), count), extra_turn, extra_move, left);
+                deepest_out = std::max(deepest_out, left);
+                state.turn = normalised(multiply(extra_turn, state.turn));
+                for (std::size_t c = 0; c < 3; ++c) state.move[c] += extra_move[c];
+            }
+            if (deck_guard::length_of(state.move) < 0.0001f && std::abs(state.turn[3]) > 0.99999f) state.way = -1;
+            moved = std::max(moved, deck_guard::length_of(state.move));
+            giving = giving || deck_guard::length_of(state.move) > 0.005f || std::abs(state.turn[3]) < 0.9997f; // 2 degrees
+            // 4. On top or under: the ankle against the deck along his up, while the board lies flat enough to tell and the ankle
+            // is clearly on one side (4 cm); on its edge to him, as it was.
+            {
+                const auto a = deck_guard::on_board(drawn_board, world(edited, foot), {0, 0, 0});
+                const float grip_up = deck_guard::dot_of(rotate(drawn_board.rotation, Vec3{0, 1, 0}), up);
+                const float off = a[1] - deck_guard::deck_middle(a[2]);
+                if (std::abs(grip_up) > 0.5f && std::abs(off) > 0.04f) state.on_top = off * grip_up > 0 ? 1 : -1;
+            }
         }
         guard_in_mm.store(std::max(deepest_in, 0.0f) * 1000, std::memory_order_relaxed);
         guard_out_mm.store(deepest_out * 1000, std::memory_order_relaxed);
-        guard_round_mm.store(round_out * 1000, std::memory_order_relaxed);
+        guard_round_mm.store(moved * 1000, std::memory_order_relaxed);
         guard_at.store(now, std::memory_order_relaxed);
     } catch (...) {
     }
-    return going_round;
+    return giving;
 }
 // ---- the feet on the deck ------------------------------------------------------------------------------
 // The game's board this update (its mount), with our own write of the last frame taken back off, as the board's pass does.

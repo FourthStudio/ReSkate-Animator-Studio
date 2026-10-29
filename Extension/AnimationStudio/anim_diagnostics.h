@@ -38,7 +38,7 @@ struct DiagnosticSample {
     float lean{}, handover{-1};
     // The board's force field: how deep (mm) a shoe was in a deck before it pushed and after (-1: it did not run then).
     float guard_in_mm{-1}, guard_out_mm{-1};
-    float guard_round_mm{-1}; // how far a foot was turned out to go round the deck from under it
+    float guard_round_mm{-1}; // how far the force field moved a foot (mm, besides its turn at the ankle)
     // What the game's animation said (trainer::read_studio_states; -1 not read): its trick phase, the trick input, aiming for
     // a grind, its time to land.
     float game_phase{-1}, time_to_land{-1};
