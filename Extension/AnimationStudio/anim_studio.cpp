@@ -4513,6 +4513,11 @@ struct BodyPublicationState {
     std::uint64_t feet_generation{~std::uint64_t{0}};
     double on_rail_at{-1};
     bool feet_at_lock_ok{};
+    // SMOOTH: the board's force field (guard_legs_from_the_board) comes on as a move starts going over to the next and holds
+    // until both feet are where the game has them (or the trick plays as made again): guard_since, when it came on (-1 off);
+    // guard_going, when a move was last going over.
+    double guard_since{-1}, guard_going{-1};
+    std::uint64_t guard_generation{~std::uint64_t{0}};
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 // While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
@@ -4772,7 +4777,7 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
 bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept;
 bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater, Joint& out) noexcept;
 bool board_as_drawn_now(Joint& out) noexcept;
-void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board) noexcept;
+void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games) noexcept;
 // SMOOTH transitions: the handover into a grind. At a rail's lock the trick it leaves (the last packet) goes on playing at
 // its own pace over the game's fresh pose, never held, and each joint goes over to the game's at its own speed
 // (handover_left: legs with the board, then hips and arms, then the back and head). The board goes from where it was drawn
@@ -4926,8 +4931,8 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
                 if (finite(at) && finite(own) && at.position[1] < own.position[1] - 0.01f)
                     place_foot(edited, feet[i], Vec3{at.position[0], own.position[1], at.position[2]}, nullptr, 1.0f);
             }
-            // And the legs round the board as drawn, never through it, while they go over.
-            guard_legs_from_the_board(edited, native, drawn);
+            // And the legs round the board as drawn (and the game's), never through it, while they go over.
+            guard_legs_from_the_board(edited, native, drawn, true);
         }
         // What is drawn is where any fade after this starts from.
         body.transition.current = pose_edit_deltas(native, edited);
@@ -4997,8 +5002,13 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             }
             handing = handover_running(h, now, generation, motion, packet.get()) && hand_over_body(h, now, native, edited, publication);
         }
-        if (handing) applied_deltas = pose_edit_deltas(native, edited);
-        else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
+        if (handing) {
+            applied_deltas = pose_edit_deltas(native, edited);
+            // The force field ran in it (hand_over_body): it holds after it until the feet are where the game has them.
+            publication.guard_generation = generation;
+            publication.guard_going = now_seconds();
+            if (publication.guard_since < 0) publication.guard_since = publication.guard_going;
+        } else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
             // Into a grind the board is the game's at once (the board's pass leaves it alone on a rail), so the body goes
             // with it: the trick's last keys fade out in grind_hand_back, not over the Crossfade. Faded over up to 0.4 s,
             // a trick still mid-flip off a low pop drew its legs on a board already flat on the rail, through it.
@@ -5040,17 +5050,36 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                         place_foot(edited, foot, Vec3{drawn.position[0], own.position[1], drawn.position[2]}, nullptr, 1.0f);
                 }
             }
-            // SMOOTH: while one move goes over to the next - a trick handing back, fading in or out, leaning over to the
-            // game's ahead of a rail - the legs go round the board as drawn, never through it (guard_legs_from_the_board).
-            // Not while a trick plays as made.
+            // SMOOTH: from the moment one move starts going over to the next - a trick handing back (the next input, its
+            // end), fading in or out, leaning over to the game's ahead of a rail - until both feet are where the game has
+            // them, the legs go round the board as drawn, never through it (guard_legs_from_the_board). Not while a trick
+            // plays as made.
             if (smooth_transitions.load(std::memory_order_relaxed)) {
-                const bool lean = packet && rail_lean_episode.load(std::memory_order_acquire) == packet->episode &&
-                                  rail_lean.load(std::memory_order_acquire) > 0.001f && rail_lean.load(std::memory_order_acquire) < 0.999f;
-                const bool going_over = publication.transition.from_left > 0.001f || (packet && packet->weight < 0.999f) ||
-                                        (packet && packet->lower_release > 0.001f && packet->lower_release < 0.999f) || lean;
+                const float lean = packet && rail_lean_episode.load(std::memory_order_acquire) == packet->episode ? rail_lean.load(std::memory_order_acquire) : 0.0f;
+                const bool fading = publication.transition.from_left > 0.001f || (packet && packet->weight < 0.999f);
+                const bool releasing = (packet && packet->lower_release > 0.001f) || lean > 0.001f; // the legs going to the game's
+                const bool going = fading || (packet && packet->lower_release > 0.001f && packet->lower_release < 0.999f) || (lean > 0.001f && lean < 0.999f);
+                const double at_now = now_seconds();
+                if (publication.guard_generation != generation) {
+                    publication.guard_generation = generation;
+                    publication.guard_since = publication.guard_going = -1;
+                }
+                if (going) {
+                    publication.guard_going = at_now;
+                    if (publication.guard_since < 0) publication.guard_since = at_now;
+                } else if (packet && !releasing) publication.guard_since = -1; // the trick plays as made
+                else if (publication.guard_since >= 0) {
+                    // Both feet where the game has them (within a centimetre), or held a second and a half past the move: off.
+                    bool reached = true;
+                    for (const std::uint16_t foot : {left_foot_joint, right_foot_joint}) {
+                        const auto a = world(edited, foot).position, b = world(native, foot).position;
+                        reached = reached && (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]) < 0.0001f;
+                    }
+                    if (reached || at_now - publication.guard_going > 1.5) publication.guard_since = -1;
+                }
                 Joint board;
-                if (going_over && (packet ? drawn_board_now(*packet, native, board) : board_as_drawn_now(board))) {
-                    guard_legs_from_the_board(edited, native, board);
+                if (publication.guard_since >= 0 && (packet ? drawn_board_now(*packet, native, board) : board_as_drawn_now(board))) {
+                    guard_legs_from_the_board(edited, native, board, !packet || releasing);
                     applied_deltas = pose_edit_deltas(native, edited);
                 }
             }
@@ -5276,25 +5305,46 @@ Push leg_in_deck(std::span<const Joint> pose, const Joint& board, std::uint16_t 
     return worst;
 }
 } // namespace deck_guard
-void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board) noexcept {
+void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games) noexcept {
     try {
         if (edited.size() < skeleton_joints || native.size() < skeleton_joints || !finite(drawn_board)) return;
-        // Only with him over the deck: under the board (a bail, the board over him) it is not his to stand on.
-        const auto hips = world(edited, hips_joint).position;
-        const auto over = rotate(conjugate(drawn_board.rotation),
-                                 Vec3{hips[0] - drawn_board.position[0], hips[1] - drawn_board.position[1], hips[2] - drawn_board.position[2]});
-        if (!(over[1] > deck_guard::top)) return;
         Joint games;
         const bool games_ok = games_board_now(live().board_holder.load(std::memory_order_acquire), games) && finite(games);
+        // The boards to keep out of: the board as drawn, and going over to the game's its own and the one halfway, so a board
+        // drawn a little off where this reckons it (the board's pass has its own fade) is not gone through either.
+        std::array<Joint, 3> boards{};
+        std::size_t count = 0;
+        const auto hips = world(edited, hips_joint).position;
+        const auto keep_out_of = [&](const Joint& board) {
+            // Only with him over the deck: under the board (a bail, the board over him) it is not his to stand on.
+            const auto over = rotate(conjugate(board.rotation), Vec3{hips[0] - board.position[0], hips[1] - board.position[1], hips[2] - board.position[2]});
+            if (finite(board) && over[1] > deck_guard::top) boards[count++] = board;
+        };
+        keep_out_of(drawn_board);
+        if (toward_games && games_ok) {
+            keep_out_of(games);
+            Joint halfway;
+            halfway.rotation = slerp(drawn_board.rotation, games.rotation, 0.5f);
+            for (std::size_t k = 0; k < 3; ++k) halfway.position[k] = (drawn_board.position[k] + games.position[k]) * 0.5f;
+            keep_out_of(halfway);
+        }
+        if (count == 0) return;
         for (const auto& [foot, knee] : {std::pair<std::uint16_t, std::uint16_t>{left_foot_joint, 342}, std::pair<std::uint16_t, std::uint16_t>{right_foot_joint, 9}}) {
-            // As deep as the game's own pose has it in its own board is the game's: only what is deeper is ours to move.
-            const float own = games_ok ? deck_guard::leg_in_deck(native, games, foot, knee).depth : 0.0f;
-            // A few goes: the leg bends to reach, and a push out of one side can leave another point in.
-            for (int pass = 0; pass < 4; ++pass) {
-                const auto push = deck_guard::leg_in_deck(edited, drawn_board, foot, knee);
+            // As deep as the game's own pose has it in its own board is the game's: only what is deeper is ours to move (up
+            // to 1.5 cm of it: deeper than that is in the deck whoever put it there).
+            const float own = games_ok ? std::min(deck_guard::leg_in_deck(native, games, foot, knee).depth, 0.015f) : 0.0f;
+            // A few goes: the leg bends to reach, and a push out of one side (or one board) can leave another point in.
+            for (int pass = 0; pass < 5; ++pass) {
+                deck_guard::Push push;
+                const Joint* board = nullptr;
+                for (std::size_t b = 0; b < count; ++b)
+                    if (const auto in = deck_guard::leg_in_deck(edited, boards[b], foot, knee); in.depth > push.depth) {
+                        push = in;
+                        board = &boards[b];
+                    }
                 const float excess = push.depth - std::max(own, deck_guard::sole_skin);
-                if (!(excess > 0.0005f)) break;
-                const auto way = rotate(drawn_board.rotation, push.way);
+                if (!board || !(excess > 0.0005f)) break;
+                const auto way = rotate(board->rotation, push.way);
                 const auto at = world(edited, foot);
                 const float by = excess + deck_guard::clear_by;
                 place_foot(edited, foot, Vec3{at.position[0] + way[0] * by, at.position[1] + way[1] * by, at.position[2] + way[2] * by}, &at.rotation, 1.0f);
