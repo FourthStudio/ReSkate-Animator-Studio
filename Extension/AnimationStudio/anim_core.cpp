@@ -35,7 +35,7 @@ std::string_view ease_name(Ease ease) noexcept {
     return ease == Ease::linear ? "linear" : ease == Ease::step ? "step" : "smooth";
 }
 
-constexpr std::array<EditableJoint, 25> joints{{
+constexpr std::array<EditableJoint, 55> joints{{
     {board_joint, "Board", true},
     {7, "Hips", true},
     {42, "Lower back", false},
@@ -53,14 +53,46 @@ constexpr std::array<EditableJoint, 25> joints{{
     {341, "Left leg", false},
     {342, "Left knee", false},
     {343, "Left foot", true},
-    {344, "Left toes", false},
+    {344, "Left toes", false, JointGroup::advanced},
     {8, "Right leg", false},
     {9, "Right knee", false},
     {10, "Right foot", true},
-    {11, "Right toes", false},
-    {43, "Middle back", false},
-    {45, "Upper chest", false},
-    {102, "Upper neck", false},
+    {11, "Right toes", false, JointGroup::advanced},
+    {43, "Middle back", false, JointGroup::advanced},
+    {45, "Upper chest", false, JointGroup::advanced},
+    {102, "Upper neck", false, JointGroup::advanced},
+    // The fingers, each in its three joints from the knuckle out (the game's clips key all of them; the twist, face and eye
+    // joints are left out: the game moves those itself, a key there would not show).
+    {51, "Right thumb 1", false, JointGroup::fingers},
+    {52, "Right thumb 2", false, JointGroup::fingers},
+    {53, "Right thumb 3", false, JointGroup::fingers},
+    {63, "Right index 1", false, JointGroup::fingers},
+    {64, "Right index 2", false, JointGroup::fingers},
+    {65, "Right index 3", false, JointGroup::fingers},
+    {55, "Right middle 1", false, JointGroup::fingers},
+    {56, "Right middle 2", false, JointGroup::fingers},
+    {57, "Right middle 3", false, JointGroup::fingers},
+    {67, "Right ring 1", false, JointGroup::fingers},
+    {68, "Right ring 2", false, JointGroup::fingers},
+    {69, "Right ring 3", false, JointGroup::fingers},
+    {59, "Right pinky 1", false, JointGroup::fingers},
+    {60, "Right pinky 2", false, JointGroup::fingers},
+    {61, "Right pinky 3", false, JointGroup::fingers},
+    {296, "Left thumb 1", false, JointGroup::fingers},
+    {297, "Left thumb 2", false, JointGroup::fingers},
+    {298, "Left thumb 3", false, JointGroup::fingers},
+    {289, "Left index 1", false, JointGroup::fingers},
+    {290, "Left index 2", false, JointGroup::fingers},
+    {291, "Left index 3", false, JointGroup::fingers},
+    {285, "Left middle 1", false, JointGroup::fingers},
+    {286, "Left middle 2", false, JointGroup::fingers},
+    {287, "Left middle 3", false, JointGroup::fingers},
+    {293, "Left ring 1", false, JointGroup::fingers},
+    {294, "Left ring 2", false, JointGroup::fingers},
+    {295, "Left ring 3", false, JointGroup::fingers},
+    {280, "Left pinky 1", false, JointGroup::fingers},
+    {281, "Left pinky 2", false, JointGroup::fingers},
+    {282, "Left pinky 3", false, JointGroup::fingers},
 }};
 } // namespace
 
@@ -502,7 +534,8 @@ void apply_authored_edit_layer(const Animation& animation, float seconds, std::s
     if (match_rest > 0 && studio.size() >= skeleton_joints && native.size() >= skeleton_joints) {
         const float rest = std::min(match_rest, 1.0f) * weight;
         for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
-            if (!gameplay_body_joint(j) || !editable(j)) continue;
+            // Not the fingers: they stay the game's, with their keys on top (as before they could be keyed).
+            if (!gameplay_body_joint(j) || !editable(j) || editable(j)->group == JointGroup::fingers) continue;
             const float share = limbs ? rest * std::clamp(limbs->of(j), 0.0f, 1.0f) : rest;
             if (share <= 0) continue;
             native[j].rotation = slerp(native[j].rotation, studio[j].rotation, share);
@@ -1967,7 +2000,7 @@ std::vector<NativeModels::Model> native_models_of(const Clip& clip, std::size_t 
         std::vector<std::uint16_t> picked;
         for (const auto& e : editable_joints())
             if (e.index < native_body_joints && e.index < skeleton_joints && gameplay_body_joint(e.index) &&
-                mirror_joint[e.index] < native_body_joints)
+                mirror_joint[e.index] < native_body_joints && e.group != JointGroup::fingers)
                 picked.push_back(e.index);
         return picked;
     }();

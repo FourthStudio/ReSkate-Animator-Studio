@@ -48,10 +48,14 @@ Vec3 to_euler(const Quat& q) noexcept;
 bool finite(const Joint& joint) noexcept;
 
 // ---- the joints a player edits --------------------------------------------------------------------
+// Which rows show a joint (SETTINGS > SKATER): the usual ones always, the advanced bones (toes, the spine and neck between
+// the usual ones) and the fingers when their setting is on - and any joint with keys, whatever the setting.
+enum class JointGroup : std::uint8_t { usual, advanced, fingers };
 struct EditableJoint {
     std::uint16_t index;
     std::string_view label; // as the timeline shows it
     bool moves;              // takes a position as well as a rotation (the hips)
+    JointGroup group{JointGroup::usual};
 };
 // In the order of the timeline's rows.
 std::span<const EditableJoint> editable_joints() noexcept;

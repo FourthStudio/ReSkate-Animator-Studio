@@ -17,6 +17,7 @@
 #include "Extension/AnimationStudio/studio_rails.h"
 #include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/editor_floor.h"
+#include "Extension/AnimationStudio/grab_types.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -2111,6 +2112,32 @@ void game_clips_stand_on_the_floor_where_their_board_rests() {
     check(near(lift.front(), 0), "A steep board is not stood on the floor by its rest");
     check(near(floor_lift_at(times, lift, 0.5f), lift[30]) && floor_lifts(times, {}, flat).empty(), "The lift is read between frames");
 }
+// The game's grab loop table (cdb_onboard_grab_loop, EnumGS.GrabType 1 to 10) and its styles (Enum.GS.DetailedGrabType).
+void a_grab_loop_is_known_by_the_games_grab() {
+    const auto melon = grab_loop_of("native:animation/dingo/c_proto_onb_inair_bs_grab_melon_mid_loop");
+    check(melon.family == 2 && melon.style == "melon" && !melon.fakie, "A BS grab's melon loop is family 2, style melon");
+    check(grab_loop_of("c_proto_inair_fs_grab_tailbone_tuckknee_mid_loop_01").style == "tailbone_tuckknee", "Mid and the number are not style");
+    check(grab_loop_of("c_proto_onb_inair_grab_weddle_japan_loop").family == 8, "The weddle loops are the mute grab");
+    check(grab_loop_of("c_proto_onb_inair_double_grab_left_loop").family == 9 && grab_loop_of("c_proto_onb_grab_rocket_loop").family == 10,
+          "Double and rocket");
+    check(grab_loop_of("c_proto_onb_inair_grab_crail_bs_shifty_loop").family == 5 &&
+              grab_loop_of("c_proto_onb_inair_grab_crail_bs_shifty_loop").style == "bs_shifty",
+          "A crail's BS shifty is the crail, not a BS grab");
+    check(grab_loop_of("c_proto_onb_inair_fakie_bs_grab_loop").fakie && grab_loop_of("c_proto_onb_inair_fakie_bs_grab_loop").style.empty(),
+          "A fakie loop is fakie, its plain style");
+    check(grab_loop_of("c_proto_onb_grab_bs_1ft_judo_loop").family == 0 && grab_loop_of("c_proto_onb_grab_ground_fs_loop").family == 0 &&
+              grab_loop_of("c_proto_onb_inair_bs_grab_into").family == 0,
+          "One-foot grabs, ground grabs and ways in are not in the table");
+    check(grab_style_words(4) == "melon" && grab_style_words(13) == "fs_shifty" && grab_style_words(1).empty() && grab_style_words(99).empty(),
+          "The game's styles read as the loops' words");
+    const auto plain = grab_loop_of("c_proto_onb_inair_bs_grab_loop"), japan = grab_loop_of("c_proto_onb_inair_bs_grab_japan_loop");
+    check(grab_loop_rank(melon, 2, 4, nullptr) == 0 && grab_loop_rank(plain, 2, 4, nullptr) == 1 && grab_loop_rank(japan, 2, 4, nullptr) == 2,
+          "A melon plays its own loop first, then the plain one, then another style");
+    check(grab_loop_rank(melon, 1, 4, nullptr) < 0 && grab_loop_rank(melon, 0, 0, nullptr) < 0, "Never on another grab, or no grab");
+    const bool fakie = true;
+    check(grab_loop_rank(plain, 2, 1, &fakie) == 3 && grab_loop_rank(grab_loop_of("c_proto_onb_inair_fakie_bs_grab_loop"), 2, 1, &fakie) == 0,
+          "Riding fakie, the fakie loop first");
+}
 void grind_rail_goes_under_the_grind() {
     check(grind_clip("animation/dingo/c_proto_onb_grind_fs_bs_5_0_rail_loop") && grind_clip("animation/dingo/c_proto_ofb_grind_5050_feet_rail_loop") &&
               !grind_clip("animation/dingo/c_proto_onb_trick_o_kickflip_mid") && !grind_clip("animation/dingo/c_proto_onb_manual_t_loop_med") &&
@@ -2819,6 +2846,7 @@ int main(int argc, char** argv) {
         additive_clips_go_on_their_pose();
         grind_rail_goes_under_the_grind();
         game_clips_stand_on_the_floor_where_their_board_rests();
+        a_grab_loop_is_known_by_the_games_grab();
         a_grind_is_known_by_the_games_name();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();

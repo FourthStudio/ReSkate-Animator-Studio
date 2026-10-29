@@ -32,6 +32,7 @@
 #include "studio_rails.h"
 #include "grind_types.h"
 #include "editor_floor.h"
+#include "grab_types.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include <Windows.h>
@@ -366,6 +367,7 @@ struct State {
     std::string your_name;                         // MADE BY, remembered for new recordings and packs
     std::vector<std::string> favorite_packs;       // starred in PACKS
     bool hover_preview{true};                      // TRICKS: a hovered trick plays in a little window
+    bool advanced_bones{}, finger_bones{};         // SETTINGS > SKATER: their rows shown
     bool catch_marker{true}, drop_preview_tool{true}; // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                             // the first-start guide was read
     bool smooth_handover{true};                    // SETTINGS > TRICKS > Transitions: SMOOTH (smooth_transitions) or CLASSIC
@@ -610,6 +612,10 @@ struct Live {
     std::vector<PieceManual> piece_manuals;
     int manual_now{-1};
     std::optional<bool> fakie_now;
+    // Each piece's grab (piece_tricks indices: grab_loop_of), and the game's grab and its style now (EnumGS.GrabType,
+    // Enum.GS.DetailedGrabType; -1 not read).
+    std::vector<GrabLoop> piece_grabs;
+    int grab_now{-1}, grab_style_now{-1};
     std::vector<std::size_t> tracked;
     struct HeldPlay {
         HeldKind kind{HeldKind::none};
@@ -713,6 +719,7 @@ struct RailLink {
     double seen{-1};
     std::string ready_item; // the rail that stands under the grind, its size, and its bar's top above the floor
     float ready_size{}, ready_top{};
+    RailSpot ready_spot; // and where it stands
     std::vector<std::string> placeable; // the rails this player's build kit has (empty: not known yet)
     bool cannot{}; // the rail cannot be put up now (no objects on this map, online, the game refused): the grind is not lifted
 };
@@ -903,6 +910,8 @@ SettingsFile settings_file_of(const State& s) {
     f.smooth_transitions = s.smooth_handover;
     f.grind_rail = s.grind_rail;
     f.grind_rail_size = s.grind_rail_size;
+    f.advanced_bones = s.advanced_bones;
+    f.finger_bones = s.finger_bones;
     return f;
 }
 void load_settings(State& s) {
@@ -917,6 +926,8 @@ void load_settings(State& s) {
         s.grab_board = f.grab_board;
         s.your_name = f.made_by;
         s.hover_preview = f.hover_preview;
+        s.advanced_bones = f.advanced_bones;
+        s.finger_bones = f.finger_bones;
         s.ungrouped = std::move(f.ungrouped);
         s.favorite_packs = std::move(f.favorite_packs);
         s.export_folder = f.export_folder;
@@ -2143,7 +2154,25 @@ std::size_t pin_brackets_locked(State& s) {
         }
     return pinned;
 }
+// A finger keyed for the first time gets its brackets (0, 0, 0 at the start and the end), so its key comes in from the
+// game's pose and goes back to it as every other joint's does (key_all_at leaves fingers without keys out).
+void bracket_keyed_fingers_locked(State& s) {
+    if (!s.clip || s.clip->empty()) return;
+    const float from = s.edits.start, to = s.edits.end < 0 ? s.clip->duration() : s.edits.end;
+    for (const auto& joint : editable_joints()) {
+        if (joint.group != JointGroup::fingers) continue;
+        const auto* track = s.edits.track(joint.index);
+        if (!track || track->keys.empty() || track->locked) continue;
+        for (const float at : {from, to}) {
+            bool has = false;
+            for (const auto& key : track->keys) has |= std::abs(key.time - at) <= 1.0f / 120;
+            if (!has) set_key(s.edits, joint.index, at, Offset{});
+            track = s.edits.track(joint.index);
+        }
+    }
+}
 void changed_locked(State& s) {
+    bracket_keyed_fingers_locked(s);
     if (pin_brackets_locked(s))
         s.status = "The brackets' keys stay at 0, 0, 0, so your animation comes in from the game's pose and goes back to it: "
                    "pose between the brackets.";
@@ -2198,6 +2227,8 @@ void key_all_at(Animation& animation, float seconds) {
         // trick already has it (board_edited) and the brackets anchor the board like any limb.
         const auto* track = animation.track(joint.index);
         if (track && track->locked) continue;
+        // A finger only once it has keys (bracket_keyed_fingers): thirty empty tracks on every trick otherwise.
+        if (joint.group == JointGroup::fingers && (!track || track->keys.empty())) continue;
         bool has = false;
         if (track)
             for (const auto& key : track->keys) has |= std::abs(key.time - seconds) <= 1.0f / 120;
@@ -2986,7 +3017,8 @@ Live::HeldKind held_kind_of(const std::string& trick) {
     if (has("ofb")) return K::none; // on foot
     if (has("powerslide") || has("brake")) return has("loop") ? K::ground : K::none;
     if (has("manual")) return has("loop") || has("pose") ? K::ground : K::none;
-    if (has("grab")) return has("inair") && has("loop") ? K::grab : K::none;
+    // An air grab's loop (the one-foot and two-foot grabs' too: "onb_grab_bs_1ft_judo_loop"); a grab on the ground is not one.
+    if (has("grab")) return has("loop") && !has("ground") ? K::grab : K::none;
     if (has("loop") && (has("grind") || has("rail") || has("slide"))) return K::grind;
     return K::none;
 }
@@ -3068,6 +3100,54 @@ std::optional<PieceMatch> manual_play(Live& l, float dt) {
                  l.fakie_now && *l.fakie_now ? ", fakie" : "", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, best.mirrored ? ", mirrored" : "");
     return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, best.score};
 }
+// A held move the game names (its grind, its grab): the saved loop for it starts the moment the game is in it, from its
+// start, and lets go the moment the game leaves it - no waiting for him to hold its pose first, as a manual does
+// (manual_play; 2026-10-29: "the manuals are instant, can you do the same with grinds and grabs"). `rank` says how well a
+// saved loop is for what the game says now (-1 not for it, 0 best); of the best, the nearest to his pose plays.
+std::optional<PieceMatch> said_loop(Live& l, float dt, Live::HeldKind kind, const std::function<int(std::size_t)>& rank, const std::string& doing,
+                                    const char* left) {
+    auto& g = l.held;
+    if (g.playing >= 0 && rank(static_cast<std::size_t>(g.playing)) < 0) {
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go: {}.", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, left);
+        g.playing = g.candidate = -1;
+    }
+    if (g.playing >= 0) {
+        const auto* playing = l.piece_tricks[static_cast<std::size_t>(g.playing)];
+        const float length = playing->clip->duration();
+        g.time += dt;
+        if (length > 0) g.time = std::fmod(g.time, length);
+        return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, 0};
+    }
+    int best = -1;
+    for (const auto& [index, k] : l.held_loops)
+        if (k == kind)
+            if (const int r = rank(index); r >= 0 && (best < 0 || r < best)) best = r;
+    if (best < 0) return std::nullopt;
+    std::vector<std::size_t> pieces;
+    std::vector<const Clip*> clips;
+    for (const auto& [index, k] : l.held_loops)
+        if (k == kind && rank(index) == best) {
+            pieces.push_back(index);
+            clips.push_back(l.piece_tricks[index]->clip.get());
+        }
+    const auto fits = held_pose_fits(clips, l.pose, kind == Live::HeldKind::grab);
+    if (fits.empty()) return std::nullopt;
+    const auto& pick = fits.front();
+    g.playing = static_cast<int>(pieces[pick.piece]);
+    g.mirrored = pick.mirrored;
+    g.time = 0; // the game's loop starts as the move does
+    g.off_since = -1;
+    logging::log(Level::info, Channel::skater, "Animation Studio: the game is {}: {}{} plays from its start.", doing,
+                 l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, pick.mirrored ? ", mirrored" : "");
+    return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, pick.score};
+}
+// A grab of the game's (EnumGS.GrabType 1 to 10, its style by Enum.GS.DetailedGrabType): the saved loops of that family, its
+// own style first, then the plain one, then any other style; the fakie ones when he rides fakie.
+int grab_rank(const Live& l, std::size_t index) {
+    if (index >= l.piece_grabs.size()) return -1;
+    const bool fakie = l.fakie_now.value_or(false);
+    return grab_loop_rank(l.piece_grabs[index], l.grab_now, l.grab_style_now, l.fakie_now ? &fakie : nullptr);
+}
 constexpr float held_apart = 0.7f;  // the loop taken is well nearer than the next saved one
 constexpr float held_still = 0.006f; // on the ground: how little the spine and legs may move over a quarter of a second
 std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, float dt, Live::HeldKind kind, std::uint32_t grind) {
@@ -3090,11 +3170,29 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
     if (manuals_by_game) {
         if (auto played = manual_play(l, dt)) return played;
     }
+    // On a rail, the saved loop of the grind the game names starts at once (its grind is known: only that one may play).
+    if (grinding && grind) {
+        return said_loop(l, dt, kind, [&](std::size_t index) { return grind_allows(l, index, grind) ? 0 : -1; }, "doing a " + grind_type_label(grind),
+                         "the game is doing another grind now");
+    }
+    // In the air, a grab loop of yours is played by the game's grab, when it can be read.
+    const bool grabs_by_game = kind == Live::HeldKind::grab && l.grab_now >= 0;
+    if (grabs_by_game) {
+        static constexpr std::array<const char*, 11> family_names{"", "FS grab", "BS grab", "tail grab", "seatbelt grab", "crail grab",
+                                                                   "nose grab", "stale grab", "mute grab", "double grab", "rocket air"};
+        const auto style = grab_style_words(l.grab_style_now);
+        const std::string said = l.grab_now >= 1 && l.grab_now <= 10
+                                     ? std::string("in a ") + family_names[static_cast<std::size_t>(l.grab_now)] + (style.empty() ? std::string{} : " (" + style + ")")
+                                     : std::string("in a grab");
+        if (auto played = said_loop(l, dt, kind, [&](std::size_t index) { return grab_rank(l, index); }, said, "the game has left that grab"))
+            return played;
+    }
     std::vector<std::size_t> pieces;
     std::vector<const Clip*> clips;
     for (const auto& [index, k] : l.held_loops)
         if (k == kind && (!grinding || grind_allows(l, index, grind)) &&
-            !(manuals_by_game && index < l.piece_manuals.size() && l.piece_manuals[index].manual)) {
+            !(manuals_by_game && index < l.piece_manuals.size() && l.piece_manuals[index].manual) &&
+            !(grabs_by_game && index < l.piece_grabs.size() && l.piece_grabs[index].family)) {
             pieces.push_back(index);
             clips.push_back(l.piece_tricks[index]->clip.get());
         }
@@ -3185,6 +3283,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
         l.held_loops.clear();
         l.piece_grinds.clear();
         l.piece_manuals.clear();
+        l.piece_grabs.clear();
         l.tracked.clear();
         l.held = {};
         std::vector<const Clip*> clips;
@@ -3197,6 +3296,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                     l.piece_tricks.push_back(&t);
                     l.piece_grinds.push_back(grind_types_of(t.trick.substr(7)));
                     l.piece_manuals.push_back(manual_of(t.trick));
+                    l.piece_grabs.push_back(grab_loop_of(t.trick));
                     if (kind != Live::HeldKind::none) l.held_loops.push_back({index, kind});
                     else {
                         l.tracked.push_back(index);
@@ -3714,6 +3814,9 @@ void on_animation(std::uintptr_t component) noexcept {
             l.game = entity ? trainer::read_studio_states(base, entity) : trainer::StudioStates{};
             l.manual_now = entity ? trainer::read_manual_intent(base, entity) : -1;
             l.fakie_now = l.game.riding_fakie;
+            // Not grabbing (when that can be read): no grab, whatever the grab's type was left at.
+            l.grab_now = !l.game.grab_type ? -1 : l.game.grabbing && !*l.game.grabbing ? 0 : static_cast<int>(*l.game.grab_type);
+            l.grab_style_now = l.game.detailed_grab_type ? static_cast<int>(*l.game.detailed_grab_type) : -1;
             // Which grind the game is doing (grind_types.h): Enum.GS.SkateGrindType, the one the game picks its grind clips by
             // (CurrentSkateGrindType named another grind than the clip it played, 2026-10-29); else CurrentSkateGrindType,
             // else CurrentGrindType.
@@ -3963,8 +4066,18 @@ void on_animation(std::uintptr_t component) noexcept {
                 st.board_base = relative(origin, unedited);
                 st.board_base_valid = has_trick && finite(st.board_base);
                 if (snap->grab && finite(board_target)) {
-                    close_hand(l.pose, right_hand_joint, right_fingers, board_target);
-                    close_hand(l.pose, left_hand_joint, left_fingers, board_target);
+                    // Not a hand whose fingers are keyed (SETTINGS > SKATER > Fingers): the keys say how it holds the board.
+                    const auto keyed = [&](const auto& fingers) {
+                        for (const auto& finger : fingers)
+                            for (const auto joint : finger)
+                                if (joint)
+                                    if (const auto* t = shown_edits.track(joint); t && !t->hidden)
+                                        for (const auto& key : t->keys)
+                                            if (key.rotation != Quat{0, 0, 0, 1}) return true;
+                        return false;
+                    };
+                    if (!keyed(right_fingers)) close_hand(l.pose, right_hand_joint, right_fingers, board_target);
+                    if (!keyed(left_fingers)) close_hand(l.pose, left_hand_joint, left_fingers, board_target);
                 }
             }
         } else if (snap->open) {
@@ -4990,7 +5103,7 @@ void stash(const GameplayPacket& packet, std::uint64_t presentation, const std::
     if (fakie_mirrored(*packet.edits)) mirror_upper_body(studio);
     auto pose = native;
     for (std::uint16_t j = 0; j < skeleton_joints; ++j)
-        if (gameplay_body_joint(j) && editable(j)) pose[j] = studio[j];
+        if (gameplay_body_joint(j) && editable(j) && editable(j)->group != JointGroup::fingers) pose[j] = studio[j];
     apply_edits(*packet.edits, packet.time, pose); // the board track (900) is past the skeleton and left out
     if (packet.limits) limit_keyed_joints(*packet.edits, packet.time, pose);
     expected = {presentation, packet.episode, now, packet.time, std::move(pose), native, packet.edits->name, packet.mirrored, packet.fakie,
@@ -5014,7 +5127,7 @@ void compare(std::uint64_t presentation, double now, const std::vector<Joint>& d
     int count = 0;
     for (const auto& e : editable_joints()) {
         const auto j = e.index;
-        if (j >= skeleton_joints || !gameplay_body_joint(j)) continue;
+        if (j >= skeleton_joints || !gameplay_body_joint(j) || e.group == JointGroup::fingers) continue;
         const float error = angle(drawn[j].rotation, expected.pose[j].rotation);
         sum += error;
         native_sum += angle(expected.native[j].rotation, expected.pose[j].rotation);
@@ -5059,6 +5172,10 @@ bool board_as_drawn_now(Joint& out) noexcept;
 // True while it is still giving a foot a turn or a move.
 bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games,
                                bool letting_go) noexcept;
+// The board's force field is off (2026-10-29, after testing 1.0.13 to 1.0.37: "remove the force field, that's not working
+// out, I liked how it was before"). The hand-back is as it was before it: the game's legs, the feet never drawn under the
+// game's own. Kept, not deleted, while other ways are looked for.
+constexpr bool board_force_field = false;
 // The force field's moment (SMOOTH): it comes on as the trick starts handing back to the game (`handing_back` rising: the next
 // input, going onto a rail or a ledge, the lean onto a rail, the handover into a grind or on into the next move in the air),
 // stays on for that move's crossfade (the trick's own or the main one), and then lets go: each foot glides back to where it is
@@ -5336,7 +5453,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             const bool running = handover_running(h, now, generation, motion, packet.get());
             const bool handing_back = guard_releasing ||
                                       (!packet && motion != MotionState::riding && (running || publication.transition.from_left > 0.001f));
-            guard_on = smooth_transitions.load(std::memory_order_relaxed) &&
+            guard_on = board_force_field && smooth_transitions.load(std::memory_order_relaxed) &&
                        guard_moment(publication, now, generation, handing_back, packet && !guard_releasing);
             handing = running && hand_over_body(h, now, native, edited, publication, guard_on);
         }
@@ -6028,7 +6145,7 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
                 const auto studio = studio_pose(*packet.clip, packet.time, packet.mirrored);
                 std::vector<Joint> body(native.begin(), native.end());
                 for (std::uint16_t j = 0; j < skeleton_joints; ++j)
-                    if (gameplay_body_joint(j) && editable(j)) body[j] = studio[j];
+                    if (gameplay_body_joint(j) && editable(j) && editable(j)->group != JointGroup::fingers) body[j] = studio[j];
                 apply_edits(*packet.edits, packet.time, body);
                 if (packet.limits) limit_keyed_joints(*packet.edits, packet.time, body);
                 for (const auto& [foot, thigh] : legs) {
@@ -6486,12 +6603,13 @@ void rail_cannot(bool cannot) {
     std::lock_guard lock(r.mutex);
     r.cannot = cannot;
 }
-void rail_ready(const std::string& item, float size, float top) {
+void rail_ready(const std::string& item, float size, float top, const RailSpot& at = {}) {
     auto& r = rail_link();
     std::lock_guard lock(r.mutex);
     r.ready_item = item;
     r.ready_size = size;
     r.ready_top = top;
+    r.ready_spot = at;
 }
 bool rail_near(const std::array<float, 3>& a, const std::array<float, 3>& b, float within) {
     const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
@@ -6734,7 +6852,7 @@ void rail_tick(bool open) noexcept {
                 rail_say(p, "The grind stands on the rail: " + std::string(rail ? rail->name : std::string_view(item)) +
                                 std::format(" at {:.0f}%, its top {:.1f} cm up.", size * 100, p.top * 100));
         }
-        rail_ready(item, size, p.top);
+        rail_ready(item, size, p.top, RailSpot{at, rotation, true});
     } catch (...) {}
 }
 TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float camera_fov) {
@@ -6949,6 +7067,8 @@ Settings settings() {
     out.stance_choice = s.stance_choice;
     out.game_goofy = goofy_stance();
     out.grab_board = s.grab_board;
+    out.advanced_bones = s.advanced_bones;
+    out.finger_bones = s.finger_bones;
     out.limits = s.limits;
     out.front_foot = s.front_foot;
     out.crossfade = s.crossfade;
@@ -7134,6 +7254,8 @@ View view() {
             v.trick_stance = (*lead != v.own_lead_right ? 2 : 0) + (s.edits.fakie.value_or(false) ? 1 : 0);
     v.showing_goofy = s.showing_goofy;
     v.grab_board = s.grab_board;
+    v.advanced_bones = s.advanced_bones;
+    v.finger_bones = s.finger_bones;
     v.front_foot = s.front_foot;
     v.limits = s.limits;
     v.crossfade = s.crossfade;
@@ -7405,6 +7527,24 @@ void set_grab(bool on) {
     s.grab_board = on;
     save_settings_locked(s);
     s.status = on ? "Hands close on the board when they come near it." : "Hands stay as they are.";
+    publish_locked(s);
+}
+void set_advanced_bones(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.advanced_bones = on;
+    save_settings_locked(s);
+    s.status = on ? "The toes and the spine and neck between the usual joints are on the timeline and on him to key."
+                  : "Only the usual joints show (a joint you keyed stays on the timeline).";
+    publish_locked(s);
+}
+void set_finger_bones(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.finger_bones = on;
+    save_settings_locked(s);
+    s.status = on ? "Every finger is on the timeline and on him to key, three joints each: curl them round the board for a grab."
+                  : "The fingers are hidden (a finger you keyed stays on the timeline).";
     publish_locked(s);
 }
 void set_stance(int choice) {
@@ -10507,6 +10647,24 @@ bool peek_playing() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     return static_cast<bool>(s.peek_clip);
+}
+bool peek_ready() {
+    std::string asset;
+    {
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        if (!s.peek_clip) return false;
+        if (s.peek_edits && s.peek_edits->source.kind == "native_asset") asset = s.peek_edits->source.asset;
+    }
+    // A grind's preview opens on the studio rail standing under it (2026-10-29: "the grind previews need to have the rail
+    // spawn instantly"): it is moved under the grind as the preview stands on its first frame, and the window waits for it.
+    // Nothing to wait for when no rail can come.
+    if (!grind_clip(asset)) return true;
+    auto& r = rail_link();
+    std::lock_guard lock(r.mutex);
+    if (!r.room || r.chosen.empty() || r.cannot) return true;
+    return r.grind && r.ready_item == r.chosen && std::abs(r.ready_size - r.size) < 0.005f && r.ready_spot.valid &&
+           same_rail_spot(r.ready_spot.at, r.ready_spot.rotation, r.spot.at, r.spot.rotation);
 }
 void peek_go() {
     auto& s = state();

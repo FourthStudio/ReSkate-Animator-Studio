@@ -144,6 +144,18 @@ Setting hands_grab_the_board(const studio::Settings& now) {
                   "not keyed or saved.",
                   [](bool on) { studio::set_grab(on); });
 }
+Setting advanced_bones(const studio::Settings& now) {
+    return on_off("Advanced bones", now.advanced_bones,
+                  "On: the toes, and the spine and neck between the usual joints (middle back, upper chest, upper neck), on the "
+                  "timeline and on him to key. Off: the usual joints only. A joint you keyed shows either way.",
+                  [](bool on) { studio::set_advanced_bones(on); });
+}
+Setting finger_bones(const studio::Settings& now) {
+    return on_off("Fingers", now.finger_bones,
+                  "On: every finger on the timeline and on him to key, three joints each from the knuckle out, to close a hand "
+                  "round the board for a grab. They play in game like any other key. A finger you keyed shows either way.",
+                  [](bool on) { studio::set_finger_bones(on); });
+}
 Setting joint_limits(const studio::Settings& now) {
     return on_off("Joint limits", now.limits,
                   "On: knees and elbows bend one way and every joint stays in the range the game's own animation uses, while you "

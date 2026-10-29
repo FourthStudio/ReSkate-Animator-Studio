@@ -9,7 +9,7 @@
 namespace dingosdk::anim_studio {
 namespace {
 struct Given {
-    std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, drop_preview, guide_seen, smooth;
+    std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, drop_preview, guide_seen, smooth, advanced, fingers;
     std::optional<int> stance;
     std::optional<float> crossfade;
     std::optional<std::string> your_name, grind_rail;
@@ -22,6 +22,8 @@ Given given;
 }
 void set_room(bool on) { given.room = on; }
 void set_grab(bool on) { given.grab = on; }
+void set_advanced_bones(bool on) { given.advanced = on; }
+void set_finger_bones(bool on) { given.fingers = on; }
 void set_joint_limits(bool on) { given.limits = on; }
 void set_play_in_game(bool on) { given.play_in_game = on; }
 void set_front_foot(bool on) { given.front_foot = on; }
@@ -77,6 +79,12 @@ void each_on_off_row_sets_its_own_setting() {
     custom_tricks_in_game(now).pick(0);
     check(anim_studio::given.grab == true && anim_studio::given.limits == false && anim_studio::given.play_in_game == false,
           "An on / off row set another setting, or not its own");
+    check(!anim_studio::given.advanced && !anim_studio::given.fingers, "Another row set the advanced bones or the fingers");
+    check(advanced_bones(now).value == "OFF" && finger_bones(now).value == "OFF", "Advanced bones and Fingers start off");
+    advanced_bones(now).pick(1);
+    check(anim_studio::given.advanced == true && !anim_studio::given.fingers, "Advanced bones set another setting, or not its own");
+    finger_bones(now).pick(1);
+    check(anim_studio::given.fingers == true, "Fingers did not set its own setting");
 }
 void editing_stance_names_the_games_stance_and_goes_round() {
     reset();

@@ -340,7 +340,7 @@ struct Ui {
         ImVec2 a{}, b{};
         std::function<bool(bool)> start; // asks for the trick: true plays it once it is ready, false only readies it
         bool readied{}, tried{}, peeking{}, going{}, done{};
-        double asked{-1};
+        double asked{-1}, ready_at{-1}, go_at{-1};
         float duration{};
         studio::Orbit orbit; // the camera as it was, put back after
     } hover;
@@ -371,6 +371,28 @@ void say(std::string text) {
 const studio::JointView* joint_view(const studio::View& v, std::uint16_t joint) {
     for (const auto& j : v.joints) if (j.joint == joint) return &j;
     return nullptr;
+}
+const studio::TrackView* track_view(const studio::View& v, std::uint16_t joint); // below
+// Whether a joint's row and dot show (SETTINGS > SKATER): the usual joints always, the advanced bones and the fingers when
+// their setting is on, and any joint keyed away from the game's pose whatever the setting (a key is never hidden).
+bool joint_shown(const studio::View& v, const studio::EditableJoint& e) {
+    if (e.group == studio::JointGroup::usual) return true;
+    if (e.group == studio::JointGroup::advanced ? v.advanced_bones : v.finger_bones) return true;
+    if (const auto* t = track_view(v, e.index))
+        for (const auto& key : t->keys)
+            if (key.rotation != studio::Quat{0, 0, 0, 1} || key.offset != studio::Vec3{}) return true;
+    return false;
+}
+bool joint_shown(const studio::View& v, std::uint16_t joint) {
+    const auto* e = studio::editable(joint);
+    return e && joint_shown(v, *e);
+}
+// The joints shown, in the timeline's order.
+std::vector<studio::EditableJoint> shown_joints(const studio::View& v) {
+    std::vector<studio::EditableJoint> out;
+    for (const auto& e : studio::editable_joints())
+        if (joint_shown(v, e)) out.push_back(e);
+    return out;
 }
 const studio::TrackView* track_view(const studio::View& v, std::uint16_t joint) {
     for (const auto& t : v.tracks) if (t.joint == joint) return &t;
@@ -2476,7 +2498,7 @@ void reset_picked(const studio::View& v) {
 }
 // The next or previous joint, in the timeline's order (the D-pad, the arrow keys).
 void step_joint(int by) {
-    const auto joints = studio::editable_joints();
+    const auto joints = shown_joints(studio::view());
     if (joints.empty()) return;
     auto& u = ui();
     std::size_t i = 0;
@@ -4278,15 +4300,20 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         studio::set_orbit(orbit);
     }
     if (!h.peeking) return;
-    // He stands on the trick's first frame while the camera gets to his side and the window opens, and the trick starts
-    // once it is open: seen whole from its start. (It started as soon as it was read, behind the opening window and under
-    // a camera still swinging round: its first moments were never seen and the window opened on him mid-move.)
-    constexpr float hold = 0.3f;
-    const float k = f.k, since = static_cast<float>(now - h.since), played = since - hold;
-    if (!h.going && since >= hold) {
+    // He stands on the trick's first frame while the camera gets to his side, and the window opens once all of it is there
+    // (studio::peek_ready: for a grind, the studio rail standing under it - never a rail coming up in front of you); the
+    // trick starts once the window is open: seen whole from its start. (It started as soon as it was read, behind the opening
+    // window and under a camera still swinging round: its first moments were never seen and the window opened on him mid-move.)
+    constexpr float camera_first = 0.12f, opens_in = 0.18f, waits_at_most = 1.6f;
+    const float k = f.k, since = static_cast<float>(now - h.since);
+    if (h.ready_at < 0 && since >= camera_first && (studio::peek_ready() || since >= waits_at_most)) h.ready_at = now;
+    const float open_for = h.ready_at < 0 ? 0.0f : static_cast<float>(now - h.ready_at);
+    if (!h.going && h.ready_at >= 0 && open_for >= opens_in) {
         studio::peek_go();
         h.going = true;
+        h.go_at = now;
     }
+    const float played = h.going ? static_cast<float>(now - h.go_at) : -1.0f;
     if (played > h.duration + 0.9f) { // done, and the window closes until another card is held
         cover_peek_hole();
         stop_hover_peek();
@@ -4325,7 +4352,7 @@ void hover_preview(const Fonts& f, const studio::View& v) {
     const float fade_in = std::clamp(since / 0.25f, 0.0f, 1.0f);
     // The first moments and the last are covered, fading: the camera takes a frame or two to get to his side, and he
     // goes back after. The window opens on him already in place and is closed again before anything moves back.
-    const float opening = std::clamp((since - 0.12f) / (hold - 0.12f), 0.0f, 1.0f);
+    const float opening = std::clamp(open_for / opens_in, 0.0f, 1.0f);
     const float closing = std::clamp((h.duration + 0.9f - played) / 0.2f, 0.0f, 1.0f);
     if (const float cover = 1 - std::min(opening, closing); cover > 0)
         d->AddRectFilled(a, b, IM_COL32(10, 10, 12, static_cast<int>(252 * cover)), 6 * k);
@@ -7503,6 +7530,8 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
     case 1: {
         rows.push_back(studio::settings_rows::editing_stance(now));
         rows.push_back(studio::settings_rows::hands_grab_the_board(now));
+        rows.push_back(studio::settings_rows::advanced_bones(now));
+        rows.push_back(studio::settings_rows::finger_bones(now));
         rows.push_back(studio::settings_rows::joint_limits(now));
         rows.push_back(slider("Keep clear", u.anti_clip ? u.clear_force : 0.0f,
                               !u.anti_clip || u.clear_force <= 0.005f ? "OFF" : std::format("{:.0f}%", u.clear_force * 100),
@@ -10335,8 +10364,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     key_mark(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft, round_key(key));
     d->PopClipRect();
     // Rows, one per joint, and under a joint that is opened (its name clicked, or T) a row for each of its
-    // channels - rotation X, Y, Z and, for what can be moved, location X, Y, Z - each with its curve.
-    const auto joints = studio::editable_joints();
+    // channels - rotation X, Y, Z and, for what can be moved, location X, Y, Z - each with its curve. The advanced bones and
+    // the fingers only when SETTINGS > SKATER shows them (or they have keys).
+    const auto joints = shown_joints(v);
     const float rows_top = summary_y + summary_h + 6 * k;
     const float rows_h = at.y + size.y - rows_top;
     const float ch_h = 30 * k, ch_gap = 3 * k;
@@ -11046,7 +11076,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     float best = 22 * k;
     if (!u.pad_mode && !joints_hidden)
         for (const auto& j : v.joints)
-            if (const auto at = project(j.position)) {
+            if (const auto at = joint_shown(v, j.joint) ? project(j.position) : std::nullopt) {
                 const float dist = std::hypot(at->x - mouse.x, at->y - mouse.y);
                 if (inside && dist < best) {
                     best = dist;
@@ -11055,6 +11085,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
             }
     if (!joints_hidden)
         for (const auto& j : v.joints) {
+            if (!joint_shown(v, j.joint)) continue;
             const auto at = project(j.position);
             if (!at || j.joint == u.selected) continue;
             const bool hot = hovered && *hovered == j.joint;

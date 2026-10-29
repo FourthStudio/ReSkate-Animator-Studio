@@ -151,6 +151,12 @@ StateObject studio_objects[]{
     {{0x55, 0xb1, 0x44, 0x08, 0x0e, 0xbe, 0x28, 0x92, 0x08, 0x44, 0xb1, 0x55, 0xbe, 0x0e, 0x92, 0x28}, "Animation/Dingo/Enum.GS.SkateGrindType"},
     // Which way he rides, as the game's manual table reads it (cdb_onboard_manualloop), f9a95db4-e022-f765-....
     {{0xb4, 0x5d, 0xa9, 0xf9, 0x22, 0xe0, 0x65, 0xf7, 0xf9, 0xa9, 0x5d, 0xb4, 0xe0, 0x22, 0xf7, 0x65}, "Animation/Dingo/Bool.Physics.RidingFakie"},
+    // The grab the game picks its grab loops by (cdb_onboard_grab_loop keys on it: 1 FS to 10 Rocket), 387fb01d-9950-ce5d-....
+    {{0x1d, 0xb0, 0x7f, 0x38, 0x50, 0x99, 0x5d, 0xce, 0x38, 0x7f, 0xb0, 0x1d, 0x99, 0x50, 0xce, 0x5d}, "Animation/Dingo/EnumGS.GrabType"},
+    // And its style (Enum.DetailedGrabType: BS_Melon, FS_TuckKnee, Tail_FS_Shifty, ...), 92445c52-d077-a5e5-....
+    {{0x52, 0x5c, 0x44, 0x92, 0x77, 0xd0, 0xe5, 0xa5, 0x92, 0x44, 0x5c, 0x52, 0xd0, 0x77, 0xa5, 0xe5}, "Animation/Dingo/Enum.GS.DetailedGrabType"},
+    // Whether he is grabbing now, 1851635a-bdf0-f51a-....
+    {{0x5a, 0x63, 0x51, 0x18, 0xf0, 0xbd, 0x1a, 0xf5, 0x18, 0x51, 0x63, 0x5a, 0xbd, 0xf0, 0xf5, 0x1a}, "Animation/Dingo/Bool.Anim.IsGrabbing"},
 };
 StateObject transition_objects[]{
     {{0x7d, 0xbc, 0xc5, 0x80, 0xd7, 0xd9, 0xb2, 0xed, 0x80, 0xc5, 0xbc, 0x7d, 0xd9, 0xd7, 0xed, 0xb2}, "Animation/Dingo/Bool.Physics.FoundLipTrick"},
@@ -376,6 +382,15 @@ StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noex
     word(grind_control_objects[9], out.skate_grind_type);
     word(studio_objects[6], out.anim_grind_type);
     flag(studio_objects[7], out.riding_fakie);
+    // The grab's type and style: Enum.GrabType (0 to 90) and Enum.DetailedGrabType (0 to 38) values.
+    const auto value_under = [&](StateObject &object, std::uint32_t count, std::optional<std::uint32_t> &into) {
+        const auto at = value_address(object, block);
+        std::uint32_t value{};
+        if (at && peek(at, value) && value < count) into = value;
+    };
+    value_under(studio_objects[8], 91, out.grab_type);
+    value_under(studio_objects[9], 39, out.detailed_grab_type);
+    flag(studio_objects[10], out.grabbing);
     return out;
 }
 namespace {

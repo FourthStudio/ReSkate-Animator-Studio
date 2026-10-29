@@ -79,6 +79,7 @@ struct View {
     bool own_lead_right{}; // the skater's own stance leads with the right foot (goofy): stance versions are told apart by it
     bool showing_goofy{};
     bool grab_board{};   // a hand near the deck closes its fingers on it
+    bool advanced_bones{}, finger_bones{}; // SETTINGS > SKATER: the advanced bones' and the fingers' rows shown (JointGroup)
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
     bool limits{true};     // Joint limits: keyed joints stay inside the range the game's own animation uses
     float crossfade{0.3f}; // seconds a trick takes to hand back to the game's next move in game (Crossfade)
@@ -184,6 +185,7 @@ struct Settings {
     int stance_choice{}; // 0 the game's, 1 regular, 2 goofy (set_stance)
     bool game_goofy{};   // the game's own stance is goofy
     bool grab_board{}, limits{true}, front_foot{true};
+    bool advanced_bones{}, finger_bones{};
     float crossfade{0.3f};
     bool catch_marker{true}, drop_preview_tool{true};
     bool smooth_transitions{true}; // SETTINGS > TRICKS > Transitions: SMOOTH or CLASSIC
@@ -240,6 +242,8 @@ void set_stance(int choice);
 // A hand brought near the board closes its fingers round the deck, by how near it is. The fingers are not
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
+void set_advanced_bones(bool on); // SETTINGS > SKATER > Advanced bones
+void set_finger_bones(bool on);   // SETTINGS > SKATER > Fingers
 // How many times the Studio room setting was switched: the client opens the studio in the room, or leaves it, at once.
 std::uint64_t room_changes() noexcept;
 // In game: how long a trick takes to fade out into the game's next move (a manual, the next trick), 0.1 to 0.8 s;
@@ -530,6 +534,7 @@ bool peek_game_trick(const GameTrick& trick, bool play = true);
 bool peek_saved(const std::string& animation, bool play = true);
 bool peek_playing();   // the trick asked to play is ready and shown (held on its first frame until peek_go)
 void peek_go();        // it starts playing from its first frame now
+bool peek_ready();     // all of it is there to be seen: its first frame, and for a grind the studio rail standing under it
 void end_peek();       // and one asked for that is not ready yet does not start
 float peek_duration(); // the trick being looked at, in seconds (0 none)
 // Deletes a saved trick and takes it out of every pack it is in. A pack got from someone else (the MARKET, an import)

@@ -33,6 +33,7 @@ struct SettingsFile {
     bool smooth_transitions{true};               // SETTINGS > TRICKS > Transitions: SMOOTH (the handover) or CLASSIC
     std::string grind_rail{"own_bkrails_generic_flatrailsquare_00001"}; // SETTINGS > STUDIO > Grind rail (studio_rails.h), "" none
     float grind_rail_size{0.6f};                                            // SETTINGS > STUDIO > Rail size
+    bool advanced_bones{}, finger_bones{};                                  // SETTINGS > SKATER: their rows shown
 };
 inline void read_settings_file(const Json& root, SettingsFile& f) {
     if (!root.is_object()) return;
@@ -40,6 +41,8 @@ inline void read_settings_file(const Json& root, SettingsFile& f) {
     f.joint_limits = root.value("joint_limits", f.joint_limits);
     f.stance = std::clamp(root.value("stance", f.stance), 0, 2);
     f.grab_board = root.value("grab_board", f.grab_board);
+    f.advanced_bones = root.value("advanced_bones", f.advanced_bones);
+    f.finger_bones = root.value("finger_bones", f.finger_bones);
     f.made_by = utf8_prefix(root.value("made_by", f.made_by.c_str()), 48);
     f.hover_preview = root.value("hover_preview", f.hover_preview);
     f.ungrouped.clear();
@@ -80,6 +83,8 @@ inline Json settings_file_json(const SettingsFile& f) {
     root["joint_limits"] = f.joint_limits;
     root["stance"] = f.stance;
     root["grab_board"] = f.grab_board;
+    root["advanced_bones"] = f.advanced_bones;
+    root["finger_bones"] = f.finger_bones;
     root["crossfade"] = f.crossfade;
     if (!f.export_folder.empty()) root["export_folder"] = f.export_folder;
     if (!f.import_folder.empty()) root["import_folder"] = f.import_folder;

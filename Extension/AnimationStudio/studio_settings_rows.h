@@ -48,6 +48,8 @@ Setting report_a_bug(Tell tell);
 // SKATER
 Setting editing_stance(const anim_studio::Settings&);
 Setting hands_grab_the_board(const anim_studio::Settings&);
+Setting advanced_bones(const anim_studio::Settings&); // the toes and the spine and neck between the usual joints
+Setting finger_bones(const anim_studio::Settings&);   // every finger, three joints each
 Setting joint_limits(const anim_studio::Settings&);
 // TRICKS
 Setting custom_tricks_in_game(const anim_studio::Settings&);
