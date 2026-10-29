@@ -46,10 +46,17 @@ constexpr int window_height = 380;
 constexpr int text_left = 16;
 constexpr int bar_height = 4;
 constexpr int shadow_height = 120;
+// The mod's name ("+ ANIMATOR STUDIO") as the launcher writes it under its wordmark: brush
+// lettering with a drop shadow, parallel to the wordmark. The launcher tilts both; the art's
+// RESKATE logo is level, so the name is too. On a picture it sits under that logo, at this point.
+constexpr int name_size = 26;
+constexpr POINT name_on_art{142, 100};
 
 constexpr wchar_t class_name[] = L"ReSkateStartupWindow";
 constexpr const wchar_t* art_files[] = {L"ReSkate.Splash.png", L"ReSkate.Splash.jpg"};
 constexpr wchar_t art_resource[] = L"STARTUP_SPLASH";
+constexpr wchar_t brush_resource[] = L"FONT_BRUSH";
+constexpr wchar_t brush_face[] = L"Permanent Marker";
 
 struct Shared {
     std::mutex mutex;
@@ -185,6 +192,20 @@ ComPtr<IWICBitmapSource> open_art() {
     return converter;
 }
 
+// The launcher's brush lettering (Permanent Marker, built into ReSkate.dll as FONT_BRUSH), loaded
+// once for this process only.
+bool brush_font_loaded() {
+    static const bool loaded = [] {
+        const auto module = this_module();
+        const auto found = FindResourceW(module, brush_resource, MAKEINTRESOURCEW(10) /* RT_RCDATA */);
+        const auto data = found ? LoadResource(module, found) : nullptr;
+        auto* bytes = data ? LockResource(data) : nullptr;
+        DWORD fonts{};
+        return bytes && AddFontMemResourceEx(bytes, SizeofResource(module, found), nullptr, &fonts) && fonts;
+    }();
+    return loaded;
+}
+
 // `art` cover-fitted to width x height, as a top-down DIB.
 HBITMAP scale_art(IWICBitmapSource* art, int width, int height) {
     const auto factory = imaging();
@@ -218,8 +239,9 @@ struct Window {
     HWND window{};
     UINT dpi{96};
     int width{}, height{};
-    HFONT title{}, heading{}, body{};
+    HFONT title{}, heading{}, body{}, brush{};
     HBITMAP background{}, shadow{};
+    POINT name_at{};
     HICON large_icon{}, small_icon{};
     ComPtr<IWICBitmapSource> art;
     Clock::time_point opened_at{}, leave_at{}, checked_at{};
@@ -230,7 +252,7 @@ struct Window {
     void layout() {
         width = px(window_width);
         height = px(window_height);
-        for (auto* font : {&title, &heading, &body})
+        for (auto* font : {&title, &heading, &body, &brush})
             if (*font) { DeleteObject(*font); *font = nullptr; }
         const auto font = [&](int size, int weight, bool italic) {
             return CreateFontW(-px(size), 0, 0, 0, weight, italic, FALSE, FALSE, DEFAULT_CHARSET,
@@ -240,6 +262,9 @@ struct Window {
         title = font(84, FW_BOLD, true);
         heading = font(16, FW_BOLD, false);
         body = font(12, FW_NORMAL, false);
+        brush = CreateFontW(-px(name_size), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                            OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH,
+                            brush_font_loaded() ? brush_face : L"Arial");
         make_background();
         make_shadow();
     }
@@ -261,14 +286,16 @@ struct Window {
             SelectObject(source, kept);
             DeleteDC(source);
             DeleteObject(picture);
+            name_at = {px(name_on_art.x), px(name_on_art.y)};
         } else {
-            draw_card(dc);
+            name_at = draw_card(dc);
         }
         SelectObject(dc, previous);
         DeleteDC(dc);
     }
 
-    void draw_card(HDC dc) const {
+    // Returns where the mod's name goes: under the card's wordmark and its rule.
+    POINT draw_card(HDC dc) const {
         // Halftone washing in from two corners, as on the game's own picture.
         SelectObject(dc, GetStockObject(NULL_PEN));
         SelectObject(dc, GetStockObject(DC_BRUSH));
@@ -307,6 +334,7 @@ struct Window {
             points[i] = {static_cast<LONG>(x0 + torn[i].first * rule), static_cast<LONG>(y0 + torn[i].second * unit)};
         SetDCBrushColor(dc, blue);
         Polygon(dc, points.data(), static_cast<int>(points.size()));
+        return {static_cast<LONG>(x0) + px(6), static_cast<LONG>(y0 + 6.0f * unit) + px(2)};
     }
 
     // Darkens the bottom of the picture so the status stays readable on any art.
@@ -390,18 +418,15 @@ struct Window {
         DeleteDC(source);
 
         SetBkMode(dc, TRANSPARENT);
-        // A build that carries a mod says so on any picture, the built-in art's own RESKATE logo
-        // included: "+ ANIMATOR STUDIO" on a blue tag in the top right.
+        // A build that carries a mod says so on any picture, under the RESKATE logo, as the launcher does.
         if (!reskate_mod_name.empty()) {
-            std::wstring tag = L"+ ";
-            for (const char c : reskate_mod_name) tag += static_cast<wchar_t>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
-            SelectObject(dc, heading);
-            SIZE extent{};
-            GetTextExtentPoint32W(dc, tag.c_str(), static_cast<int>(tag.size()), &extent);
-            const RECT box{width - px(16) - extent.cx - px(20), px(16), width - px(16), px(16) + extent.cy + px(12)};
-            fill(dc, box, blue);
+            std::wstring name = L"+ ";
+            for (const char c : reskate_mod_name) name += static_cast<wchar_t>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+            SelectObject(dc, brush);
+            SetTextColor(dc, ink);
+            TextOutW(dc, name_at.x + px(2), name_at.y + px(3), name.c_str(), static_cast<int>(name.size()));
             SetTextColor(dc, paper);
-            TextOutW(dc, box.left + px(10), box.top + px(6), tag.c_str(), static_cast<int>(tag.size()));
+            TextOutW(dc, name_at.x, name_at.y, name.c_str(), static_cast<int>(name.size()));
         }
         const int bar = height - px(bar_height);
         const auto line = [&](HFONT font, COLORREF colour, const std::wstring& text, int top, int line_height) {
@@ -441,7 +466,7 @@ struct Window {
     }
 
     void release() {
-        for (auto* font : {&title, &heading, &body})
+        for (auto* font : {&title, &heading, &body, &brush})
             if (*font) { DeleteObject(*font); *font = nullptr; }
         for (auto* bitmap : {&background, &shadow})
             if (*bitmap) { DeleteObject(*bitmap); *bitmap = nullptr; }
