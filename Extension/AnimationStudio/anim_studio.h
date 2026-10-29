@@ -407,6 +407,28 @@ struct PlaylistsNow {
     std::string on;
 };
 PlaylistsNow playlists_now();
+// The ReSkate menu's ANIMATOR STUDIO page, cheaply, any thread: what plays, the packs and whether each is in the playlist
+// that is on, and the last tricks done (the newest first, at most 5): the game's trick, its pop, and which of yours played it
+// ("" the game's own), with how many there were to choose from.
+struct MenuSummary {
+    std::string playing; // the playlist that is on ("" none)
+    std::size_t entries{};
+    PlaylistMode mode{PlaylistMode::fixed};
+    struct Pack {
+        std::string name;
+        bool in{};
+        std::size_t tricks{};
+    };
+    std::vector<Pack> packs;
+    std::size_t own{}, in_play{}; // tricks of yours, and those that play now
+    struct Done {
+        std::string trick, label, pop, played;
+        int choices{};
+        double ago{-1}; // seconds since
+    };
+    std::vector<Done> recent;
+};
+MenuSummary menu_summary();
 bool playlist_add(const PlaylistEntry& entry, std::string& message); // makes Playlist 1 when there is none
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)

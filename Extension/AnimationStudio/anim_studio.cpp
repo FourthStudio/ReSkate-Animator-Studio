@@ -547,6 +547,7 @@ struct Live {
     bool raised_said{};
     double raised_asked_at{-1};
     double raised_contact_at{-1}, raised_last{-1}; // when the probe says it meets the rail; the release's last step
+    std::uint64_t recent_episode{~std::uint64_t{0}}; // the trick last told to the menu's feed (remember_trick_done)
     // What the game's animation is doing (trainer::read_studio_states), this update; found in memory once a level.
     trainer::StudioStates game{};
     std::uint64_t states_generation{~std::uint64_t{0}};
@@ -3387,6 +3388,8 @@ void late_read(std::uintptr_t base, std::uintptr_t component, const Joint& board
 }
 } // namespace studio_snapshot
 
+void remember_trick_done(const std::string& trick, const std::string& pop, const std::string& played, int choices, double at, bool again); // the menu's feed, below
+
 // ---- the animation thread ------------------------------------------------------------------------
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
@@ -3908,6 +3911,13 @@ void on_animation(std::uintptr_t component) noexcept {
                                                                                            : std::string("its own pop"),
                                              found->leads_right == live.leads_right ? "" : ", mirrored",
                                              variants.size() > 1 ? std::format(", one of {}", variants.size()) : std::string());
+                // The menu's feed: the trick and who played it (once a trick; its pop graded later takes its place).
+                if (!name.empty()) {
+                    const bool again = l.recent_episode == l.episode.id;
+                    l.recent_episode = l.episode.id;
+                    remember_trick_done(name, pop, found ? found->name : std::string{}, static_cast<int>(variants.size()), at, again);
+                }
+                if (found) {}
                 else if (!name.empty())
                     l.decision = !l.playback_switch.has_value() ? std::string("none: the stance could not be read at the takeoff")
                                  : candidates.empty() ? "none: nothing of yours for " + name
@@ -7672,6 +7682,77 @@ void set_playlist_mode(const std::string& name, PlaylistMode mode, std::string& 
     auto& s = state();
     std::lock_guard lock(s.mutex);
     set_playlist_mode_locked(s, name, mode, message);
+}
+// The last tricks done, for the menu's feed (menu_summary): told where the studio chooses what plays.
+struct RecentTricks {
+    std::mutex mutex;
+    std::deque<std::pair<MenuSummary::Done, double>> done; // and when
+};
+RecentTricks& recent_tricks() {
+    static auto* value = new RecentTricks;
+    return *value;
+}
+// A trick's choice, the newest first; the same trick chosen again (its pop graded later) takes the place of its first.
+void remember_trick_done(const std::string& trick, const std::string& pop, const std::string& played, int choices, double at, bool again) {
+    auto& r = recent_tricks();
+    std::lock_guard lock(r.mutex);
+    MenuSummary::Done d;
+    d.trick = trick;
+    d.pop = pop;
+    d.played = played;
+    d.choices = choices;
+    if (again && !r.done.empty()) r.done.front() = {d, at};
+    else r.done.emplace_front(d, at);
+    while (r.done.size() > 5) r.done.pop_back();
+}
+MenuSummary menu_summary() {
+    MenuSummary out;
+    {
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        out.playing = s.playlists.on;
+        const auto* list = s.playlists.named(s.playlists.on);
+        if (list) {
+            out.entries = list->entries.size();
+            out.mode = list->mode;
+        }
+        for (const auto& pack : s.packs) {
+            const bool in = list && std::find(list->entries.begin(), list->entries.end(), PlaylistEntry{pack.name, ""}) != list->entries.end();
+            out.packs.push_back({pack.name, in, pack.members().size()});
+        }
+        for (const auto& p : s.presets) {
+            out.own += !p.foreign;
+            out.in_play += p.active;
+        }
+    }
+    {
+        auto& r = recent_tricks();
+        std::lock_guard lock(r.mutex);
+        const double now = now_seconds();
+        for (const auto& [d, at] : r.done) {
+            out.recent.push_back(d);
+            out.recent.back().ago = now - at;
+        }
+    }
+    // The game's name for each (Kickflip), from its catalog, without the pop it is filed under.
+    if (!out.recent.empty()) {
+        const auto tricks = game_tricks();
+        for (auto& d : out.recent) {
+            for (const auto& t : *tricks)
+                if (t.trick == d.trick && !t.preview_only && !t.label.empty()) {
+                    d.label = t.label;
+                    for (const char* pop : {" low", " mid", " high", " Low", " Mid", " High"})
+                        if (d.label.size() > std::strlen(pop) && d.label.ends_with(pop)) d.label.resize(d.label.size() - std::strlen(pop));
+                    break;
+                }
+            if (d.label.empty()) {
+                d.label = d.trick.starts_with("n_") ? "Nollie " + d.trick.substr(2) : d.trick;
+                for (auto& c : d.label) if (c == '_') c = ' ';
+                if (!d.label.empty()) d.label[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(d.label[0])));
+            }
+        }
+    }
+    return out;
 }
 PlaylistsNow playlists_now() {
     auto& s = state();

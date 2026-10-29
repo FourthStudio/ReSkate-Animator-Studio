@@ -5228,7 +5228,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             const ImU32 ink = lit ? IM_COL32(18, 18, 20, 255) : white, ink_soft = lit ? IM_COL32(80, 80, 86, 255) : soft;
             text(d, f.bold, 19 * k, ImVec2(ca.x + 14 * k, cover_b.y + 12 * k), ink, "Your own tricks");
             text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 40 * k), ink_soft,
-                 std::to_string(own) + (own == 1 ? " TRICK" : " TRICKS") + "  /  ADD THEM ONE BY ONE, NO PACK NEEDED");
+                 elide(f.bold, 12 * k, std::to_string(own) + (own == 1 ? " TRICK" : " TRICKS") + "  /  ONE BY ONE, NO PACK", card_w - 28 * k));
             if (pressed) {
                 u.pack_settings = true;
                 u.playlist_pick_scroll = 0;
@@ -7414,7 +7414,6 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(on_off("Shortcuts panel", u.controls_open, "The list of keys (or buttons) at the editor's lower right. Key: " + key_of("shortcuts") + ".",
                               [](bool on) { ui().controls_open = on; }));
         rows.push_back(studio::settings_rows::catch_marker(now));
-        rows.push_back(studio::settings_rows::drop_height_preview(now));
         rows.push_back(studio::settings_rows::how_it_works());
         rows.push_back(studio::settings_rows::report_a_bug(tell));
         rows.push_back(button_row("Export diagnostics",
@@ -9992,8 +9991,10 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     }
     if (!u.trick_panel) return;
     const float w = 420 * k, row = 76 * k;
-    const bool catch_hold_shown = show_catch_tools && v.catch_marker, drop_preview_shown = show_catch_tools && v.drop_preview_tool;
-    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + (2 + (catch_hold_shown ? 1 : 0) + (drop_preview_shown ? 1 : 0)) * row);
+    // (DROP PREVIEW is gone, 2026-10-29: it played the trick as off a drop here, which read as a setting of the trick and led to
+    // wrong keys.)
+    const bool catch_hold_shown = show_catch_tools && v.catch_marker;
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + (2 + (catch_hold_shown ? 1 : 0)) * row);
     skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
     const float x = a.x + 20 * k, bw = w - 40 * k;
@@ -10053,17 +10054,6 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         if (began) studio::begin_change();
         if (amount >= 0) studio::set_catch_hold(amount);
         note("Off big drops: high keeps the catch long and reaches for the ground late.");
-        y += row;
-    }
-    // DROP PREVIEW (SETTINGS > STUDIO > Drop height preview).
-    if (drop_preview_shown) {
-        const bool can = v.catch_air && v.catch_at >= 0;
-        const std::string value = !can ? "NEEDS A CATCH" : v.drop_preview < 0.05f ? "OFF"
-                                                                                   : std::format("{:.1f} m   +{:.2f} s AIR", v.drop_preview, std::max(0.0f, v.drop_extra));
-        head("DROP PREVIEW", value, can, x + bw);
-        const float amount = panel_slider(d, f, "##droppreview", ImVec2(x, y + 30 * k), bw, v.drop_preview / 4.0f, can, nullptr);
-        if (amount >= 0) studio::set_drop_preview(amount * 4.0f);
-        note("Plays it here as off a drop this high, the catch slowed as in game.");
         y += row;
     }
     // The rest of the panel takes the mouse, so a click on it does not reach the skater behind it.
