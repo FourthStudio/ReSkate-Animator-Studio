@@ -4650,6 +4650,9 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
 bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motion, bool playing, std::span<const Joint> native,
                                    std::vector<Joint>& edited) noexcept; // below
 bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept;
+bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater, Joint& out) noexcept;
+bool board_as_drawn_now(Joint& out) noexcept;
+void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board) noexcept;
 // SMOOTH transitions: the handover into a grind. At a rail's lock the trick it leaves (the last packet) goes on playing at
 // its own pace over the game's fresh pose, never held, and each joint goes over to the game's at its own speed
 // (handover_left: legs with the board, then hips and arms, then the back and head). The board goes from where it was drawn
@@ -4801,6 +4804,8 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
                 if (finite(at) && finite(own) && at.position[1] < own.position[1] - 0.01f)
                     place_foot(edited, feet[i], Vec3{at.position[0], own.position[1], at.position[2]}, nullptr, 1.0f);
             }
+            // And the legs round the board as drawn, never through it, while they go over.
+            guard_legs_from_the_board(edited, native, drawn);
         }
         // What is drawn is where any fade after this starts from.
         body.transition.current = pose_edit_deltas(native, edited);
@@ -4912,6 +4917,20 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                     const auto drawn = world(edited, foot);
                     if (finite(drawn) && finite(own) && drawn.position[1] < own.position[1] - 0.01f)
                         place_foot(edited, foot, Vec3{drawn.position[0], own.position[1], drawn.position[2]}, nullptr, 1.0f);
+                }
+            }
+            // SMOOTH: while one move goes over to the next - a trick handing back, fading in or out, leaning over to the
+            // game's ahead of a rail - the legs go round the board as drawn, never through it (guard_legs_from_the_board).
+            // Not while a trick plays as made.
+            if (smooth_transitions.load(std::memory_order_relaxed)) {
+                const bool lean = packet && rail_lean_episode.load(std::memory_order_acquire) == packet->episode &&
+                                  rail_lean.load(std::memory_order_acquire) > 0.001f && rail_lean.load(std::memory_order_acquire) < 0.999f;
+                const bool going_over = publication.transition.from_left > 0.001f || (packet && packet->weight < 0.999f) ||
+                                        (packet && packet->lower_release > 0.001f && packet->lower_release < 0.999f) || lean;
+                Joint board;
+                if (going_over && (packet ? drawn_board_now(*packet, native, board) : board_as_drawn_now(board))) {
+                    guard_legs_from_the_board(edited, native, board);
+                    applied_deltas = pose_edit_deltas(native, edited);
                 }
             }
         } else publication.transition.reset();
@@ -5028,6 +5047,24 @@ struct BoardPublicationState {
     std::uint64_t drawn_generation{~std::uint64_t{0}};
 };
 BoardPublicationState& board_publication_state() { static auto* state = new BoardPublicationState; return *state; }
+// The board as its pass last drew it: the game's board with the fade it was given (BoardPublicationState::transition).
+bool board_as_drawn_now(Joint& out) noexcept {
+    try {
+        Joint native;
+        if (!games_board_now(live().board_holder.load(std::memory_order_acquire), native)) return false;
+        auto& board = board_publication_state();
+        std::lock_guard lock(board.mutex);
+        out = native;
+        if (!board.transition.current.empty()) {
+            const auto& d = board.transition.current[0];
+            out.rotation = normalised(multiply(d.rotation, native.rotation));
+            for (std::size_t k = 0; k < 3; ++k) out.position[k] += d.offset[k];
+        }
+        return finite(out);
+    } catch (...) {
+        return false;
+    }
+}
 // Each frame in the air, the board as drawn, in the skater's placement frame (his pose holds the placement unedited).
 void remember_board_in_the_air(BoardPublicationState& board, const Joint& drawn, std::uint64_t generation) noexcept {
     auto& l = live();
@@ -5042,6 +5079,104 @@ void remember_board_in_the_air(BoardPublicationState& board, const Joint& drawn,
     board.drawn_generation = generation;
 }
 
+// ---- the board's force field (SMOOTH) --------------------------------------------------------------------------------
+// While a pose goes over from one move to the next, each leg goes from where it was to where it goes as its joints turn,
+// and on the way a foot or a shin went through the deck (custom to the game's, 2026-10-29). Only then - never while a trick
+// plays as made (a guard on all the time held the feet to the deck, test 2, 2026-10-27): a shoe or shin in the deck deeper
+// than the game's own pose has it in the game's board goes out the nearest way, up over the deck or out past its edge, by
+// moving the foot (its knee follows), so the leg slides round the board instead of through it. Shoe and deck as measured
+// (contrib/animator-studio/clip_check.py).
+namespace deck_guard {
+constexpr Vec3 down{0.5408f, 0.8412f, 0}, forward{0.8412f, -0.5408f, 0};
+constexpr float ankle_over_sole = 0.085f;
+constexpr float top = 0.019f, tip = 0.40f, half = 0.105f, kick_from = 0.29f, kick_rise = 0.045f, round_from = 0.30f;
+constexpr float shin_radius = 0.045f, deepest = 0.12f; // deeper than that the leg is under the board, not in it
+Vec3 shoe(float ahead, float side, float over_sole) noexcept {
+    const float d = ankle_over_sole - over_sole;
+    return {down[0] * d + forward[0] * ahead, down[1] * d + forward[1] * ahead, side};
+}
+const std::array<Vec3, 9>& sole() noexcept {
+    static const std::array<Vec3, 9> points{shoe(-0.065f, 0.035f, 0), shoe(-0.065f, -0.035f, 0), shoe(0.015f, 0.045f, 0), shoe(0.015f, -0.045f, 0),
+                                            shoe(0.094f, 0.05f, 0), shoe(0.094f, -0.05f, 0), shoe(0.165f, 0.03f, 0.008f),
+                                            shoe(0.165f, -0.03f, 0.008f), shoe(0.175f, 0, 0.012f)};
+    return points;
+}
+float deck_top(float along) noexcept {
+    const float x = std::clamp((std::abs(along) - kick_from) / (tip - kick_from), 0.0f, 1.0f);
+    return top + kick_rise * x * x;
+}
+float half_width(float along) noexcept {
+    const float a = std::abs(along);
+    if (a <= round_from) return half;
+    if (a >= tip) return 0;
+    const float x = (a - round_from) / (tip - round_from);
+    return half * std::sqrt(std::max(0.0f, 1 - x * x));
+}
+// How far out a point must go, and which way (the board's frame: x across, y up, z along).
+struct Push {
+    float depth{};
+    Vec3 way{};
+};
+Push into(const Vec3& p, float radius) noexcept {
+    Push out;
+    if (std::abs(p[2]) > tip) return out;
+    const float width = half_width(p[2]) + radius;
+    if (std::abs(p[0]) > width) return out;
+    const float over = deck_top(p[2]) - (p[1] - radius);
+    if (!(over > 0) || over > deepest) return out;
+    const float side = width - std::abs(p[0]);
+    if (side < over) {
+        out.depth = side;
+        out.way = {p[0] >= 0 ? 1.0f : -1.0f, 0, 0};
+    } else {
+        out.depth = over;
+        out.way = {0, 1, 0};
+    }
+    return out;
+}
+// The deepest a leg's shoe or shin is in the deck of `board`.
+Push leg_in_deck(std::span<const Joint> pose, const Joint& board, std::uint16_t foot, std::uint16_t knee) noexcept {
+    Push worst;
+    const auto back = conjugate(board.rotation);
+    const auto on_board = [&](const Joint& j, const Vec3& v) {
+        const auto w = rotate(j.rotation, v);
+        return rotate(back, Vec3{j.position[0] + w[0] - board.position[0], j.position[1] + w[1] - board.position[1], j.position[2] + w[2] - board.position[2]});
+    };
+    const auto f = world(pose, foot);
+    for (const auto& point : sole())
+        if (const auto push = into(on_board(f, point), 0); push.depth > worst.depth) worst = push;
+    const auto k = world(pose, knee);
+    for (const float along : {0.14f, 0.24f, 0.34f})
+        if (const auto push = into(on_board(k, Vec3{along, 0, 0}), shin_radius); push.depth > worst.depth) worst = push;
+    return worst;
+}
+} // namespace deck_guard
+void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board) noexcept {
+    try {
+        if (edited.size() < skeleton_joints || native.size() < skeleton_joints || !finite(drawn_board)) return;
+        // Only with him over the deck: under the board (a bail, the board over him) it is not his to stand on.
+        const auto hips = world(edited, hips_joint).position;
+        const auto over = rotate(conjugate(drawn_board.rotation),
+                                 Vec3{hips[0] - drawn_board.position[0], hips[1] - drawn_board.position[1], hips[2] - drawn_board.position[2]});
+        if (!(over[1] > deck_guard::top)) return;
+        Joint games;
+        const bool games_ok = games_board_now(live().board_holder.load(std::memory_order_acquire), games) && finite(games);
+        for (const auto& [foot, knee] : {std::pair<std::uint16_t, std::uint16_t>{left_foot_joint, 342}, std::pair<std::uint16_t, std::uint16_t>{right_foot_joint, 9}}) {
+            // As deep as the game's own pose has it in its own board is the game's: only what is deeper is ours to move.
+            const float own = games_ok ? deck_guard::leg_in_deck(native, games, foot, knee).depth : 0.0f;
+            for (int pass = 0; pass < 2; ++pass) {
+                const auto push = deck_guard::leg_in_deck(edited, drawn_board, foot, knee);
+                const float excess = push.depth - std::max(own, 0.005f);
+                if (!(excess > 0)) break;
+                const auto way = rotate(drawn_board.rotation, push.way);
+                const auto at = world(edited, foot);
+                const float by = excess + 0.003f;
+                place_foot(edited, foot, Vec3{at.position[0] + way[0] * by, at.position[1] + way[1] * by, at.position[2] + way[2] * by}, &at.rotation, 1.0f);
+            }
+        }
+    } catch (...) {
+    }
+}
 // ---- the feet on the deck ------------------------------------------------------------------------------
 // The game's board this update (its mount), with our own write of the last frame taken back off, as the board's pass does.
 bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept {
