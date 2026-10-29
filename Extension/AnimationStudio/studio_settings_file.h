@@ -13,6 +13,7 @@ namespace dingosdk::anim_studio {
 inline constexpr int guide_version = 3; // 3 (2026-10-29): the LIBRARY
 // What studio-settings.json keeps, apart from the studio's state: the studio reads it into its state at start and
 // writes it back whole after each change. A key the file does not have keeps the value it is given.
+inline constexpr int grind_rail_defaults = 2; // 2: the square 4 m rail at 60%, set once over any earlier choice
 struct SettingsFile {
     bool front_foot{true};
     bool joint_limits{true};
@@ -30,8 +31,8 @@ struct SettingsFile {
     bool catch_marker{true}, drop_preview{true}; // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                           // this first-start guide (guide_version) was read
     bool smooth_transitions{true};               // SETTINGS > TRICKS > Transitions: SMOOTH (the handover) or CLASSIC
-    std::string grind_rail{"own_bkrails_generic_flatrailroundlong_00001"}; // SETTINGS > STUDIO > Grind rail (studio_rails.h), "" none
-    float grind_rail_size{0.6f};                                               // SETTINGS > STUDIO > Rail size
+    std::string grind_rail{"own_bkrails_generic_flatrailsquare_00001"}; // SETTINGS > STUDIO > Grind rail (studio_rails.h), "" none
+    float grind_rail_size{0.6f};                                            // SETTINGS > STUDIO > Rail size
 };
 inline void read_settings_file(const Json& root, SettingsFile& f) {
     if (!root.is_object()) return;
@@ -63,12 +64,15 @@ inline void read_settings_file(const Json& root, SettingsFile& f) {
     f.drop_preview = root.value("drop_preview", f.drop_preview);
     f.guide_seen = root.value("guide_read", 0) >= guide_version; // "guide_seen" was the first guide's: it opens again
     f.smooth_transitions = root.value("smooth_transitions", f.smooth_transitions);
-    if (root.contains("grind_rail") && root.at("grind_rail").is_string()) {
-        const auto rail = root.at("grind_rail").string();
-        f.grind_rail = rail == "off" ? std::string{} : rail.size() < 96 ? rail : f.grind_rail;
+    // The rail chosen before the square 4 m at 60% became the default (grind_rail_defaults 2, 2026-10-29) is set to it once.
+    if (root.value("grind_rail_defaults", 0) >= grind_rail_defaults) {
+        if (root.contains("grind_rail") && root.at("grind_rail").is_string()) {
+            const auto rail = root.at("grind_rail").string();
+            f.grind_rail = rail == "off" ? std::string{} : rail.size() < 96 ? rail : f.grind_rail;
+        }
+        if (root.contains("grind_rail_size") && root.at("grind_rail_size").is_number())
+            f.grind_rail_size = std::clamp(static_cast<float>(root.at("grind_rail_size").get<double>()), 0.3f, 1.0f);
     }
-    if (root.contains("grind_rail_size") && root.at("grind_rail_size").is_number())
-        f.grind_rail_size = std::clamp(static_cast<float>(root.at("grind_rail_size").get<double>()), 0.3f, 1.0f);
 }
 inline Json settings_file_json(const SettingsFile& f) {
     Json root = Json::object();
@@ -96,6 +100,7 @@ inline Json settings_file_json(const SettingsFile& f) {
     root["smooth_transitions"] = f.smooth_transitions;
     root["grind_rail"] = f.grind_rail.empty() ? std::string("off") : f.grind_rail;
     root["grind_rail_size"] = f.grind_rail_size;
+    root["grind_rail_defaults"] = grind_rail_defaults;
     return root;
 }
 }

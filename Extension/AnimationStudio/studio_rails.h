@@ -28,7 +28,8 @@ inline constexpr std::array<StudioRail, 8> studio_rails{{
     {"own_bkrails_generic_flatrailsquaretall_00001", "Tall square rail, 4 m, 75 cm high", "TALL SQUARE 4M", 0.75f, 4},
     {"own_bkrails_generic_flatrailsquaretalllong_00001", "Tall square rail, 6 m, 75 cm high", "TALL SQUARE 6M", 0.75f, 6},
 }};
-inline constexpr std::string_view default_studio_rail = "own_bkrails_generic_flatrailroundlong_00001";
+// The square 4 m rail at 60%: 30 cm high, 2.4 m long (the user's pick, 2026-10-29).
+inline constexpr std::string_view default_studio_rail = "own_bkrails_generic_flatrailsquare_00001";
 // How big the rail is put up (the build kit scales an object whole: lower, thinner and shorter). The game's are big for a
 // skater (a 50 cm rail with a bar near 10 cm thick, 2026-10-29: "the rail looks so big"); 60% is a 30 cm rail.
 inline constexpr std::array<float, 6> studio_rail_sizes{1.0f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f};

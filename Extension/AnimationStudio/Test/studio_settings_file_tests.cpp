@@ -76,6 +76,22 @@ void values_out_of_range_are_kept_in_it() {
     read_settings_file(Json::parse(R"({"stance": 7, "crossfade": 3.0})"), read);
     check(read.stance == 2 && read.crossfade == 0.8f, "A stance or crossfade out of range was kept");
 }
+// The square 4 m rail at 60% is set once over a rail chosen before it was the default; one chosen since stays.
+void the_grind_rail_is_the_square_one_once() {
+    SettingsFile fresh;
+    check(fresh.grind_rail == "own_bkrails_generic_flatrailsquare_00001" && fresh.grind_rail_size == 0.6f, "The default rail is not the square 4 m at 60%");
+    SettingsFile older;
+    read_settings_file(Json::parse(R"({"grind_rail": "own_bkrails_generic_flatrailround_00001", "grind_rail_size": 1.0})"), older);
+    check(older.grind_rail == fresh.grind_rail && older.grind_rail_size == 0.6f,
+          "A rail chosen before was not set to the square 4 m at 60%");
+    SettingsFile chosen;
+    chosen.grind_rail = "own_bkrails_generic_flatrailroundtall_00001";
+    chosen.grind_rail_size = 0.8f;
+    const auto read = reloaded(chosen);
+    check(read.grind_rail == chosen.grind_rail && read.grind_rail_size == 0.8f, "A rail chosen since did not survive a save and reload");
+    chosen.grind_rail.clear();
+    check(reloaded(chosen).grind_rail.empty(), "OFF did not survive a save and reload");
+}
 }
 int main() {
     try {
@@ -85,6 +101,7 @@ int main() {
         values_out_of_range_are_kept_in_it();
         the_catch_tools_and_the_guide_survive_a_save_and_reload();
         a_file_from_before_shows_the_catch_tools_and_the_guide();
+        the_grind_rail_is_the_square_one_once();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "studio settings file tests passed\n";
 }
