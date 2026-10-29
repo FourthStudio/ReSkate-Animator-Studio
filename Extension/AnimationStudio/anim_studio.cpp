@@ -30,6 +30,7 @@
 #include "pack_file_transaction.h"
 #include "studio_settings_file.h"
 #include "studio_rails.h"
+#include "grind_types.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include <Windows.h>
@@ -588,6 +589,13 @@ struct Live {
     // moving through them (the tracker gets the others: tracked, its index -> piece_tricks).
     enum class HeldKind { none, grind, grab, ground };
     std::vector<std::pair<std::size_t, HeldKind>> held_loops;
+    // Each piece's grinds (grind_types.h; piece_tricks indices): a saved grind plays only while the game says it is doing
+    // one of these. Empty: not one of the game's grinds.
+    std::vector<std::vector<std::uint32_t>> piece_grinds;
+    // The grind the game says he is doing (an Enum.SkateGrindType value, 0 none), when it last said one, and the last one
+    // logged.
+    std::uint32_t grind_now{}, grind_told{};
+    double grind_now_at{-1};
     std::vector<std::size_t> tracked;
     struct HeldPlay {
         HeldKind kind{HeldKind::none};
@@ -2928,9 +2936,17 @@ HeldRule held_rule(Live::HeldKind kind) {
     default: return {0.015f, 0.03f, "holding a pose on the board", "manual, powerslide or brake loop"};
     }
 }
+// A saved piece may play on the grind the game is doing: one of the game's grinds plays only on the grinds its clip is for
+// (grind_types_of), never on another that looks like it (2026-10-29: a FS blunt played on a 50-50). `grind` 0: the game has
+// not said which grind (then none of them plays).
+bool grind_allows(const Live& l, std::size_t piece, std::uint32_t grind) noexcept {
+    if (piece >= l.piece_grinds.size() || !grind) return false;
+    const auto& types = l.piece_grinds[piece];
+    return std::find(types.begin(), types.end(), grind) != types.end();
+}
 constexpr float held_apart = 0.7f;  // the loop taken is well nearer than the next saved one
 constexpr float held_still = 0.006f; // on the ground: how little the spine and legs may move over a quarter of a second
-std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, float dt, Live::HeldKind kind) {
+std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, float dt, Live::HeldKind kind, std::uint32_t grind) {
     auto& g = l.held;
     if (g.kind != kind) {
         g = {};
@@ -2938,10 +2954,17 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
     }
     if (g.since < 0) g.since = at;
     const auto rule = held_rule(kind);
+    // Grinding, only the saved loops of the grind the game is doing are in the running.
+    const bool grinding = kind == Live::HeldKind::grind;
+    if (grinding && g.playing >= 0 && !grind_allows(l, static_cast<std::size_t>(g.playing), grind)) {
+        logging::log(Level::info, Channel::skater, "Animation Studio: grinding; {} lets go: the game is doing a {} now.",
+                     l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, grind ? grind_type_label(grind) : std::string("grind it has not named"));
+        g.playing = g.candidate = -1;
+    }
     std::vector<std::size_t> pieces;
     std::vector<const Clip*> clips;
     for (const auto& [index, k] : l.held_loops)
-        if (k == kind) {
+        if (k == kind && (!grinding || grind_allows(l, index, grind))) {
             pieces.push_back(index);
             clips.push_back(l.piece_tricks[index]->clip.get());
         }
@@ -3030,6 +3053,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
         l.mirrored_edits.clear(); // an address can be reused by a new animation
         l.piece_tricks.clear();
         l.held_loops.clear();
+        l.piece_grinds.clear();
         l.tracked.clear();
         l.held = {};
         std::vector<const Clip*> clips;
@@ -3040,6 +3064,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                     const auto kind = held_kind_of(t.trick);
                     const auto index = l.piece_tricks.size();
                     l.piece_tricks.push_back(&t);
+                    l.piece_grinds.push_back(grind_types_of(t.trick.substr(7)));
                     if (kind != Live::HeldKind::none) l.held_loops.push_back({index, kind});
                     else {
                         l.tracked.push_back(index);
@@ -3076,12 +3101,22 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     else if (motion == MotionState::riding || (motion == MotionState::unknown && state && *state < 300)) holding = K::ground;
     const bool any_held = std::any_of(l.held_loops.begin(), l.held_loops.end(), [&](const auto& h) { return h.second == holding; });
     if (holding == K::none || !any_held) l.held = {};
+    // The grind the game says he is doing now (said within the last half second), told once each.
+    const std::uint32_t grind = l.grind_now_at >= 0 && at - l.grind_now_at < 0.5 ? l.grind_now : 0;
+    if (motion == MotionState::rail && grind && grind != l.grind_told) {
+        l.grind_told = grind;
+        logging::log(Level::info, Channel::skater, "Animation Studio: the game is doing a {} ({}); only a saved grind made for it plays.",
+                     grind_type_label(grind), skate_grind_types[grind]);
+    }
     std::optional<PieceMatch> match;
     if (!l.game_trick && !scheduled) {
         match = l.pieces.update(at, l.pose);
         if (match) match->piece = match->piece < l.tracked.size() ? l.tracked[match->piece] : l.piece_tricks.size();
+        // A piece of one of the game's grinds (its way in, its lean, its pop-out) only on that grind.
+        if (match && match->piece < l.piece_grinds.size() && !l.piece_grinds[match->piece].empty() && !grind_allows(l, match->piece, grind))
+            match.reset();
         // Nothing moving through a piece: the loop of a move he holds, if one of them is saved.
-        if (!match && any_held) match = held_play(l, snap, at, dt, holding);
+        if (!match && any_held) match = held_play(l, snap, at, dt, holding, grind);
     } else l.pieces.reset();
     // Exact stance: a piece seen playing the other way round to the way it was made is left to the game.
     if (match && !snap.front_foot && match->mirrored) match.reset();
@@ -3540,6 +3575,16 @@ void on_animation(std::uintptr_t component) noexcept {
             const auto collection = read<std::uintptr_t>(component + 0x18).value_or(0);
             const auto entity = collection ? read<std::uintptr_t>(collection).value_or(0) : 0;
             l.game = entity ? trainer::read_studio_states(base, entity) : trainer::StudioStates{};
+            // Which grind the game is doing (grind_types.h): CurrentSkateGrindType, else CurrentGrindType.
+            {
+                std::uint32_t type = 0;
+                if (l.game.skate_grind_type && real_grind_type(*l.game.skate_grind_type)) type = *l.game.skate_grind_type;
+                else if (l.game.grind_type && real_grind_type(*l.game.grind_type)) type = *l.game.grind_type;
+                if (type) {
+                    l.grind_now = type;
+                    l.grind_now_at = at;
+                }
+            }
             game_targeting_grind.store(l.game.targeting_grind.value_or(false), std::memory_order_release);
             game_time_to_land.store(l.game.time_to_land.value_or(-1.0f), std::memory_order_release);
         }

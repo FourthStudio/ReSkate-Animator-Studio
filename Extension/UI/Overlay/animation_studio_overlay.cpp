@@ -3,6 +3,7 @@
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/AnimationStudio/studio_rails.h"
+#include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
@@ -3899,9 +3900,14 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
     y += 32 * k;
     if (p && p->trick.starts_with("native:")) {
         // A piece of the game's animation (a grind's loop, a grab's hold) is not popped: it plays when the game plays it.
+        // One of the game's grinds plays only on the grinds its clip is for, as the game names the one he is doing.
+        const auto grinds = studio::grind_types_of(p->trick.substr(7));
         y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, soft,
-                       "Whenever the game plays this piece, " + piece_label(p->trick) + ": the studio knows it by the skater's pose. "
-                       "Pieces have no pop, so there is nothing to copy to low, mid and high.");
+                       grinds.empty() ? "Whenever the game plays this piece, " + piece_label(p->trick) + ": the studio knows it by the skater's pose. "
+                                        "Pieces have no pop, so there is nothing to copy to low, mid and high."
+                                      : "Only when you do a " + studio::grind_types_words(grinds) + ": the game says which grind you are doing, "
+                                        "and no other grind plays it (anything else is the game's own). Pieces have no pop, so there is "
+                                        "nothing to copy to low, mid and high.");
         y += 18 * k;
     } else {
         const std::string pop = p ? p->pop : std::string{};

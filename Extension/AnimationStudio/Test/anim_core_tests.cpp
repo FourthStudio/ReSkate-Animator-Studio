@@ -15,6 +15,7 @@
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/native_additive.h"
 #include "Extension/AnimationStudio/studio_rails.h"
+#include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -2087,6 +2088,28 @@ void grind_rail_goes_under_the_grind() {
     check(same_rail_spot(spot.at, spot.rotation, spot.at, half_turn), "A rail turned half round is the same rail");
 }
 
+// A saved grind plays only on the grinds its clip is for, as the game names them (grind_types.h).
+void a_grind_is_known_by_the_games_name() {
+    const auto of = [](const char* name) { return grind_types_of(std::string("animation/dingo/") + name); };
+    using V = std::vector<std::uint32_t>;
+    const auto id = [](const char* name) { return skate_grind_type(name); };
+    check(id("FS_Blunt") == 14 && id("BF_FS_NoseSlide") == 38 && id("Exit") == 77 && skate_grind_types.size() == 78, "The game's grind types");
+    check(of("c_proto_onb_grind_fs_blunt_rail_loop") == V{id("FS_Blunt")}, "A FS blunt is a FS blunt only");
+    check(of("c_proto_onb_grind_5050_rail_loop") == V{id("FS_50_50"), id("BS_50_50")}, "A 50-50 with no side is both sides");
+    check(of("c_proto_onb_grind_bf_5050_rail_into") == V{id("BF_FS_50_50"), id("BF_BS_50_50")}, "bf is the fakie way in");
+    check(of("c_proto_onb_grind_fs_boardslide_bs_lipslide_rail_loop") == V{id("FS_Board"), id("BS_Lip")}, "A shared clip is both its tricks");
+    check(of("c_proto_onb_grind_fs_boardslide_bs_lipslide_rail_loop_dark") == V{id("FS_DarkSlide"), id("BS_Darklip")}, "Dark is the darkslide");
+    check(of("c_proto_onb_grind_fs_bs_5_0_rail_loop") == V{id("FS_5_0"), id("BS_5_0")}, "fs_bs is both sides of one trick");
+    check(of("c_proto_onb_grind_fakie_fs_noseslide_rail_popout_bs") == V{id("BF_FS_NoseSlide")}, "A fakie pop-out is the fakie grind");
+    check(of("c_proto_onb_grind_bs_salad_fs_oversalad_rail_loop") == V{id("BS_Salad"), id("FS_Suski")}, "An oversalad is the game's suski");
+    check(of("c_proto_onb_trick_o_kickflip_mid").empty() && of("c_proto_ofb_grind_5050_feet_rail_loop").empty() &&
+              of("c_proto_onb_grind_fs_wobble_rail_loop").empty(),
+          "Anything else, or a name it cannot read, is no grind");
+    check(grind_type_label(id("FS_Blunt")) == "FS Bluntslide" && grind_type_label(id("BF_FS_NoseSlide")) == "Fakie FS Noseslide" &&
+              grind_types_words({id("FS_Board"), id("BS_Lip")}) == "FS Boardslide or BS Lipslide",
+          "Grinds are named as the game says them");
+}
+
 void fakie_mirrors_the_upper_body() {
     std::mt19937 random(7);
     std::uniform_real_distribution<float> spread(-1, 1);
@@ -2651,6 +2674,7 @@ int main(int argc, char** argv) {
         fakie_mirrors_the_upper_body();
         additive_clips_go_on_their_pose();
         grind_rail_goes_under_the_grind();
+        a_grind_is_known_by_the_games_name();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
         profiles_read_back_and_bad_ones_are_refused();

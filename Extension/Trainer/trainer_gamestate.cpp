@@ -362,6 +362,14 @@ StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noex
     number(studio_objects[3], out.time_to_land);
     flag(studio_objects[4], out.trick_in_air);
     flag(studio_objects[5], out.grind_into);
+    // The grind's type, found by the same search (grind_control_objects): an Enum.SkateGrindType value, 0 to 77.
+    const auto word = [&](StateObject &object, std::optional<std::uint32_t> &into) {
+        const auto at = value_address(object, block);
+        std::uint32_t value{};
+        if (at && peek(at, value) && value < 78) into = value;
+    };
+    word(grind_control_objects[8], out.grind_type);
+    word(grind_control_objects[9], out.skate_grind_type);
     return out;
 }
 namespace {
