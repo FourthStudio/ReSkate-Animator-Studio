@@ -50,10 +50,20 @@ struct Config {
 // Release builds replace ReSkateLauncher.exe and ReSkate.dll; local builds only report.
 bool binary_updates_enabled() noexcept;
 Config parse_config(std::string_view text);
+
+// Whose releases update the launcher and ReSkate.dll: this build's own (launcher_release_repo), or
+// official ReSkate's (official_release_repo), which the player can choose in a modified build.
+enum class Channel { own, official };
+// Whether there is a choice: this build updates from releases that are not official ReSkate's.
+// Choosing official ReSkate installs its launcher too, which has no way back: the player
+// reinstalls this build to return to it.
+bool has_official_channel() noexcept;
+std::wstring_view release_repo(Channel channel) noexcept;
+
 // Returns nothing when offline or the config is invalid; the reason is logged.
 // `prereleases`: the newest release that carries a launcher.json, pre-release or not (the
 // launcher's "Test pre-releases" setting); otherwise GitHub's latest full release.
-std::optional<Config> fetch_config(bool prereleases = false);
+std::optional<Config> fetch_config(bool prereleases = false, Channel channel = Channel::own);
 
 // One GitHub release, for the launcher's changelogs: its patch notes are what its page on
 // GitHub shows, the release's description or, without one, its commit's message.
@@ -65,9 +75,9 @@ struct ReleaseNote {
 std::vector<ReleaseNote> parse_release_feed(std::string_view feed);
 // The newest release of the repo the launcher updates from (with `prereleases`, the newest
 // pre-release when it is newer). Throws when GitHub cannot be reached.
-ReleaseNote fetch_release_note(bool prereleases = false);
+ReleaseNote fetch_release_note(bool prereleases = false, Channel channel = Channel::own);
 // That repo's releases page on GitHub.
-std::string releases_page();
+std::string releases_page(Channel channel = Channel::own);
 
 // Streams an HTTPS GET into `sink`, following HTTPS redirects; throws past
 // `limit` bytes, on a non-200 answer, or whatever `sink` throws (to cancel).

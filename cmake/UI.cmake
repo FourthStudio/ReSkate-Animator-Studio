@@ -134,6 +134,8 @@ endif()
 # The window shown from the moment ReSkate loads until the game's own window appears.
 add_library(dingosdk_startup_window STATIC Extension/UI/Startup/startup_window.cpp)
 target_link_libraries(dingosdk_startup_window PRIVATE gdi32 user32 msimg32 shell32 ole32 windowscodecs)
+# reskate_version.h: the build's name on the splash.
+target_include_directories(dingosdk_startup_window PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # TEST ONLY: lists every control the overlay draws, by its ID, with its box on the screen, for game tests to click
 # (Extension/UI/Overlay/Test/ui_control_list.cpp). Off, ImGui is built exactly as without it.
