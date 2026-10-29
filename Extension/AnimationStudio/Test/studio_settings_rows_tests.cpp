@@ -8,7 +8,7 @@
 namespace dingosdk::anim_studio {
 namespace {
 struct Given {
-    std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, drop_preview, guide_seen;
+    std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, drop_preview, guide_seen, smooth;
     std::optional<int> stance;
     std::optional<float> crossfade;
     std::optional<std::string> your_name;
@@ -29,6 +29,7 @@ void set_your_name(const std::string& name) { given.your_name = name; }
 void set_catch_marker(bool on) { given.catch_marker = on; }
 void set_drop_preview_tool(bool on) { given.drop_preview = on; }
 void set_guide_seen(bool seen) { given.guide_seen = seen; }
+void set_smooth_transitions(bool on) { given.smooth = on; }
 void play_playlist(const std::string& name, std::string& message) {
     given.playing = name;
     message = name.empty() ? "No playlist is on." : name + " is on.";
@@ -84,6 +85,15 @@ void editing_stance_names_the_games_stance_and_goes_round() {
     check(anim_studio::given.stance == 2, "A step back from THE GAME'S did not go round to GOOFY");
     row.pick(1);
     check(anim_studio::given.stance == 1, "Picking REGULAR did not set it");
+}
+void transitions_picks_smooth_or_classic() {
+    reset();
+    anim_studio::Settings now;
+    now.smooth_transitions = true;
+    const auto row = transitions(now);
+    check(row.options == std::vector<std::string>{"SMOOTH", "CLASSIC"} && row.selected == 0, "Transitions does not start on SMOOTH");
+    row.pick(1);
+    check(anim_studio::given.smooth == false, "Picking CLASSIC did not set it");
 }
 void trick_matching_picks_front_foot_or_exact_stance() {
     reset();
@@ -187,6 +197,7 @@ int main() {
         each_on_off_row_sets_its_own_setting();
         editing_stance_names_the_games_stance_and_goes_round();
         trick_matching_picks_front_foot_or_exact_stance();
+        transitions_picks_smooth_or_classic();
         crossfade_slides_in_hundredths_of_a_second();
         report_a_bug_says_where_the_report_went();
         made_by_sets_the_name_and_says_so();

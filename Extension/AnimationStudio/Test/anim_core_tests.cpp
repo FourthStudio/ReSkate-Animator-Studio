@@ -1975,6 +1975,35 @@ void native_clips_pop_where_the_game_does() {
     auto piece = make(-1, -1);
     check(!place_native_marks(piece) && piece.takeoff < 0, "and a piece with no pop gets none");
 }
+// SMOOTH transitions (2026-10-29): part of a flip past half a turn goes on round, a jump inside one trick is eased, and in
+// a handover the legs go over first, then the hips and arms, then the back and head.
+void smooth_transitions_contracts() {
+    const auto about_x = [](float degrees) {
+        const float h = degrees * 3.14159265f / 360;
+        return Quat{std::sin(h), 0, 0, std::cos(h)};
+    };
+    const auto angle_x = [](const Quat& q) { return 2 * std::atan2(q[0], q[3]) * 180 / 3.14159265f; };
+    check(near(angle_x(scaled_turn(about_x(200), 0.5f)), 100, 0.05f), "Half of a 200 degree flip is 100 degrees on, not 80 back");
+    check(near(angle_x(scaled_turn(about_x(90), 0.5f)), 45, 0.05f), "Half of a quarter turn is an eighth");
+    check(scaled_turn(about_x(300), 0) == (Quat{0, 0, 0, 1}), "None of a turn is no turn");
+    EditTransition t;
+    std::array<Offset, 1> flat{}, turned{};
+    turned[0].rotation = about_x(90);
+    t.evaluate(1, 1, 1, 10, flat, 0.15f, board_jump_degrees);
+    t.evaluate(1.2, 1, 1, 10, flat, 0.15f, board_jump_degrees);
+    const auto eased = t.evaluate(1.217, 1, 1, 10, turned, 0.15f, board_jump_degrees)[0];
+    check(std::abs(angle_x(eased.rotation)) < 45, "A 90 degree jump inside one trick is eased, not drawn in one frame");
+    check(std::abs(angle_x(t.evaluate(1.33, 1, 1, 10, turned, 0.15f, board_jump_degrees)[0].rotation) - 90) < 0.5f,
+          "and reaches it after the jump's fade");
+    EditTransition plain;
+    plain.evaluate(1, 1, 1, 10, flat);
+    plain.evaluate(1.2, 1, 1, 10, flat);
+    check(std::abs(angle_x(plain.evaluate(1.217, 1, 1, 10, turned)[0].rotation) - 90) < 0.5f, "Without the guard it is drawn at once");
+    check(handover_left(10, 0) == 1 && handover_left(10, handover_legs) == 0, "A foot goes over in the legs' time");
+    check(handover_left(10, 0.1f) < handover_left(47, 0.1f) && handover_left(47, 0.1f) < handover_left(44, 0.1f),
+          "The legs go first, then the arms, then the chest");
+    check(handover_left(103, handover_torso) == 0, "and the head is over by the torso's time");
+}
 void native_playback_contracts() {
     EditTransition transition;
     std::array<Offset, 1> a{}, b{}; a[0].offset[0] = 0.4f; b[0].offset[0] = -0.4f;
@@ -2424,6 +2453,7 @@ int main(int argc, char** argv) {
         blend_out_eases_back_to_the_game();
         blend_in_eases_in_from_the_game();
         keys_can_be_dragged_in_time();
+        smooth_transitions_contracts();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
         profiles_read_back_and_bad_ones_are_refused();

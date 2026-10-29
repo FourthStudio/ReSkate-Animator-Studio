@@ -63,6 +63,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     setting_row(menu, anim_studio::settings_rows::custom_tricks_in_game(now));
     setting_row(menu, anim_studio::settings_rows::crossfade(now));
     setting_row(menu, anim_studio::settings_rows::trick_matching(now));
+    setting_row(menu, anim_studio::settings_rows::transitions(now));
     end_card();
     const anim_studio::settings_rows::Tell tell = [&menu](const std::string& said) { feedback(menu, said.c_str()); };
     const auto playlists = anim_studio::playlists_now();

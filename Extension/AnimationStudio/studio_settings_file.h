@@ -29,6 +29,7 @@ struct SettingsFile {
     bool play_in_game{true};
     bool catch_marker{true}, drop_preview{true}; // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                           // this first-start guide (guide_version) was read
+    bool smooth_transitions{true};               // SETTINGS > TRICKS > Transitions: SMOOTH (the handover) or CLASSIC
 };
 inline void read_settings_file(const Json& root, SettingsFile& f) {
     if (!root.is_object()) return;
@@ -59,6 +60,7 @@ inline void read_settings_file(const Json& root, SettingsFile& f) {
     f.catch_marker = root.value("catch_marker", f.catch_marker);
     f.drop_preview = root.value("drop_preview", f.drop_preview);
     f.guide_seen = root.value("guide_read", 0) >= guide_version; // "guide_seen" was the first guide's: it opens again
+    f.smooth_transitions = root.value("smooth_transitions", f.smooth_transitions);
 }
 inline Json settings_file_json(const SettingsFile& f) {
     Json root = Json::object();
@@ -83,6 +85,7 @@ inline Json settings_file_json(const SettingsFile& f) {
     root["catch_marker"] = f.catch_marker;
     root["drop_preview"] = f.drop_preview;
     root["guide_read"] = f.guide_seen ? guide_version : 0;
+    root["smooth_transitions"] = f.smooth_transitions;
     return root;
 }
 }

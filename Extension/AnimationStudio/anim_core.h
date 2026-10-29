@@ -318,6 +318,13 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
                              std::span<Joint> native, bool mirror, float weight, bool reverse_facing = false);
 Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
+// The board's key at `seconds` (its turn and move in the board's ground frame); none where the trick has no board key then.
+std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror = false);
+// `board` with a board key on it: turned and moved in the ground frame (board_edited is board_key and this).
+Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& frame) noexcept;
+// `k` of a turn, its own way round: a quaternion past half a turn (w below 0) goes on round to it, where slerp from no turn
+// takes the short way back (a flip drawn in part seemed to flip back - Team B, 2026-10-29).
+Quat scaled_turn(const Quat& q, float k) noexcept;
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
 // Native/custom blend at explicitly edited bracket boundaries. Legacy full-clip windows stay at 1.

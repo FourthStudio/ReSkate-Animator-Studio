@@ -729,13 +729,27 @@ void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native) 
         for (std::size_t k = 0; k < 3; ++k) native[i].position[k] += deltas[i].offset[k];
     }
 }
-Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& ground, bool mirror) {
-    if (!std::isfinite(seconds) || seconds < edits.start || (edits.end >= 0 && seconds > edits.end)) return board;
+std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror) {
+    if (!std::isfinite(seconds) || seconds < edits.start || (edits.end >= 0 && seconds > edits.end)) return std::nullopt;
     const auto* track = edits.track(board_joint);
-    if (!track || track->hidden || track->keys.empty()) return board;
+    if (!track || track->hidden || track->keys.empty()) return std::nullopt;
     auto edit = evaluate(*track, seconds);
-    if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 && edit.offset == Vec3{}) return board;
+    if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 && edit.offset == Vec3{}) return std::nullopt;
     if (mirror) { edit.rotation = mirror_board_rotation(edit.rotation); edit.offset = mirror_board_vector(edit.offset); }
+    return edit;
+}
+Quat scaled_turn(const Quat& q, float k) noexcept {
+    const float w = std::clamp(q[3], -1.0f, 1.0f);
+    const float sine = std::sqrt(std::max(0.0f, 1 - w * w));
+    if (!(sine > 1e-6f) || !std::isfinite(k)) return w >= 0 || !(k > 0) ? Quat{0, 0, 0, 1} : q;
+    const float half = std::acos(w) * k, f = std::sin(half) / sine;
+    return {q[0] * f, q[1] * f, q[2] * f, std::cos(half)};
+}
+Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& ground, bool mirror) {
+    const auto edit = board_key(edits, seconds, mirror);
+    return edit ? board_edited_by(board, *edit, ground) : board;
+}
+Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& ground) noexcept {
     auto out = board;
     const auto moved = rotate(ground, edit.offset);
     for (std::size_t i = 0; i < 3; ++i) out.position[i] += moved[i];

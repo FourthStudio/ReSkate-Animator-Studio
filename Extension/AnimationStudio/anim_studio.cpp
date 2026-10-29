@@ -358,6 +358,7 @@ struct State {
     bool hover_preview{true};                      // TRICKS: a hovered trick plays in a little window
     bool catch_marker{true}, drop_preview_tool{true}; // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                             // the first-start guide was read
+    bool smooth_handover{true};                    // SETTINGS > TRICKS > Transitions: SMOOTH (smooth_transitions) or CLASSIC
     std::map<std::string, std::string> keys;       // the editor's rebound keys (View::keys)
     bool playlist_on{};                            // the playlist that plays (Playlists::on), as last read
     PlaylistMode playlist_mode{PlaylistMode::fixed};
@@ -627,6 +628,10 @@ struct GameplayPacket {
     float feet_match{}; // how far a foot on the deck goes where the studio has it on the board (off the game's clip)
     bool limits{};      // keyed joints are kept inside the game's range
     float lower_release{}; // how far the board, hips and legs are the game's ahead of a rail or a ledge (raised_lead)
+    // What the game was doing when this was made (riding, air, rail): the passes go by it, not by a state stored ahead of the
+    // packet, which drew a frame of the air's trick on a board already on the rail (Team B, 2026-10-29).
+    MotionState motion{MotionState::unknown};
+    float caught{-1}; // the trick's catch, on its own clock (-1 none): the lean onto a rail waits for it
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
@@ -643,6 +648,15 @@ constexpr std::array<std::uint16_t, 9> grind_lower_body{7, 8, 9, 10, 11, 341, 34
 // lead was still a fraction of a second too quick, 2026-10-27).
 constexpr float raised_landing = 0.12f, raised_lead = 0.25f, raised_min_ease = 0.12f;
 std::atomic<bool> overrides_allowed{true};
+// SETTINGS > TRICKS > Transitions: SMOOTH (true) hands a trick over to a grind the way the game does its own (Handover);
+// CLASSIC is 1.0.16's, kept to compare.
+std::atomic<bool> smooth_transitions{true};
+// The game turning the board to a rail's angle under a trick of ours in the air (the board pass sees it): how far the board
+// and legs have leaned over to the game's, and for which trick (episode).
+std::atomic<float> rail_lean{0};
+std::atomic<std::uint64_t> rail_lean_episode{~std::uint64_t{0}};
+// When the handover running now started (Handover::started), for the bug report; -1 none.
+std::atomic<double> handover_at{-1};
 Live& live();
 struct GameplayPackets {
     std::mutex mutex;
@@ -803,6 +817,7 @@ SettingsFile settings_file_of(const State& s) {
     f.catch_marker = s.catch_marker;
     f.drop_preview = s.drop_preview_tool;
     f.guide_seen = s.guide_seen;
+    f.smooth_transitions = s.smooth_handover;
     return f;
 }
 void load_settings(State& s) {
@@ -828,6 +843,8 @@ void load_settings(State& s) {
         s.catch_marker = f.catch_marker;
         s.drop_preview_tool = f.drop_preview;
         s.guide_seen = f.guide_seen;
+        s.smooth_handover = f.smooth_transitions;
+        smooth_transitions.store(f.smooth_transitions, std::memory_order_relaxed);
     } catch (...) {}
 }
 void write_preset_file(const std::filesystem::path& path, const std::string& text); // below
@@ -3060,6 +3077,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     packet->limits = snap.limits;
     packet->board_frame_local = play.board_frame; packet->board_frame_valid = play.board_frame_ok;
     packet->board_owned = true;
+    packet->motion = motion;
     if (play.board_frame_ok && l.board_ok) {
         Joint frame;
         frame.rotation = normalised(multiply(live_placement.rotation, play.board_frame));
@@ -4195,6 +4213,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->match_rest = whole; // on another pop's clip: body and board as made (other_pop)
                     packet->limits = snap->limits;
                     packet->lower_release = l.raised_release;
+                    packet->motion = motion;
+                    packet->caught = trick->caught;
                     // The board keys are authored in the board's own frame and played in it (nose-relative both
                     // times), so they need no turning for fakie. A deck turned round under him is the game's
                     // board-backwards flag, applied where the board is drawn.
@@ -4225,6 +4245,9 @@ void on_animation(std::uintptr_t component) noexcept {
         }
         trick_blend.store(std::clamp((l.game_trick && l.crossfade_now > 0 ? l.crossfade_now : snap->crossfade) * 0.5f, 0.08f, 0.4f),
                           std::memory_order_relaxed);
+        // SMOOTH: on a rail with the trick's clock not found (rail_release) the handover takes the trick over, not a packet
+        // that gives the board to the game in one frame for 80 ms (Team B, 2026-10-29).
+        if (scheduled && !scheduled->board_owned && smooth_transitions.load(std::memory_order_relaxed)) scheduled.reset();
         publish_gameplay_packet(std::move(scheduled));
         if (diagnostics_capture) {
             diagnostic.observed_phase = snap->open ? "studio_preview" : phase_name(l.episode.phase);
@@ -4243,6 +4266,9 @@ void on_animation(std::uintptr_t component) noexcept {
             }
             diagnostic.entry = entry_name(l.episode.entry); diagnostic.episode = l.episode.id;
             diagnostic.pop = l.used_pop; diagnostic.pop_source = l.used_pop_source; diagnostic.decision = l.decision;
+            diagnostic.lean = rail_lean_episode.load(std::memory_order_acquire) == l.episode.id ? rail_lean.load(std::memory_order_acquire) : 0.0f;
+            if (const double started = handover_at.load(std::memory_order_relaxed); started >= 0)
+                diagnostic.handover = static_cast<float>(now_seconds() - started);
             diagnostic.takeoff_goofy = l.playback_goofy;
             diagnostic.takeoff_switch = l.playback_switch;
             diagnostic.board_weight = board_weight;
@@ -4613,6 +4639,168 @@ void idle(double now) {
 void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept; // below
 bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motion, bool playing, std::span<const Joint> native,
                                    std::vector<Joint>& edited) noexcept; // below
+bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept;
+// SMOOTH transitions: the handover into a grind. At a rail's lock the trick it leaves (the last packet) goes on playing at
+// its own pace over the game's fresh pose, never held, and each joint goes over to the game's at its own speed
+// (handover_left: legs with the board, then hips and arms, then the back and head). The board goes from where it was drawn
+// on the game's to the game's with the legs, and each foot stays on the board as drawn. Both passes keep to it: one record,
+// one clock, the board's frame for both. What is drawn is written into each pass's fade, so whatever comes next (a pop off
+// the rail into the next trick) fades from it, never back to the trick it left.
+struct Handover {
+    std::mutex mutex;
+    std::uint64_t generation{~std::uint64_t{0}};
+    std::shared_ptr<const GameplayPacket> outgoing; // the trick as it last played
+    double outgoing_seen{-1};
+    Joint air_board{}; // the board as drawn, in the game's board's frame, on the last frame in the air
+    double air_board_at{-1};
+    Joint air_board_placed{}; // and in the skater's placement frame (remember_board_in_the_air), for the feet
+    double air_board_placed_at{-1};
+    double started{-1}; // the lock the handover runs from; -1 none
+    Joint board{};      // air_board at the lock: what is left of it goes as the legs go
+    std::array<Joint, 2> feet{}; // each foot on the board as drawn at the lock
+    bool feet_ok{}, feet_taken{};
+    // The lean onto a rail (board pass): the game's board's heading under him, frame to frame.
+    std::uint64_t lean_episode{~std::uint64_t{0}};
+    float heading{};
+    double heading_at{-1}, lean_started{-1};
+    int turning{};
+    // The board key's way round (scaled_turn): the sign last drawn, for one trick.
+    Quat key_sign{0, 0, 0, 1};
+    std::uint64_t key_episode{~std::uint64_t{0}};
+};
+Handover& handover() { static auto* h = new Handover; return *h; }
+// Whether a handover runs now, starting one at a rail's lock (the trick played within 0.15 s, none plays now). Caller holds
+// the handover's mutex.
+bool handover_running(Handover& h, double now, std::uint64_t generation, MotionState motion, const GameplayPacket* packet) noexcept {
+    if (h.generation != generation) {
+        h.outgoing.reset();
+        h.started = h.air_board_at = -1;
+        h.generation = generation;
+    }
+    if (packet) {
+        h.started = -1;
+        handover_at.store(-1, std::memory_order_relaxed);
+        return false;
+    }
+    if (h.started >= 0 && now - h.started > handover_torso + 0.02) {
+        h.started = -1;
+        h.outgoing.reset();
+    }
+    if (h.started < 0 && smooth_transitions.load(std::memory_order_relaxed) && motion == MotionState::rail && h.outgoing &&
+        h.outgoing->edits && now - h.outgoing_seen < 0.15) {
+        h.started = now;
+        h.board = now - h.air_board_at < 0.15 ? h.air_board : Joint{};
+        h.feet_taken = h.feet_ok = false;
+    }
+    handover_at.store(h.started, std::memory_order_relaxed);
+    return h.started >= 0;
+}
+// `k` of a joint's change: its turn (short way: a pose's joints) and its move.
+Joint part_of(const Joint& change, float k) noexcept {
+    Joint out = change;
+    out.rotation = slerp(Quat{0, 0, 0, 1}, change.rotation, std::clamp(k, 0.0f, 1.0f));
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] = change.position[i] * std::clamp(k, 0.0f, 1.0f);
+    return out;
+}
+// The key's way round kept frame to frame within one trick (scaled_turn needs it: a key read on its own can come either
+// sign). `update`: the board pass, which draws it, keeps the sign; drawn_board_now only reads it. Caller holds the mutex.
+Offset key_its_own_way(Handover& h, Offset key, std::uint64_t episode, bool update) noexcept {
+    const auto& p = h.key_sign;
+    if (h.key_episode == episode && key.rotation[0] * p[0] + key.rotation[1] * p[1] + key.rotation[2] * p[2] + key.rotation[3] * p[3] < 0)
+        key.rotation = {-key.rotation[0], -key.rotation[1], -key.rotation[2], -key.rotation[3]};
+    if (update) {
+        h.key_sign = key.rotation;
+        h.key_episode = episode;
+    }
+    return key;
+}
+// The board a trick draws, `w` of its keys on `base` (the game's board, or the recording's): SMOOTH, the key that far round its
+// own way (scaled_turn); CLASSIC, slerp to the whole board as before.
+Joint part_of_the_trick_board(const Joint& native_mount, const Joint& base, const Joint& target, const std::optional<Offset>& key,
+                              const Quat& ground, float w, bool smooth) noexcept {
+    if (target == native_mount) return native_mount;
+    Joint out = native_mount;
+    if (smooth && key && w < 0.999f) {
+        Joint part = native_mount;
+        part.rotation = slerp(native_mount.rotation, base.rotation, w);
+        for (std::size_t i = 0; i < 3; ++i) part.position[i] += (base.position[i] - native_mount.position[i]) * w;
+        Offset edit = *key;
+        edit.rotation = scaled_turn(key->rotation, w);
+        for (std::size_t i = 0; i < 3; ++i) edit.offset[i] *= w;
+        return board_edited_by(part, edit, ground);
+    }
+    out.rotation = slerp(native_mount.rotation, target.rotation, w);
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] += (target.position[i] - native_mount.position[i]) * w;
+    return out;
+}
+// The body in a handover (see Handover): writes the pose into `edited`, and what it draws into the body's fade.
+bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std::vector<Joint>& edited, BodyPublicationState& body) noexcept {
+    try {
+        if (!h.outgoing || !h.outgoing->edits || native.size() < skeleton_joints || edited.size() < skeleton_joints) return false;
+        const auto& out = *h.outgoing;
+        const float elapsed = static_cast<float>(now - h.started);
+        // The trick it leaves, on at its own pace.
+        float t = out.time + static_cast<float>(std::max(0.0, now - out.at));
+        if (out.clip) t = std::min(t, out.clip->duration());
+        std::vector<Joint> leaving(native.begin(), native.end());
+        std::vector<Joint> studio;
+        if (out.match > 0 && out.clip && out.clip->joints == skeleton_joints) studio = studio_pose(*out.clip, t, out.mirrored);
+        apply_authored_edit_layer(*out.edits, t, leaving, out.weight, &out.limbs, studio, out.match, out.match_rest);
+        if (out.limits) limit_keyed_joints(*out.edits, t, leaving);
+        auto left = pose_edit_deltas(native, leaving);
+        // The legs and hips leaned over to the game's ahead of the rail stay so.
+        float released = std::clamp(out.lower_release, 0.0f, 1.0f);
+        if (rail_lean_episode.load(std::memory_order_acquire) == out.episode) released = std::max(released, rail_lean.load(std::memory_order_acquire));
+        for (const auto& joint : editable_joints()) {
+            const auto j = joint.index;
+            if (j >= left.size()) continue;
+            float k = handover_left(j, elapsed);
+            if (std::find(grind_lower_body.begin(), grind_lower_body.end(), j) != grind_lower_body.end()) k *= 1 - released;
+            left[j].rotation = slerp(Quat{0, 0, 0, 1}, left[j].rotation, k);
+            for (std::size_t c = 0; c < 3; ++c) left[j].offset[c] *= k;
+        }
+        std::copy(native.begin(), native.end(), edited.begin());
+        apply_pose_deltas(left, edited);
+        // Each foot on the board as drawn: from where it stood on it at the lock, to where the game has it, with the legs.
+        Joint games;
+        if (games_board_now(live().board_holder.load(std::memory_order_acquire), games) && finite(games)) {
+            constexpr std::array<std::uint16_t, 2> feet{left_foot_joint, right_foot_joint};
+            const float legs = handover_left(right_foot_joint, elapsed);
+            const auto drawn = compose(games, part_of(h.board, legs));
+            if (!h.feet_taken) {
+                // The board as drawn in the air comes from the board pass (h.air_board_placed): taking the board pass's lock
+                // here, under this one, could stop both passes for good.
+                h.feet_taken = true;
+                h.feet_ok = now - body.feet_in_the_air_at < 0.15 && now - h.air_board_placed_at < 0.15;
+                for (std::size_t i = 0; i < feet.size(); ++i) {
+                    h.feet[i] = relative(h.air_board_placed, body.feet_in_the_air[i]);
+                    h.feet_ok = h.feet_ok && finite(h.feet[i]);
+                }
+            }
+            for (std::size_t i = 0; i < feet.size(); ++i) {
+                const auto own = world(native, feet[i]);
+                if (h.feet_ok && legs > 0) {
+                    const auto on_games = relative(games, own);
+                    if (finite(on_games)) {
+                        const auto want = compose(drawn, foot_sliding_to_the_games(h.feet[i], on_games, legs));
+                        place_foot(edited, feet[i], want.position, &want.rotation, 1.0f);
+                    }
+                }
+                // Never lower than the game has it (the deck under it).
+                const auto at = world(edited, feet[i]);
+                if (finite(at) && finite(own) && at.position[1] < own.position[1] - 0.01f)
+                    place_foot(edited, feet[i], Vec3{at.position[0], own.position[1], at.position[2]}, nullptr, 1.0f);
+            }
+        }
+        // What is drawn is where any fade after this starts from.
+        body.transition.current = pose_edit_deltas(native, edited);
+        body.transition.from = body.transition.current;
+        body.transition.from_left = 0;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
     auto& l = live();
     auto& publication = body_publication_state(); std::lock_guard lock(publication.mutex);
@@ -4640,9 +4828,13 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
             // Ahead of a rail or a ledge (raised_lead) the hips and legs go to the game's pose, as far as the board does
             // (drawn_board_now, apply_gameplay_board), so the feet stay on the deck as both meet the rail.
-            if (packet->lower_release > 0) {
+            // SMOOTH: and as far as the board leans over to the game's turning it to a rail (rail_lean).
+            float lower_release = packet->lower_release;
+            if (smooth_transitions.load(std::memory_order_relaxed) && rail_lean_episode.load(std::memory_order_acquire) == packet->episode)
+                lower_release = std::max(lower_release, rail_lean.load(std::memory_order_acquire));
+            if (lower_release > 0) {
                 auto lower = pose_edit_deltas(native, edited);
-                const float keep = 1 - std::min(packet->lower_release, 1.0f);
+                const float keep = 1 - std::min(lower_release, 1.0f);
                 for (const std::uint16_t j : grind_lower_body)
                     if (j < lower.size()) {
                         lower[j].rotation = slerp(Quat{0, 0, 0, 1}, lower[j].rotation, keep);
@@ -4656,8 +4848,21 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
         const auto desired_deltas = pose_edit_deltas(native, edited);
         edited = native;
         std::vector<Offset> applied_deltas;
-        const auto motion = l.render_motion.load(std::memory_order_acquire);
-        if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
+        const auto motion = packet && packet->motion != MotionState::unknown ? packet->motion : l.render_motion.load(std::memory_order_acquire);
+        // SMOOTH: the handover into a grind (Handover).
+        bool handing = false;
+        if (overrides_allowed.load()) {
+            auto& h = handover();
+            std::lock_guard hand_lock(h.mutex);
+            const double now = now_seconds();
+            if (packet) {
+                h.outgoing = packet;
+                h.outgoing_seen = now;
+            }
+            handing = handover_running(h, now, generation, motion, packet.get()) && hand_over_body(h, now, native, edited, publication);
+        }
+        if (handing) applied_deltas = pose_edit_deltas(native, edited);
+        else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
             // Into a grind the board is the game's at once (the board's pass leaves it alone on a rail), so the body goes
             // with it: the trick's last keys fade out in grind_hand_back, not over the Crossfade. Faded over up to 0.4 s,
             // a trick still mid-flip off a low pop drew its legs on a board already flat on the rail, through it.
@@ -4859,7 +5064,7 @@ bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater
         Joint native_mount;
         if (!games_board_now(packet.board_holder, native_mount)) return false;
         // On a rail (and off the board) its pass leaves the game's board as it is.
-        const auto motion = l.render_motion.load(std::memory_order_acquire);
+        const auto motion = packet.motion != MotionState::unknown ? packet.motion : l.render_motion.load(std::memory_order_acquire);
         if (!overrides_allowed.load() || motion == MotionState::rail || motion == MotionState::unknown || motion == MotionState::offboard) {
             out = native_mount;
             return finite(out);
@@ -4872,11 +5077,19 @@ bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater
             const auto shape = board_shape(*packet.clip);
             (void)keep_board_above(target, shape, lowest_point(native_mount, shape));
         }
-        // Ahead of a rail or a ledge the board goes to the game's with the legs (lower_release, raised_lead).
-        const float w = std::clamp(packet.weight, 0.0f, 1.0f) * (1 - std::clamp(packet.lower_release, 0.0f, 1.0f));
-        out = native_mount;
-        out.rotation = slerp(native_mount.rotation, target.rotation, w);
-        for (std::size_t i = 0; i < 3; ++i) out.position[i] += (target.position[i] - native_mount.position[i]) * w;
+        // Ahead of a rail or a ledge the board goes to the game's with the legs (lower_release, raised_lead), and as far as it
+        // leans over to the game's turning it to a rail (rail_lean): the board as apply_gameplay_board draws it.
+        const bool smooth = smooth_transitions.load(std::memory_order_relaxed);
+        float lean = 0;
+        if (smooth && rail_lean_episode.load(std::memory_order_acquire) == packet.episode) lean = rail_lean.load(std::memory_order_acquire);
+        const float w = std::clamp(packet.weight, 0.0f, 1.0f) * (1 - std::clamp(packet.lower_release, 0.0f, 1.0f)) * (1 - lean);
+        std::optional<Offset> key;
+        {
+            auto& h = handover();
+            std::lock_guard hand_lock(h.mutex);
+            if (auto raw = board_key(*packet.edits, packet.time)) key = key_its_own_way(h, *raw, packet.episode, false);
+        }
+        out = part_of_the_trick_board(native_mount, native_mount, target, key, ground_turn(frame), w, smooth);
         return finite(out);
     } catch (...) {
         return false;
@@ -5054,6 +5267,8 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         auto edited = native;
         const auto native_mount = compose(compose(native[0], native[1]), native[board_mount]);
         Joint want = native_mount;
+        const auto motion = packet && packet->motion != MotionState::unknown ? packet->motion : l.render_motion.load(std::memory_order_acquire);
+        const bool smooth = smooth_transitions.load(std::memory_order_relaxed);
         Joint studio_board;
         bool studio_board_ok = false;
         if (packet && packet->board_holder == holder && packet->board_owned && packet->board_frame_valid) {
@@ -5093,25 +5308,85 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
                 }
                 studio_board = target;
                 studio_board_ok = packet->weight >= 0.98f;
-                // Ahead of a rail or a ledge the board goes to the game's with the legs (lower_release, raised_lead).
-                const float bw = packet->weight * (1 - std::clamp(packet->lower_release, 0.0f, 1.0f));
-                if (target != native_mount) {
-                    want.rotation = slerp(native_mount.rotation, target.rotation, bw);
-                    for (std::size_t i = 0; i < 3; ++i) want.position[i] += (target.position[i] - native_mount.position[i]) * bw;
+                std::optional<Offset> key;
+                float lean = 0;
+                {
+                    auto& h = handover();
+                    std::lock_guard hand_lock(h.mutex);
+                    if (auto raw = board_key(*packet->edits, packet->time)) key = key_its_own_way(h, *raw, packet->episode, true);
+                    // SMOOTH: the game turning the board to a rail's angle under the trick, after its catch: lean over to it.
+                    // Seen in the air; once leaning, the board and legs stay the game's for the rest of the trick wherever it
+                    // ends (the legs went on leaning while the board came back, on a landing after a turn that was no rail).
+                    const double now = now_seconds();
+                    if (smooth && h.lean_episode != packet->episode) {
+                        h.lean_episode = packet->episode;
+                        h.lean_started = h.heading_at = -1;
+                        h.turning = 0;
+                    }
+                    if (smooth && motion == MotionState::air) {
+                        const auto along = rotate(multiply(conjugate(placement.rotation), native_mount.rotation), Vec3{0, 0, 1});
+                        const float heading = std::atan2(along[0], along[2]) * 57.2957795f;
+                        if (h.heading_at < 0 || now - h.heading_at > 0.008) {
+                            if (h.heading_at >= 0) {
+                                float step = std::fmod(heading - h.heading + 540.0f, 360.0f) - 180.0f;
+                                const float rate = std::abs(step) / static_cast<float>(now - h.heading_at);
+                                const bool flat = rotate(native_mount.rotation, Vec3{0, 1, 0})[1] > 0.9f;
+                                const bool caught = packet->caught >= 0 && packet->time >= packet->caught;
+                                h.turning = flat && caught && rate > rail_turn_degrees_per_second ? h.turning + 1 : 0;
+                            }
+                            h.heading = heading;
+                            h.heading_at = now;
+                        }
+                        if (h.turning >= 2 && h.lean_started < 0) {
+                            h.lean_started = now;
+                            logging::log(Level::info, Channel::skater, "Animation Studio: the game turns the board to a rail under the trick: "
+                                         "the board and legs lean over to the game's.");
+                        }
+                    }
+                    if (smooth && h.lean_started >= 0) {
+                        const float u = std::clamp(static_cast<float>(now - h.lean_started) / rail_lean_seconds, 0.0f, 1.0f);
+                        lean = u * u * (3 - 2 * u);
+                    }
+                    if (smooth) {
+                        rail_lean_episode.store(packet->episode, std::memory_order_release);
+                        rail_lean.store(lean, std::memory_order_release);
+                    }
                 }
+                // Ahead of a rail or a ledge the board goes to the game's with the legs (lower_release, raised_lead).
+                const float bw = packet->weight * (1 - std::clamp(packet->lower_release, 0.0f, 1.0f)) * (1 - lean);
+                want = part_of_the_trick_board(native_mount, base, target, key, ground_turn(frame), bw, smooth);
             }
         }
         std::array<Offset, 1> desired{};
         if (want.rotation != native_mount.rotation) desired[0].rotation = normalised(multiply(want.rotation, conjugate(native_mount.rotation)));
         for (std::size_t k = 0; k < 3; ++k) desired[0].offset[k] = want.position[k] - native_mount.position[k];
         want = native_mount;
-        const auto motion = l.render_motion.load(std::memory_order_acquire);
+        // SMOOTH: in a handover the board goes from where it was drawn on the game's to the game's, with the legs.
+        bool handing = false;
+        if (overrides_allowed.load()) {
+            auto& h = handover();
+            std::lock_guard hand_lock(h.mutex);
+            const double now = now_seconds();
+            if (handover_running(h, now, generation, motion, packet.get())) {
+                want = compose(native_mount, part_of(h.board, handover_left(right_foot_joint, static_cast<float>(now - h.started))));
+                handing = true;
+            }
+        }
+        if (handing) {
+            Offset drawn;
+            drawn.rotation = normalised(multiply(want.rotation, conjugate(native_mount.rotation)));
+            for (std::size_t k = 0; k < 3; ++k) drawn.offset[k] = want.position[k] - native_mount.position[k];
+            publication.transition.current.assign(1, drawn);
+            publication.transition.from = publication.transition.current;
+            publication.transition.from_left = 0;
+        }
         // On a rail the board is the game's: the trick's last board keys ease out in grind_feet_on_deck, with the hips and
         // legs (apply_gameplay_body), instead of the board jumping onto the rail in one frame under legs still mid-flip.
-        if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
+        else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
             const auto delta = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
                 packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired,
-                motion == MotionState::rail ? grind_feet_on_deck : trick_blend.load(std::memory_order_relaxed))[0];
+                motion == MotionState::rail ? grind_feet_on_deck : trick_blend.load(std::memory_order_relaxed),
+                smooth ? board_jump_degrees : 0.0f)[0];
             if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
             for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
         } else publication.transition.reset();
@@ -5121,6 +5396,15 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         if ((motion == MotionState::riding || motion == MotionState::rail) && publication.shape_ok && want != native_mount)
             (void)keep_board_above(want, publication.shape, lowest_point(native_mount, publication.shape));
         if (motion == MotionState::air) remember_board_in_the_air(publication, want, generation);
+        // The board as drawn on the game's, in the air: where a handover at the lock starts the board from.
+        if (motion == MotionState::air && packet) {
+            auto& h = handover();
+            std::lock_guard hand_lock(h.mutex);
+            h.air_board = relative(native_mount, want);
+            h.air_board_at = now_seconds();
+            h.air_board_placed = publication.drawn_in_the_air;
+            h.air_board_placed_at = publication.drawn_in_the_air_at;
+        }
         if (want != native_mount) {
             edited[1] = relative(native[0], compose(want, relative(native[board_mount], Joint{})));
             edited[1].scale = native[1].scale;
@@ -5525,6 +5809,7 @@ Settings settings() {
     out.crossfade = s.crossfade;
     out.catch_marker = s.catch_marker;
     out.drop_preview_tool = s.drop_preview_tool;
+    out.smooth_transitions = s.smooth_handover;
     out.your_name = s.your_name;
     out.export_folder = s.export_folder;
     out.import_folder = s.import_folder;
@@ -7270,6 +7555,16 @@ void set_hover_preview(bool on) {
     std::lock_guard lock(s.mutex);
     s.hover_preview = on;
     save_settings_locked(s);
+    publish_locked(s, false);
+}
+void set_smooth_transitions(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.smooth_handover = on;
+    smooth_transitions.store(on, std::memory_order_relaxed);
+    save_settings_locked(s);
+    s.status = on ? "Transitions: SMOOTH. Into a grind your trick hands over the way the game hands over its own."
+                  : "Transitions: CLASSIC, as in 1.0.16.";
     publish_locked(s, false);
 }
 void set_catch_marker(bool on) {

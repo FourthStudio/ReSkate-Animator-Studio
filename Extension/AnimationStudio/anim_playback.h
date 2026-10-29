@@ -202,20 +202,41 @@ struct EditTransition {
     double started{-1}, observed{-1};
     std::vector<Offset> from, current;
     float from_left{}; // how much of `from` is still in `current`: 1 as a fade starts, 0 when it is done
+    float length{-1};  // a fade of its own length (a jump eased, jump_fade), -1 the caller's `seconds`
+    static constexpr float jump_fade = 0.1f;
     void reset() { *this = {}; }
+    // Any joint whose wanted turn is more than `degrees` from the one drawn, or moved more than 25 cm.
+    static bool jumps(std::span<const Offset> drawn, std::span<const Offset> wanted, float degrees) noexcept {
+        const float most = std::cos(degrees * 0.5f * 3.14159265f / 180);
+        for (std::size_t i = 0; i < drawn.size() && i < wanted.size(); ++i) {
+            const auto& a = drawn[i].rotation; const auto& b = wanted[i].rotation;
+            if (std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) < most) return true;
+            float d = 0;
+            for (std::size_t k = 0; k < 3; ++k) d += (drawn[i].offset[k] - wanted[i].offset[k]) * (drawn[i].offset[k] - wanted[i].offset[k]);
+            if (d > 0.25f * 0.25f) return true;
+        }
+        return false;
+    }
+    // `jump_degrees` (0 off): a jump inside one trick - its weight cut at its end, a clip that turns its board round in a
+    // frame, frames the game did not draw - eases over jump_fade instead of showing in one frame (Team B measured 48 to 174
+    // degrees in one update, 2026-10-29).
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
-                                     std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f) {
+                                     std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f,
+                                     float jump_degrees = 0) {
         if (!std::isfinite(now)) { reset(); return current; }
         if (generation != gen || current.size() != desired.size() || now < observed) {
             generation = gen; current.assign(desired.size(), Offset{}); started = -1;
         }
         if (started < 0 || episode != attempt || source != selected) {
-            from = current; started = now; episode = attempt; source = selected;
+            from = current; started = now; episode = attempt; source = selected; length = -1;
+        } else if (jump_degrees > 0 && from_left <= 0 && jumps(current, desired, jump_degrees)) {
+            from = current; started = now; length = jump_fade;
         }
         observed = now;
         // `seconds` (0.15 unless the Crossfade setting says): one trick's keys into the next, or out when a trick is
         // cut short (a new air, a bail), without a snap.
-        float u = std::clamp(static_cast<float>(now - started) / std::max(seconds, 0.02f), 0.0f, 1.0f);
+        const float fade = length > 0 ? length : seconds;
+        float u = std::clamp(static_cast<float>(now - started) / std::max(fade, 0.02f), 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
         from_left = 1 - u;
         for (std::size_t i = 0; i < desired.size(); ++i) {
@@ -238,6 +259,30 @@ inline bool feet_stay_on_the_games_board(MotionState motion, bool playing) noexc
 inline bool rail_lock_fade_continues(bool playing, double started, double at_lock) noexcept {
     return !playing && started == at_lock;
 }
+// ---- SMOOTH transitions: the handover into a grind ----------------------------------------------------------------------
+// How the game hands its own trick over (its animation data and its own grinds, Team A, 2026-10-29): the board is the game's
+// from the lock on, and the body goes over part by part, shrinking the difference from the pose it leaves rather than
+// mixing two poses - the board and legs in 8 animation ticks (1/60 s each), the arms in 16, the hips and torso in 32
+// (BlendBehaviour_TrickToInAir, TrickToGrind). Hips and arms here go in 15, the back, neck and head in 24.
+inline constexpr float handover_legs = 8.0f / 60, handover_middle = 15.0f / 60, handover_torso = 24.0f / 60;
+inline float handover_seconds(std::uint16_t joint) noexcept {
+    switch (joint) {
+    case 8: case 9: case 10: case 11: case 341: case 342: case 343: case 344: return handover_legs;
+    case 42: case 43: case 44: case 45: case 101: case 102: case 103: return handover_torso;
+    default: return handover_middle; // the hips, the shoulders and arms
+    }
+}
+// How much of the trick it leaves joint `joint` still shows, `elapsed` seconds into the handover (1 to 0, eased).
+inline float handover_left(std::uint16_t joint, float elapsed) noexcept {
+    const float u = std::clamp(elapsed / handover_seconds(joint), 0.0f, 1.0f);
+    return 1 - u * u * (3 - 2 * u);
+}
+// In the air before a grind the game turns the board to the rail's angle - 70 degrees in the last 0.1 to 0.13 s before the
+// lock, at up to 14 degrees a frame - with the board caught and flat and the skater not turning with it (its own grinds,
+// 2026-10-29). A trick of ours still holding the board then draws a board the game is not drawing: from the second frame
+// the game's board turns faster than 5 degrees a frame under him (a flat landing stays near 1), after the trick's catch, the board and legs lean over to the game's
+// (rail_lean) within rail_lean_seconds, so the lock finds them there.
+inline constexpr float rail_turn_degrees_per_second = 300, rail_lean_seconds = 0.1f, board_jump_degrees = 35;
 // A foot on the game's board (in the board's frame), `fade_left` of the way back to where it stood at the lock.
 inline Joint foot_sliding_to_the_games(const Joint& at_the_lock, const Joint& games, float fade_left) noexcept {
     const float k = std::clamp(fade_left, 0.0f, 1.0f);

@@ -7443,6 +7443,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(studio::settings_rows::custom_tricks_in_game(now));
         rows.push_back(studio::settings_rows::crossfade(now));
         rows.push_back(studio::settings_rows::trick_matching(now));
+        rows.push_back(studio::settings_rows::transitions(now));
         {
             const auto build = studio::library_build();
             Setting s = button_row("Trick library",

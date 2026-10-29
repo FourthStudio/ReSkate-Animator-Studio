@@ -181,6 +181,7 @@ struct Settings {
     bool grab_board{}, limits{true}, front_foot{true};
     float crossfade{0.3f};
     bool catch_marker{true}, drop_preview_tool{true};
+    bool smooth_transitions{true}; // SETTINGS > TRICKS > Transitions: SMOOTH or CLASSIC
     std::string your_name;
     std::string export_folder, import_folder; // "" the defaults
     std::string export_path, import_path;     // where they are, in full (UTF-8)
@@ -234,6 +235,9 @@ std::uint64_t room_changes() noexcept;
 // In game: how long a trick takes to fade out into the game's next move (a manual, the next trick), 0.1 to 0.8 s;
 // one trick's keys blend into the next's over half of it. Saved with the studio's settings.
 void set_crossfade(float seconds);
+// Transitions: SMOOTH, a trick hands over to a grind the way the game hands over its own (the board and legs first, then the
+// arms, then the back and head, the trick going on meanwhile); CLASSIC, as 1.0.16 did.
+void set_smooth_transitions(bool on);
 // Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
 // elbows bend one way, nothing twists round), while you pose and in game. Off, joints go where you push them.
 void set_joint_limits(bool on);

@@ -51,6 +51,7 @@ Setting joint_limits(const anim_studio::Settings&);
 Setting custom_tricks_in_game(const anim_studio::Settings&);
 Setting crossfade(const anim_studio::Settings&);
 Setting trick_matching(const anim_studio::Settings&);
+Setting transitions(const anim_studio::Settings&);
 Setting made_by(const anim_studio::Settings&, Tell tell);
 // PACKS
 Setting pack_folder(const anim_studio::Settings&, bool exporting);

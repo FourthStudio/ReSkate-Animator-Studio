@@ -144,6 +144,12 @@ Setting trick_matching(const studio::Settings& now) {
                   "does. Exact stance: only the one made on the foot that leads now; the game's own otherwise.",
                   [](int picked) { studio::set_front_foot(picked == 0); });
 }
+Setting transitions(const studio::Settings& now) {
+    return one_of("Transitions", {"SMOOTH", "CLASSIC"}, now.smooth_transitions ? 0 : 1,
+                  "Smooth: into a grind your trick hands over the way the game hands over its own - the board and legs first, "
+                  "then the arms, then the back and head, the trick going on meanwhile. Classic: as before, to compare.",
+                  [](int picked) { studio::set_smooth_transitions(picked == 0); });
+}
 Setting made_by(const studio::Settings& now, Tell tell) {
     Setting s;
     s.kind = Setting::Kind::name;
