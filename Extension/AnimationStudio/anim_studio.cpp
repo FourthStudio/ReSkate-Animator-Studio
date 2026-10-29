@@ -4522,12 +4522,13 @@ struct BodyPublicationState {
     std::uint64_t feet_generation{~std::uint64_t{0}};
     double on_rail_at{-1};
     bool feet_at_lock_ok{};
-    // SMOOTH: the board's force field (guard_legs_from_the_board) comes on as a move starts going over to the next and holds
-    // until both feet are where the game has them (or the trick plays as made again): guard_since, when it came on (-1 off);
-    // guard_going, when a move was last going over.
-    double guard_since{-1}, guard_going{-1};
+    // SMOOTH: the board's force field (guard_legs_from_the_board) has its moment (guard_moment): from when the trick starts
+    // handing back to the game, for that move's crossfade (guard_window), then it lets go. guard_since: when it came on (-1
+    // off); guard_handing_back: the trick was handing back last frame (it comes on as that starts).
+    double guard_since{-1};
+    float guard_window{};
+    bool guard_letting_go{}, guard_handing_back{};
     std::uint64_t guard_generation{~std::uint64_t{0}};
-    bool guard_round{}; // the force field was still giving a foot a turn or a move (guard_legs_from_the_board) last frame
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 // While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
@@ -4788,8 +4789,50 @@ bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept;
 bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater, Joint& out) noexcept;
 bool board_as_drawn_now(Joint& out) noexcept;
 // The board's force field: the legs kept out of the deck as drawn (and, going over to the game's, the game's own and the one
-// halfway), each foot pushed back out of the face it is on. True while it is still giving a foot a turn or a move.
-bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games) noexcept;
+// halfway), each foot pushed back out of the face it is on. `letting_go`: each foot glides back to where it is going instead.
+// True while it is still giving a foot a turn or a move.
+bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games,
+                               bool letting_go) noexcept;
+// The force field's moment (SMOOTH): it comes on as the trick starts handing back to the game (`handing_back` rising: the next
+// input, going onto a rail or a ledge, the lean onto a rail, the handover into a grind or on into the next move in the air),
+// stays on for that move's crossfade (the trick's own or the main one), and then lets go: each foot glides back to where it is
+// going and it is off. It lets go sooner once both feet are where the game has them (feet_where_the_game_has_them), and at once
+// when a trick plays as made (`as_made`: the next trick), so it is never there at a landing or in another trick. True while
+// it runs.
+bool guard_moment(BodyPublicationState& body, double now, std::uint64_t generation, bool handing_back, bool as_made) noexcept {
+    if (body.guard_generation != generation) {
+        body.guard_generation = generation;
+        body.guard_since = -1;
+        body.guard_handing_back = false;
+    }
+    if (handing_back && !body.guard_handing_back && body.guard_since < 0) {
+        body.guard_since = now;
+        body.guard_window = std::clamp(trick_blend.load(std::memory_order_relaxed) * 2, 0.1f, 0.8f); // the Crossfade
+        body.guard_letting_go = false;
+    }
+    body.guard_handing_back = handing_back;
+    if (body.guard_since < 0) return false;
+    const double age = now - body.guard_since;
+    if (as_made || age >= body.guard_window) body.guard_letting_go = true;
+    if (age > body.guard_window + 0.4) { // never longer, whatever is left
+        body.guard_since = -1;
+        return false;
+    }
+    return true;
+}
+// Both feet where the game has them (within a centimetre), a moment after it came on: the force field lets go.
+void feet_where_the_game_has_them(BodyPublicationState& body, double now, std::span<const Joint> native, std::span<const Joint> edited) noexcept {
+    if (body.guard_since < 0 || body.guard_letting_go || now - body.guard_since < 0.03) return;
+    for (const std::uint16_t foot : {left_foot_joint, right_foot_joint}) {
+        const auto a = world(edited, foot).position, b = world(native, foot).position;
+        if ((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]) > 0.0001f) return;
+    }
+    body.guard_letting_go = true;
+}
+// After it ran: off once it has let go of both feet.
+void guard_ran(BodyPublicationState& body, bool giving) noexcept {
+    if (body.guard_letting_go && !giving) body.guard_since = -1;
+}
 // SMOOTH transitions: the handover into a grind. At a rail's lock the trick it leaves (the last packet) goes on playing at
 // its own pace over the game's fresh pose, never held, and each joint goes over to the game's at its own speed
 // (handover_left: legs with the board, then hips and arms, then the back and head). The board goes from where it was drawn
@@ -4887,7 +4930,8 @@ Joint part_of_the_trick_board(const Joint& native_mount, const Joint& base, cons
     return out;
 }
 // The body in a handover (see Handover): writes the pose into `edited`, and what it draws into the body's fade.
-bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std::vector<Joint>& edited, BodyPublicationState& body) noexcept {
+bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std::vector<Joint>& edited, BodyPublicationState& body,
+                    bool guard_on) noexcept {
     try {
         if (!h.outgoing || !h.outgoing->edits || native.size() < skeleton_joints || edited.size() < skeleton_joints) return false;
         const auto& out = *h.outgoing;
@@ -4943,8 +4987,11 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
                 if (finite(at) && finite(own) && at.position[1] < own.position[1] - 0.01f)
                     place_foot(edited, feet[i], Vec3{at.position[0], own.position[1], at.position[2]}, nullptr, 1.0f);
             }
-            // And the legs round the board as drawn (and the game's), never through it, while they go over.
-            body.guard_round = guard_legs_from_the_board(edited, native, drawn, true);
+            // And the legs round the board as drawn (and the game's), never through it, in the force field's moment.
+            if (guard_on) {
+                feet_where_the_game_has_them(body, now, native, edited);
+                guard_ran(body, guard_legs_from_the_board(edited, native, drawn, true, body.guard_letting_go));
+            }
         }
         // What is drawn is where any fade after this starts from.
         body.transition.current = pose_edit_deltas(native, edited);
@@ -5004,6 +5051,12 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
         const auto motion = packet && packet->motion != MotionState::unknown ? packet->motion : l.render_motion.load(std::memory_order_acquire);
         // SMOOTH: the handover into a grind (Handover).
         bool handing = false;
+        // SMOOTH: the board's force field's moment (guard_moment). The trick hands back to the game when its legs go over to
+        // the game's (the next input, a rail or a ledge ahead: lower_release; the lean onto a rail), or when it has stopped and
+        // a handover or a fade carries on from it anywhere but rolling on the ground (there it is its landing).
+        const float guard_lean = packet && rail_lean_episode.load(std::memory_order_acquire) == packet->episode ? rail_lean.load(std::memory_order_acquire) : 0.0f;
+        const bool guard_releasing = packet && (packet->lower_release > 0.001f || guard_lean > 0.001f);
+        bool guard_on = false;
         if (overrides_allowed.load()) {
             auto& h = handover();
             std::lock_guard hand_lock(h.mutex);
@@ -5012,15 +5065,15 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                 h.outgoing = packet;
                 h.outgoing_seen = now;
             }
-            handing = handover_running(h, now, generation, motion, packet.get()) && hand_over_body(h, now, native, edited, publication);
+            const bool running = handover_running(h, now, generation, motion, packet.get());
+            const bool handing_back = guard_releasing ||
+                                      (!packet && motion != MotionState::riding && (running || publication.transition.from_left > 0.001f));
+            guard_on = smooth_transitions.load(std::memory_order_relaxed) &&
+                       guard_moment(publication, now, generation, handing_back, packet && !guard_releasing);
+            handing = running && hand_over_body(h, now, native, edited, publication, guard_on);
         }
-        if (handing) {
-            applied_deltas = pose_edit_deltas(native, edited);
-            // The force field ran in it (hand_over_body): it holds after it until the feet are where the game has them.
-            publication.guard_generation = generation;
-            publication.guard_going = now_seconds();
-            if (publication.guard_since < 0) publication.guard_since = publication.guard_going;
-        } else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
+        if (handing) applied_deltas = pose_edit_deltas(native, edited);
+        else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
             // Into a grind the board is the game's at once (the board's pass leaves it alone on a rail), so the body goes
             // with it: the trick's last keys fade out in grind_hand_back, not over the Crossfade. Faded over up to 0.4 s,
             // a trick still mid-flip off a low pop drew its legs on a board already flat on the rail, through it.
@@ -5062,38 +5115,18 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                         place_foot(edited, foot, Vec3{drawn.position[0], own.position[1], drawn.position[2]}, nullptr, 1.0f);
                 }
             }
-            // SMOOTH: from the moment one move starts going over to the next - a trick handing back (the next input, its
-            // end), fading in or out, leaning over to the game's ahead of a rail - until both feet are where the game has
-            // them, the legs go round the board as drawn, never through it (guard_legs_from_the_board). Not while a trick
-            // plays as made.
-            if (smooth_transitions.load(std::memory_order_relaxed)) {
-                const float lean = packet && rail_lean_episode.load(std::memory_order_acquire) == packet->episode ? rail_lean.load(std::memory_order_acquire) : 0.0f;
-                const bool fading = publication.transition.from_left > 0.001f || (packet && packet->weight < 0.999f);
-                const bool releasing = (packet && packet->lower_release > 0.001f) || lean > 0.001f; // the legs going to the game's
-                const bool going = fading || (packet && packet->lower_release > 0.001f && packet->lower_release < 0.999f) || (lean > 0.001f && lean < 0.999f);
+            // SMOOTH: in the force field's moment (guard_moment: from the input that hands the trick back, for its crossfade,
+            // until both feet are where the game has them) the legs go round the board as drawn, never through it
+            // (guard_legs_from_the_board); then each foot glides back to where it is going. Never while a trick plays as
+            // made, at its landing or in another trick.
+            if (guard_on) {
                 const double at_now = now_seconds();
-                if (publication.guard_generation != generation) {
-                    publication.guard_generation = generation;
-                    publication.guard_since = publication.guard_going = -1;
-                }
-                if (going) {
-                    publication.guard_going = at_now;
-                    if (publication.guard_since < 0) publication.guard_since = at_now;
-                } else if (packet && !releasing) publication.guard_since = -1; // the trick plays as made
-                else if (publication.guard_since >= 0) {
-                    // Both feet where the game has them (within a centimetre), or held a second and a half past the move: off.
-                    bool reached = true;
-                    for (const std::uint16_t foot : {left_foot_joint, right_foot_joint}) {
-                        const auto a = world(edited, foot).position, b = world(native, foot).position;
-                        reached = reached && (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]) < 0.0001f;
-                    }
-                    if ((reached && !publication.guard_round) || at_now - publication.guard_going > 1.5) publication.guard_since = -1;
-                }
+                feet_where_the_game_has_them(publication, at_now, native, edited);
                 Joint board;
-                if (publication.guard_since >= 0 && (packet ? drawn_board_now(*packet, native, board) : board_as_drawn_now(board))) {
-                    publication.guard_round = guard_legs_from_the_board(edited, native, board, !packet || releasing);
+                if (packet ? drawn_board_now(*packet, native, board) : board_as_drawn_now(board)) {
+                    guard_ran(publication, guard_legs_from_the_board(edited, native, board, !packet || guard_releasing, publication.guard_letting_go));
                     applied_deltas = pose_edit_deltas(native, edited);
-                } else publication.guard_round = false;
+                }
             }
         } else publication.transition.reset();
         if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
@@ -5261,6 +5294,9 @@ constexpr float sole_skin = 0.005f, clear_by = 0.004f;
 // does it with less. What a foot is given glides to what it needs at up to `glide` m/s and `turn_glide` rad/s, and looks
 // `ahead` seconds on along the way the board is turning, so a foot gives before the deck gets to it.
 constexpr float thickness = 0.016f, pivot_most = 0.35f, pivot_lever = 0.06f, glide = 1.5f, turn_glide = 8.4f, ahead = 0.05f;
+// Only in the last of a foot's way to where the game has it: full from `near_full`, none from `near_none` (a foot still on its
+// way from far is the game's own legs moving it: a manual, a pop), and it lets go of the foot at a centimetre (guard_moment).
+constexpr float near_full = 0.05f, near_none = 0.08f;
 Vec3 shoe(float ahead_of_ankle, float side, float over_sole) noexcept {
     const float d = ankle_over_sole - over_sole;
     return {down[0] * d + forward[0] * ahead_of_ankle, down[1] * d + forward[1] * ahead_of_ankle, side};
@@ -5376,7 +5412,8 @@ void give(std::vector<Joint>& pose, std::uint16_t foot, const Quat& turn, const 
     place_foot(pose, foot, Vec3{at.position[0] + move[0], at.position[1] + move[1], at.position[2] + move[2]}, &turned, 1.0f);
 }
 } // namespace deck_guard
-bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games) noexcept {
+bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint> native, const Joint& drawn_board, bool toward_games,
+                               bool letting_go) noexcept {
     bool giving = false;
     try {
         if (edited.size() < skeleton_joints || native.size() < skeleton_joints || !finite(drawn_board)) return false;
@@ -5435,6 +5472,9 @@ bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint
                         int way = deck_guard::way_out(e, board, on_top, up, &board == &against[0] ? state.way : -1);
                         if (way < 0) continue;
                         float need = e.need[static_cast<std::size_t>(way)];
+                        // As far as the game's own pose is in this deck that way is the game's (a manual's foot on the kick).
+                        if (const auto own = deck_guard::exits_of(native, board, foot, knee, on_top, up); own.in)
+                            need -= own.need[static_cast<std::size_t>(way)];
                         if (!(need > 0.0005f)) continue;
                         any = true;
                         if (&board == &against[0]) state.way = way;
@@ -5479,11 +5519,19 @@ bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint
                     if (way >= 0) left = std::max(left, e.need[static_cast<std::size_t>(way)]);
                 }
             };
+            // How close the foot is to where the game has it: the field is only in the last few centimetres of its way there.
+            float closeness = 0;
+            if (!letting_go) {
+                const auto a = world(edited, foot).position, b = world(native, foot).position;
+                const float away = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+                closeness = std::clamp((deck_guard::near_none - away) / (deck_guard::near_none - deck_guard::near_full), 0.0f, 1.0f);
+            }
             // 1. What the foot needs, from where it wants to be: the least that takes it out of the deck as drawn and as it will
-            // be a moment on, whichever needs more.
-            Quat need_turn;
-            Vec3 need_move;
-            {
+            // be a moment on, whichever needs more, as far as the foot is close. Letting go or far: nothing, so it glides back to where
+            // it is going.
+            Quat need_turn{0, 0, 0, 1};
+            Vec3 need_move{};
+            if (closeness > 0) {
                 float left = 0;
                 std::vector<Joint> wanted(edited.begin(), edited.end());
                 const auto e = deck_guard::exits_of(wanted, drawn_board, foot, knee, on_top, up);
@@ -5501,6 +5549,8 @@ bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint
                     need_move = later_move;
                     need_turn = later_turn;
                 }
+                for (auto& c : need_move) c *= closeness;
+                need_turn = slerp(Quat{0, 0, 0, 1}, need_turn, closeness);
             }
             // 2. What it is given glides to that, so the foot gives and comes back like a foot, never in a jump.
             {
@@ -5514,8 +5564,9 @@ bool guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint
                 state.turn = apart > turn_most ? slerp(state.turn, need_turn, turn_most / apart) : need_turn;
             }
             deck_guard::give(edited, foot, state.turn, state.move);
-            // 3. Never in a deck, whatever the glide has not caught up with yet: the rest at once, kept in what it is given.
-            {
+            // 3. Never in a deck, whatever the glide has not caught up with yet: the rest at once, kept in what it is given (once
+            // the foot is nearly there).
+            if (closeness > 0.5f) {
                 Quat extra_turn;
                 Vec3 extra_move;
                 float left = 0;
