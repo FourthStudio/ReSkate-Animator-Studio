@@ -13,6 +13,7 @@
 #include "Extension/AnimationStudio/anim_playback.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
+#include "Extension/AnimationStudio/native_additive.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -1998,6 +1999,60 @@ void fakie_layer_goes_on_as_the_game_plays_it() {
 // FAKIE (2026-10-29): a trick set to fakie stands with its upper body mirrored across the plane between the thighs, the
 // hips and legs as they are; twice is the pose back; the keys mirrored with it come to the mirror of the keyed pose; a file
 // saved before has its upper body's keys mirrored once as it is read.
+// The game's additive clips go on the pose they add to (native_additive.h): a manual's loop on that manual's pose, a
+// riding pose less the neutral one on the neutral one, a lean on the clip it is named after.
+void additive_clips_go_on_their_pose() {
+    namespace nl = native_library;
+    const std::string dingo = "animation/dingo/";
+    const auto first = [&](const char* name) { return nl::additive_bases(dingo + name).front(); };
+    const auto offers = [&](const char* name, const std::string& base) {
+        const auto all = nl::additive_bases(dingo + name);
+        return std::find(all.begin(), all.end(), dingo + base) != all.end();
+    };
+    check(first("c_proto_onb_manual_t_loop_med") == dingo + "c_proto_onb_manual_t_med_pose", "A manual's loop goes on its medium pose");
+    check(first("c_proto_onb_manual_n_fakie_loop_med") == dingo + "c_proto_onb_manual_n_fakie_med_pose", "A fakie nose manual's loop goes on its own pose");
+    check(first("c_proto_onb_manual_t_land_addi") == dingo + "c_proto_onb_manual_t_med_pose", "A manual's landing goes on its pose");
+    check(first("c_proto_onb_idle_rolling_pump_bs_pose_addi") == dingo + "c_proto_onb_idle_rolling_neutral_pose" &&
+              !offers("c_proto_onb_idle_rolling_pump_bs_pose_addi", "c_proto_onb_idle_rolling_pump_bs_pose"),
+          "A riding pose less the neutral one goes on the neutral one, never on itself");
+    check(first("c_proto_onb_idle_rolling_pump_fakie_neutral_pose_addi") == dingo + "c_proto_onb_idle_rolling_fakie_neutral_pose" &&
+              first("c_proto_onb_idle_rolling_regular_to_fakie_pose_addi") == dingo + "c_proto_onb_idle_rolling_neutral_pose",
+          "Fakie ones on fakie's neutral pose, regular-to-fakie on the regular one");
+    check(offers("c_ofb_slide_loop_left_addi", "c_ofb_slide_loop_left") && offers("c_proto_onb_setup_ollie_low_loop_01", "c_proto_onb_setup_ollie_low_pose") &&
+              offers("c_proto_onb_idle_rolling_bs_fast_noise_addi", "c_proto_onb_idle_rolling_bs_fast_pose"),
+          "Others go on the clip they are named after");
+    const auto climb = nl::additive_bases(dingo + "c_proto_climb_idle_lean_left_01");
+    const auto gesture = nl::additive_bases(dingo + "c_proto_ofbnb_gesture_clap_corrective");
+    check(climb[climb.size() - 2] == dingo + "c_proto_climb_idle_center_01" && gesture[gesture.size() - 2] == dingo + "c_proto_ofbnb_idle_lfoot" &&
+              climb.back() == dingo + "c_proto_onb_idle_rolling_neutral_pose",
+          "Then by kind: the climb idle, the standing idle, the riding pose last");
+
+    // Laid over: a tracked turn after the base's, a tracked position added, the rest the base's.
+    using J10 = std::array<float, 10>;
+    const Quat base_turn = normalised(Quat{0.3f, -0.2f, 0.1f, 0.9f}), change = normalised(Quat{0.05f, 0.1f, -0.02f, 1.0f});
+    std::vector<J10> base(3);
+    for (auto& joint : base) joint = {1, 1, 1, base_turn[0], base_turn[1], base_turn[2], base_turn[3], 0.1f, 0.9f, -0.2f};
+    std::vector<J10> frames{{1, 1, 1, change[0], change[1], change[2], change[3], 0.01f, -0.02f, 0.03f},
+                            {1, 1, 1, change[0], change[1], change[2], change[3], 0.01f, -0.02f, 0.03f},
+                            {2, 2, 2, 0, 0, 0, 1, 0.5f, 0.5f, 0.5f}};
+    const std::vector<std::uint8_t> animated{nl::tracks_rotation, nl::tracks_position, 0};
+    nl::add_onto(frames, 3, base, animated);
+    const auto wanted = multiply(base_turn, change);
+    check(near(frames[0][3], wanted[0]) && near(frames[0][4], wanted[1]) && near(frames[0][5], wanted[2]) && near(frames[0][6], wanted[3]) &&
+              near(frames[0][7], 0.1f) && near(frames[0][8], 0.9f),
+          "A tracked turn goes after the base's own, its position stays the base's");
+    check(near(frames[1][3], base_turn[0]) && near(frames[1][6], base_turn[3]) && near(frames[1][7], 0.11f) && near(frames[1][8], 0.88f) && near(frames[1][9], -0.17f),
+          "A tracked position is added to the base's, its turn stays the base's");
+    check(frames[2] == base[2], "A joint with no track is the base's, scale and all");
+    bool refused = false;
+    try {
+        nl::add_onto(frames, 3, std::span(base).first(2), animated);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    check(refused, "A base of another size is refused");
+}
+
 void fakie_mirrors_the_upper_body() {
     std::mt19937 random(7);
     std::uniform_real_distribution<float> spread(-1, 1);
@@ -2560,6 +2615,7 @@ int main(int argc, char** argv) {
         smooth_transitions_contracts();
         fakie_layer_goes_on_as_the_game_plays_it();
         fakie_mirrors_the_upper_body();
+        additive_clips_go_on_their_pose();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
         profiles_read_back_and_bad_ones_are_refused();

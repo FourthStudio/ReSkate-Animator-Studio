@@ -18,7 +18,8 @@
 //
 // A port of contrib/animator-studio's direct decoder - decode_native_tree.py --direct, native_pose.py,
 // native_piecewise.py and make_trick_library.py - reading the bundles with Engine/Vfs instead of the probe's dumps.
-// It writes the same files, named the same way, so a library built here and one built by those scripts agree.
+// It writes the same files, named the same way, so a library built here and one built by those scripts agree - but
+// for the game's additive clips, which are laid over the pose they go on here (native_additive.h) and left raw there.
 namespace dingosdk::anim_studio::native_library {
 inline constexpr int joint_count = 395;
 inline constexpr int board_joint_index = 380; // Skateboard_Root
@@ -26,9 +27,10 @@ inline constexpr int board_joint_index = 380; // Skateboard_Root
 // One joint of one pose: scale (3), rotation (quaternion x y z w), position (3), as the studio's clips keep them.
 using Joint10 = std::array<float, 10>;
 struct Decoded {
-    std::vector<float> times;    // seconds, 60 a second from 0
-    std::vector<Joint10> frames; // times.size() * joint_count, frame by frame
-    bool board{};                // the clip has the board's channels
+    std::vector<float> times;            // seconds, 60 a second from 0
+    std::vector<Joint10> frames;         // times.size() * joint_count, frame by frame
+    bool board{};                        // the clip has the board's channels
+    std::vector<std::uint8_t> animated;  // joint_count: what it has tracks for (native_additive.h tracks_rotation | tracks_position)
 };
 // A clip the decoder does not take: an unmeasured encoding, rig or timing. Anything else going wrong is an error.
 struct Unsupported : std::runtime_error {
@@ -65,7 +67,8 @@ std::string category(const std::string& asset, const std::string& root_type);
 // Which builder made a library (build-info.json's "builder"). Raised whenever a build would come out with tricks or
 // pops an older one lacked, so a library made by an older studio is built again on the next start: the libraries made
 // before the in-game builder (2026-10-23) had no Kickflip MID, and the nollie flips under names the game never says.
-inline constexpr int builder_version = 2;
+// 3 (2026-10-29): the additive clips (a manual's loop, the riding leans) laid over their pose, not lying flat.
+inline constexpr int builder_version = 3;
 struct Report {
     std::size_t assets{}, clips{}, tricks{}, unsupported{}, errors{};
     std::string first_error;
