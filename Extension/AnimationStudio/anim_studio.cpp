@@ -690,6 +690,7 @@ struct RailLink {
     std::string ready_item; // the rail that stands under the grind, its size, and its bar's top above the floor
     float ready_size{}, ready_top{};
     std::vector<std::string> placeable; // the rails this player's build kit has (empty: not known yet)
+    bool cannot{}; // the rail cannot be put up now (no objects on this map, online, the game refused): the grind is not lifted
 };
 RailLink& rail_link() {
     static auto* value = new RailLink; // process lifetime
@@ -3443,7 +3444,12 @@ float rail_frame(bool in_room, bool grind, const Joint& placement, const Joint& 
     if (!grind || r.chosen.empty()) return 0;
     r.spot = rail_spot(placement.rotation, placement.position, clip_placement.rotation, ground_first.position, floor);
     r.grind = r.spot.valid;
-    return r.grind && r.ready_item == r.chosen && r.ready_size == r.size ? r.ready_top : 0.0f;
+    if (!r.grind) return 0;
+    // At once, by the rail's own top (studio_rails.h, as big as it is put up), not when the rail has come up and been
+    // measured: that took the grind up onto it 3 seconds late (2026-10-29). The measured top takes over once it is there.
+    if (r.ready_item == r.chosen && r.ready_size == r.size) return r.ready_top;
+    const auto* rail = studio_rail(r.chosen);
+    return rail && !r.cannot ? rail->top * r.size : 0.0f;
 }
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
@@ -6283,6 +6289,11 @@ void rail_say(RailPlaced& p, const std::string& message) {
     s.status = message;
     publish_locked(s, false);
 }
+void rail_cannot(bool cannot) {
+    auto& r = rail_link();
+    std::lock_guard lock(r.mutex);
+    r.cannot = cannot;
+}
 void rail_ready(const std::string& item, float size, float top) {
     auto& r = rail_link();
     std::lock_guard lock(r.mutex);
@@ -6306,10 +6317,18 @@ void rail_tick(bool open) noexcept {
     try {
         static RailPlaced p;
         static double next = 0;
+        static bool last_grind = false;
         const double now = now_seconds();
-        if (now < next || now < p.wait_until) return;
-        next = now + 0.1;
         auto& r = rail_link();
+        bool changed{};
+        {
+            std::lock_guard lock(r.mutex);
+            const bool grind_now = r.room && r.grind && now - r.seen < 0.5;
+            changed = grind_now != last_grind;
+            last_grind = grind_now;
+        }
+        if ((now < next && !changed) || now < p.wait_until) return;
+        next = now + 0.1;
         bool room{}, grind{};
         RailSpot spot;
         std::array<float, 3> park{};
@@ -6350,6 +6369,7 @@ void rail_tick(bool open) noexcept {
         }
         if (!model.available || model.map.empty()) {
             if (grind) rail_say(p, "The grind rail cannot be put up here now: objects cannot be placed on this map at the moment.");
+            rail_cannot(true);
             rail_ready({}, 0, 0);
             return;
         }
@@ -6394,6 +6414,7 @@ void rail_tick(bool open) noexcept {
             if (p.pending && now - p.since > 10) {
                 p.pending = false;
                 rail_say(p, "The grind rail did not come up: the game did not put it there.");
+                rail_cannot(true);
                 p.wait_until = now + 5;
             }
             return;
@@ -6453,9 +6474,11 @@ void rail_tick(bool open) noexcept {
             moved.scale = size;
             if (const auto why = rail_edit(model, "move", moved); !why.empty()) {
                 rail_say(p, "The grind rail could not be moved: " + why);
+                rail_cannot(true);
                 p.wait_until = now + 5;
                 return;
             }
+            rail_cannot(false);
             p.at = at;
             p.rotation = rotation;
             p.size = size;
@@ -6468,6 +6491,7 @@ void rail_tick(bool open) noexcept {
             // Online the rail would stand in everyone's world: there it stays down.
             if (multiplayer::model().active) {
                 if (grind) rail_say(p, "The grind rail stays down in an online session: it would be in everyone's world.");
+                rail_cannot(true);
                 p.wait_until = now + 5;
                 return;
             }
@@ -6480,9 +6504,11 @@ void rail_tick(bool open) noexcept {
             rail.scale = size;
             if (const auto why = rail_edit(model, "place", rail); !why.empty()) {
                 rail_say(p, "The grind rail could not be put up: " + why);
+                rail_cannot(true);
                 p.wait_until = now + 5;
                 return;
             }
+            rail_cannot(false);
             p.pending = true;
             p.since = now;
             p.item = item;
@@ -6494,6 +6520,7 @@ void rail_tick(bool open) noexcept {
             p.measures = 0;
             return;
         }
+        rail_cannot(false);
         if (!grind) {
             rail_ready({}, 0, 0);
             return;
