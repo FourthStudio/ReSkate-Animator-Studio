@@ -10,7 +10,7 @@ namespace dingosdk::anim_studio {
 namespace {
 struct Given {
     std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, drop_preview, guide_seen, smooth, advanced, fingers;
-    std::optional<int> stance;
+    std::optional<int> stance, combo;
     std::optional<float> crossfade;
     std::optional<std::string> your_name, grind_rail;
     std::optional<float> grind_rail_size;
@@ -23,6 +23,7 @@ Given given;
 void set_room(bool on) { given.room = on; }
 void set_grab(bool on) { given.grab = on; }
 void set_advanced_bones(bool on) { given.advanced = on; }
+void set_open_combo(int combo) { given.combo = combo; }
 void set_finger_bones(bool on) { given.fingers = on; }
 void set_joint_limits(bool on) { given.limits = on; }
 void set_play_in_game(bool on) { given.play_in_game = on; }
@@ -85,6 +86,10 @@ void each_on_off_row_sets_its_own_setting() {
     check(anim_studio::given.advanced == true && !anim_studio::given.fingers, "Advanced bones set another setting, or not its own");
     finger_bones(now).pick(1);
     check(anim_studio::given.fingers == true, "Fingers did not set its own setting");
+    const auto combo = controller_combo(now);
+    check(combo.options.size() == 4 && combo.value == "L3 + R3" && combo.options.back() == "OFF", "Controller combo starts on L3 + R3, OFF last");
+    combo.pick(3);
+    check(anim_studio::given.combo == 3, "Controller combo did not set its own setting");
 }
 void editing_stance_names_the_games_stance_and_goes_round() {
     reset();

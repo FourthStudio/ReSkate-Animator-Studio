@@ -186,6 +186,7 @@ struct Settings {
     bool game_goofy{};   // the game's own stance is goofy
     bool grab_board{}, limits{true}, front_foot{true};
     bool advanced_bones{}, finger_bones{};
+    int open_combo{}; // open_combo_names
     float crossfade{0.3f};
     bool catch_marker{true}, drop_preview_tool{true};
     bool smooth_transitions{true}; // SETTINGS > TRICKS > Transitions: SMOOTH or CLASSIC
@@ -243,6 +244,12 @@ void set_stance(int choice);
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
 void set_advanced_bones(bool on); // SETTINGS > SKATER > Advanced bones
+// SETTINGS > STUDIO > Controller combo: what held on a controller opens and closes the studio (another mod may want L3 + R3,
+// 2026-10-29). 0 L3 + R3 (as before), 1 LB + R3, 2 RB + L3, 3 none (F8, or the ReSkate menu's ADDONS > ANIMATOR STUDIO).
+inline constexpr std::array<const char*, 4> open_combo_names{"L3 + R3", "LB + R3", "RB + L3", "OFF"};
+inline constexpr std::array<std::uint16_t, 4> open_combo_buttons{0x0040 | 0x0080, 0x0100 | 0x0080, 0x0200 | 0x0040, 0};
+void set_open_combo(int combo);
+int open_combo() noexcept; // any thread, every frame
 void set_finger_bones(bool on);   // SETTINGS > SKATER > Fingers
 // How many times the Studio room setting was switched: the client opens the studio in the room, or leaves it, at once.
 std::uint64_t room_changes() noexcept;

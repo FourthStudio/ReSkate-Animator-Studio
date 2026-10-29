@@ -24,6 +24,7 @@
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/xray_skeleton.h"
+#include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "native_library.h"
 #include "marketplace.h"
@@ -368,6 +369,7 @@ struct State {
     std::vector<std::string> favorite_packs;       // starred in PACKS
     bool hover_preview{true};                      // TRICKS: a hovered trick plays in a little window
     bool advanced_bones{}, finger_bones{};         // SETTINGS > SKATER: their rows shown
+    int open_combo{};                              // SETTINGS > STUDIO > Controller combo (open_combo_names)
     bool catch_marker{true}, drop_preview_tool{true}; // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                             // the first-start guide was read
     bool smooth_handover{true};                    // SETTINGS > TRICKS > Transitions: SMOOTH (smooth_transitions) or CLASSIC
@@ -434,6 +436,15 @@ constexpr std::array<float, 3> room_spot{1.0f, -69.04f, -5.25f};
 constexpr std::array<float, 3> room_reach{2.0f, 2.0f, 2.0f};
 constexpr float room_floor = -69.99f;
 // A turn about the up axis only: the way `joint` faces on the ground.
+// The turn of `q` about the up axis alone (its twist about Y): where a clip heads, without how it leans. The editor takes
+// only this off a clip's first frame: a handplant starts on the wall, its placement tilted 90 degrees, and taking all of
+// that off stood the plant on its side (2026-10-29: "the handplants are now sideways, they need to be vertical like in the
+// game"). For a clip that starts upright it is the whole turn, as before.
+Quat heading_of(const Quat& q) noexcept {
+    const float length = std::sqrt(q[1] * q[1] + q[3] * q[3]);
+    if (!(length > 1e-4f)) return {0, 0, 0, 1};
+    return {0, q[1] / length, 0, q[3] / length};
+}
 Quat ground_turn(const Joint& joint) noexcept {
     const auto along = rotate(joint.rotation, {1, 0, 0});
     const float angle = std::atan2(-along[2], along[0]);
@@ -912,8 +923,10 @@ SettingsFile settings_file_of(const State& s) {
     f.grind_rail_size = s.grind_rail_size;
     f.advanced_bones = s.advanced_bones;
     f.finger_bones = s.finger_bones;
+    f.open_combo = s.open_combo;
     return f;
 }
+std::atomic<int> open_combo_now{0}; // s.open_combo, for the overlay's every frame
 void load_settings(State& s) {
     try {
         std::ifstream in(library_folder() / settings_file, std::ios::binary);
@@ -928,6 +941,8 @@ void load_settings(State& s) {
         s.hover_preview = f.hover_preview;
         s.advanced_bones = f.advanced_bones;
         s.finger_bones = f.finger_bones;
+        s.open_combo = std::clamp(f.open_combo, 0, 3);
+        open_combo_now.store(s.open_combo, std::memory_order_release);
         s.ungrouped = std::move(f.ungrouped);
         s.favorite_packs = std::move(f.favorite_packs);
         s.export_folder = f.export_folder;
@@ -2984,7 +2999,7 @@ std::vector<float> clip_floor_lifts(const Clip& clip) {
     if (clip.empty() || clip.joints <= ground_joint || clip.board.size() != n) return {};
     const auto shape = board_shape(clip);
     const float ground = world(clip.frame(0), ground_joint).position[1];
-    const Quat start = world(clip.frame(0), placement_joint).rotation;
+    const Quat start = heading_of(world(clip.frame(0), placement_joint).rotation);
     std::vector<float> low(n), level(n);
     for (std::size_t f = 0; f < n; ++f) {
         const auto placed = world(clip.frame(f), placement_joint);
@@ -3914,7 +3929,8 @@ void on_animation(std::uintptr_t component) noexcept {
             shown->sample(shown_time, l.sampled);
             const auto& start = shown->frame(0)[placement_joint];
             const auto& now_rec = l.sampled[placement_joint];
-            const auto turn = normalised(multiply(conjugate(start.rotation), now_rec.rotation));
+            // Its turn since its first frame's heading (heading_of): a clip that starts leaning keeps its lean.
+            const auto turn = normalised(multiply(conjugate(heading_of(start.rotation)), now_rec.rotation));
             // On the floor, on the board: the clip is moved up or down so its board's lowest point (its
             // wheels, or its tail at the pop) is on the studio's floor before the pop and after the landing,
             // and between them follows the arc of a jump as long as the clip's air (unless the clip rises by
@@ -4166,8 +4182,10 @@ void on_animation(std::uintptr_t component) noexcept {
             if (l.episode.phase == PlaybackPhase::air && l.predicted_air == 0 && at - l.episode.takeoff >= 0.03) {
                 const double elapsed = at - l.episode.takeoff;
                 const auto vy = board_up_speed(base, component);
+                // At the trainer's gravity: a pop at twice the gravity is a shorter air, not a lower pop.
+                const double g = 9.81 * air_gravity_in_force();
                 l.predicted_air = vy && *vy > 0.3f
-                    ? static_cast<float>(std::clamp(2 * (*vy + 9.81 * elapsed) / 9.81 - elapsed, 0.15, 3.0)) : -1.0f;
+                    ? static_cast<float>(std::clamp(2 * (*vy + g * elapsed) / g - elapsed, 0.15, 3.0)) : -1.0f;
             }
             // The game's trick, read for as long as he is in the air rather than only just after takeoff.
             // A name arriving late used to be ignored, so a trick that turned into another one kept the
@@ -6896,7 +6914,7 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
         const float t = time_to_landing(low, probe.vx.load(std::memory_order_acquire),
                                         probe.vy.load(std::memory_order_acquire), probe.vz.load(std::memory_order_acquire),
                                         [&](float dx, float dz, float top) { return ground_not_self(ground, dx, dz, top, low); },
-                                        0.05f, 16, &surface);
+                                        0.05f, 16, &surface, board_gravity * air_gravity_in_force());
         probe.surface.store(surface, std::memory_order_release);
         probe.to_ground.store(t, std::memory_order_release);
         probe.found_at.store(now_seconds(), std::memory_order_release);
@@ -7069,6 +7087,7 @@ Settings settings() {
     out.grab_board = s.grab_board;
     out.advanced_bones = s.advanced_bones;
     out.finger_bones = s.finger_bones;
+    out.open_combo = s.open_combo;
     out.limits = s.limits;
     out.front_foot = s.front_foot;
     out.crossfade = s.crossfade;
@@ -7538,6 +7557,17 @@ void set_advanced_bones(bool on) {
                   : "Only the usual joints show (a joint you keyed stays on the timeline).";
     publish_locked(s);
 }
+void set_open_combo(int combo) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.open_combo = std::clamp(combo, 0, 3);
+    open_combo_now.store(s.open_combo, std::memory_order_release);
+    save_settings_locked(s);
+    s.status = s.open_combo == 3 ? std::string("No controller combo opens the studio now: F8, or the ReSkate menu's ADDONS > ANIMATOR STUDIO.")
+                                 : std::string("Hold ") + open_combo_names[static_cast<std::size_t>(s.open_combo)] + " on a controller to open and close the studio.";
+    publish_locked(s);
+}
+int open_combo() noexcept { return std::clamp(open_combo_now.load(std::memory_order_acquire), 0, 3); }
 void set_finger_bones(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);

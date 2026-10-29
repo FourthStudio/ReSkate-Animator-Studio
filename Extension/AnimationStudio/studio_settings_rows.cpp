@@ -85,6 +85,12 @@ Setting grind_rail(const studio::Settings& now) {
                   "grind is open), and never in an online session.",
                   [keys](int picked) { studio::set_grind_rail(keys[static_cast<std::size_t>(picked)]); });
 }
+Setting controller_combo(const studio::Settings& now) {
+    return one_of("Controller combo", {studio::open_combo_names.begin(), studio::open_combo_names.end()}, std::clamp(now.open_combo, 0, 3),
+                  "What you hold on a controller (half a second) to open the studio, and to close it again. Another mod using the "
+                  "same buttons: pick another, or OFF and open it with F8 or from the ReSkate menu (ADDONS > ANIMATOR STUDIO).",
+                  [](int picked) { studio::set_open_combo(picked); });
+}
 Setting rail_size(const studio::Settings& now) {
     const auto* rail = studio::studio_rail(now.grind_rail);
     std::vector<std::string> options;

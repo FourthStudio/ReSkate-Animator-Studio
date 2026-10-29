@@ -41,6 +41,7 @@ Setting info_setting(std::string label, std::string value, std::string about);
 Setting studio_room(const anim_studio::Settings&);
 Setting grind_rail(const anim_studio::Settings&); // OFF or one of the game's straight rails (studio_rails.h)
 Setting rail_size(const anim_studio::Settings&);  // how big it is put up (studio_rail_sizes)
+Setting controller_combo(const anim_studio::Settings&); // what held on a controller opens the studio (open_combo_names)
 Setting catch_marker(const anim_studio::Settings&);
 Setting drop_height_preview(const anim_studio::Settings&);
 Setting how_it_works(); // opens the first-start guide again

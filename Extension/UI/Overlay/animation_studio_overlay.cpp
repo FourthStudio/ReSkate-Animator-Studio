@@ -2677,17 +2677,21 @@ void controller(const studio::View& v, const Projector& p) {
     if (pressed || sticks) u.pad_mode = true;
     const float dt = std::min(ImGui::GetIO().DeltaTime, 0.1f);
 
-    // L3 + R3 held: close the studio (the same hold opens it from the game).
-    if ((buttons & pad_l3) && (buttons & pad_r3)) {
+    // The controller combo held (SETTINGS > STUDIO, L3 + R3 unless changed): close the studio (the same hold opens it).
+    const unsigned combo = studio::open_combo_buttons[static_cast<std::size_t>(studio::open_combo())];
+    if (combo && (buttons & combo) == combo) {
         u.l3_combo = true;
-        if (u.combo_armed && held_for(pad_l3) > 0.5 && held_for(pad_r3) > 0.5) {
+        bool long_enough = true;
+        for (unsigned bit = 1; bit < 0x10000; bit <<= 1)
+            if ((combo & bit) && held_for(bit) <= 0.5) long_enough = false;
+        if (u.combo_armed && long_enough) {
             studio::request_close();
             u.combo_armed = false;
         }
         return;
     }
     if (u.l3_combo) {
-        if (!(buttons & (pad_l3 | pad_r3))) {
+        if (!combo || !(buttons & combo)) {
             u.l3_combo = false;
             u.combo_armed = true;
         }
@@ -3790,11 +3794,19 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     }
     text(d, f.bold, 21 * k, ImVec2(a.x + 18 * k, a.y + 14 * k), white, elide(f.bold, 21 * k, shown_name(v, name), right_edge - a.x - 26 * k));
     std::string what = p ? upper(trick_label(p->trick)) : std::string("A PIECE OF THE GAME'S ANIMATION");
+    // Its stance has a tag of its own below (2026-10-29: "I'm missing a tag in which stance it's been made").
+    const int version = p ? std::clamp(studio::stance_version(*p, u.own_lead_right), 0, 3) : 0;
     if (p)
-        for (const auto& [label, colour] : tags_of(*p)) what += "  /  " + label;
+        for (const auto& [label, colour] : tags_of(*p))
+            if (version == 0 || label != stance_word(version, nollie_trick(p->trick))) what += "  /  " + label;
     if (p)
         if (const auto when = edited_words(p->saved_at); !when.empty()) what += "  /  EDITED " + when;
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 42 * k), soft, elide(f.bold, 12 * k, what, size.x - 36 * k));
+    if (p) {
+        // The stance it was made in, as you ride: NORMAL (your own), FAKIE, SWITCH or SWITCH FAKIE, as the editor names it.
+        const std::string stance = version == 0 ? std::string("NORMAL") : stance_word(version, nollie_trick(p->trick));
+        tag(d, f, ImVec2(a.x + 18 * k, a.y + 64 * k), stance, version == 0 ? IM_COL32(255, 255, 255, 36) : IM_COL32(196, 104, 0, 255));
+    }
     if (lit && nav().keys) chosen_outline(d, a, ImVec2(b.x, b.y - strip), k);
     // EDIT, TEST IN GAME, and + PLAYLIST (IN PLAYLIST when it is in the playlist that is on).
     const float play_w = 120 * k, bw = (size.x - 28 * k - 16 * k - play_w) / 2;
@@ -4280,11 +4292,18 @@ void hover_preview(const Fonts& f, const studio::View& v) {
             return;
         }
     }
-    if (!h.peeking) {
-        if (!studio::peek_playing()) {
-            if (now - h.asked > 4.0) h.done = true; // it could not be read
+    // Its window comes up as soon as it is asked for, covered, with a loading bar, and opens once the trick (and a grind's
+    // rail) is there (2026-10-29: "can you add a loading bar for the previews of the grinds").
+    bool reading = false;
+    if (!h.peeking && !studio::peek_playing()) {
+        if (now - h.asked > 4.0) { // it could not be read
+            cover_peek_hole();
+            stop_hover_peek();
+            h.done = true;
             return;
         }
+        reading = true;
+    } else if (!h.peeking) {
         h.peeking = true;
         h.since = now;
         h.duration = std::max(0.3f, studio::peek_duration());
@@ -4299,14 +4318,13 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         studio::set_focus(studio::all_joints);
         studio::set_orbit(orbit);
     }
-    if (!h.peeking) return;
     // He stands on the trick's first frame while the camera gets to his side, and the window opens once all of it is there
     // (studio::peek_ready: for a grind, the studio rail standing under it - never a rail coming up in front of you); the
     // trick starts once the window is open: seen whole from its start. (It started as soon as it was read, behind the opening
     // window and under a camera still swinging round: its first moments were never seen and the window opened on him mid-move.)
     constexpr float camera_first = 0.12f, opens_in = 0.18f, waits_at_most = 1.6f;
-    const float k = f.k, since = static_cast<float>(now - h.since);
-    if (h.ready_at < 0 && since >= camera_first && (studio::peek_ready() || since >= waits_at_most)) h.ready_at = now;
+    const float k = f.k, since = reading ? 0.0f : static_cast<float>(now - h.since);
+    if (!reading && h.ready_at < 0 && since >= camera_first && (studio::peek_ready() || since >= waits_at_most)) h.ready_at = now;
     const float open_for = h.ready_at < 0 ? 0.0f : static_cast<float>(now - h.ready_at);
     if (!h.going && h.ready_at >= 0 && open_for >= opens_in) {
         studio::peek_go();
@@ -4349,13 +4367,28 @@ void hover_preview(const Fonts& f, const studio::View& v) {
     const ImVec2 middle((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f + 40 * k);
     studio::set_view_shift((display.y * 0.5f - middle.y) / display.y, (middle.x - display.x * 0.5f) / display.y);
     auto* d = ImGui::GetForegroundDrawList();
-    const float fade_in = std::clamp(since / 0.25f, 0.0f, 1.0f);
+    const float fade_in = reading ? std::clamp(static_cast<float>(now - h.asked) / 0.25f, 0.0f, 1.0f) : std::clamp(since / 0.25f, 0.0f, 1.0f);
     // The first moments and the last are covered, fading: the camera takes a frame or two to get to his side, and he
     // goes back after. The window opens on him already in place and is closed again before anything moves back.
     const float opening = std::clamp(open_for / opens_in, 0.0f, 1.0f);
     const float closing = std::clamp((h.duration + 0.9f - played) / 0.2f, 0.0f, 1.0f);
-    if (const float cover = 1 - std::min(opening, closing); cover > 0)
+    if (const float cover = 1 - std::min(opening, closing); cover > 0) {
         d->AddRectFilled(a, b, IM_COL32(10, 10, 12, static_cast<int>(252 * cover)), 6 * k);
+        // While it gets ready: what it waits for, and a bar that fills as it comes (full once it is there).
+        if (h.ready_at < 0 || opening < 1) {
+            const bool rail = !reading && h.ready_at < 0 && since >= camera_first;
+            const char* label = reading ? "LOADING THE TRICK" : rail ? "PUTTING UP THE RAIL" : "READY";
+            const float waited = static_cast<float>(now - h.asked);
+            const float fill = h.ready_at >= 0 ? 1.0f : std::min(0.95f, 1 - std::exp(-waited / 0.7f));
+            const auto alpha = [&](int full) { return static_cast<int>(static_cast<float>(full) * cover * fade_in); };
+            const float bar_w = std::min(260 * k, w - 60 * k), mid_y = (a.y + b.y) * 0.5f;
+            const ImVec2 bar_a((a.x + b.x - bar_w) * 0.5f, mid_y + 6 * k), bar_b(bar_a.x + bar_w, bar_a.y + 6 * k);
+            const auto size = text_size(f.heading, 13 * k, label);
+            text(d, f.heading, 13 * k, ImVec2((a.x + b.x - size.x) * 0.5f, mid_y - 22 * k), IM_COL32(150, 196, 255, alpha(255)), label);
+            d->AddRectFilled(bar_a, bar_b, IM_COL32(255, 255, 255, alpha(30)), 3 * k);
+            d->AddRectFilled(bar_a, ImVec2(bar_a.x + bar_w * fill, bar_b.y), IM_COL32(1, 131, 255, alpha(255)), 3 * k);
+        }
+    }
     // Its frame: the name across the top, how far it has got along the bottom.
     d->AddRect(a, b, IM_COL32(1, 131, 255, static_cast<int>(200 * fade_in)), 6 * k, 0, 3 * k);
     d->AddRectFilled(ImVec2(a.x, a.y), ImVec2(b.x, a.y + 40 * k), IM_COL32(12, 12, 14, 235), 6 * k, ImDrawFlags_RoundCornersTop);
@@ -7463,6 +7496,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(studio::settings_rows::studio_room(now));
         rows.push_back(studio::settings_rows::grind_rail(now));
         rows.push_back(studio::settings_rows::rail_size(now));
+        rows.push_back(studio::settings_rows::controller_combo(now));
         rows.push_back(choice("Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))].name,
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
                               "him and above, as he stands when you pick it; BOARD is close on the deck, CINEMATIC wide and low, FILMER "
@@ -9902,7 +9936,7 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
     using Line = std::tuple<std::optional<Glyph>, std::string, const char*>;
     std::vector<Line> list;
     const char* move = u.move_mode ? "Move (L3: turn)" : u.axis < 0 ? "Turn (L3: axis)" : u.axis == 0 ? "Turn X (L3)" : u.axis == 1 ? "Turn Y (L3)" : "Turn Z (L3)";
-    if (u.pad_mode)
+    if (u.pad_mode) {
         list = {{Glyph::ls, "", move},
                 {Glyph::rs, "", u.stick_zoom ? "Zoom / pan (R3)" : "Orbit (R3: zoom)"},
                 {Glyph::rt, "", "Play forward"},
@@ -9917,9 +9951,15 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
                 {Glyph::view, "", "Menu"},
                 {Glyph::lb, "", "Zoom timeline (RB)"},
                 {Glyph::lb, "", "+ LS: start anim."},
-                {Glyph::rb, "", "+ RS: end anim."},
-                {Glyph::l3, "", "+ R3 hold: back"}};
-    else
+                {Glyph::rb, "", "+ RS: end anim."}};
+        // The controller combo back to skating, as SETTINGS > STUDIO has it (none: OFF).
+        switch (studio::open_combo()) {
+        case 0: list.push_back({Glyph::l3, "", "+ R3 hold: back"}); break;
+        case 1: list.push_back({Glyph::lb, "", "+ R3 hold: back"}); break;
+        case 2: list.push_back({Glyph::rb, "", "+ L3 hold: back"}); break;
+        default: break;
+        }
+    } else
         list = {{std::nullopt, "LMB", "Pick / turn"},
                 {std::nullopt, "RMB", "Orbit"},
                 {std::nullopt, key_of("view_up") + " " + key_of("view_left") + " " + key_of("view_down") + " " + key_of("view_right"), "Turn the view"},
@@ -11300,12 +11340,14 @@ void open_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
 
 bool animation_studio_open() { return studio::is_open(); }
 
-// Closed, the studio still listens for L3 + R3 held on a controller, which opens it.
+// Closed, the studio still listens for its controller combo held (L3 + R3 unless SETTINGS > STUDIO says otherwise), which opens it.
 void poll_animation_studio_controller() {
     static double since = 0;
     static bool fired = false;
     const auto pad = read_gamepad();
-    const bool both = pad.valid && (pad.buttons & pad_l3) && (pad.buttons & pad_r3);
+    // The combo SETTINGS > STUDIO says (L3 + R3 unless changed; none: OFF).
+    const unsigned combo = studio::open_combo_buttons[static_cast<std::size_t>(studio::open_combo())];
+    const bool both = pad.valid && combo && (pad.buttons & combo) == combo;
     const double now = GetTickCount64() / 1000.0;
     if (!both) {
         since = 0;

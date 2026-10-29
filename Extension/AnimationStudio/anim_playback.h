@@ -313,10 +313,12 @@ inline std::optional<Quat> rest_heading_before(const std::deque<std::pair<double
 inline constexpr float board_gravity = 20.0f;
 // Seconds until the board is down: from how fast it goes up now (metres a second, falling below 0) and how high its lowest
 // point is over the ground. Below 0: not known.
-inline float time_to_ground(float up_speed, float height) noexcept {
-    if (!std::isfinite(up_speed) || !std::isfinite(height)) return -1;
+// `gravity`: the board's gravity now (board_gravity times the trainer's gravity: at twice the gravity the air is shorter, and
+// at the game's own the catch was held waiting for a landing that had already come - "janky with higher gravity", 2026-10-29).
+inline float time_to_ground(float up_speed, float height, float gravity = board_gravity) noexcept {
+    if (!std::isfinite(up_speed) || !std::isfinite(height) || !(gravity > 0)) return -1;
     const float h = std::max(0.0f, height);
-    return (up_speed + std::sqrt(up_speed * up_speed + 2 * board_gravity * h)) / board_gravity;
+    return (up_speed + std::sqrt(up_speed * up_speed + 2 * gravity * h)) / gravity;
 }
 // Seconds until the board comes down where it is flying to, not straight below it: over a gap the ground under the
 // board is the gap's bottom, and the trick was taken for one off a drop - its catch slowed and its feet held on the deck
@@ -327,12 +329,12 @@ inline float time_to_ground(float up_speed, float height) noexcept {
 // what it lands on (a rail or a ledge stands over the ground it took off from).
 template <class GroundAt>
 float time_to_landing(float low, float vx, float vy, float vz, GroundAt&& ground_at, float step = 0.05f, int samples = 16,
-                      float* surface = nullptr) {
+                      float* surface = nullptr, float gravity = board_gravity) {
     if (!std::isfinite(low) || !std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(vz)) return -1;
     float last_t = -1, last_gap = 0, last_ground = 0;
     for (int k = 0; k <= samples; ++k) {
         const float t = static_cast<float>(k) * step;
-        const float y = low + vy * t - 0.5f * board_gravity * t * t;
+        const float y = low + vy * t - 0.5f * gravity * t * t;
         // Now: from just under the board. Ahead: from a little over its path, so ground it would meet is found.
         const std::optional<float> ground = ground_at(vx * t, vz * t, k == 0 ? low - 0.03f : y + 0.6f);
         if (!ground || !std::isfinite(*ground)) continue;
@@ -348,7 +350,7 @@ float time_to_landing(float low, float vx, float vy, float vz, GroundAt&& ground
     }
     if (last_t < 0) return -1;
     if (surface) *surface = last_ground;
-    const float down = time_to_ground(vy - board_gravity * last_t, last_gap);
+    const float down = time_to_ground(vy - gravity * last_t, last_gap, gravity);
     return down < 0 ? -1 : last_t + down;
 }
 // The skater and his board are bodies in the world the ground is looked for in: a ray from over the board's path, within
