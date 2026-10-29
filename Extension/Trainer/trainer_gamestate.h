@@ -43,6 +43,7 @@ struct StudioStates {
     std::optional<float> trick_phase, time_to_land;
     std::optional<bool> trick_intent, targeting_grind, trick_in_air, grind_into;
     std::optional<std::uint32_t> grind_type, skate_grind_type, anim_grind_type;
+    std::optional<bool> riding_fakie; // Bool.Physics.RidingFakie
 };
 StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noexcept;
 // Whether any of them is known (the level's objects), and a search of the game's memory for them (off the game's threads,

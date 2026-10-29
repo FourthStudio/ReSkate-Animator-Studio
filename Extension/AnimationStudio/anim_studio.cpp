@@ -596,6 +596,15 @@ struct Live {
     // logged.
     std::uint32_t grind_now{}, grind_told{};
     double grind_now_at{-1};
+    // Each piece's manual (piece_tricks indices): the game's Enum.Manual it is (1 tail, 2 nose; 0 not a manual's loop or
+    // pose) and whether it is the fakie one. The game's manual now (Enum.Intent.Manual, -1 not read) and riding fakie.
+    struct PieceManual {
+        int manual{};
+        bool fakie{};
+    };
+    std::vector<PieceManual> piece_manuals;
+    int manual_now{-1};
+    std::optional<bool> fakie_now;
     std::vector<std::size_t> tracked;
     struct HeldPlay {
         HeldKind kind{HeldKind::none};
@@ -2947,6 +2956,64 @@ bool grind_allows(const Live& l, std::size_t piece, std::uint32_t grind) noexcep
     const auto& types = l.piece_grinds[piece];
     return std::find(types.begin(), types.end(), grind) != types.end();
 }
+// A manual's loop or pose (c_proto_onb_manual_<t|n>_[fakie_]...loop... | ..._pose | ..._turn_...): the game's manual it
+// plays in (Enum.Manual: 1 tail, 2 nose) and whether fakie, as the game's manual table picks its loops
+// (cdb_onboard_manualloop: Bool.Physics.RidingFakie and Enum.Intent.Manual, 2026-10-29). 0: not one.
+Live::PieceManual manual_of(const std::string& trick) {
+    const auto at = trick.find("_manual_");
+    if (at == std::string::npos || at + 9 >= trick.size() || trick[at + 9] != '_' || trick.find("ofb") != std::string::npos) return {};
+    const char which = trick[at + 8];
+    if (which != 't' && which != 'n') return {};
+    const auto rest = trick.substr(at + 10);
+    if (rest.find("loop") == std::string::npos && rest.find("pose") == std::string::npos && rest.find("turn") == std::string::npos) return {};
+    return {which == 't' ? 1 : 2, rest.starts_with("fakie_")};
+}
+// A manual of yours starts the moment the game is in that manual (its Enum.Intent.Manual, and riding fakie or not), and
+// stops the moment it leaves it - no waiting for him to hold still in it first (2026-10-29: "I need to wait and manual a
+// bit before the loop starts"). Of more than one saved for it, the nearest to his pose. Nothing when the game's manual
+// cannot be read: then the manuals are found by the pose held, as before.
+std::optional<PieceMatch> manual_play(Live& l, float dt) {
+    auto& g = l.held;
+    if (l.manual_now < 0) return std::nullopt;
+    const int manual = l.manual_now == 1 || l.manual_now == 2 ? l.manual_now : 0;
+    const auto fits_now = [&](std::size_t index) {
+        if (index >= l.piece_manuals.size()) return false;
+        const auto& m = l.piece_manuals[index];
+        return manual && m.manual == manual && (!l.fakie_now || m.fakie == *l.fakie_now);
+    };
+    if (g.playing >= 0 && static_cast<std::size_t>(g.playing) < l.piece_manuals.size() && l.piece_manuals[static_cast<std::size_t>(g.playing)].manual &&
+        !fits_now(static_cast<std::size_t>(g.playing))) {
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go: the game has left that manual.",
+                     l.piece_tricks[static_cast<std::size_t>(g.playing)]->name);
+        g.playing = g.candidate = -1;
+    }
+    if (g.playing >= 0) {
+        const auto* playing = l.piece_tricks[static_cast<std::size_t>(g.playing)];
+        const float length = playing->clip->duration();
+        g.time += dt;
+        if (length > 0) g.time = std::fmod(g.time, length);
+        return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, 0};
+    }
+    if (!manual) return std::nullopt;
+    std::vector<std::size_t> pieces;
+    std::vector<const Clip*> clips;
+    for (const auto& [index, k] : l.held_loops)
+        if (k == Live::HeldKind::ground && fits_now(index)) {
+            pieces.push_back(index);
+            clips.push_back(l.piece_tricks[index]->clip.get());
+        }
+    if (clips.empty()) return std::nullopt;
+    const auto fits = held_pose_fits(clips, l.pose, false);
+    if (fits.empty()) return std::nullopt;
+    const auto& best = fits.front();
+    g.playing = static_cast<int>(pieces[best.piece]);
+    g.mirrored = best.mirrored;
+    g.time = 0; // the game's loop starts as the manual does
+    g.off_since = -1;
+    logging::log(Level::info, Channel::skater, "Animation Studio: the game is in a {}{}: {}{} plays from its start.", manual == 1 ? "manual" : "nose manual",
+                 l.fakie_now && *l.fakie_now ? ", fakie" : "", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, best.mirrored ? ", mirrored" : "");
+    return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, best.score};
+}
 constexpr float held_apart = 0.7f;  // the loop taken is well nearer than the next saved one
 constexpr float held_still = 0.006f; // on the ground: how little the spine and legs may move over a quarter of a second
 std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, float dt, Live::HeldKind kind, std::uint32_t grind) {
@@ -2964,10 +3031,16 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
                      l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, grind ? grind_type_label(grind) : std::string("grind it has not named"));
         g.playing = g.candidate = -1;
     }
+    // On the ground, a manual of yours is played by the game's manual (manual_play), when it can be read.
+    const bool manuals_by_game = kind == Live::HeldKind::ground && l.manual_now >= 0;
+    if (manuals_by_game) {
+        if (auto played = manual_play(l, dt)) return played;
+    }
     std::vector<std::size_t> pieces;
     std::vector<const Clip*> clips;
     for (const auto& [index, k] : l.held_loops)
-        if (k == kind && (!grinding || grind_allows(l, index, grind))) {
+        if (k == kind && (!grinding || grind_allows(l, index, grind)) &&
+            !(manuals_by_game && index < l.piece_manuals.size() && l.piece_manuals[index].manual)) {
             pieces.push_back(index);
             clips.push_back(l.piece_tricks[index]->clip.get());
         }
@@ -3057,6 +3130,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
         l.piece_tricks.clear();
         l.held_loops.clear();
         l.piece_grinds.clear();
+        l.piece_manuals.clear();
         l.tracked.clear();
         l.held = {};
         std::vector<const Clip*> clips;
@@ -3068,6 +3142,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                     const auto index = l.piece_tricks.size();
                     l.piece_tricks.push_back(&t);
                     l.piece_grinds.push_back(grind_types_of(t.trick.substr(7)));
+                    l.piece_manuals.push_back(manual_of(t.trick));
                     if (kind != Live::HeldKind::none) l.held_loops.push_back({index, kind});
                     else {
                         l.tracked.push_back(index);
@@ -3583,6 +3658,8 @@ void on_animation(std::uintptr_t component) noexcept {
             const auto collection = read<std::uintptr_t>(component + 0x18).value_or(0);
             const auto entity = collection ? read<std::uintptr_t>(collection).value_or(0) : 0;
             l.game = entity ? trainer::read_studio_states(base, entity) : trainer::StudioStates{};
+            l.manual_now = entity ? trainer::read_manual_intent(base, entity) : -1;
+            l.fakie_now = l.game.riding_fakie;
             // Which grind the game is doing (grind_types.h): Enum.GS.SkateGrindType, the one the game picks its grind clips by
             // (CurrentSkateGrindType named another grind than the clip it played, 2026-10-29); else CurrentSkateGrindType,
             // else CurrentGrindType.
