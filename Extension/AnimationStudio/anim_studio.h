@@ -363,7 +363,11 @@ struct SharedPack {
     std::vector<std::pair<std::string, std::string>> files; // path in the zip, bytes
     std::vector<std::string> tricks;
     std::string picture;
+    // Tricks the pack names whose files are not on this PC: not in what is shared, and not named in its pack file either.
+    std::vector<std::string> left_out;
 };
+// "2 tricks the pack names were not found and are not in it: A, B." ("" none.)
+std::string left_out_note(const std::vector<std::string>& names);
 bool share_pack(const std::string& pack, SharedPack& out, std::string& message);
 // It went up on Thunderstore as this version of this package (Team-Name): its next update goes to the same package.
 void pack_published(const std::string& pack, const std::string& version, const std::string& published_as);
@@ -517,13 +521,15 @@ bool export_diagnostics(std::string& message);
 bool report_bug(std::string& message);
 bool load_game_trick(const GameTrick& trick, std::string& message);
 // A trick done by the skater himself for a look (TRICKS' hover preview), over whatever is open, which stays as it is:
-// it plays once from the start and holds its end, until end_peek. It is read, decoded and turned into the studio's
+// once read it stands on its first frame (peek_playing) until peek_go, so the camera is at his side and the window open
+// before it moves; then it plays once from the start and holds its end, until end_peek. It is read, decoded and turned into the studio's
 // stance on a thread of its own (a library clip is hundreds of KB: read on the frame, it stuttered the game), and the
 // last few are kept, so one looked at again starts at once. `play`: it starts as soon as it is ready; without, it is
 // only made ready (the mouse is settling on its card). False when it cannot be asked for.
 bool peek_game_trick(const GameTrick& trick, bool play = true);
 bool peek_saved(const std::string& animation, bool play = true);
-bool peek_playing();   // the trick asked to play is playing
+bool peek_playing();   // the trick asked to play is ready and shown (held on its first frame until peek_go)
+void peek_go();        // it starts playing from its first frame now
 void end_peek();       // and one asked for that is not ready yet does not start
 float peek_duration(); // the trick being looked at, in seconds (0 none)
 // Deletes a saved trick and takes it out of every pack it is in. A pack got from someone else (the MARKET, an import)

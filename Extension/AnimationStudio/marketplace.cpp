@@ -1225,6 +1225,7 @@ std::string export_package(const std::string& pack_name, std::string& message, c
         const auto path = pack_export_folder() / widen(market().team.empty() ? package.file_name : market().team + "-" + package.file_name);
         write_file(path, package.zip);
         message = "Made " + utf8(path.filename()) + " for Thunderstore: upload it on thunderstore.io/c/reskate, or publish it from here with a linked team.";
+        if (!pack.left_out.empty()) message += " " + left_out_note(pack.left_out);
         ShellExecuteW(nullptr, L"open", path.parent_path().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return utf8(path);
     } catch (const std::exception& e) {
@@ -1332,6 +1333,7 @@ void publish(const std::string& pack_name, const std::string& wanted_version, co
         result.url = std::string(site) + "/c/" + community + "/p/" + team + "/" + package.name + "/";
         result.message = (pack.published.empty() ? "Published " : "Updated ") + pack.name + " to " + version + " on Thunderstore as " + team + "-" +
                          package.name + ". It shows in the MARKET within a minute.";
+        if (!pack.left_out.empty()) result.message += " " + left_out_note(pack.left_out);
         progress(1);
         refresh(true);
     });

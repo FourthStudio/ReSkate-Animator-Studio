@@ -16,6 +16,7 @@
 #include "Extension/AnimationStudio/native_additive.h"
 #include "Extension/AnimationStudio/studio_rails.h"
 #include "Extension/AnimationStudio/grind_types.h"
+#include "Extension/AnimationStudio/editor_floor.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -2062,6 +2063,54 @@ void additive_clips_go_on_their_pose() {
 
 // The studio's grind rail (studio_rails.h): only the game's grinds get one, under their Ground joint along the way he
 // travels, and the same spot is not moved again.
+// The game's clips on the studio's floor (editor_floor.h), with board heights shaped like the trick library's (measured
+// 2026-10-29 by putting every clip down as the editor does).
+void game_clips_stand_on_the_floor_where_their_board_rests() {
+    std::vector<float> times;
+    for (int i = 0; i <= 120; ++i) times.push_back(static_cast<float>(i) / 60.0f);
+    const std::vector<float> flat(times.size(), 1.0f);
+    const auto lifted = [&](const std::vector<float>& low, const std::vector<float>& lift, std::size_t i) { return low[i] + lift[i]; };
+    // A whole kickflip: on its wheels 2 mm under the floor before the pop and after the landing, its tail 1.5 cm under at
+    // the pop, up in the air between.
+    std::vector<float> kickflip(times.size(), -0.002f);
+    for (std::size_t i = 12; i < 14; ++i) kickflip[i] = -0.015f;
+    for (std::size_t i = 14; i < 44; ++i) kickflip[i] = 0.6f * std::sin(static_cast<float>(i - 14) / 30.0f * 3.14159f);
+    auto lift = floor_lifts(times, kickflip, flat);
+    check(lift.size() == times.size() && near(lifted(kickflip, lift, 0), 0) && near(lifted(kickflip, lift, 120), 0) && near(lift[30], 0.002f),
+          "A whole trick stays as the game has it, its board on the floor before and after");
+    // A dark catch: the same pop, then the board upside down 9.5 cm up to the end.
+    std::vector<float> dark = kickflip;
+    std::vector<float> dark_level = flat;
+    for (std::size_t i = 44; i < times.size(); ++i) {
+        dark[i] = 0.095f;
+        dark_level[i] = 1.0f; // upside down lies as flat
+    }
+    lift = floor_lifts(times, dark, dark_level);
+    check(near(lifted(dark, lift, 0), 0) && near(lifted(dark, lift, 120), 0) && near(lifted(dark, lift, 60), 0),
+          "A dark catch lands on the floor, not 9.5 cm over it");
+    check(lift[20] < 0 && lift[20] > -0.095f, "and goes there smoothly through the air");
+    // A fingerflip's way in: from the floor, then 46 cm into it. Nothing rests: lifted once, all of it off the floor.
+    std::vector<float> into(times.size());
+    for (std::size_t i = 0; i < times.size(); ++i) into[i] = -0.46f * std::sin(static_cast<float>(i) / 120.0f * 3.14159f * 0.5f);
+    lift = floor_lifts(times, into, flat);
+    check(near(lift.front(), lift.back()) && near(lift.front(), 0.46f), "A piece in the air is lifted once, off the floor");
+    // A held flip high in the air: the game's own height.
+    std::vector<float> held(times.size());
+    for (std::size_t i = 0; i < times.size(); ++i) held[i] = 0.7f + 0.15f * std::sin(static_cast<float>(i) * 0.3f);
+    lift = floor_lifts(times, held, flat);
+    check(near(lift.front(), 0) && near(lift.back(), 0), "A piece high in the air keeps the game's height");
+    // A no comply that ends still falling (its landing is the next clip's): its start on the floor, nothing more.
+    std::vector<float> falling(times.size(), -0.002f);
+    for (std::size_t i = 20; i < times.size(); ++i) falling[i] = 0.05f + 0.5f * std::sin(static_cast<float>(i - 20) / 110.0f * 3.14159f);
+    lift = floor_lifts(times, falling, flat);
+    check(near(lift.front(), 0.002f) && near(lift.back(), 0.002f), "A clip that ends in the air keeps its start on the floor");
+    // A board held tilted (a manual's tail down 40 degrees) is not resting flat: off the floor only.
+    std::vector<float> tilted(times.size(), 0.05f);
+    const std::vector<float> steep(times.size(), 0.7f);
+    lift = floor_lifts(times, tilted, steep);
+    check(near(lift.front(), 0), "A steep board is not stood on the floor by its rest");
+    check(near(floor_lift_at(times, lift, 0.5f), lift[30]) && floor_lifts(times, {}, flat).empty(), "The lift is read between frames");
+}
 void grind_rail_goes_under_the_grind() {
     check(grind_clip("animation/dingo/c_proto_onb_grind_fs_bs_5_0_rail_loop") && grind_clip("animation/dingo/c_proto_ofb_grind_5050_feet_rail_loop") &&
               !grind_clip("animation/dingo/c_proto_onb_trick_o_kickflip_mid") && !grind_clip("animation/dingo/c_proto_onb_manual_t_loop_med") &&
@@ -2769,6 +2818,7 @@ int main(int argc, char** argv) {
         fakie_mirrors_the_upper_body();
         additive_clips_go_on_their_pose();
         grind_rail_goes_under_the_grind();
+        game_clips_stand_on_the_floor_where_their_board_rests();
         a_grind_is_known_by_the_games_name();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();

@@ -222,7 +222,8 @@ inline std::string readme(const std::string& title, const std::string& descripti
     out += "## Tricks\n\n";
     for (const auto& t : tricks) out += "- " + t + "\n";
     out += "\n## Install\n\nOpen the Animator Studio in game (F8), go to MARKET and install it there, or install it with the ReSkate launcher. "
-           "Then switch the pack on in PACKS.\n";
+           "It goes straight into the playlist that plays (LIBRARY changes what plays). Each trick above plays on the game's trick "
+           "and pop it says.\n";
     if (!made_by.empty()) out += "\nMade by " + made_by + " in the ReSkate Animator Studio.\n";
     return out;
 }

@@ -339,7 +339,7 @@ struct Ui {
         double since{-1};
         ImVec2 a{}, b{};
         std::function<bool(bool)> start; // asks for the trick: true plays it once it is ready, false only readies it
-        bool readied{}, tried{}, peeking{}, done{};
+        bool readied{}, tried{}, peeking{}, going{}, done{};
         double asked{-1};
         float duration{};
         studio::Orbit orbit; // the camera as it was, put back after
@@ -4278,7 +4278,15 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         studio::set_orbit(orbit);
     }
     if (!h.peeking) return;
-    const float k = f.k, played = static_cast<float>(now - h.since);
+    // He stands on the trick's first frame while the camera gets to his side and the window opens, and the trick starts
+    // once it is open: seen whole from its start. (It started as soon as it was read, behind the opening window and under
+    // a camera still swinging round: its first moments were never seen and the window opened on him mid-move.)
+    constexpr float hold = 0.3f;
+    const float k = f.k, since = static_cast<float>(now - h.since), played = since - hold;
+    if (!h.going && since >= hold) {
+        studio::peek_go();
+        h.going = true;
+    }
     if (played > h.duration + 0.9f) { // done, and the window closes until another card is held
         cover_peek_hole();
         stop_hover_peek();
@@ -4314,10 +4322,10 @@ void hover_preview(const Fonts& f, const studio::View& v) {
     const ImVec2 middle((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f + 40 * k);
     studio::set_view_shift((display.y * 0.5f - middle.y) / display.y, (middle.x - display.x * 0.5f) / display.y);
     auto* d = ImGui::GetForegroundDrawList();
-    const float fade_in = std::clamp(played / 0.25f, 0.0f, 1.0f);
+    const float fade_in = std::clamp(since / 0.25f, 0.0f, 1.0f);
     // The first moments and the last are covered, fading: the camera takes a frame or two to get to his side, and he
     // goes back after. The window opens on him already in place and is closed again before anything moves back.
-    const float opening = std::clamp((played - 0.12f) / 0.18f, 0.0f, 1.0f);
+    const float opening = std::clamp((since - 0.12f) / (hold - 0.12f), 0.0f, 1.0f);
     const float closing = std::clamp((h.duration + 0.9f - played) / 0.2f, 0.0f, 1.0f);
     if (const float cover = 1 - std::min(opening, closing); cover > 0)
         d->AddRectFilled(a, b, IM_COL32(10, 10, 12, static_cast<int>(252 * cover)), 6 * k);
