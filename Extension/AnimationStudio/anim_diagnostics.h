@@ -36,6 +36,8 @@ struct DiagnosticSample {
     // SMOOTH transitions: how far the board and legs leaned over to the game's ahead of a rail, and how far into a handover
     // (seconds since the rail's lock, -1 none).
     float lean{}, handover{-1};
+    // The board's force field: how deep (mm) a shoe was in a deck before it pushed and after (-1: it did not run then).
+    float guard_in_mm{-1}, guard_out_mm{-1};
     // What the game's animation said (trainer::read_studio_states; -1 not read): its trick phase, the trick input, aiming for
     // a grind, its time to land.
     float game_phase{-1}, time_to_land{-1};
@@ -96,7 +98,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     timeline << std::setprecision(12);
     poses << std::setprecision(12);
     board << std::setprecision(12);
-    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land\n";
+    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land,guard_in_mm,guard_out_mm\n";
     const std::string columns = "seconds,sequence,stage,joint,sx,sy,sz,qx,qy,qz,qw,px,py,pz\n";
     poses << columns; board << columns;
     rig << columns;
@@ -127,7 +129,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
                  << ',' << diagnostic_csv(s.clock_state) << ',' << s.clock_clip << ',' << s.clock_error
                  << ',' << diagnostic_csv(s.pop) << ',' << diagnostic_csv(s.pop_source) << ',' << diagnostic_csv(s.decision)
                  << ',' << s.lean << ',' << s.handover << ',' << s.game_phase << ',' << s.trick_intent << ',' << s.targeting_grind << ','
-                 << s.time_to_land << '\n';
+                 << s.time_to_land << ',' << s.guard_in_mm << ',' << s.guard_out_mm << '\n';
         if (!s.native.empty()) ++captured;
         for (std::size_t j = 0; j < s.native.size(); ++j) joint_row(poses, s.at, s.sequence, "animation_native", j, s.native[j]);
         for (std::size_t j = 0; j < s.desired.size(); ++j) {

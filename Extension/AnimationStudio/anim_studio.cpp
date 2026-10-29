@@ -674,6 +674,10 @@ std::atomic<float> rail_lean{0};
 std::atomic<std::uint64_t> rail_lean_episode{~std::uint64_t{0}};
 // When the handover running now started (Handover::started), for the bug report; -1 none.
 std::atomic<double> handover_at{-1};
+// The board's force field (guard_legs_from_the_board), for the bug report: when it last ran, and how deep (mm) a shoe was in
+// a deck before it and after it then.
+std::atomic<double> guard_at{-1};
+std::atomic<float> guard_in_mm{0}, guard_out_mm{0};
 // The game aiming the board at a grind (Bool.Physics.IsTargetingGrind) and its time to land (Float.Physics.TimeToLand, -1
 // not known), this update: the lean onto a rail goes by them as well as by the board turning.
 std::atomic<bool> game_targeting_grind{};
@@ -4378,6 +4382,10 @@ void on_animation(std::uintptr_t component) noexcept {
             diagnostic.lean = rail_lean_episode.load(std::memory_order_acquire) == l.episode.id ? rail_lean.load(std::memory_order_acquire) : 0.0f;
             if (const double started = handover_at.load(std::memory_order_relaxed); started >= 0)
                 diagnostic.handover = static_cast<float>(now_seconds() - started);
+            if (now_seconds() - guard_at.load(std::memory_order_relaxed) < 0.05) {
+                diagnostic.guard_in_mm = guard_in_mm.load(std::memory_order_relaxed);
+                diagnostic.guard_out_mm = guard_out_mm.load(std::memory_order_relaxed);
+            }
             if (l.game.trick_phase) diagnostic.game_phase = *l.game.trick_phase;
             if (l.game.time_to_land) diagnostic.time_to_land = *l.game.time_to_land;
             if (l.game.trick_intent) diagnostic.trick_intent = *l.game.trick_intent ? 1 : 0;
@@ -5329,12 +5337,14 @@ void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint
             keep_out_of(halfway);
         }
         if (count == 0) return;
+        // How deep a shoe was in a deck before and after (mm past its field), for the bug report (guard_in_mm, guard_out_mm).
+        float deepest_in = 0, deepest_out = 0;
         for (const auto& [foot, knee] : {std::pair<std::uint16_t, std::uint16_t>{left_foot_joint, 342}, std::pair<std::uint16_t, std::uint16_t>{right_foot_joint, 9}}) {
-            // As deep as the game's own pose has it in its own board is the game's: only what is deeper is ours to move (up
-            // to 1.5 cm of it: deeper than that is in the deck whoever put it there).
-            const float own = games_ok ? std::min(deck_guard::leg_in_deck(native, games, foot, knee).depth, 0.015f) : 0.0f;
+            // No shoe in a deck at all, whoever put it there: the game's own depth was let through until 1.0.22, and in the
+            // air the game's board passes its own feet mid-flip, which read as deep and let ours sink a centimetre going
+            // onto a rail or a ledge (2026-10-29).
             // A few goes: the leg bends to reach, and a push out of one side (or one board) can leave another point in.
-            for (int pass = 0; pass < 5; ++pass) {
+            for (int pass = 0; pass < 6; ++pass) {
                 deck_guard::Push push;
                 const Joint* board = nullptr;
                 for (std::size_t b = 0; b < count; ++b)
@@ -5342,14 +5352,22 @@ void guard_legs_from_the_board(std::vector<Joint>& edited, std::span<const Joint
                         push = in;
                         board = &boards[b];
                     }
-                const float excess = push.depth - std::max(own, deck_guard::sole_skin);
-                if (!board || !(excess > 0.0005f)) break;
+                const float excess = push.depth - deck_guard::sole_skin;
+                if (pass == 0) deepest_in = std::max(deepest_in, excess);
+                if (!board || !(excess > 0.0005f)) {
+                    deepest_out = std::max(deepest_out, std::max(excess, 0.0f));
+                    break;
+                }
+                if (pass == 5) deepest_out = std::max(deepest_out, excess);
                 const auto way = rotate(board->rotation, push.way);
                 const auto at = world(edited, foot);
                 const float by = excess + deck_guard::clear_by;
                 place_foot(edited, foot, Vec3{at.position[0] + way[0] * by, at.position[1] + way[1] * by, at.position[2] + way[2] * by}, &at.rotation, 1.0f);
             }
         }
+        guard_in_mm.store(std::max(deepest_in, 0.0f) * 1000, std::memory_order_relaxed);
+        guard_out_mm.store(deepest_out * 1000, std::memory_order_relaxed);
+        guard_at.store(now_seconds(), std::memory_order_relaxed);
     } catch (...) {
     }
 }
