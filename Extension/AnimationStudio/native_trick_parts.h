@@ -101,19 +101,32 @@ inline constexpr std::array<Named, 17> rail_tricks{{{"5050", "50-50", 0},       
                                                     {"lipslide", "Lipslide", 101}, {"noseslide", "Noseslide", 102},
                                                     {"tailslide", "Tailslide", 103}, {"blunt", "Bluntslide", 104},
                                                     {"noseblunt", "Nosebluntslide", 105}}};
-inline std::vector<NativeTrickPart> rail(const Words& w, std::size_t from, std::size_t to, bool fakie, const std::string& piece, int order) {
+// A fakie grind's clip is named by the end of the board on the rail, its trick by the way he rides (the game's own grind
+// tables, cdb_onboard_grind_loop, 2026-10-29): with `fakie_swaps`, a clip of two tricks ("fs_crook_bs_overcrook") is the
+// fakie FS overcrook and the fakie BS crook, and a slide on one side has its nose and tail the other way round
+// ("bf_fs_tailslide" is the fakie FS noseslide). Kept the same as grind_types.h's grind_types_of.
+inline std::vector<NativeTrickPart> rail(const Words& w, std::size_t from, std::size_t to, bool fakie, const std::string& piece, int order,
+                                         bool fakie_swaps = false) {
     std::vector<NativeTrickPart> out;
     std::vector<std::string_view> sides;
+    std::size_t tricks = 0;
+    for (std::size_t i = from; i < to; ++i) tricks += w[i] != "fs" && w[i] != "bs";
     for (std::size_t i = from; i < to; ++i) {
         if (w[i] == "fs" || w[i] == "bs") {
             sides.push_back(w[i]);
             continue;
         }
-        const auto* trick = find(rail_tricks, w[i]);
+        std::string_view token = w[i];
+        const bool swap = fakie && fakie_swaps;
+        if (swap && tricks == 1 && sides.size() == 1)
+            token = token == "noseslide" ? "tailslide" : token == "tailslide" ? "noseslide" : token == "noseblunt" ? "blunt" : token == "blunt" ? "noseblunt" : token;
+        const auto* trick = find(rail_tricks, token);
         if (!trick) return {};
         if (sides.empty()) sides.push_back({});
-        for (const auto side : sides)
+        for (auto side : sides) {
+            if (swap && tricks == 2) side = side == "fs" ? std::string_view("bs") : side == "bs" ? std::string_view("fs") : side;
             out.push_back(part(trick->order >= 100 ? slides : grinds, trick->label, trick->order % 100, join(fakie ? "FAKIE" : "", upper(side)), piece, order));
+        }
         sides.clear();
     }
     if (!sides.empty()) return {};
@@ -145,7 +158,7 @@ inline std::vector<NativeTrickPart> grind(const Words& w) {
     if (piece.empty()) return {};
     if (air) piece += " AIR", order += 2;
     if (dark) piece = "DARK " + piece, order += 10;
-    return rail(w, i, at_rail, fakie, piece, order);
+    return rail(w, i, at_rail, fakie, piece, order, true);
 }
 inline std::vector<NativeTrickPart> grind_tweak(const Words& w) {
     // adjust_<left|right|nose|tail>_<tricks>_<tucked|extended>_pose[_dark]: leaning into the grind.

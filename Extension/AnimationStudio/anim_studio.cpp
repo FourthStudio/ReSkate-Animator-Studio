@@ -3105,8 +3105,13 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     const std::uint32_t grind = l.grind_now_at >= 0 && at - l.grind_now_at < 0.5 ? l.grind_now : 0;
     if (motion == MotionState::rail && grind && grind != l.grind_told) {
         l.grind_told = grind;
-        logging::log(Level::info, Channel::skater, "Animation Studio: the game is doing a {} ({}); only a saved grind made for it plays.",
-                     grind_type_label(grind), skate_grind_types[grind]);
+        const auto said = [](const std::optional<std::uint32_t>& v) {
+            return v && *v < skate_grind_types.size() ? std::string(skate_grind_types[*v]) : std::string("not read");
+        };
+        logging::log(Level::info, Channel::skater,
+                     "Animation Studio: the game is doing a {} ({}; SkateGrindType {}, CurrentSkateGrindType {}, CurrentGrindType {}); "
+                     "only a saved grind made for it plays.",
+                     grind_type_label(grind), skate_grind_types[grind], said(l.game.anim_grind_type), said(l.game.skate_grind_type), said(l.game.grind_type));
     }
     std::optional<PieceMatch> match;
     if (!l.game_trick && !scheduled) {
@@ -3575,10 +3580,13 @@ void on_animation(std::uintptr_t component) noexcept {
             const auto collection = read<std::uintptr_t>(component + 0x18).value_or(0);
             const auto entity = collection ? read<std::uintptr_t>(collection).value_or(0) : 0;
             l.game = entity ? trainer::read_studio_states(base, entity) : trainer::StudioStates{};
-            // Which grind the game is doing (grind_types.h): CurrentSkateGrindType, else CurrentGrindType.
+            // Which grind the game is doing (grind_types.h): Enum.GS.SkateGrindType, the one the game picks its grind clips by
+            // (CurrentSkateGrindType named another grind than the clip it played, 2026-10-29); else CurrentSkateGrindType,
+            // else CurrentGrindType.
             {
                 std::uint32_t type = 0;
-                if (l.game.skate_grind_type && real_grind_type(*l.game.skate_grind_type)) type = *l.game.skate_grind_type;
+                if (l.game.anim_grind_type && real_grind_type(*l.game.anim_grind_type)) type = *l.game.anim_grind_type;
+                else if (l.game.skate_grind_type && real_grind_type(*l.game.skate_grind_type)) type = *l.game.skate_grind_type;
                 else if (l.game.grind_type && real_grind_type(*l.game.grind_type)) type = *l.game.grind_type;
                 if (type) {
                     l.grind_now = type;

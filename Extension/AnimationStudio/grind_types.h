@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <string>
@@ -11,6 +12,13 @@
 // found only by the pose he holds played on any grind that looked like it - a FS blunt on a 50-50. A saved grind now plays
 // only while the game says it is doing one of the grinds its clip is for (grind_types_of). "BF" is the fakie way into and
 // along the rail (as TRICKS reads a clip's "bf_"); "fakie_" on a pop-out is the same.
+//
+// Which clip the game plays for which grind is its own table (cdb_onboard_grind_loop: Enum.GS.SkateGrindType with
+// Bool.Anim.Grind.IsNose and IsTail, a clip each; read 2026-10-29). Normal grinds play the clip of their name. A fakie
+// grind's clip is named by the end of the board on the rail, not the way he rides: a clip of two tricks is the other way
+// round ("bf_fs_feeble_bs_smith" is BF_FS_Smith and BF_BS_Feeble), and a slide on one side swaps its nose and tail
+// ("bf_fs_tailslide" is BF_FS_NoseSlide, "bf_fs_blunt" BF_FS_NoseBlunt). grind_types_of follows that: the same as the
+// game's table for all 46 of its loop clips and all 76 grinds.
 namespace dingosdk::anim_studio {
 inline constexpr std::array<std::string_view, 78> skate_grind_types{
     "Invalid",         "FS_Lip",          "FS_Board",        "FS_50_50",        "FS_NoseSlide",    "FS_TailSlide",    "FS_NoseGrind",
@@ -102,6 +110,9 @@ inline std::vector<std::uint32_t> grind_types_of(std::string_view asset) {
     }};
     std::vector<std::uint32_t> out;
     std::vector<std::string_view> sides;
+    std::size_t named = 0; // tricks in the name
+    for (std::size_t i = first; i < last; ++i) named += w[i] != "fs" && w[i] != "bs";
+    const bool swaps = fakie && kind == "grind"; // the fakie grinds' swap, from the game's table
     for (std::size_t i = first; i < last; ++i) {
         if (w[i] == "fs" || w[i] == "bs") {
             sides.push_back(w[i] == "fs" ? "FS" : "BS");
@@ -111,16 +122,21 @@ inline std::vector<std::uint32_t> grind_types_of(std::string_view asset) {
         for (const auto& [word, game] : tricks)
             if (w[i] == word) trick = game;
         if (trick.empty()) return {};
+        const bool one_side = sides.size() == 1;
+        if (swaps && named == 1 && one_side)
+            trick = trick == "NoseSlide" ? "TailSlide" : trick == "TailSlide" ? "NoseSlide" : trick == "NoseBlunt" ? "Blunt" : trick == "Blunt" ? "NoseBlunt" : trick;
         if (dark && trick == "Board") trick = "DarkSlide";
         else if (dark && trick == "Lip") trick = "Darklip";
         if (sides.empty()) sides = {"FS", "BS"};
-        for (const auto side : sides) {
+        for (auto side : sides) {
+            if (swaps && named == 2) side = side == "FS" ? "BS" : "FS";
             const auto type = skate_grind_type(std::string(fakie ? "BF_" : "") + std::string(side) + "_" + std::string(trick));
             if (!real_grind_type(type)) return {};
             out.push_back(type);
         }
         sides.clear();
     }
+    std::sort(out.begin(), out.end());
     if (!sides.empty()) return {};
     return out;
 }

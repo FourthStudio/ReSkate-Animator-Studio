@@ -260,7 +260,12 @@ void native_trick_cards() {
     check(fakie.size() == 2 && fakie[0].trick == "5-0" && fakie[0].side == "FAKIE FS" && fakie[1].side == "FAKIE BS" && fakie[0].part == "INTO",
           "bf grinds are the fakie ones, and 5_0 is the 5-0");
     const auto out = parts("c_proto_onb_grind_fakie_fs_lipslide_bs_boardslide_rail_dark_popout_bs_inair");
-    check(out.size() == 2 && out[0].part == "DARK OUT BS AIR" && out[0].side == "FAKIE FS", "Pop-outs keep their way out, air and darkslide");
+    check(out.size() == 2 && out[0].part == "DARK OUT BS AIR" && out[0].trick == "Lipslide" && out[0].side == "FAKIE BS" &&
+              out[1].trick == "Boardslide" && out[1].side == "FAKIE FS",
+          "Pop-outs keep their way out, air and darkslide; a fakie clip of two tricks is the other way round");
+    const auto fakie_slide = parts("c_proto_onb_grind_bf_fs_tailslide_rail_loop");
+    check(fakie_slide.size() == 1 && fakie_slide[0].trick == "Noseslide" && fakie_slide[0].side == "FAKIE FS",
+          "A fakie slide's clip is named by the end on the rail: bf_fs_tailslide is the fakie FS noseslide");
     const auto melon = parts("c_proto_onb_inair_bs_grab_melon_mid_loop");
     check(melon.size() == 1 && melon[0].trick == "Melon" && melon[0].side == "BS GRAB" && melon[0].part == "HOLD MID" && melon[0].kind == "Grabs",
           "A grab's tweak is a card of its own, on the grab it is done from");
@@ -2100,7 +2105,97 @@ void a_grind_is_known_by_the_games_name() {
     check(of("c_proto_onb_grind_fs_boardslide_bs_lipslide_rail_loop") == V{id("FS_Board"), id("BS_Lip")}, "A shared clip is both its tricks");
     check(of("c_proto_onb_grind_fs_boardslide_bs_lipslide_rail_loop_dark") == V{id("FS_DarkSlide"), id("BS_Darklip")}, "Dark is the darkslide");
     check(of("c_proto_onb_grind_fs_bs_5_0_rail_loop") == V{id("FS_5_0"), id("BS_5_0")}, "fs_bs is both sides of one trick");
-    check(of("c_proto_onb_grind_fakie_fs_noseslide_rail_popout_bs") == V{id("BF_FS_NoseSlide")}, "A fakie pop-out is the fakie grind");
+    // Fakie: the clip is named by the end on the rail (the game's own grind table).
+    check(of("c_proto_onb_grind_bf_fs_tailslide_rail_loop") == V{id("BF_FS_NoseSlide")} && of("c_proto_onb_grind_bf_fs_blunt_rail_loop") == V{id("BF_FS_NoseBlunt")} &&
+              of("c_proto_onb_grind_bf_bs_noseslide_rail_loop") == V{id("BF_BS_TailSlide")},
+          "A fakie slide on one side swaps its nose and tail");
+    check(of("c_proto_onb_grind_bf_fs_feeble_bs_smith_rail_loop") == V{id("BF_FS_Smith"), id("BF_BS_Feeble")} &&
+              of("c_proto_onb_grind_bf_fs_lipslide_bs_boardslide_rail_loop_dark") == V{id("BF_FS_DarkSlide"), id("BF_BS_Darklip")},
+          "A fakie clip of two tricks is the other way round");
+    check(of("c_proto_onb_grind_fakie_fs_noseslide_rail_popout_bs") == V{id("BF_FS_TailSlide")}, "A fakie pop-out is the fakie grind");
+    // The game's own grind table (cdb_onboard_grind_loop, read 2026-10-29): each grind and the loop clip it plays.
+    static constexpr std::pair<std::uint32_t, const char*> game_loops[]{
+        {1, "fs_lipslide_bs_boardslide_rail_loop"},
+        {2, "fs_boardslide_bs_lipslide_rail_loop"},
+        {3, "5050_rail_loop"},
+        {4, "fs_noseslide_rail_loop"},
+        {5, "fs_tailslide_rail_loop"},
+        {6, "fs_bs_nosegrind_rail_loop"},
+        {7, "fs_bs_5_0_rail_loop"},
+        {8, "fs_salad_bs_oversalad_rail_loop"},
+        {9, "fs_smith_bs_feeble_rail_loop"},
+        {10, "fs_feeble_bs_smith_rail_loop"},
+        {11, "fs_willy_bs_overwilly_rail_loop"},
+        {12, "fs_overwilly_bs_willy_rail_loop"},
+        {13, "fs_noseblunt_rail_loop"},
+        {14, "fs_blunt_rail_loop"},
+        {15, "fs_crook_bs_overcrook_rail_loop"},
+        {16, "fs_overcrook_bs_crook_rail_loop"},
+        {18, "fs_boardslide_bs_lipslide_rail_loop"},
+        {19, "fs_lipslide_bs_boardslide_rail_loop"},
+        {20, "5050_rail_loop"},
+        {21, "bs_noseslide_rail_loop"},
+        {22, "bs_tailslide_rail_loop"},
+        {23, "fs_bs_nosegrind_rail_loop"},
+        {24, "fs_bs_5_0_rail_loop"},
+        {25, "bs_salad_fs_oversalad_rail_loop"},
+        {26, "fs_feeble_bs_smith_rail_loop"},
+        {27, "fs_smith_bs_feeble_rail_loop"},
+        {28, "fs_overwilly_bs_willy_rail_loop"},
+        {29, "fs_willy_bs_overwilly_rail_loop"},
+        {30, "bs_noseblunt_rail_loop"},
+        {31, "bs_blunt_rail_loop"},
+        {32, "fs_overcrook_bs_crook_rail_loop"},
+        {33, "fs_crook_bs_overcrook_rail_loop"},
+        {37, "bf_5050_rail_loop"},
+        {40, "bf_fs_bs_nosegrind_rail_loop"},
+        {41, "bf_fs_bs_5_0_rail_loop"},
+        {42, "bf_bs_salad_fs_oversalad_rail_loop"},
+        {43, "bf_fs_feeble_bs_smith_rail_loop"},
+        {44, "bf_fs_smith_bs_feeble_rail_loop"},
+        {45, "bf_fs_overwilly_bs_willy_rail_loop"},
+        {46, "bf_fs_willy_bs_overwilly_rail_loop"},
+        {49, "bf_fs_overcrook_bs_crook_rail_loop"},
+        {50, "bf_fs_crook_bs_overcrook_rail_loop"},
+        {54, "bf_5050_rail_loop"},
+        {57, "bf_fs_bs_nosegrind_rail_loop"},
+        {58, "bf_fs_bs_5_0_rail_loop"},
+        {59, "bf_fs_salad_bs_oversalad_rail_loop"},
+        {60, "bf_fs_smith_bs_feeble_rail_loop"},
+        {61, "bf_fs_feeble_bs_smith_rail_loop"},
+        {62, "bf_fs_willy_bs_overwilly_rail_loop"},
+        {63, "bf_fs_overwilly_bs_willy_rail_loop"},
+        {66, "bf_fs_crook_bs_overcrook_rail_loop"},
+        {67, "bf_fs_overcrook_bs_crook_rail_loop"},
+        {53, "bf_fs_boardslide_bs_lipslide_rail_loop"},
+        {35, "bf_fs_boardslide_bs_lipslide_rail_loop"},
+        {55, "bf_bs_tailslide_rail_loop"},
+        {65, "bf_bs_noseblunt_rail_loop"},
+        {52, "bf_fs_lipslide_bs_boardslide_rail_loop"},
+        {36, "bf_fs_lipslide_bs_boardslide_rail_loop"},
+        {38, "bf_fs_tailslide_rail_loop"},
+        {39, "bf_fs_noseslide_rail_loop"},
+        {47, "bf_fs_blunt_rail_loop"},
+        {48, "bf_fs_noseblunt_rail_loop"},
+        {56, "bf_bs_noseslide_rail_loop"},
+        {64, "bf_bs_blunt_rail_loop"},
+        {69, "bs_salad_fs_oversalad_rail_loop"},
+        {70, "bf_fs_salad_bs_oversalad_rail_loop"},
+        {71, "fs_salad_bs_oversalad_rail_loop"},
+        {72, "bf_bs_salad_fs_oversalad_rail_loop"},
+        {17, "fs_boardslide_bs_lipslide_rail_loop_dark"},
+        {51, "bf_fs_lipslide_bs_boardslide_rail_loop_dark"},
+        {34, "fs_lipslide_bs_boardslide_rail_loop_dark"},
+        {68, "bf_fs_boardslide_bs_lipslide_rail_loop_dark"},
+        {73, "fs_boardslide_bs_lipslide_rail_loop_dark"},
+        {74, "bf_fs_lipslide_bs_boardslide_rail_loop_dark"},
+        {75, "fs_lipslide_bs_boardslide_rail_loop_dark"},
+        {76, "bf_fs_boardslide_bs_lipslide_rail_loop_dark"},
+    };
+    for (const auto& [type, clip] : game_loops) {
+        const auto types = of((std::string("c_proto_onb_grind_") + clip).c_str());
+        check(std::find(types.begin(), types.end(), type) != types.end(), "A grind is not on the loop clip the game plays for it");
+    }
     check(of("c_proto_onb_grind_bs_salad_fs_oversalad_rail_loop") == V{id("BS_Salad"), id("FS_Suski")}, "An oversalad is the game's suski");
     check(of("c_proto_onb_trick_o_kickflip_mid").empty() && of("c_proto_ofb_grind_5050_feet_rail_loop").empty() &&
               of("c_proto_onb_grind_fs_wobble_rail_loop").empty(),
