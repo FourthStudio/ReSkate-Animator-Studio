@@ -2063,17 +2063,23 @@ void grind_rail_goes_under_the_grind() {
           "Only the game's grinds and slides on a rail get the rail");
     check(studio_rail(default_studio_rail) != nullptr && studio_rail("own_bkrails_generic_snakewavy_00005") == nullptr,
           "The rail is one of the straight ones");
+    check(studio_rail_size(0.62f) == 0.6f && studio_rail_size(5) == 1.0f && studio_rail_size(0) == 0.4f, "A size is one of the sizes");
     for (const auto& rail : studio_rails) check(rail.top > 0.4f && rail.top < 0.8f && rail.length >= 4, "Each straight rail's top and length are known");
     // Facing as the game's own placement does (a quarter turn about up): the rail runs along his X, under the Ground joint.
     const float h = std::sqrt(0.5f);
     const std::array<float, 4> facing{0, -h, 0, h};
-    const auto spot = rail_spot(facing, {10, -69, 5}, {0.0f, 0.97f, 0.3f}, -69.99f);
+    const auto spot = rail_spot(facing, {10, -69, 5}, facing, {0.0f, 0.97f, 0.3f}, -69.99f); // a clip that starts him as the studio does
     check(spot.valid, "A grind has its rail");
     // His X turned a quarter about up is the world's Z, and the Ground joint's (0, _, 0.3) lies 0.3 back along world X.
     check(near(spot.at[0], 9.7f) && near(spot.at[1], -69.99f) && near(spot.at[2], 5.0f), "The rail stands on the floor under the Ground joint");
     const auto bar = rotate(Quat{spot.rotation[0], spot.rotation[1], spot.rotation[2], spot.rotation[3]}, Vec3{0, 0, 1});
     const auto along = rotate(Quat{facing[0], facing[1], facing[2], facing[3]}, Vec3{1, 0, 0});
-    check(near(std::abs(bar[0] * along[0] + bar[2] * along[2]), 1) && near(bar[1], 0), "Its bar runs the way he travels");
+    check(near(std::abs(bar[0] * along[0] + bar[2] * along[2]), 1) && near(bar[1], 0), "Its bar runs along the clip's Z");
+    // A clip that starts him turned another way (a noseslide at 0 degrees): the bar still runs along the clip's Z, turned as
+    // the studio turns the clip - here a quarter round from the other.
+    const auto turned = rail_spot(facing, {10, -69, 5}, {0, 0, 0, 1}, {0.0f, 0.97f, 0.3f}, -69.99f);
+    const auto turned_bar = rotate(Quat{turned.rotation[0], turned.rotation[1], turned.rotation[2], turned.rotation[3]}, Vec3{0, 0, 1});
+    check(turned.valid && near(std::abs(turned_bar[0]), 1) && near(turned_bar[2], 0), "A clip turned another way has its rail turned with it");
     check(same_rail_spot(spot.at, spot.rotation, {spot.at[0] + 0.01f, spot.at[1], spot.at[2]}, spot.rotation) &&
               !same_rail_spot(spot.at, spot.rotation, {spot.at[0] + 0.05f, spot.at[1], spot.at[2]}, spot.rotation),
           "Within 2 cm it is the same spot");

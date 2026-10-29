@@ -28,7 +28,17 @@ inline constexpr std::array<StudioRail, 8> studio_rails{{
     {"own_bkrails_generic_flatrailsquaretall_00001", "Tall square rail, 4 m, 75 cm high", "TALL SQUARE 4M", 0.75f, 4},
     {"own_bkrails_generic_flatrailsquaretalllong_00001", "Tall square rail, 6 m, 75 cm high", "TALL SQUARE 6M", 0.75f, 6},
 }};
-inline constexpr std::string_view default_studio_rail = "own_bkrails_generic_flatrailround_00001";
+inline constexpr std::string_view default_studio_rail = "own_bkrails_generic_flatrailroundlong_00001";
+// How big the rail is put up (the build kit scales an object whole: lower, thinner and shorter). The game's are big for a
+// skater (a 50 cm rail with a bar near 10 cm thick, 2026-10-29: "the rail looks so big"); 60% is a 30 cm rail.
+inline constexpr std::array<float, 6> studio_rail_sizes{1.0f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f};
+inline constexpr float default_studio_rail_size = 0.6f;
+inline float studio_rail_size(float wanted) noexcept {
+    float best = default_studio_rail_size;
+    for (const float size : studio_rail_sizes)
+        if (std::abs(size - wanted) < std::abs(best - wanted)) best = size;
+    return best;
+}
 inline const StudioRail* studio_rail(std::string_view key) noexcept {
     for (const auto& rail : studio_rails)
         if (rail.key == key) return &rail;
@@ -41,25 +51,29 @@ inline bool grind_clip(std::string_view asset) noexcept { return asset.find("_gr
 // Where the rail goes under a grind clip, from the clip's first frame as the studio draws it: its Ground joint is where
 // the board meets the rail (7.9 cm under the deck between the trucks on a 50-50, under the back truck on a 5-0, under
 // the deck on a boardslide, at the tail on a tailslide - the game's own clips, 2026-10-29), and the rail runs along the
-// way he travels, the placement's own X. `placement` the placement's turn (x y z w) and place, `ground` the Ground
-// joint's place in the placement's frame, `floor` the floor's height. The rail's origin (on the floor) and its turn
-// about up (its Z along the way he travels).
+// clip's own Z. (Not along the way he faces: the clips start him turned every way, -90 to 270 degrees about up, by the
+// trick; the rail was along his X, right only for those at -90.) The grind clips stand still (their placement never
+// moves), so that line holds on every frame. `placement` the placement's turn (x y z w) and place as the studio draws it,
+// `clip_placement` the placement's turn in the clip's first frame, `ground` the Ground joint's place in the placement's
+// frame, `floor` the floor's height. The rail's origin (on the floor) and its turn about up (its Z along the rail).
 struct RailSpot {
     std::array<float, 3> at{};
     std::array<float, 4> rotation{0, 0, 0, 1};
     bool valid{};
 };
 inline RailSpot rail_spot(const std::array<float, 4>& placement_rotation, const std::array<float, 3>& placement_at,
-                          const std::array<float, 3>& ground, float floor) noexcept {
-    const auto rotate = [&](const std::array<float, 3>& v) {
-        const float x = placement_rotation[0], y = placement_rotation[1], z = placement_rotation[2], w = placement_rotation[3];
+                          const std::array<float, 4>& clip_placement, const std::array<float, 3>& ground, float floor) noexcept {
+    const auto rotate = [](const std::array<float, 4>& q, const std::array<float, 3>& v) {
+        const float x = q[0], y = q[1], z = q[2], w = q[3];
         const std::array<float, 3> t{2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])};
         return std::array<float, 3>{v[0] + w * t[0] + (y * t[2] - z * t[1]), v[1] + w * t[1] + (z * t[0] - x * t[2]),
                                     v[2] + w * t[2] + (x * t[1] - y * t[0])};
     };
     RailSpot spot;
-    const auto contact = rotate(ground);
-    const auto along = rotate({1, 0, 0});
+    const auto contact = rotate(placement_rotation, ground);
+    // The clip's Z in the placement's frame, then as the studio turns the placement.
+    const std::array<float, 4> back{-clip_placement[0], -clip_placement[1], -clip_placement[2], clip_placement[3]};
+    const auto along = rotate(placement_rotation, rotate(back, {0, 0, 1}));
     const float n = std::sqrt(along[0] * along[0] + along[2] * along[2]);
     if (!(n > 1e-3f) || !std::isfinite(floor)) return spot;
     const float yaw = std::atan2(along[0] / n, along[2] / n); // the turn about up that takes Z along the way he travels

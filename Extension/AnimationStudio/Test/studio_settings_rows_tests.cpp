@@ -1,4 +1,5 @@
 #include "Extension/AnimationStudio/studio_settings_rows.h"
+#include "Extension/AnimationStudio/studio_rails.h"
 #include <cmath>
 #include <iostream>
 #include <optional>
@@ -12,6 +13,7 @@ struct Given {
     std::optional<int> stance;
     std::optional<float> crossfade;
     std::optional<std::string> your_name, grind_rail;
+    std::optional<float> grind_rail_size;
     int bug_reports{};
     std::optional<std::string> playing, mode_of;
     std::optional<PlaylistMode> mode;
@@ -31,6 +33,7 @@ void set_drop_preview_tool(bool on) { given.drop_preview = on; }
 void set_guide_seen(bool seen) { given.guide_seen = seen; }
 void set_smooth_transitions(bool on) { given.smooth = on; }
 void set_grind_rail(const std::string& key) { given.grind_rail = key; }
+void set_grind_rail_size(float size) { given.grind_rail_size = size; }
 void play_playlist(const std::string& name, std::string& message) {
     given.playing = name;
     message = name.empty() ? "No playlist is on." : name + " is on.";
@@ -185,6 +188,11 @@ void grind_rail_lists_off_and_the_rails_this_player_has() {
     check(anim_studio::given.grind_rail == "own_bkrails_generic_flatrailround_00001", "Picking a rail did not set it");
     row.pick(0);
     check(anim_studio::given.grind_rail == "", "Picking OFF did not take the rail away");
+    const auto size = rail_size(now);
+    check(size.options.size() == anim_studio::studio_rail_sizes.size() && size.options[size.selected].starts_with("60%: 30 cm high"),
+          "Rail size does not list the sizes with the chosen rail's height at 60%");
+    size.pick(0);
+    check(anim_studio::given.grind_rail_size == 1.0f, "Picking 100% did not set the size");
 }
 void how_it_works_opens_the_guide_again() {
     reset();

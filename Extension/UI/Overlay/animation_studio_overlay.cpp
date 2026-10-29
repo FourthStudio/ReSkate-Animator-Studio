@@ -7421,6 +7421,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
     case 0: {
         rows.push_back(studio::settings_rows::studio_room(now));
         rows.push_back(studio::settings_rows::grind_rail(now));
+        rows.push_back(studio::settings_rows::rail_size(now));
         rows.push_back(choice("Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))].name,
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
                               "him and above, as he stands when you pick it; BOARD is close on the deck, CINEMATIC wide and low, FILMER "
@@ -9590,6 +9591,17 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
         if (tool("##rail", rail ? std::string(rail->label).c_str() : "OFF", "", rail != nullptr,
                  "The game's rail this grind stands on, its board on the top. Press for the next one. SETTINGS > STUDIO > Grind rail."))
             studio::set_grind_rail(keys[(i + 1) % keys.size()]);
+        if (rail) {
+            y += row;
+            const auto& sizes = studio::studio_rail_sizes;
+            std::size_t at_size = 0;
+            for (std::size_t s = 0; s < sizes.size(); ++s)
+                if (std::abs(sizes[s] - v.grind_rail_size) < 0.001f) at_size = s;
+            const auto label = std::format("SIZE {:.0f}%", sizes[at_size] * 100);
+            if (tool("##railsize", label.c_str(), "", false,
+                     "How big the rail is: lower, thinner and shorter together. Press for the next size. SETTINGS > STUDIO > Rail size."))
+                studio::set_grind_rail_size(sizes[(at_size + 1) % sizes.size()]);
+        }
     }
     if (!u.tool_tip.empty()) {
         const float tw = 300 * k;

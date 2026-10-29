@@ -65,6 +65,7 @@ struct View {
     // shows the RAIL button. grind_rail: the rail chosen ("" none).
     bool grind_open{};
     std::string grind_rail;
+    float grind_rail_size{0.6f};
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
     // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
     // and its name. Opening another trick to edit drops it, so ask first.
@@ -189,6 +190,7 @@ struct Settings {
     // SETTINGS > STUDIO > Grind rail: the game's straight rail a grind stands on in the studio (studio_rails.h), "" none,
     // and the ones this player's build kit can place (all of studio_rails until the game has said).
     std::string grind_rail;
+    float grind_rail_size{0.6f}; // Rail size: how big it is put up (studio_rail_sizes)
     std::vector<std::string> rails;
     std::string your_name;
     std::string export_folder, import_folder; // "" the defaults
@@ -455,6 +457,7 @@ void set_hover_preview(bool on);
 void set_catch_marker(bool on);
 // The grind rail (studio_rails.h key, "" none): a game grind opened in the studio stands on that rail.
 void set_grind_rail(const std::string& key);
+void set_grind_rail_size(float size); // one of studio_rail_sizes (the nearest)
 void set_drop_preview_tool(bool on);
 // The first-start guide read (true), or to open again (false).
 void set_guide_seen(bool seen);

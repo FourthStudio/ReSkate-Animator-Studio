@@ -2,6 +2,7 @@
 #include "studio_rails.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <format>
 #include <utility>
 
@@ -80,8 +81,24 @@ Setting grind_rail(const studio::Settings& now) {
     return one_of("Grind rail", std::move(options), selected,
                   "The game's own straight rail a grind stands on in the studio: open one of the game's grinds or slides and the "
                   "rail is put up under it, the board on its top as in game. Flip tricks and everything else have none. It "
-                  "stands in your park only while the grind is open, only in the Studio room, and never in an online session.",
+                  "stands in your park only while the studio is open in the Studio room (out of sight under the floor until a "
+                  "grind is open), and never in an online session.",
                   [keys](int picked) { studio::set_grind_rail(keys[static_cast<std::size_t>(picked)]); });
+}
+Setting rail_size(const studio::Settings& now) {
+    const auto* rail = studio::studio_rail(now.grind_rail);
+    std::vector<std::string> options;
+    int selected = 0;
+    for (std::size_t i = 0; i < studio::studio_rail_sizes.size(); ++i) {
+        const float size = studio::studio_rail_sizes[i];
+        if (std::abs(size - now.grind_rail_size) < 0.001f) selected = static_cast<int>(i);
+        options.push_back(rail ? std::format("{:.0f}%: {:.0f} cm high, {:.1f} m long", size * 100, rail->top * size * 100, rail->length * size)
+                               : std::format("{:.0f}%", size * 100));
+    }
+    return one_of("Rail size", std::move(options), selected,
+                  "How big the grind rail is put up: lower, thinner and shorter together, as the build kit scales an object. The "
+                  "game's own are big for a skater; 60% is a 30 cm rail. The grind stays on its top at any size.",
+                  [](int picked) { studio::set_grind_rail_size(studio::studio_rail_sizes[static_cast<std::size_t>(picked)]); });
 }
 Setting catch_marker(const studio::Settings& now) {
     return on_off("Catch marker", now.catch_marker,

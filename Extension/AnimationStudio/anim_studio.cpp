@@ -364,6 +364,7 @@ struct State {
     bool guide_seen{};                             // the first-start guide was read
     bool smooth_handover{true};                    // SETTINGS > TRICKS > Transitions: SMOOTH (smooth_transitions) or CLASSIC
     std::string grind_rail{default_studio_rail};   // SETTINGS > STUDIO > Grind rail (rail_link().chosen follows it), "" none
+    float grind_rail_size{default_studio_rail_size}; // SETTINGS > STUDIO > Rail size (studio_rail_sizes)
     std::map<std::string, std::string> keys;       // the editor's rebound keys (View::keys)
     bool playlist_on{};                            // the playlist that plays (Playlists::on), as last read
     PlaylistMode playlist_mode{PlaylistMode::fixed};
@@ -679,12 +680,15 @@ std::atomic<bool> smooth_transitions{true};
 struct RailLink {
     std::mutex mutex;
     std::string chosen{default_studio_rail}; // "" none
-    bool wanted{};
+    float size{default_studio_rail_size};
+    bool room{};  // the open studio is in its room: the rail stands there, parked out of sight under the floor (park)
+    bool grind{}; // ... and a grind of the game's is shown: the rail is under it (spot)
     RailSpot spot;
+    std::array<float, 3> park{};
     float floor{};
     double seen{-1};
-    std::string ready_item; // the rail that stands where it is wanted, and its bar's top above the floor
-    float ready_top{};
+    std::string ready_item; // the rail that stands under the grind, its size, and its bar's top above the floor
+    float ready_size{}, ready_top{};
     std::vector<std::string> placeable; // the rails this player's build kit has (empty: not known yet)
 };
 RailLink& rail_link() {
@@ -871,6 +875,7 @@ SettingsFile settings_file_of(const State& s) {
     f.guide_seen = s.guide_seen;
     f.smooth_transitions = s.smooth_handover;
     f.grind_rail = s.grind_rail;
+    f.grind_rail_size = s.grind_rail_size;
     return f;
 }
 void load_settings(State& s) {
@@ -899,10 +904,12 @@ void load_settings(State& s) {
         s.smooth_handover = f.smooth_transitions;
         smooth_transitions.store(f.smooth_transitions, std::memory_order_relaxed);
         s.grind_rail = f.grind_rail.empty() || studio_rail(f.grind_rail) ? f.grind_rail : std::string(default_studio_rail);
+        s.grind_rail_size = studio_rail_size(f.grind_rail_size);
         {
             auto& r = rail_link();
             std::lock_guard rail_lock(r.mutex);
             r.chosen = s.grind_rail;
+            r.size = s.grind_rail_size;
         }
     } catch (...) {}
 }
@@ -3420,20 +3427,23 @@ void late_read(std::uintptr_t base, std::uintptr_t component, const Joint& board
 void remember_trick_done(const std::string& trick, const std::string& pop, const std::string& played, int choices, double at, bool again); // the menu's feed, below
 
 // ---- the animation thread ------------------------------------------------------------------------
-// The grind rail, on the animation thread: whether the trick shown in the open studio is one of the game's grinds, and
-// where its rail goes (rail_spot: its Ground joint, where the board meets the rail, on the first frame), for rail_tick.
-// Returns how far to lift it so that joint is on the bar's top: 0 until the rail stands there.
-float rail_frame(bool grind, const Joint& placement, const Joint& ground_first, float floor) noexcept {
+// The grind rail, on the animation thread: whether the open studio is in its room, whether the trick shown is one of the
+// game's grinds, and where its rail goes (rail_spot: its Ground joint, where the board meets the rail, along the clip's Z),
+// for rail_tick. Returns how far to lift the grind so that joint is on the bar's top: 0 until the rail stands there.
+constexpr float rail_park_depth = 3.0f; // the rail waits this far under the room's floor while no grind is shown
+float rail_frame(bool in_room, bool grind, const Joint& placement, const Joint& clip_placement, const Joint& ground_first, float floor) noexcept {
     auto& r = rail_link();
     std::lock_guard lock(r.mutex);
-    r.wanted = false;
-    if (!grind || r.chosen.empty()) return 0;
-    r.spot = rail_spot(placement.rotation, placement.position, ground_first.position, floor);
-    if (!r.spot.valid) return 0;
-    r.wanted = true;
-    r.floor = floor;
+    r.room = in_room && std::isfinite(floor);
+    r.grind = false;
+    if (!r.room) return 0;
     r.seen = now_seconds();
-    return r.ready_item == r.chosen ? r.ready_top : 0.0f;
+    r.floor = floor;
+    r.park = {placement.position[0], floor - rail_park_depth, placement.position[2]};
+    if (!grind || r.chosen.empty()) return 0;
+    r.spot = rail_spot(placement.rotation, placement.position, clip_placement.rotation, ground_first.position, floor);
+    r.grind = r.spot.valid;
+    return r.grind && r.ready_item == r.chosen && r.ready_size == r.size ? r.ready_top : 0.0f;
 }
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
@@ -3682,9 +3692,10 @@ void on_animation(std::uintptr_t component) noexcept {
             // Ground joint - where the board meets the rail - on the bar. Anything else (a flip trick) has no rail.
             {
                 // Only in the studio room: where he stopped, the rail would go up through his own board and push him.
-                const bool grind = in_room && has_trick && l.floor_valid && shown_edits.source.kind == "native_asset" &&
-                                   grind_clip(shown_edits.source.asset) && clip.joints > ground_joint && !clip.empty();
-                rise_y += rail_frame(grind, live_placement, grind ? clip.frame(0)[ground_joint] : Joint{}, l.floor);
+                const bool grind = has_trick && shown_edits.source.kind == "native_asset" && grind_clip(shown_edits.source.asset) &&
+                                   clip.joints > ground_joint && !clip.empty();
+                rise_y += rail_frame(in_room && l.floor_valid, grind, live_placement, grind ? clip.frame(0)[placement_joint] : Joint{},
+                                     grind ? clip.frame(0)[ground_joint] : Joint{}, l.floor);
             }
             const auto rise = rotate(conjugate(live_placement.rotation), {0, rise_y, 0});
             for (std::size_t i = 2; i < std::min<std::size_t>(layout.count, shown->joints); ++i) {
@@ -6230,8 +6241,10 @@ struct RailPlaced {
     std::uint64_t id{}, ids_before{};
     std::array<float, 3> at{};
     std::array<float, 4> rotation{0, 0, 0, 1};
+    float size{1};
     bool pending{}, measured{};
-    double since{}, wanted_since{-1}, unwanted_since{-1}, wait_until{};
+    int measures{};
+    double since{}, gone_since{-1}, flat_since{-1}, wait_until{};
     float top{};
     std::string leftovers_map, said;
 };
@@ -6270,10 +6283,11 @@ void rail_say(RailPlaced& p, const std::string& message) {
     s.status = message;
     publish_locked(s, false);
 }
-void rail_ready(const std::string& item, float top) {
+void rail_ready(const std::string& item, float size, float top) {
     auto& r = rail_link();
     std::lock_guard lock(r.mutex);
     r.ready_item = item;
+    r.ready_size = size;
     r.ready_top = top;
 }
 bool rail_near(const std::array<float, 3>& a, const std::array<float, 3>& b, float within) {
@@ -6285,40 +6299,44 @@ std::string rail_edit(const ParkEditorModel& model, std::string_view operation, 
     const auto status = edit_local_park(operation, model.map, model.generation, model.revision, {}, object);
     return status.starts_with("error: ") ? status.substr(7) : std::string{};
 }
+// The rail goes up as the studio opens in its room, out of sight under the floor, so a grind opened finds it there and it
+// is only moved under the grind (2026-10-29: "the rails need to spawn at the start"); it goes back under the floor a
+// moment after the grind is closed, and it is taken away when the studio closes.
 void rail_tick(bool open) noexcept {
     try {
         static RailPlaced p;
         static double next = 0;
         const double now = now_seconds();
         if (now < next || now < p.wait_until) return;
-        next = now + 0.2;
+        next = now + 0.1;
         auto& r = rail_link();
-        bool wanted{};
+        bool room{}, grind{};
         RailSpot spot;
+        std::array<float, 3> park{};
         std::string item;
-        float floor{};
+        float size{1}, floor{};
         {
             std::lock_guard lock(r.mutex);
-            wanted = open && r.wanted && now - r.seen < 0.5;
+            room = r.room && now - r.seen < 2.0;
+            grind = room && r.grind && now - r.seen < 0.5;
             spot = r.spot;
+            park = r.park;
             item = r.chosen;
+            size = r.size;
             floor = r.floor;
         }
-        // Put there once the grind has been open a moment, taken away a second after (at once when the studio closes): a
-        // trick looked at in passing does not put a rail up and take it down.
-        if (wanted) {
-            p.unwanted_since = -1;
-            if (p.wanted_since < 0) p.wanted_since = now;
-        } else {
-            p.wanted_since = -1;
-            if (p.unwanted_since < 0) p.unwanted_since = now;
-        }
-        const bool place_now = wanted && now - p.wanted_since >= 0.3;
-        const bool remove_now = !wanted && (!open || now - p.unwanted_since >= 1.0);
+        const bool wanted = open && room && !item.empty();
+        if (wanted) p.gone_since = -1;
+        else if (p.gone_since < 0) p.gone_since = now;
+        if (grind) p.flat_since = -1;
+        else if (p.flat_since < 0) p.flat_since = now;
+        const bool take_down = !wanted && (!open || now - p.gone_since >= 1.0);
+        // Under the floor again a moment after the grind is closed: a trick looked at in passing does not move it.
+        const bool to_park = wanted && !grind && now - p.flat_since >= 0.3;
         std::error_code exists_error;
         const bool leftovers = std::filesystem::exists(rail_file(), exists_error);
-        if (!place_now && !p.pending && !p.id && !leftovers) {
-            rail_ready({}, 0);
+        if (!wanted && !p.pending && !p.id && !leftovers) {
+            rail_ready({}, 0, 0);
             return;
         }
         const auto model = local_park_editor();
@@ -6331,8 +6349,8 @@ void rail_tick(bool open) noexcept {
             r.placeable = std::move(keys);
         }
         if (!model.available || model.map.empty()) {
-            if (place_now) rail_say(p, "The grind rail cannot be put up here now: objects cannot be placed on this map at the moment.");
-            rail_ready({}, 0);
+            if (grind) rail_say(p, "The grind rail cannot be put up here now: objects cannot be placed on this map at the moment.");
+            rail_ready({}, 0, 0);
             return;
         }
         if (model.busy) return;
@@ -6349,11 +6367,8 @@ void rail_tick(bool open) noexcept {
                 for (const auto& left : rail_records()) {
                     if (!left.is_object() || left.value("map", "") != model.map) continue;
                     const auto id = static_cast<std::uint64_t>(left.value("id", 0.0));
-                    std::array<float, 3> at{};
-                    if (left.contains("at") && left.at("at").is_array() && left.at("at").size() == 3)
-                        for (std::size_t i = 0; i < 3; ++i) at[i] = static_cast<float>(left.at("at")[i].get<double>());
                     const auto* o = find(id);
-                    if (o && o->item == left.value("item", "") && rail_near(o->position, at, 0.05f)) {
+                    if (o && o->item == left.value("item", "")) {
                         profile::PlacedObject gone;
                         gone.id = id;
                         if (!rail_edit(model, "delete", gone).empty()) return; // tried again on the next map change
@@ -6373,7 +6388,6 @@ void rail_tick(bool open) noexcept {
                     record["map"] = p.map;
                     record["id"] = static_cast<double>(p.id);
                     record["item"] = p.item;
-                    record["at"] = Json(std::vector<double>{p.at[0], p.at[1], p.at[2]});
                     set_rail_record(p.map, &record);
                     break;
                 }
@@ -6407,38 +6421,53 @@ void rail_tick(bool open) noexcept {
             set_rail_record(model.map, nullptr);
         };
         if (!wanted) {
-            rail_ready({}, 0);
-            if (ours && remove_now) take_away();
+            rail_ready({}, 0, 0);
+            if (ours && take_down) take_away();
             return;
         }
-        if (!place_now) return;
         if (ours && ours->item != item) { // another rail chosen: this one goes, the other comes up on the next tick
-            rail_ready({}, 0);
+            rail_ready({}, 0, 0);
             take_away();
             return;
         }
-        if (ours && !same_rail_spot(ours->position, ours->rotation, spot.at, spot.rotation)) {
-            rail_ready({}, 0);
+        // Where it goes: under the grind, or out of sight under the floor (kept where it is for a moment after a grind).
+        std::array<float, 3> at{};
+        std::array<float, 4> rotation{0, 0, 0, 1};
+        if (grind) {
+            at = spot.at;
+            rotation = spot.rotation;
+        } else if (to_park || !ours) {
+            at = park;
+            if (ours) rotation = ours->rotation;
+        } else {
+            rail_ready({}, 0, 0);
+            return;
+        }
+        if (ours && !(same_rail_spot(ours->position, ours->rotation, at, rotation) && std::abs(ours->scale - size) < 0.005f)) {
+            rail_ready({}, 0, 0);
             profile::PlacedObject moved;
             moved.id = p.id;
             moved.item = item;
-            moved.position = spot.at;
-            moved.rotation = spot.rotation;
+            moved.position = at;
+            moved.rotation = rotation;
+            moved.scale = size;
             if (const auto why = rail_edit(model, "move", moved); !why.empty()) {
                 rail_say(p, "The grind rail could not be moved: " + why);
                 p.wait_until = now + 5;
                 return;
             }
-            p.at = spot.at;
-            p.rotation = spot.rotation;
+            p.at = at;
+            p.rotation = rotation;
+            p.size = size;
             p.measured = false;
+            p.measures = 0;
             return;
         }
         if (!ours) {
-            rail_ready({}, 0);
+            rail_ready({}, 0, 0);
             // Online the rail would stand in everyone's world: there it stays down.
             if (multiplayer::model().active) {
-                rail_say(p, "The grind rail stays down in an online session: it would be in everyone's world.");
+                if (grind) rail_say(p, "The grind rail stays down in an online session: it would be in everyone's world.");
                 p.wait_until = now + 5;
                 return;
             }
@@ -6446,8 +6475,9 @@ void rail_tick(bool open) noexcept {
             for (const auto& o : model.objects) p.ids_before = std::max(p.ids_before, o.id);
             profile::PlacedObject rail;
             rail.item = item;
-            rail.position = spot.at;
-            rail.rotation = spot.rotation;
+            rail.position = at;
+            rail.rotation = rotation;
+            rail.scale = size;
             if (const auto why = rail_edit(model, "place", rail); !why.empty()) {
                 rail_say(p, "The grind rail could not be put up: " + why);
                 p.wait_until = now + 5;
@@ -6457,26 +6487,35 @@ void rail_tick(bool open) noexcept {
             p.since = now;
             p.item = item;
             p.map = model.map;
-            p.at = spot.at;
-            p.rotation = spot.rotation;
+            p.at = at;
+            p.rotation = rotation;
+            p.size = size;
             p.measured = false;
+            p.measures = 0;
             return;
         }
-        // It stands where the grind wants it: its bar's top measured once it is in the world (along the bar, off its
-        // middle), the table's while that finds nothing like it.
-        if (!ours->spawned) return;
-        if (!p.measured) {
-            const auto* rail = studio_rail(item);
-            float top = rail ? rail->top : 0.5f;
-            const float yaw = 2 * std::atan2(spot.rotation[1], spot.rotation[3]);
-            const float x = spot.at[0] + std::sin(yaw) * 0.6f, z = spot.at[2] + std::cos(yaw) * 0.6f;
-            if (const auto hit = local_ground_height(x, z, floor + 2.5f, floor - 0.5f); hit && std::abs(*hit - floor - top) < 0.08f) top = *hit - floor;
-            p.top = top;
-            p.measured = true;
-            rail_say(p, "The grind stands on the rail: " + std::string(rail ? rail->name : std::string_view(item)) +
-                            std::format(" (its top {:.1f} cm up).", top * 100));
+        if (!grind) {
+            rail_ready({}, 0, 0);
+            return;
         }
-        rail_ready(item, p.top);
+        // It stands under the grind: its bar's top measured once it is there (along the bar, off its middle), the table's
+        // (scaled) while that finds nothing like it - a moved or resized rail can take a moment to be where it is said to be.
+        if (!ours->spawned) return;
+        const auto* rail = studio_rail(item);
+        const float table = (rail ? rail->top : 0.5f) * size;
+        if (!p.measured) {
+            p.top = table;
+            const float yaw = 2 * std::atan2(rotation[1], rotation[3]);
+            const float x = at[0] + std::sin(yaw) * 0.6f * size, z = at[2] + std::cos(yaw) * 0.6f * size;
+            if (const auto hit = local_ground_height(x, z, floor + 2.5f, floor - 0.5f); hit && std::abs(*hit - floor - table) < 0.04f) {
+                p.top = *hit - floor;
+                p.measured = true;
+            } else if (++p.measures >= 20) p.measured = true; // two seconds of nothing like it: the table's
+            if (p.measured)
+                rail_say(p, "The grind stands on the rail: " + std::string(rail ? rail->name : std::string_view(item)) +
+                                std::format(" at {:.0f}%, its top {:.1f} cm up.", size * 100, p.top * 100));
+        }
+        rail_ready(item, size, p.top);
     } catch (...) {}
 }
 TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float camera_fov) {
@@ -6698,6 +6737,7 @@ Settings settings() {
     out.drop_preview_tool = s.drop_preview_tool;
     out.smooth_transitions = s.smooth_handover;
     out.grind_rail = s.grind_rail;
+    out.grind_rail_size = s.grind_rail_size;
     {
         auto& r = rail_link();
         std::lock_guard rail_lock(r.mutex);
@@ -6857,6 +6897,7 @@ View view() {
     v.has_clip = s.clip && !s.clip->empty();
     v.grind_open = v.has_clip && s.edits.source.kind == "native_asset" && grind_clip(s.edits.source.asset);
     v.grind_rail = s.grind_rail;
+    v.grind_rail_size = s.grind_rail_size;
     v.dirty = s.dirty;
     v.previewing = s.previewing;
     v.kept_dirty = s.previewing && s.kept && s.kept->dirty;
@@ -8594,6 +8635,19 @@ void set_grind_rail(const std::string& key) {
     }
     save_settings_locked(s);
     s.status = rail ? "Grinds stand on the " + std::string(rail->name) + " in the studio." : "No grind rail: grinds stand on the floor in the studio.";
+    publish_locked(s, false);
+}
+void set_grind_rail_size(float size) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.grind_rail_size = studio_rail_size(size);
+    {
+        auto& r = rail_link();
+        std::lock_guard rail_lock(r.mutex);
+        r.size = s.grind_rail_size;
+    }
+    save_settings_locked(s);
+    s.status = std::format("The grind rail is put up at {:.0f}% of its size.", s.grind_rail_size * 100);
     publish_locked(s, false);
 }
 void set_catch_marker(bool on) {

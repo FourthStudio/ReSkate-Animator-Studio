@@ -30,7 +30,8 @@ struct SettingsFile {
     bool catch_marker{true}, drop_preview{true}; // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                           // this first-start guide (guide_version) was read
     bool smooth_transitions{true};               // SETTINGS > TRICKS > Transitions: SMOOTH (the handover) or CLASSIC
-    std::string grind_rail{"own_bkrails_generic_flatrailround_00001"}; // SETTINGS > STUDIO > Grind rail (studio_rails.h), "" none
+    std::string grind_rail{"own_bkrails_generic_flatrailroundlong_00001"}; // SETTINGS > STUDIO > Grind rail (studio_rails.h), "" none
+    float grind_rail_size{0.6f};                                               // SETTINGS > STUDIO > Rail size
 };
 inline void read_settings_file(const Json& root, SettingsFile& f) {
     if (!root.is_object()) return;
@@ -66,6 +67,8 @@ inline void read_settings_file(const Json& root, SettingsFile& f) {
         const auto rail = root.at("grind_rail").string();
         f.grind_rail = rail == "off" ? std::string{} : rail.size() < 96 ? rail : f.grind_rail;
     }
+    if (root.contains("grind_rail_size") && root.at("grind_rail_size").is_number())
+        f.grind_rail_size = std::clamp(static_cast<float>(root.at("grind_rail_size").get<double>()), 0.3f, 1.0f);
 }
 inline Json settings_file_json(const SettingsFile& f) {
     Json root = Json::object();
@@ -92,6 +95,7 @@ inline Json settings_file_json(const SettingsFile& f) {
     root["guide_read"] = f.guide_seen ? guide_version : 0;
     root["smooth_transitions"] = f.smooth_transitions;
     root["grind_rail"] = f.grind_rail.empty() ? std::string("off") : f.grind_rail;
+    root["grind_rail_size"] = f.grind_rail_size;
     return root;
 }
 }
