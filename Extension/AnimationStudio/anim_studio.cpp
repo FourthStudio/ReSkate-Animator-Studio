@@ -207,8 +207,9 @@ using CustomTricks = std::vector<CustomTrick>;
 // it is (NativeClock, PieceTracker for pieces), and the keys ride on the game's pose at that time - its IK,
 // its height, its board. Forcing the studio's whole pose over it (these were 1 until 2026-10-22) put the
 // skater at the clip's own height, took his feet off the game's deck and fought the game's next animation.
-// A deck turned round under him is taken from the game's own board-backwards flag. Joint limits is a
-// setting (JOINTS): it holds in the studio and in game alike, so what is posed is what plays.
+// A deck turned round under him is taken from the game's own board-backwards flag. Joint limits (JOINTS) is the
+// editor's: it keeps the keys inside the game's range as they are made (limit_key) and holds the studio's picture to
+// it. In game the keys play as they were saved; nothing is limited over the game's own pose (it bent the game's limbs).
 constexpr float match_bent_joints = 0; // a joint with a key: its key on the game's pose
 constexpr float match_whole_body = 0;  // every other joint, and the board: the game's own
 // In the air the keys ride on the game's own pose and clock: a trick plays at the speed of the game's own trick, whatever
@@ -657,7 +658,6 @@ struct GameplayPacket {
     bool fakie{};           // he took off rolling fakie (for the playback verification's report)
     float match{};     // how far a keyed joint goes to the pose it has in the studio (match_bent_joints)
     float match_rest{}; // and how far every other joint and the board do (match_whole_body)
-    bool limits{};      // keyed joints are kept inside the game's range
     float lower_release{}; // how far the board, hips and legs are the game's ahead of a rail or a ledge (raised_lead)
     // What the game was doing when this was made (riding, air, rail): the passes go by it, not by a state stored ahead of the
     // packet, which drew a frame of the air's trick on a board already on the rail (2026-10-29).
@@ -3026,7 +3026,6 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     packet->mirrored = play.mirrored; packet->match = match_bent_joints;
     packet->board_backwards = play.board_backwards;
     packet->match_rest = match_whole_body;
-    packet->limits = snap.limits;
     packet->board_frame_local = play.board_frame; packet->board_frame_valid = play.board_frame_ok;
     packet->board_owned = true;
     packet->motion = motion;
@@ -4018,7 +4017,6 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
                     packet->match_rest = whole; // on another pop's clip: body and board as made (other_pop)
-                    packet->limits = snap->limits;
                     packet->lower_release = l.raised_release;
                     packet->motion = motion;
                     packet->caught = trick->caught;
@@ -4412,7 +4410,6 @@ void stash(const GameplayPacket& packet, std::uint64_t presentation, const std::
     for (std::uint16_t j = 0; j < skeleton_joints; ++j)
         if (gameplay_body_joint(j) && editable(j) && editable(j)->group != JointGroup::fingers) pose[j] = studio[j];
     apply_edits(*packet.edits, packet.time, pose); // the board track (900) is past the skeleton and left out
-    if (packet.limits) limit_keyed_joints(*packet.edits, packet.time, pose);
     expected = {presentation, packet.episode, now, packet.time, std::move(pose), native, packet.edits->name, packet.mirrored, packet.fakie,
                 packet.board_backwards};
 }
@@ -4582,7 +4579,6 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
         std::vector<Joint> leaving(native.begin(), native.end());
         const auto studio = fakie_upper_base(out, t, out.weight, leaving, out.match > 0);
         apply_authored_edit_layer(*out.edits, t, leaving, out.weight, &out.limbs, studio, out.match, out.match_rest);
-        if (out.limits) limit_keyed_joints(*out.edits, t, leaving);
         auto left = pose_edit_deltas(native, leaving);
         // The legs and hips leaned over to the game's ahead of the rail stay so.
         float released = std::clamp(out.lower_release, 0.0f, 1.0f);
@@ -4660,7 +4656,6 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             const auto studio = fakie_upper_base(*packet, packet->time, packet->weight, edited, packet->match > 0);
             apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs, studio, packet->match,
                                       packet->match_rest);
-            if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
             // Ahead of a rail or a ledge (raised_lead) the hips and legs go to the game's pose, as far as the board does
             // (drawn_board_now, apply_gameplay_board), so the feet stay on the deck as both meet the rail.
             // SMOOTH: and as far as the board leans over to the game's turning it to a rail (rail_lean).
@@ -6396,8 +6391,8 @@ void set_joint_limits(bool on) {
     std::lock_guard lock(s.mutex);
     s.limits = on;
     save_settings_locked(s);
-    s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses, in the studio and in game."
-                  : "Joint limits off: joints go wherever you push them, in the studio and in game.";
+    s.status = on ? "Joint limits on: while you pose, knees and elbows bend one way and every joint stays in the range the game uses."
+                  : "Joint limits off: joints go wherever you push them.";
     publish_locked(s);
 }
 void set_crossfade(float seconds) {

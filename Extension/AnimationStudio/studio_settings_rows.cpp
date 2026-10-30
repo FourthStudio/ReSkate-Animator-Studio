@@ -127,8 +127,8 @@ Setting finger_bones(const studio::Settings& now) {
 }
 Setting joint_limits(const studio::Settings& now) {
     return on_off("Joint limits", now.limits,
-                  "On: knees and elbows bend one way and every joint stays in the range the game's own animation uses, while you "
-                  "pose and in game. Off: joints go wherever you push them.",
+                  "On: while you pose, knees and elbows bend one way and every joint stays in the range the game's own animation "
+                  "uses. Off: joints go wherever you push them. In the editor only: in game your keys play as you made them.",
                   [](bool on) { studio::set_joint_limits(on); });
 }
 
