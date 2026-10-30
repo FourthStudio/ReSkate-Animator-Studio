@@ -18,6 +18,7 @@
 #include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/editor_floor.h"
 #include "Extension/AnimationStudio/grab_types.h"
+#include "Extension/AnimationStudio/held_loop_selection.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -2138,6 +2139,42 @@ void a_grab_loop_is_known_by_the_games_grab() {
     check(grab_loop_rank(plain, 2, 1, &fakie) == 3 && grab_loop_rank(grab_loop_of("c_proto_onb_inair_fakie_bs_grab_loop"), 2, 1, &fakie) == 0,
           "Riding fakie, the fakie loop first");
 }
+void held_loops_follow_style_changes() {
+    const std::array<GrabLoop, 4> saved{
+        grab_loop_of("c_proto_onb_inair_bs_grab_melon_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_fakie_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop")};
+    std::vector<std::pair<std::size_t, int>> loops{{0, 1}, {1, 1}, {2, 1}, {3, 1}};
+    int family = 2, detail = 4, playing = -1;
+    bool fakie = false;
+    const auto rank = [&](std::size_t index) { return grab_loop_rank(saved[index], family, detail, &fakie); };
+    const auto choose = [&] { return held_loop_ranks<int>(loops, 1, playing, rank); };
+    check(choose().best == 0 && !choose().keep, "A new melon selects an eligible loop");
+    playing = 0;
+    check(choose().keep, "Holding the same style retains its playback clock");
+    detail = 3;
+    check(!choose().keep && choose().best == 0 && rank(playing) == 2,
+          "Melon gives way to saved Japan even though melon is still a valid same-family fallback");
+    playing = 1;
+    check(choose().keep, "Japan does not restart each frame or switch to an equal-ranked variant");
+    playing = 3;
+    check(choose().keep, "An equally ranked playing variant keeps priority over an earlier index");
+    fakie = true;
+    check(!choose().keep && choose().best == 0, "A held loop yields to a better matching fakie version");
+    playing = 2;
+    check(choose().keep, "The matching fakie loop continues");
+    family = 1;
+    check(!choose().keep && choose().best < 0, "Changing grab family releases all incompatible saved loops");
+    family = 2;
+    playing = 0;
+    loops = {{0, 1}};
+    check(choose().keep && choose().best >= 0, "An available fallback continues when no better loop exists");
+    loops = {{0, 2}};
+    check(!choose().keep && choose().best < 0, "Another held-move kind cannot retain the grab");
+    loops.clear();
+    check(!choose().keep && choose().best < 0, "Removing the saved loops releases the current selection");
+}
 void grind_rail_goes_under_the_grind() {
     check(grind_clip("animation/dingo/c_proto_onb_grind_fs_bs_5_0_rail_loop") && grind_clip("animation/dingo/c_proto_ofb_grind_5050_feet_rail_loop") &&
               !grind_clip("animation/dingo/c_proto_onb_trick_o_kickflip_mid") && !grind_clip("animation/dingo/c_proto_onb_manual_t_loop_med") &&
@@ -2852,6 +2889,7 @@ int main(int argc, char** argv) {
         grind_rail_goes_under_the_grind();
         game_clips_stand_on_the_floor_where_their_board_rests();
         a_grab_loop_is_known_by_the_games_grab();
+        held_loops_follow_style_changes();
         a_grind_is_known_by_the_games_name();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
