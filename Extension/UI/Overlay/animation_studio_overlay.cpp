@@ -5396,10 +5396,10 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
             y += 50 * k;
         }
     }
-    // ---- + ADD OWN TRICKS (your own tricks, one by one, into the open playlist) and + NEW PLAYLIST ----
+    // ---- + ADD TRICKS (tricks one by one, yours and the packs', into the open playlist) and + NEW PLAYLIST ----
     {
         const float nw = 170 * k, aw = w - nw - 10 * k;
-        if (action(d, f, "##addowntricks", ImVec2(x, y), ImVec2(aw, 40 * k), "+ ADD OWN TRICKS", Look::blue)) {
+        if (action(d, f, "##addowntricks", ImVec2(x, y), ImVec2(aw, 40 * k), "+ ADD TRICKS", Look::blue)) {
             u.pack_settings = true;
             u.pack_page = false;
             u.playlist_pick_scroll = 0;
@@ -5446,7 +5446,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     }
     if (v.playlist_open.empty()) {
         y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, soft,
-                       "No playlist yet. + NEW PLAYLIST makes one, + ADD OWN TRICKS or + ADD on a pack puts them in a first one, and "
+                       "No playlist yet. + NEW PLAYLIST makes one, + ADD TRICKS or + ADD on a pack puts them in a first one, and "
                        "+ PLAYLIST on a trick in MY TRICKS asks which playlist it goes in. Packs and tricks play from the playlist that is on.") + 14 * k;
     } else {
         // The open one: its name, SET to rename it, DELETE (pressed twice), and its switch.
@@ -5508,7 +5508,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     float ly = la.y - u.pack_settings_scroll;
     if (v.playlist.empty() && !v.playlist_open.empty())
         ly += paragraph(d, f.bold, 15 * k, ImVec2(x, ly), w - 14 * k, soft,
-                        "Empty. + ADD on a pack puts it in, and + ADD OWN TRICKS your own tricks one by one.") + 10 * k;
+                        "Empty. + ADD on a pack puts it in, and + ADD TRICKS tricks one by one.") + 10 * k;
     for (std::size_t i = 0; i < v.playlist.size(); ++i) {
         const auto& e = v.playlist[i];
         ImGui::PushID(static_cast<int>(i));
