@@ -3656,7 +3656,17 @@ std::string listed(const std::vector<std::string>& names) {
     return out;
 }
 // A saved trick is in the playlist that is on: as itself, or in a whole pack there (select_playlist).
-bool in_playing_list(const studio::Preset& p) { return p.included; }
+// In the playlist NOW PLAYING shows (the open one, where + ADD and + PLAYLIST put things): as itself, or in a whole pack
+// there that plays it.
+bool in_playing_list(const studio::View& v, const std::string& name) {
+    for (const auto& e : v.playlist) {
+        if (e.animation == name) return true;
+        if (!e.animation.empty()) continue;
+        for (const auto& pack : v.packs)
+            if (pack.name == e.pack && pack.pack.has(name) && !pack.pack.off.contains(name)) return true;
+    }
+    return false;
+}
 // The LIBRARY, on a playlist ("" the one it shows already): NOW PLAYING at its left shows it, the packs at its right.
 void open_playlist_page(const std::string& name) {
     auto& u = ui();
@@ -3667,25 +3677,26 @@ void open_playlist_page(const std::string& name) {
     u.pack_settings_scroll = 0;
     u.playlist_name_for.clear();
 }
-// + PLAYLIST pressed on a saved trick: into the playlist that is on; with none on, the card asks which (playlist_card).
-// IN PLAYLIST pressed: that playlist's page, to move it or take it out.
+// + PLAYLIST pressed on a saved trick: into the playlist NOW PLAYING shows (the open one); with no playlist yet, the card
+// asks (playlist_card). A trick of a pack goes in on its own, whether its pack is in another playlist or not.
+// IN PLAYLIST pressed: the LIBRARY on that playlist, to move it or take it out.
 void press_playlist(const studio::View& v, const std::string& name, bool in) {
     auto& u = ui();
     if (in) {
-        open_playlist_page(v.playlist_playing);
+        open_playlist_page({});
         return;
     }
     // One from a pack you got goes in with its pack, so that pack's pop rule holds; your own go in as themselves.
     const auto holding = packs_holding(v, name);
     const auto installed = std::find_if(holding.begin(), holding.end(), [](const auto* pack) { return pack->installed; });
     const studio::PlaylistEntry entry{installed == holding.end() ? std::string{} : (*installed)->name, name};
-    if (v.playlist_playing.empty()) {
+    if (v.playlists.empty()) {
         u.playlist_for = name;
         u.playlist_for_entry = entry;
         return;
     }
     std::string m;
-    studio::add_to_playlist(v.playlist_playing, entry, m);
+    studio::add_to_playlist(v.playlist_open.empty() ? v.playlist_playing : v.playlist_open, entry, m);
     say(m);
 }
 // The SAVED and BACK IN THE STUDIO cards: whether the trick is in the playlist that is on and plays (or which of yours
@@ -3694,11 +3705,15 @@ float in_game_row(ImDrawList* d, const Fonts& f, const studio::View& v, const st
     const float k = f.k;
     const auto* p = preset_named(v, name);
     if (!p) return 0;
-    const bool in = in_playing_list(*p);
+    const bool in = in_playing_list(v, name);
     const std::string pop = p->pop.empty() ? "any pop" : "a " + p->pop + " pop";
-    std::string words = v.playlist_playing.empty() ? "Not in a playlist yet: + PLAYLIST puts it in one, and it plays in game."
-                                                   : "Not in " + v.playlist_playing + " yet: + PLAYLIST puts it in, and it plays in game.";
-    if (in && p->active) words = "In " + v.playlist_playing + ": it plays in game when you do the trick on " + pop + ".";
+    const std::string& list = v.playlist_open.empty() ? v.playlist_playing : v.playlist_open;
+    std::string words = list.empty() ? "Not in a playlist yet: + PLAYLIST puts it in one, and it plays in game."
+                                     : "Not in " + list + " yet: + PLAYLIST puts it in.";
+    if (in && list != v.playlist_playing)
+        words = "In " + list + ", which is off" + (v.playlist_playing.empty() ? "" : " (" + v.playlist_playing + " is on)") +
+                ": switch it on in the LIBRARY to play it.";
+    else if (in && p->active) words = "In " + v.playlist_playing + ": it plays in game when you do the trick on " + pop + ".";
     else if (in) {
         words = "In " + v.playlist_playing + ", but another of its trick, pop and stance is higher up and plays first: move it up there, "
                 "or set the playlist to IN TURNS or SHUFFLE.";
@@ -3735,7 +3750,7 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     flat_rect(d, a, b, page ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
     if (name == v.name && v.has_clip) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
     float right_edge = b.x - 14 * k;
-    if (p && in_playing_list(*p)) {
+    if (p && in_playing_list(v, name)) {
         right_edge -= tag_width(f, "IN PLAYLIST");
         tag(d, f, ImVec2(right_edge, a.y + 14 * k), "IN PLAYLIST", IM_COL32(36, 150, 76, 255));
         right_edge -= 6 * k;
@@ -3781,7 +3796,7 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         say(m);
     }
     if (p) {
-        const bool in = in_playing_list(*p);
+        const bool in = in_playing_list(v, name);
         if (playlist_button(d, f, "##playlist", ImVec2(b.x - 14 * k - play_w, b.y - strip + 6 * k), ImVec2(play_w, 30 * k), in))
             press_playlist(v, name, in);
     }
@@ -3813,7 +3828,7 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
         if (const auto* p = preset_named(v, name)) {
             pops.insert(p->pop.empty() ? std::string("ANY") : upper(p->pop));
             stances.insert(stance_word(studio::stance_version(*p, v.own_lead_right), nollie_trick(p->trick)));
-            playing += in_playing_list(*p);
+            playing += in_playing_list(v, name);
             newest = std::max(newest, p->saved_at);
         }
     float right_edge = b.x - 14 * k;
@@ -5333,7 +5348,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             if (const auto when = edited_words(pack.modified); !when.empty()) by += (by.empty() ? "EDITED " : "  /  EDITED ") + when;
             if (!by.empty()) text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 60 * k), ink_soft, elide(f.bold, 12 * k, by, card_w - 140 * k));
         }
-        // + ADD / IN PLAYLIST: the whole pack in the playlist that is on (NOW PLAYING), or out of it.
+        // + ADD / IN PLAYLIST: the whole pack in the playlist NOW PLAYING shows, or out of it.
         if (action(d, f, "##packplay", ImVec2(cb.x - 120 * k, cover_b.y + 14 * k), ImVec2(110 * k, 30 * k), pack.playing ? "IN PLAYLIST" : "+ ADD",
                    pack.playing ? Look::blue : Look::dark, true, pack.playing)) {
             std::string m;

@@ -6172,7 +6172,8 @@ View view() {
     }
     v.library = s.library;
     v.presets = s.presets;
-    const auto* playing_list = s.playlists.named(s.playlists.on);
+    // The playlist NOW PLAYING shows (the open one): + ADD puts a pack in it, IN PLAYLIST says it is there.
+    const auto* playing_list = s.playlists.named(s.playlist_open);
     const std::set<std::string> here(s.library.begin(), s.library.end());
     for (const auto& saved : s.packs) {
         const auto draft = s.pack_drafts.find(saved.name);
@@ -7727,16 +7728,26 @@ bool set_pack_playing(const std::string& pack, bool on, std::string& message) {
         say_locked(s, message, "There is no pack called " + pack + ".");
         return false;
     }
+    // Into the playlist NOW PLAYING shows (the open one, a new one included), not the one that happens to be on.
     auto lists = s.playlists;
+    auto* list = lists.named(s.playlist_open);
     if (on) {
-        const bool made = !lists.named(lists.on);
-        const auto name = put_in_playing_list(lists, {pack});
-        message = pack + " plays in game now: it is in " + name + (made ? ", the playlist that is on." : ".");
+        if (!list) {
+            const auto name = put_in_playing_list(lists, {pack});
+            s.playlist_open = name;
+            message = pack + " plays in game now: it is in " + name + ", the playlist that is on.";
+        } else {
+            if (std::find(list->entries.begin(), list->entries.end(), PlaylistEntry{pack, ""}) == list->entries.end())
+                list->entries.push_back({pack, ""});
+            if (lists.on.empty()) lists.on = list->name;
+            message = lists.on == list->name ? pack + " plays in game now: it is in " + list->name + "."
+                                             : pack + " is in " + list->name + ". " + list->name + " is off, " + lists.on +
+                                                   " is on: switch " + list->name + " on to play it.";
+        }
     } else {
-        auto* list = lists.named(lists.on);
         if (!list) return true;
         std::erase(list->entries, PlaylistEntry{pack, ""});
-        message = pack + " is out of " + list->name + " and does not play now.";
+        message = pack + " is out of " + list->name + (lists.on == list->name ? " and does not play now." : ".");
     }
     playlists_changed_locked(s, lists, message);
     return true;

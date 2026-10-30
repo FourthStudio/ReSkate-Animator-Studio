@@ -101,7 +101,7 @@ struct View {
         bool favorite{};                // starred: shown first in PACKS
         bool installed{};               // made on another PC (its maker's key is not this one's): its tricks play, not open
         std::int64_t modified{};        // when its file was last written (the file clock's count), 0 not known
-        bool playing{};                 // in the playlist that is on, as a whole pack: it plays in game
+        bool playing{};                 // in the playlist NOW PLAYING shows (the open one), as a whole pack
     };
     // MY TRICKS shows a trick's saves together (one card a trick: its pops and stances); these are shown on their own.
     std::set<std::string> ungrouped;
