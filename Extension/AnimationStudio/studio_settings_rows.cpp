@@ -1,6 +1,4 @@
 #include "studio_settings_rows.h"
-#include "studio_rails.h"
-#include "studio_ramps.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -70,59 +68,11 @@ Setting studio_room(const studio::Settings& now) {
                   "you are. Takes effect the next time it opens.",
                   [](bool on) { studio::set_room(on); });
 }
-Setting grind_rail(const studio::Settings& now) {
-    std::vector<std::string> options{"OFF"}, keys{""};
-    int selected = 0;
-    for (const auto& key : now.rails)
-        if (const auto* rail = studio::studio_rail(key)) {
-            if (rail->key == now.grind_rail) selected = static_cast<int>(options.size());
-            options.emplace_back(rail->name);
-            keys.emplace_back(rail->key);
-        }
-    return one_of("Grind rail", std::move(options), selected,
-                  "The game's own straight rail a grind stands on in the studio: open one of the game's grinds or slides and the "
-                  "rail is put up under it, the board on its top as in game. Flip tricks and everything else have none. It "
-                  "stands in your park only while the studio is open in the Studio room (out of sight under the floor until a "
-                  "grind is open), and never in an online session.",
-                  [keys](int picked) { studio::set_grind_rail(keys[static_cast<std::size_t>(picked)]); });
-}
-Setting quarter_pipe(const studio::Settings& now) {
-    std::vector<std::string> options{"OFF"}, keys{""};
-    int selected = 0;
-    for (const auto& key : now.quarter_pipes)
-        if (const auto* ramp = studio::studio_quarter_pipe(key)) {
-            if (ramp->key == now.quarter_pipe) selected = static_cast<int>(options.size());
-            options.emplace_back(ramp->name);
-            keys.emplace_back(ramp->key);
-        }
-    return one_of("Quarter pipe", std::move(options), selected,
-                  "The game's own quarter pipe a handplant stands on in the studio: open one of the game's handplants or other "
-                  "inverts and it is put up under it, the planted hand on its coping and the wall under the board, as in game. "
-                  "L is a vert ramp (its top 75 cm straight up), the size the game's own handplants ride. It stands in your park "
-                  "only while the studio is open in the Studio room (out of sight under the floor until an invert is open), and "
-                  "never in an online session.",
-                  [keys](int picked) { studio::set_quarter_pipe(keys[static_cast<std::size_t>(picked)]); });
-}
 Setting controller_combo(const studio::Settings& now) {
     return one_of("Controller combo", {studio::open_combo_names.begin(), studio::open_combo_names.end()}, std::clamp(now.open_combo, 0, 3),
                   "What you hold on a controller (half a second) to open the studio, and to close it again. Another mod using the "
                   "same buttons: pick another, or OFF and open it with F8 or from the ReSkate menu (ADDONS > ANIMATOR STUDIO).",
                   [](int picked) { studio::set_open_combo(picked); });
-}
-Setting rail_size(const studio::Settings& now) {
-    const auto* rail = studio::studio_rail(now.grind_rail);
-    std::vector<std::string> options;
-    int selected = 0;
-    for (std::size_t i = 0; i < studio::studio_rail_sizes.size(); ++i) {
-        const float size = studio::studio_rail_sizes[i];
-        if (std::abs(size - now.grind_rail_size) < 0.001f) selected = static_cast<int>(i);
-        options.push_back(rail ? std::format("{:.0f}%: {:.0f} cm high, {:.1f} m long", size * 100, rail->top * size * 100, rail->length * size)
-                               : std::format("{:.0f}%", size * 100));
-    }
-    return one_of("Rail size", std::move(options), selected,
-                  "How big the grind rail is put up: lower, thinner and shorter together, as the build kit scales an object. The "
-                  "game's own are big for a skater; 60% is a 30 cm rail. The grind stays on its top at any size.",
-                  [](int picked) { studio::set_grind_rail_size(studio::studio_rail_sizes[static_cast<std::size_t>(picked)]); });
 }
 Setting catch_marker(const studio::Settings& now) {
     return on_off("Catch marker", now.catch_marker,

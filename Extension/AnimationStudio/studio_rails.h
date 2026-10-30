@@ -4,7 +4,7 @@
 #include <string_view>
 
 // The studio's grind rail: one of the game's own straight build-kit rails, put in the studio under a grind while it is
-// open, so the board sits on it as in game (anim_studio.cpp, rail_tick). Only grinds: a flip trick never shows it.
+// open, so the board sits on it as in game (anim_studio.cpp, prop_tick). Only grinds: a flip trick never shows it.
 //
 // How they are made (their physics parts, from each item's EcsPhysicsAsset volume moments, 2026-10-29): the item's
 // origin is on the floor at the middle of the rail, and the bar runs along its own Z, with feet and posts under it.
@@ -12,34 +12,19 @@
 // uses these only until then.
 namespace dingosdk::anim_studio {
 struct StudioRail {
-    std::string_view key;   // the build-kit item
-    std::string_view name;  // as SETTINGS lists it
-    std::string_view label; // as the editor's RAIL button shows it
-    float top;              // the bar's top above the floor, metres
-    float length;           // metres
+    std::string_view key;  // the build-kit item
+    std::string_view name; // as the studio's messages name it
+    float top;             // the bar's top above the floor at full size, metres
+    float length;          // metres
 };
-inline constexpr std::array<StudioRail, 8> studio_rails{{
-    {"own_bkrails_generic_flatrailround_00001", "Round rail, 4 m, 50 cm high", "ROUND 4M", 0.499f, 4},
-    {"own_bkrails_generic_flatrailroundlong_00001", "Round rail, 6 m, 50 cm high", "ROUND 6M", 0.499f, 6},
-    {"own_bkrails_generic_flatrailroundtall_00001", "Tall round rail, 4 m, 75 cm high", "TALL ROUND 4M", 0.749f, 4},
-    {"own_bkrails_generic_flatrailroundtalllong_00001", "Tall round rail, 6 m, 75 cm high", "TALL ROUND 6M", 0.749f, 6},
-    {"own_bkrails_generic_flatrailsquare_00001", "Square rail, 4 m, 50 cm high", "SQUARE 4M", 0.5f, 4},
-    {"own_bkrails_generic_flatrailsquarelong_00001", "Square rail, 6 m, 50 cm high", "SQUARE 6M", 0.5f, 6},
-    {"own_bkrails_generic_flatrailsquaretall_00001", "Tall square rail, 4 m, 75 cm high", "TALL SQUARE 4M", 0.75f, 4},
-    {"own_bkrails_generic_flatrailsquaretalllong_00001", "Tall square rail, 6 m, 75 cm high", "TALL SQUARE 6M", 0.75f, 6},
+// The one rail the studio puts up: the square 4 m rail at 60%, 30 cm high and 2.4 m long (the user's pick, 2026-10-29;
+// fixed, nothing else, 2026-10-30). The game's are big for a skater (a 50 cm rail with a bar near 10 cm thick: "the rail
+// looks so big"); the build kit scales an object whole, lower, thinner and shorter.
+inline constexpr std::array<StudioRail, 1> studio_rails{{
+    {"own_bkrails_generic_flatrailsquare_00001", "square rail, 4 m", 0.5f, 4},
 }};
-// The square 4 m rail at 60%: 30 cm high, 2.4 m long (the user's pick, 2026-10-29).
-inline constexpr std::string_view default_studio_rail = "own_bkrails_generic_flatrailsquare_00001";
-// How big the rail is put up (the build kit scales an object whole: lower, thinner and shorter). The game's are big for a
-// skater (a 50 cm rail with a bar near 10 cm thick, 2026-10-29: "the rail looks so big"); 60% is a 30 cm rail.
-inline constexpr std::array<float, 6> studio_rail_sizes{1.0f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f};
-inline constexpr float default_studio_rail_size = 0.6f;
-inline float studio_rail_size(float wanted) noexcept {
-    float best = default_studio_rail_size;
-    for (const float size : studio_rail_sizes)
-        if (std::abs(size - wanted) < std::abs(best - wanted)) best = size;
-    return best;
-}
+inline constexpr std::string_view studio_rail_item = "own_bkrails_generic_flatrailsquare_00001";
+inline constexpr float studio_rail_scale = 0.6f;
 inline const StudioRail* studio_rail(std::string_view key) noexcept {
     for (const auto& rail : studio_rails)
         if (rail.key == key) return &rail;

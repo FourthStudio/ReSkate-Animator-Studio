@@ -61,15 +61,6 @@ struct View {
     std::size_t source_pose_count{};
     float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
-    // The open trick is one of the game's grinds (studio_rails.h grind_clip): it stands on the grind rail, and the editor
-    // shows the RAIL button. grind_rail: the rail chosen ("" none).
-    bool grind_open{};
-    std::string grind_rail;
-    float grind_rail_size{0.6f};
-    // The open trick is one of the game's inverts (studio_ramps.h invert_clip): it stands on the quarter pipe, and the
-    // editor shows the RAMP button. quarter_pipe: the one chosen ("" none).
-    bool invert_open{};
-    std::string quarter_pipe;
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
     // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
     // and its name. Opening another trick to edit drops it, so ask first.
@@ -194,15 +185,6 @@ struct Settings {
     float crossfade{0.3f};
     bool catch_marker{true}, drop_preview_tool{true};
     bool smooth_transitions{true}; // SETTINGS > TRICKS > Transitions: SMOOTH or CLASSIC
-    // SETTINGS > STUDIO > Grind rail: the game's straight rail a grind stands on in the studio (studio_rails.h), "" none,
-    // and the ones this player's build kit can place (all of studio_rails until the game has said).
-    std::string grind_rail;
-    float grind_rail_size{0.6f}; // Rail size: how big it is put up (studio_rail_sizes)
-    std::vector<std::string> rails;
-    // SETTINGS > STUDIO > Quarter pipe: the game's quarter pipe a handplant stands on in the studio (studio_ramps.h), ""
-    // none, and the ones this player's build kit can place (all of studio_quarter_pipes until the game has said).
-    std::string quarter_pipe;
-    std::vector<std::string> quarter_pipes;
     std::string your_name;
     std::string export_folder, import_folder; // "" the defaults
     std::string export_path, import_path;     // where they are, in full (UTF-8)
@@ -478,11 +460,6 @@ bool set_pack_playing(const std::string& pack, bool on, std::string& message);
 void set_hover_preview(bool on);
 // SETTINGS > STUDIO: the catch's tools shown (View::catch_marker, drop_preview_tool). Off, DROP PREVIEW goes back to 0.
 void set_catch_marker(bool on);
-// The grind rail (studio_rails.h key, "" none): a game grind opened in the studio stands on that rail.
-void set_grind_rail(const std::string& key);
-void set_grind_rail_size(float size); // one of studio_rail_sizes (the nearest)
-// The quarter pipe (studio_ramps.h key, "" none): a game invert opened in the studio stands on it, the hand on its coping.
-void set_quarter_pipe(const std::string& key);
 void set_drop_preview_tool(bool on);
 // The first-start guide read (true), or to open again (false).
 void set_guide_seen(bool seen);

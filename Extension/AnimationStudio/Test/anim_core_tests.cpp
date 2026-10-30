@@ -2144,10 +2144,9 @@ void grind_rail_goes_under_the_grind() {
               !grind_clip("animation/dingo/c_proto_onb_trick_o_kickflip_mid") && !grind_clip("animation/dingo/c_proto_onb_manual_t_loop_med") &&
               !grind_clip("animation/dingo/c_proto_onb_powerslide_bs_fast_loop"),
           "Only the game's grinds and slides on a rail get the rail");
-    check(studio_rail(default_studio_rail) != nullptr && studio_rail("own_bkrails_generic_snakewavy_00005") == nullptr,
-          "The rail is one of the straight ones");
-    check(studio_rail_size(0.62f) == 0.6f && studio_rail_size(5) == 1.0f && studio_rail_size(0) == 0.4f, "A size is one of the sizes");
-    for (const auto& rail : studio_rails) check(rail.top > 0.4f && rail.top < 0.8f && rail.length >= 4, "Each straight rail's top and length are known");
+    const auto* rail = studio_rail(studio_rail_item);
+    check(rail && near(rail->top * studio_rail_scale, 0.3f) && studio_rail("own_bkrails_generic_snakewavy_00005") == nullptr,
+          "The rail is the square 4 m one, 30 cm high at 60%");
     // Facing as the game's own placement does (a quarter turn about up): the rail runs along his X, under the Ground joint.
     const float h = std::sqrt(0.5f);
     const std::array<float, 4> facing{0, -h, 0, h};
@@ -2176,17 +2175,17 @@ void quarter_pipe_goes_under_the_handplant() {
     check(invert_clip("animation/dingo/c_proto_onb_invert_fs_handplant") && invert_clip("animation/dingo/c_proto_onb_invert_bs_handplant_antic") &&
               !invert_clip("animation/dingo/c_proto_onb_grind_5050_rail_loop") && !invert_clip("animation/dingo/c_proto_onb_flip_kickflip"),
           "Only the game's inverts get the quarter pipe");
-    const auto* large = studio_quarter_pipe(default_studio_quarter_pipe);
-    check(large && near(large->top, 3.25f) && near(large->coping, -1.0f), "The L quarter pipe is 3.25 m high, its coping 1 m back");
-    for (const auto& ramp : studio_quarter_pipes) check(ramp.top > 1.5f && ramp.top < 3.5f && ramp.coping < 0, "Each quarter pipe's top and coping are known");
+    const auto* ramp = studio_quarter_pipe(studio_quarter_pipe_item);
+    check(ramp && near(ramp->top, 2.25f) && near(ramp->coping, -0.75f) && studio_quarter_pipes.size() == 1,
+          "The quarter pipe is the M, 2.25 m high, its coping 75 cm back");
     // The hand on the coping at (10, -69.99, 5) with him riding up a wall that faces +X.
     const std::array<float, 3> coping{10.0f, -69.99f, 5.0f};
-    const auto spot = quarter_pipe_spot(*large, coping, {1, 0, 0}, -69.99f);
+    const auto spot = quarter_pipe_spot(*ramp, coping, {1, 0, 0}, -69.99f);
     check(spot.valid && near(spot.at[1], -69.99f), "The quarter pipe stands on the floor");
     const Quat turn{spot.rotation[0], spot.rotation[1], spot.rotation[2], spot.rotation[3]};
     const auto faces = rotate(turn, Vec3{0, 0, 1});
     check(near(faces[0], 1) && near(faces[2], 0), "Its transition faces the way he rides up");
-    const auto top = rotate(turn, Vec3{0, large->top, large->coping - studio_coping_radius});
+    const auto top = rotate(turn, Vec3{0, ramp->top, ramp->coping - studio_coping_radius});
     check(near(spot.at[0] + top[0], coping[0]) && near(spot.at[2] + top[2], coping[2]), "Its coping's top is under the hand");
     check(spot.at[0] > coping[0], "It stands out on the open side, the deck behind the coping");
     // The same spot within 2 cm; turned half round it faces the other way, so it is not.
@@ -2194,7 +2193,7 @@ void quarter_pipe_goes_under_the_handplant() {
     check(same_ramp_spot(spot.at, spot.rotation, {spot.at[0] + 0.01f, spot.at[1], spot.at[2]}, spot.rotation) &&
               !same_ramp_spot(spot.at, spot.rotation, spot.at, half_turn),
           "A quarter pipe turned half round is not the same");
-    check(!quarter_pipe_spot(*large, coping, {0, 1, 0}, -69.99f).valid, "No way up the wall, no quarter pipe");
+    check(!quarter_pipe_spot(*ramp, coping, {0, 1, 0}, -69.99f).valid, "No way up the wall, no quarter pipe");
 }
 
 // A saved grind plays only on the grinds its clip is for, as the game names them (grind_types.h).

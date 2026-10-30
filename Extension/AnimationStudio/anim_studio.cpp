@@ -374,9 +374,6 @@ struct State {
     bool catch_marker{true}, drop_preview_tool{true}; // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                             // the first-start guide was read
     bool smooth_handover{true};                    // SETTINGS > TRICKS > Transitions: SMOOTH (smooth_transitions) or CLASSIC
-    std::string grind_rail{default_studio_rail};   // SETTINGS > STUDIO > Grind rail (rail_link().chosen follows it), "" none
-    float grind_rail_size{default_studio_rail_size}; // SETTINGS > STUDIO > Rail size (studio_rail_sizes)
-    std::string quarter_pipe{default_studio_quarter_pipe}; // SETTINGS > STUDIO > Quarter pipe (ramp_link().chosen follows it), "" none
     std::map<std::string, std::string> keys;       // the editor's rebound keys (View::keys)
     bool playlist_on{};                            // the playlist that plays (Playlists::on), as last read
     PlaylistMode playlist_mode{PlaylistMode::fixed};
@@ -723,7 +720,7 @@ std::atomic<bool> smooth_transitions{true};
 // lifted onto it.
 struct PropLink {
     std::mutex mutex;
-    std::string chosen; // "" none
+    std::string chosen; // the item (studio_rail_item, studio_quarter_pipe_item)
     float size{1};
     bool room{};  // the open studio is in its room: the prop stands there, parked out of sight under the floor (park)
     bool shown{}; // ... and a trick of the game's it is for is shown: the prop is under it (spot)
@@ -734,14 +731,13 @@ struct PropLink {
     std::string ready_item; // the prop that stands under the trick, its size, and its top above the floor
     float ready_size{}, ready_top{};
     RailSpot ready_spot; // and where it stands
-    std::vector<std::string> placeable; // the ones this player's build kit has (empty: not known yet)
     bool cannot{}; // it cannot be put up now (no objects on this map, online, the game refused): the trick is not lifted
 };
 PropLink& rail_link() {
     static auto* value = [] { // process lifetime
         auto* link = new PropLink;
-        link->chosen = default_studio_rail;
-        link->size = default_studio_rail_size;
+        link->chosen = studio_rail_item;
+        link->size = studio_rail_scale;
         return link;
     }();
     return *value;
@@ -749,7 +745,7 @@ PropLink& rail_link() {
 PropLink& ramp_link() {
     static auto* value = [] { // process lifetime
         auto* link = new PropLink;
-        link->chosen = default_studio_quarter_pipe;
+        link->chosen = studio_quarter_pipe_item;
         return link;
     }();
     return *value;
@@ -937,9 +933,6 @@ SettingsFile settings_file_of(const State& s) {
     f.drop_preview = s.drop_preview_tool;
     f.guide_seen = s.guide_seen;
     f.smooth_transitions = s.smooth_handover;
-    f.grind_rail = s.grind_rail;
-    f.grind_rail_size = s.grind_rail_size;
-    f.quarter_pipe = s.quarter_pipe;
     f.advanced_bones = s.advanced_bones;
     f.finger_bones = s.finger_bones;
     f.open_combo = s.open_combo;
@@ -975,20 +968,6 @@ void load_settings(State& s) {
         s.guide_seen = f.guide_seen;
         s.smooth_handover = f.smooth_transitions;
         smooth_transitions.store(f.smooth_transitions, std::memory_order_relaxed);
-        s.grind_rail = f.grind_rail.empty() || studio_rail(f.grind_rail) ? f.grind_rail : std::string(default_studio_rail);
-        s.grind_rail_size = studio_rail_size(f.grind_rail_size);
-        {
-            auto& r = rail_link();
-            std::lock_guard rail_lock(r.mutex);
-            r.chosen = s.grind_rail;
-            r.size = s.grind_rail_size;
-        }
-        s.quarter_pipe = f.quarter_pipe.empty() || studio_quarter_pipe(f.quarter_pipe) ? f.quarter_pipe : std::string(default_studio_quarter_pipe);
-        {
-            auto& r = ramp_link();
-            std::lock_guard ramp_lock(r.mutex);
-            r.chosen = s.quarter_pipe;
-        }
     } catch (...) {}
 }
 void write_preset_file(const std::filesystem::path& path, const std::string& text); // below
@@ -6695,7 +6674,6 @@ struct StudioProp {
     const wchar_t* records;  // beside the settings: like them, never read as a trick
     std::string_view what;   // "grind rail", "quarter pipe": its messages name it
     std::string_view stands; // "The grind stands on the rail", said with its name, size and top once measured
-    std::vector<std::string_view> keys;
     std::string_view (*name_of)(const std::string& item);
     float (*top_of)(const std::string& item); // its top above the floor at full size, by the table
     // Where to look straight down for its top once it stands at `at` turned `yaw`, `size` big: (x, z).
@@ -6706,11 +6684,6 @@ const StudioProp& rail_prop() {
     static RailPlaced placed;
     static const StudioProp prop{
         rail_link, placed, rail_records_file, "grind rail", "The grind stands on the rail",
-        [] {
-            std::vector<std::string_view> keys;
-            for (const auto& rail : studio_rails) keys.push_back(rail.key);
-            return keys;
-        }(),
         [](const std::string& item) {
             const auto* rail = studio_rail(item);
             return rail ? rail->name : std::string_view(item);
@@ -6730,11 +6703,6 @@ const StudioProp& ramp_prop() {
     static RailPlaced placed;
     static const StudioProp prop{
         ramp_link, placed, ramp_records_file, "quarter pipe", "The invert stands on the quarter pipe",
-        [] {
-            std::vector<std::string_view> keys;
-            for (const auto& ramp : studio_quarter_pipes) keys.push_back(ramp.key);
-            return keys;
-        }(),
         [](const std::string& item) {
             const auto* ramp = studio_quarter_pipe(item);
             return ramp ? ramp->name : std::string_view(item);
@@ -6857,14 +6825,6 @@ void prop_tick(const StudioProp& prop, bool open) noexcept {
             return;
         }
         const auto model = local_park_editor();
-        if (model.assets) {
-            std::vector<std::string> keys;
-            for (const auto key : prop.keys)
-                if (std::any_of(model.assets->begin(), model.assets->end(), [&](const EditorAsset& a) { return a.key == key; }))
-                    keys.emplace_back(key);
-            std::lock_guard lock(r.mutex);
-            r.placeable = std::move(keys);
-        }
         if (!model.available || model.map.empty()) {
             if (shown) prop_say(p, "The " + what + " cannot be put up here now: objects cannot be placed on this map at the moment.");
             prop_cannot(prop, true);
@@ -7265,23 +7225,6 @@ Settings settings() {
     out.catch_marker = s.catch_marker;
     out.drop_preview_tool = s.drop_preview_tool;
     out.smooth_transitions = s.smooth_handover;
-    out.grind_rail = s.grind_rail;
-    out.grind_rail_size = s.grind_rail_size;
-    {
-        auto& r = rail_link();
-        std::lock_guard rail_lock(r.mutex);
-        out.rails = r.placeable;
-    }
-    if (out.rails.empty())
-        for (const auto& rail : studio_rails) out.rails.emplace_back(rail.key);
-    out.quarter_pipe = s.quarter_pipe;
-    {
-        auto& r = ramp_link();
-        std::lock_guard ramp_lock(r.mutex);
-        out.quarter_pipes = r.placeable;
-    }
-    if (out.quarter_pipes.empty())
-        for (const auto& ramp : studio_quarter_pipes) out.quarter_pipes.emplace_back(ramp.key);
     out.your_name = s.your_name;
     out.export_folder = s.export_folder;
     out.import_folder = s.import_folder;
@@ -7432,11 +7375,6 @@ View view() {
             v.source_max_sample_gap = std::max(v.source_max_sample_gap, s.clip->times[i] - s.clip->times[i-1]);
     }
     v.has_clip = s.clip && !s.clip->empty();
-    v.grind_open = v.has_clip && s.edits.source.kind == "native_asset" && grind_clip(s.edits.source.asset);
-    v.grind_rail = s.grind_rail;
-    v.grind_rail_size = s.grind_rail_size;
-    v.invert_open = v.has_clip && s.edits.source.kind == "native_asset" && invert_clip(s.edits.source.asset);
-    v.quarter_pipe = s.quarter_pipe;
     v.dirty = s.dirty;
     v.previewing = s.previewing;
     v.kept_dirty = s.previewing && s.kept && s.kept->dirty;
@@ -9201,48 +9139,6 @@ void set_smooth_transitions(bool on) {
     save_settings_locked(s);
     s.status = on ? "Transitions: SMOOTH. Into a grind your trick hands over the way the game hands over its own."
                   : "Transitions: CLASSIC, as in 1.0.16.";
-    publish_locked(s, false);
-}
-void set_grind_rail(const std::string& key) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    const auto* rail = studio_rail(key);
-    s.grind_rail = rail ? std::string(rail->key) : std::string{};
-    {
-        auto& r = rail_link();
-        std::lock_guard rail_lock(r.mutex);
-        r.chosen = s.grind_rail;
-    }
-    save_settings_locked(s);
-    s.status = rail ? "Grinds stand on the " + std::string(rail->name) + " in the studio." : "No grind rail: grinds stand on the floor in the studio.";
-    publish_locked(s, false);
-}
-void set_quarter_pipe(const std::string& key) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    const auto* ramp = studio_quarter_pipe(key);
-    s.quarter_pipe = ramp ? std::string(ramp->key) : std::string{};
-    {
-        auto& r = ramp_link();
-        std::lock_guard ramp_lock(r.mutex);
-        r.chosen = s.quarter_pipe;
-    }
-    save_settings_locked(s);
-    s.status = ramp ? "Handplants stand on the " + std::string(ramp->name) + " in the studio."
-                    : "No quarter pipe: handplants hang in the air in the studio.";
-    publish_locked(s, false);
-}
-void set_grind_rail_size(float size) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    s.grind_rail_size = studio_rail_size(size);
-    {
-        auto& r = rail_link();
-        std::lock_guard rail_lock(r.mutex);
-        r.size = s.grind_rail_size;
-    }
-    save_settings_locked(s);
-    s.status = std::format("The grind rail is put up at {:.0f}% of its size.", s.grind_rail_size * 100);
     publish_locked(s, false);
 }
 void set_catch_marker(bool on) {

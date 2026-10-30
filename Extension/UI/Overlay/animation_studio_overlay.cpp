@@ -2,8 +2,6 @@
 #include "skate_style.h"
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
-#include "Extension/AnimationStudio/studio_rails.h"
-#include "Extension/AnimationStudio/studio_ramps.h"
 #include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
@@ -7495,9 +7493,6 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
     switch (page) {
     case 0: {
         rows.push_back(studio::settings_rows::studio_room(now));
-        rows.push_back(studio::settings_rows::grind_rail(now));
-        rows.push_back(studio::settings_rows::rail_size(now));
-        rows.push_back(studio::settings_rows::quarter_pipe(now));
         rows.push_back(studio::settings_rows::controller_combo(now));
         rows.push_back(choice("Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))].name,
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
@@ -9656,48 +9651,6 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     if (tool("##joints", "JOINTS", key_of("joints").c_str(), !u.hide_joints, "The dots on his joints and the gizmo. Off shows the pose clean.")) u.hide_joints = !u.hide_joints;
     y += row;
     if (tool("##follow", "FOLLOW", key_of("follow").c_str(), false, "The camera keeps the chosen joint in the middle. Again: the whole skater.")) studio::focus_joint(u.selected);
-    // A grind of the game's open: the rail it stands on, one press to the next (OFF and the straight rails).
-    if (v.grind_open) {
-        y += row;
-        group("RAIL");
-        const auto now = studio::settings();
-        std::vector<std::string> keys{""};
-        for (const auto& key : now.rails)
-            if (studio::studio_rail(key)) keys.push_back(key);
-        const auto chosen = std::find(keys.begin(), keys.end(), v.grind_rail);
-        const std::size_t i = chosen == keys.end() ? 0 : static_cast<std::size_t>(chosen - keys.begin());
-        const auto* rail = studio::studio_rail(keys[i]);
-        if (tool("##rail", rail ? std::string(rail->label).c_str() : "OFF", "", rail != nullptr,
-                 "The game's rail this grind stands on, its board on the top. Press for the next one. SETTINGS > STUDIO > Grind rail."))
-            studio::set_grind_rail(keys[(i + 1) % keys.size()]);
-        if (rail) {
-            y += row;
-            const auto& sizes = studio::studio_rail_sizes;
-            std::size_t at_size = 0;
-            for (std::size_t s = 0; s < sizes.size(); ++s)
-                if (std::abs(sizes[s] - v.grind_rail_size) < 0.001f) at_size = s;
-            const auto label = std::format("SIZE {:.0f}%", sizes[at_size] * 100);
-            if (tool("##railsize", label.c_str(), "", false,
-                     "How big the rail is: lower, thinner and shorter together. Press for the next size. SETTINGS > STUDIO > Rail size."))
-                studio::set_grind_rail_size(sizes[(at_size + 1) % sizes.size()]);
-        }
-    }
-    // An invert of the game's open: the quarter pipe it stands on, one press to the next (OFF and the quarter pipes).
-    if (v.invert_open) {
-        y += row;
-        group("RAMP");
-        const auto now = studio::settings();
-        std::vector<std::string> keys{""};
-        for (const auto& key : now.quarter_pipes)
-            if (studio::studio_quarter_pipe(key)) keys.push_back(key);
-        const auto chosen = std::find(keys.begin(), keys.end(), v.quarter_pipe);
-        const std::size_t i = chosen == keys.end() ? 0 : static_cast<std::size_t>(chosen - keys.begin());
-        const auto* ramp = studio::studio_quarter_pipe(keys[i]);
-        if (tool("##ramp", ramp ? std::string(ramp->label).c_str() : "OFF", "", ramp != nullptr,
-                 "The game's quarter pipe this invert stands on, the planted hand on its coping. Press for the next one. "
-                 "SETTINGS > STUDIO > Quarter pipe."))
-            studio::set_quarter_pipe(keys[(i + 1) % keys.size()]);
-    }
     if (!u.tool_tip.empty()) {
         const float tw = 300 * k;
         const auto measured = sharp(f.bold, 14 * k)->CalcTextSizeA(14 * k, FLT_MAX, tw - 28 * k, u.tool_tip_text.c_str());

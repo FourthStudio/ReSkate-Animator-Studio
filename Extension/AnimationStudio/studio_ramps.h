@@ -11,24 +11,22 @@
 // How they are made (their meshes, read from the game 2026-10-30; every colour of a size has the same one): the item's
 // origin is on the floor at the middle of its footprint, the ramp faces its own +Z (the transition there, the deck at -Z),
 // and its coping runs along X at the deck's front edge. `coping` is that edge's Z, `top` the coping's top above the floor.
-// The L's top 0.75 m is vertical, as on a vert ramp; the M's last 25 cm. The game's own invert clips ride up a
-// transition like the L's, and an L is near a real 11 ft vert ramp: played on it (all 36, against its mesh) nothing of the
-// board or body goes more than 7 cm into it, a wheel on the coping for a frame. On the M the wind-ups (_antic) put the
-// board 14 cm into its transition; on the S (1.74 m) 73 cm, so it is not offered.
+// The studio always puts up the M, 2.25 m high (the user's pick in game, 2026-10-30: "just the 2.25m is correct"), its
+// last 25 cm straight up. Played on it (all 36 clips, against its mesh) a plant's board goes 8 cm into it at most (a
+// wheel at the coping as he comes up), a wind-up's (_antic) 14 cm into its transition. (The L, 3.25 m: 7 cm at most;
+// the S, 1.74 m: 73 cm.)
 namespace dingosdk::anim_studio {
 struct StudioQuarterPipe {
-    std::string_view key;   // the build-kit item
-    std::string_view name;  // as SETTINGS lists it
-    std::string_view label; // as the editor's RAMP button shows it
-    float top;              // the coping's top above the floor, metres
-    float coping;           // the coping's front edge along the item's Z (the transition faces +Z), metres
-    float width;            // along the coping, metres
+    std::string_view key;  // the build-kit item
+    std::string_view name; // as the studio's messages name it
+    float top;             // the coping's top above the floor, metres
+    float coping;          // the coping's front edge along the item's Z (the transition faces +Z), metres
+    float width;           // along the coping, metres
 };
-inline constexpr std::array<StudioQuarterPipe, 2> studio_quarter_pipes{{
-    {"own_bkvert_generic_quarterpipelarge_00001", "Quarter pipe L, 3.25 m high (vert)", "QP L 3.25M", 3.25f, -1.0f, 3.0f},
-    {"own_bkvert_generic_quarterpipemedium_00001", "Quarter pipe M, 2.25 m high", "QP M 2.25M", 2.25f, -0.75f, 2.5f},
+inline constexpr std::array<StudioQuarterPipe, 1> studio_quarter_pipes{{
+    {"own_bkvert_generic_quarterpipemedium_00001", "quarter pipe M, 2.25 m high", 2.25f, -0.75f, 2.5f},
 }};
-inline constexpr std::string_view default_studio_quarter_pipe = "own_bkvert_generic_quarterpipelarge_00001";
+inline constexpr std::string_view studio_quarter_pipe_item = "own_bkvert_generic_quarterpipemedium_00001";
 // The coping is a pipe this thick (its radius, from the meshes): the hand rests on its top, this far behind its front.
 inline constexpr float studio_coping_radius = 0.025f;
 inline const StudioQuarterPipe* studio_quarter_pipe(std::string_view key) noexcept {
