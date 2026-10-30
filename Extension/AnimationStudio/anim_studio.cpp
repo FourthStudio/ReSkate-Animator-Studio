@@ -4143,6 +4143,24 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.playback_front_foot = snap->front_foot;
                 l.playback_switch = switch_stance(base, component);
                 l.playback_fakie = rolling_fakie(l.riding_forward);
+                // The stance at the pop as the game plays its clips by, when it can be read: its own mirror (Bool.Anim.Mirrored:
+                // its clips are authored goofy, so mirrored is the left foot leading) and its own riding fakie (what turns its
+                // fakie layer on). Our own readings - a lead-foot bit and the forward speed - are what is used when these
+                // cannot be read. A tester's nollie heel made in its own stance never played in exact stance though it did by
+                // front foot (2026-10-30): our readings said another stance at a nollie's pop than the game played it in.
+                {
+                    const bool our_lead = leads_right(l.playback_goofy, l.playback_switch.value_or(false));
+                    const bool our_fakie = l.playback_fakie;
+                    if (l.game.anim_mirrored) l.playback_switch = l.playback_goofy != !*l.game.anim_mirrored; // leads_right(goofy, it) = !mirrored
+                    if (l.game.riding_fakie) l.playback_fakie = *l.game.riding_fakie;
+                    const bool game_lead = leads_right(l.playback_goofy, l.playback_switch.value_or(false));
+                    if (game_lead != our_lead || l.playback_fakie != our_fakie)
+                        logging::log(Level::info, Channel::skater,
+                                     "Animation Studio: at this pop the game plays its clips leading with the {} foot{}; the studio's own reading "
+                                     "said the {} foot{}. The game's is used.",
+                                     game_lead ? "right" : "left", l.playback_fakie ? ", fakie" : "", our_lead ? "right" : "left",
+                                     our_fakie ? ", fakie" : "");
+                }
                 l.playback_backwards = board_backwards(base, component);
                 l.game_trick = nullptr;
                 // A new set of saved tricks (one was saved, deleted, reloaded) means the mirrors and board
