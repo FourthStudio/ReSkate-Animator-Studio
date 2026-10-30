@@ -5557,14 +5557,16 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     // are. Its arrow and the row fold it; + ADD adds the whole pack.
     // `open_at_first`: open until it is folded (MY TRICKS), else folded until it is opened (a pack).
     const auto fold = [&](const std::string& key, float row_top, float row_bottom, float button_left, bool open_at_first = false) {
-        const bool open = u.playlist_open.contains(key) != open_at_first;
+        // The key in the set: folded the other way from how it starts. A press always turns it over (MY TRICKS, open at
+        // first, could not be folded: folding it took out a key that was not there).
         const ImVec2 fa(px, row_top), fb(button_left - 8 * k, row_bottom);
         ImGui::PushID(("fold|" + key).c_str());
         if (hit("##fold", fa, fb)) {
-            if (open) u.playlist_open.erase(key);
+            if (u.playlist_open.contains(key)) u.playlist_open.erase(key);
             else u.playlist_open.insert(key);
         }
         ImGui::PopID();
+        const bool open = u.playlist_open.contains(key) != open_at_first;
         const float cx = px + 18 * k, cy = (row_top + row_bottom) * 0.5f, s = 5.5f * k;
         if (open) d->AddTriangleFilled(ImVec2(cx - s, cy - s * 0.55f), ImVec2(cx + s, cy - s * 0.55f), ImVec2(cx, cy + s * 0.75f), blue_light);
         else d->AddTriangleFilled(ImVec2(cx - s * 0.55f, cy - s), ImVec2(cx + s * 0.75f, cy), ImVec2(cx - s * 0.55f, cy + s), white);
