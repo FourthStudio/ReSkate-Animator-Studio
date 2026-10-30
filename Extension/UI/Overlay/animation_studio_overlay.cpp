@@ -3,6 +3,7 @@
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/AnimationStudio/studio_rails.h"
+#include "Extension/AnimationStudio/studio_ramps.h"
 #include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
@@ -4377,7 +4378,7 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         // While it gets ready: what it waits for, and a bar that fills as it comes (full once it is there).
         if (h.ready_at < 0 || opening < 1) {
             const bool rail = !reading && h.ready_at < 0 && since >= camera_first;
-            const char* label = reading ? "LOADING THE TRICK" : rail ? "PUTTING UP THE RAIL" : "READY";
+            const char* label = reading ? "LOADING THE TRICK" : rail ? (studio::peek_prop() == 2 ? "PUTTING UP THE QUARTER PIPE" : "PUTTING UP THE RAIL") : "READY";
             const float waited = static_cast<float>(now - h.asked);
             const float fill = h.ready_at >= 0 ? 1.0f : std::min(0.95f, 1 - std::exp(-waited / 0.7f));
             const auto alpha = [&](int full) { return static_cast<int>(static_cast<float>(full) * cover * fade_in); };
@@ -7496,6 +7497,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(studio::settings_rows::studio_room(now));
         rows.push_back(studio::settings_rows::grind_rail(now));
         rows.push_back(studio::settings_rows::rail_size(now));
+        rows.push_back(studio::settings_rows::quarter_pipe(now));
         rows.push_back(studio::settings_rows::controller_combo(now));
         rows.push_back(choice("Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))].name,
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
@@ -9679,6 +9681,22 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
                      "How big the rail is: lower, thinner and shorter together. Press for the next size. SETTINGS > STUDIO > Rail size."))
                 studio::set_grind_rail_size(sizes[(at_size + 1) % sizes.size()]);
         }
+    }
+    // An invert of the game's open: the quarter pipe it stands on, one press to the next (OFF and the quarter pipes).
+    if (v.invert_open) {
+        y += row;
+        group("RAMP");
+        const auto now = studio::settings();
+        std::vector<std::string> keys{""};
+        for (const auto& key : now.quarter_pipes)
+            if (studio::studio_quarter_pipe(key)) keys.push_back(key);
+        const auto chosen = std::find(keys.begin(), keys.end(), v.quarter_pipe);
+        const std::size_t i = chosen == keys.end() ? 0 : static_cast<std::size_t>(chosen - keys.begin());
+        const auto* ramp = studio::studio_quarter_pipe(keys[i]);
+        if (tool("##ramp", ramp ? std::string(ramp->label).c_str() : "OFF", "", ramp != nullptr,
+                 "The game's quarter pipe this invert stands on, the planted hand on its coping. Press for the next one. "
+                 "SETTINGS > STUDIO > Quarter pipe."))
+            studio::set_quarter_pipe(keys[(i + 1) % keys.size()]);
     }
     if (!u.tool_tip.empty()) {
         const float tw = 300 * k;

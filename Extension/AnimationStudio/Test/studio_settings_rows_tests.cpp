@@ -14,6 +14,7 @@ struct Given {
     std::optional<float> crossfade;
     std::optional<std::string> your_name, grind_rail;
     std::optional<float> grind_rail_size;
+    std::optional<std::string> quarter_pipe;
     int bug_reports{};
     std::optional<std::string> playing, mode_of;
     std::optional<PlaylistMode> mode;
@@ -37,6 +38,7 @@ void set_guide_seen(bool seen) { given.guide_seen = seen; }
 void set_smooth_transitions(bool on) { given.smooth = on; }
 void set_grind_rail(const std::string& key) { given.grind_rail = key; }
 void set_grind_rail_size(float size) { given.grind_rail_size = size; }
+void set_quarter_pipe(const std::string& key) { given.quarter_pipe = key; }
 void play_playlist(const std::string& name, std::string& message) {
     given.playing = name;
     message = name.empty() ? "No playlist is on." : name + " is on.";
@@ -207,6 +209,20 @@ void grind_rail_lists_off_and_the_rails_this_player_has() {
     size.pick(0);
     check(anim_studio::given.grind_rail_size == 1.0f, "Picking 100% did not set the size");
 }
+void quarter_pipe_lists_off_and_the_ones_this_player_has() {
+    reset();
+    anim_studio::Settings now;
+    now.quarter_pipe = "own_bkvert_generic_quarterpipelarge_00001";
+    now.quarter_pipes = {"own_bkvert_generic_quarterpipemedium_00001", "own_bkvert_generic_quarterpipelarge_00001",
+                         "own_bkvert_generic_quarterpipelarge_00004"};
+    const auto row = quarter_pipe(now);
+    check(row.options.size() == 3 && row.options[0] == "OFF" && row.selected == 2 && row.options[2].starts_with("Quarter pipe L"),
+          "Quarter pipe is not OFF and the quarter pipes the player has");
+    row.pick(1);
+    check(anim_studio::given.quarter_pipe == "own_bkvert_generic_quarterpipemedium_00001", "Picking a quarter pipe did not set it");
+    row.pick(0);
+    check(anim_studio::given.quarter_pipe == "", "Picking OFF did not take the quarter pipe away");
+}
 void how_it_works_opens_the_guide_again() {
     reset();
     const auto row = how_it_works();
@@ -242,6 +258,7 @@ int main() {
         the_catch_tools_are_on_by_default_and_each_sets_its_own();
         how_it_works_opens_the_guide_again();
         grind_rail_lists_off_and_the_rails_this_player_has();
+        quarter_pipe_lists_off_and_the_ones_this_player_has();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "animation studio settings tests passed\n";
 }

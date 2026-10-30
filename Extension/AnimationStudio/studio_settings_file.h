@@ -35,6 +35,7 @@ struct SettingsFile {
     float grind_rail_size{0.6f};                                            // SETTINGS > STUDIO > Rail size
     bool advanced_bones{}, finger_bones{};                                  // SETTINGS > SKATER: their rows shown
     int open_combo{};                                                       // SETTINGS > STUDIO > Controller combo
+    std::string quarter_pipe{"own_bkvert_generic_quarterpipelarge_00001"};  // SETTINGS > STUDIO > Quarter pipe (studio_ramps.h), "" none
 };
 inline void read_settings_file(const Json& root, SettingsFile& f) {
     if (!root.is_object()) return;
@@ -69,6 +70,10 @@ inline void read_settings_file(const Json& root, SettingsFile& f) {
     f.drop_preview = root.value("drop_preview", f.drop_preview);
     f.guide_seen = root.value("guide_read", 0) >= guide_version; // "guide_seen" was the first guide's: it opens again
     f.smooth_transitions = root.value("smooth_transitions", f.smooth_transitions);
+    if (root.contains("quarter_pipe") && root.at("quarter_pipe").is_string()) {
+        const auto ramp = root.at("quarter_pipe").string();
+        f.quarter_pipe = ramp == "off" ? std::string{} : ramp.size() < 96 ? ramp : f.quarter_pipe;
+    }
     // The rail chosen before the square 4 m at 60% became the default (grind_rail_defaults 2, 2026-10-29) is set to it once.
     if (root.value("grind_rail_defaults", 0) >= grind_rail_defaults) {
         if (root.contains("grind_rail") && root.at("grind_rail").is_string()) {
@@ -109,6 +114,7 @@ inline Json settings_file_json(const SettingsFile& f) {
     root["grind_rail"] = f.grind_rail.empty() ? std::string("off") : f.grind_rail;
     root["grind_rail_size"] = f.grind_rail_size;
     root["grind_rail_defaults"] = grind_rail_defaults;
+    root["quarter_pipe"] = f.quarter_pipe.empty() ? std::string("off") : f.quarter_pipe;
     return root;
 }
 }

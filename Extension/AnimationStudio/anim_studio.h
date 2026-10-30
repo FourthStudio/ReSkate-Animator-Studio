@@ -66,6 +66,10 @@ struct View {
     bool grind_open{};
     std::string grind_rail;
     float grind_rail_size{0.6f};
+    // The open trick is one of the game's inverts (studio_ramps.h invert_clip): it stands on the quarter pipe, and the
+    // editor shows the RAMP button. quarter_pipe: the one chosen ("" none).
+    bool invert_open{};
+    std::string quarter_pipe;
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
     // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
     // and its name. Opening another trick to edit drops it, so ask first.
@@ -195,6 +199,10 @@ struct Settings {
     std::string grind_rail;
     float grind_rail_size{0.6f}; // Rail size: how big it is put up (studio_rail_sizes)
     std::vector<std::string> rails;
+    // SETTINGS > STUDIO > Quarter pipe: the game's quarter pipe a handplant stands on in the studio (studio_ramps.h), ""
+    // none, and the ones this player's build kit can place (all of studio_quarter_pipes until the game has said).
+    std::string quarter_pipe;
+    std::vector<std::string> quarter_pipes;
     std::string your_name;
     std::string export_folder, import_folder; // "" the defaults
     std::string export_path, import_path;     // where they are, in full (UTF-8)
@@ -473,6 +481,8 @@ void set_catch_marker(bool on);
 // The grind rail (studio_rails.h key, "" none): a game grind opened in the studio stands on that rail.
 void set_grind_rail(const std::string& key);
 void set_grind_rail_size(float size); // one of studio_rail_sizes (the nearest)
+// The quarter pipe (studio_ramps.h key, "" none): a game invert opened in the studio stands on it, the hand on its coping.
+void set_quarter_pipe(const std::string& key);
 void set_drop_preview_tool(bool on);
 // The first-start guide read (true), or to open again (false).
 void set_guide_seen(bool seen);
@@ -542,6 +552,7 @@ bool peek_saved(const std::string& animation, bool play = true);
 bool peek_playing();   // the trick asked to play is ready and shown (held on its first frame until peek_go)
 void peek_go();        // it starts playing from its first frame now
 bool peek_ready();     // all of it is there to be seen: its first frame, and for a grind the studio rail standing under it
+int peek_prop();       // what the trick looked at stands on: 0 the floor, 1 the grind rail, 2 the quarter pipe (an invert)
 void end_peek();       // and one asked for that is not ready yet does not start
 float peek_duration(); // the trick being looked at, in seconds (0 none)
 // Deletes a saved trick and takes it out of every pack it is in. A pack got from someone else (the MARKET, an import)

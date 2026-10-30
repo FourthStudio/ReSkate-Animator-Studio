@@ -1,5 +1,6 @@
 #include "studio_settings_rows.h"
 #include "studio_rails.h"
+#include "studio_ramps.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -84,6 +85,23 @@ Setting grind_rail(const studio::Settings& now) {
                   "stands in your park only while the studio is open in the Studio room (out of sight under the floor until a "
                   "grind is open), and never in an online session.",
                   [keys](int picked) { studio::set_grind_rail(keys[static_cast<std::size_t>(picked)]); });
+}
+Setting quarter_pipe(const studio::Settings& now) {
+    std::vector<std::string> options{"OFF"}, keys{""};
+    int selected = 0;
+    for (const auto& key : now.quarter_pipes)
+        if (const auto* ramp = studio::studio_quarter_pipe(key)) {
+            if (ramp->key == now.quarter_pipe) selected = static_cast<int>(options.size());
+            options.emplace_back(ramp->name);
+            keys.emplace_back(ramp->key);
+        }
+    return one_of("Quarter pipe", std::move(options), selected,
+                  "The game's own quarter pipe a handplant stands on in the studio: open one of the game's handplants or other "
+                  "inverts and it is put up under it, the planted hand on its coping and the wall under the board, as in game. "
+                  "L is a vert ramp (its top 75 cm straight up), the size the game's own handplants ride. It stands in your park "
+                  "only while the studio is open in the Studio room (out of sight under the floor until an invert is open), and "
+                  "never in an online session.",
+                  [keys](int picked) { studio::set_quarter_pipe(keys[static_cast<std::size_t>(picked)]); });
 }
 Setting controller_combo(const studio::Settings& now) {
     return one_of("Controller combo", {studio::open_combo_names.begin(), studio::open_combo_names.end()}, std::clamp(now.open_combo, 0, 3),
