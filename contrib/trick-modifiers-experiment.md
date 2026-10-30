@@ -69,5 +69,14 @@ You can add untagged tricks, remove entries, rename it, or use it as a regular p
 
 Automated coverage checks route preference/fallback with the real stance matcher, metadata
 round trips, bind validation and selective Sony report filtering across USB, Bluetooth simple/full
-and padded DS4 reads. Automated tests do not establish that the native game input is suppressed
+and padded DS4 reads. `modifier.2` also filters the final Steam Overlay XInput result: Steam may
+answer from its own cached pad after an inner XInput hook, which let RB/R1 reach the native darkcatch
+in the first prototype. Direct XInput and Steam now use the same final filtering step.
+
+From a Visual Studio developer shell, run `python contrib/check_studio_modifier_steam.py` to compile
+the production Steam-front hook against a cached-pad provider. It must suppress R1 for the game,
+retain A, analog input and Studio's raw R1 read, and restore native R1 when the modifier is OFF.
+The regular `trick_modifiers` CTest suite covers the shared final filtering step and menu capture.
+
+Automated tests do not establish that the native game input is suppressed
 on a physical controller or that a visual animation plays correctly in the game.

@@ -3,6 +3,7 @@
 #include "input_capture.h"
 #include "held_input.h"
 #include "scripted_pad.h"
+#include "polled_gamepad.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Game/Input/playstation_report.h"
 #include "Engine/Game/Input/owned_menu_input.h"
@@ -44,6 +45,11 @@ std::atomic<bool> challenge_native_panel{};
 std::atomic<bool> challenge_menu_release{};
 bool suppress_challenge_menu() noexcept {
     return !overlay_input_access && (challenge_menu_capture.load(std::memory_order_relaxed) || challenge_menu_release.load(std::memory_order_relaxed));
+}
+std::uint16_t game_hidden_buttons() noexcept {
+    if (overlay_input_access) return 0;
+    return static_cast<std::uint16_t>(mode_hidden_buttons.load(std::memory_order_relaxed) |
+        modifier_hidden_buttons() | (suppress_challenge_menu() ? XINPUT_GAMEPAD_START : 0));
 }
 bool challenge_menu_key(int key) noexcept {
     return key==VK_ESCAPE && suppress_challenge_menu();
@@ -426,7 +432,7 @@ void note_xinput(DWORD user, const XINPUT_STATE& state) noexcept;
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const bool capture = block_polled_input();
-    const bool menu=suppress_challenge_menu();
+    const auto hidden = game_hidden_buttons();
     const bool outer = overlay_input_access == 0;
     note_prompt_read(prompt_xinput);
     DWORD result;
@@ -437,16 +443,8 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
-    if (result == ERROR_SUCCESS && output && capture) {
-        output->Gamepad = {};
-        output->dwPacketNumber ^= 0x80000000u;
-    } else if (result == ERROR_SUCCESS && output) {
-        if (outer) game_pad_read(user, output);
-        if (menu) {
-            output->Gamepad.wButtons=game::owned_menu_buttons(output->Gamepad.wButtons,true);
-            output->dwPacketNumber ^= 0x40000000u;
-        }
-    }
+    if (result == ERROR_SUCCESS && output)
+        finish_gamepad_read(*output, outer, capture, hidden, [user](XINPUT_STATE& pad) { game_pad_read(user, &pad); });
     return result;
 }
 void keep_xinput_capture_first() {
@@ -895,9 +893,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const bool game_poll = !overlay_input_access;
     const bool capture = block_polled_input();
     note_prompt_read(prompt_xinput);
-    const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
-        mode_hidden_buttons.load(std::memory_order_relaxed) | modifier_hidden_buttons() |
-        (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
+    const auto hidden = game_hidden_buttons();
     DWORD result;
     { // XInput exports can forward through another hooked XInput export.
         OverlayInputAccess access;
@@ -910,18 +906,8 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         *output = {};
         return ERROR_SUCCESS;
     }
-    if (result == ERROR_SUCCESS && output && capture) {
-        output->Gamepad = {};
-        // The game must notice a neutral state even if the physical packet did
-        // not change between opening the menu and its next controller poll.
-        output->dwPacketNumber ^= 0x80000000u;
-    } else if (result == ERROR_SUCCESS && output) {
-        if (game_poll) game_pad_read(user, output);
-        if (hidden) {
-            output->Gamepad.wButtons &= static_cast<WORD>(~hidden);
-            output->dwPacketNumber ^= 0x40000000u;
-        }
-    }
+    if (result == ERROR_SUCCESS && output)
+        finish_gamepad_read(*output, game_poll, capture, hidden, [user](XINPUT_STATE& pad) { game_pad_read(user, &pad); });
     return result;
 }
 // TEST ONLY: with RESKATE_TEST_PAD=1 the virtual pad is a connected controller in slot 0, whether a real one

@@ -1,6 +1,7 @@
 #include "Extension/AnimationStudio/trick_modifier.h"
 #include "Extension/AnimationStudio/anim_runtime_rules.h"
 #include "Engine/Game/Input/playstation_report.h"
+#include "Extension/UI/Overlay/polled_gamepad.h"
 #include <array>
 #include <iostream>
 #include <stdexcept>
@@ -51,6 +52,29 @@ int main() {
               "Front-foot mirroring remains available for modifier tricks");
         special.clear(); normal.clear();
         check(choose_trick_route(true, select).empty(), "No matching custom trick leaves the native animation available");
+
+        // Steam may return cached buttons after an inner XInput hook ran. Filter the final game-facing sample.
+        struct Pad { std::uint16_t wButtons; std::int16_t sThumbRX; std::uint8_t bLeftTrigger; };
+        struct State { std::uint32_t dwPacketNumber; Pad Gamepad; };
+        const State physical{7, {0x1200, 12000, 91}};
+        const auto native_filter = [](State& output) { output.Gamepad.wButtons |= 0x0200; };
+        auto output = physical;
+        overlay::detail::finish_gamepad_read(output, true, false, 0x0200, native_filter);
+        check(output.Gamepad.wButtons == 0x1000 && output.Gamepad.sThumbRX == 12000 && output.Gamepad.bLeftTrigger == 91,
+              "The final sample removes R1 even if a preceding provider/filter supplies it again, retaining other input");
+        check(output.dwPacketNumber != physical.dwPacketNumber, "Capture ownership is visible even on a cached packet");
+        output = physical;
+        overlay::detail::finish_gamepad_read(output, false, true, 0x0200, native_filter);
+        check(output.Gamepad.wButtons == physical.Gamepad.wButtons && output.dwPacketNumber == physical.dwPacketNumber,
+              "Studio raw reads bypass both the game filter and capture");
+        output = physical;
+        overlay::detail::finish_gamepad_read(output, true, false, 0, native_filter);
+        check(output.Gamepad.wButtons == physical.Gamepad.wButtons && output.dwPacketNumber == physical.dwPacketNumber,
+              "OFF, menus and released leases restore the native button and original packet");
+        output = physical;
+        overlay::detail::finish_gamepad_read(output, true, true, 0x0200, native_filter);
+        check(!output.Gamepad.wButtons && !output.Gamepad.sThumbRX && !output.Gamepad.bLeftTrigger,
+              "Full menu capture stays neutral and never runs the game filter");
 
         // Cover USB, full/simple Bluetooth and Windows-padded DS4 reports for every configurable button.
         struct Report { PlayStationPad kind; bool bt; std::uint8_t id; std::size_t size; };
