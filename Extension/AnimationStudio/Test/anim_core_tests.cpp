@@ -1213,6 +1213,19 @@ void merged_library_and_timing() {
     check(playback_pop_rank("low", "mid") < 0 && playback_pop_rank("low", "high") < 0 && playback_pop_rank("low", "") == 1 &&
               playback_pop_rank("", "mid") < 0,
           "A trick on its own pop plays only on that height; on any pop only by its pack's any rule");
+    // A pack's trick filling in on a pop its pack has nothing for: after everything made for that pop or for every pop,
+    // the nearest height first; a version for another pop still does not play.
+    check(fill_pop_rank(0, 1) == 2 && fill_pop_rank(0, 2) == 3 && fill_pop_rank(0, 0) == 0 && fill_pop_rank(-1, 1) == -1 &&
+              fill_pop_rank(1, 0) == 1,
+          "A filling-in trick ranks after the exact and the ANY pop ones, nearer heights first");
+    {
+        const StanceCandidate exact{false, false, 0}, filling{false, false, fill_pop_rank(0, 1)}, far{false, false, fill_pop_rank(0, 2)};
+        const std::vector<StanceCandidate> all{filling, exact, far};
+        check(choose_stance_variants(all, LiveStance{false, false}, true) == std::vector<std::size_t>{1}, "A trick made for the pop beats a pack filling in");
+        const std::vector<StanceCandidate> fills{far, filling};
+        check(choose_stance_variants(fills, LiveStance{false, false}, true) == std::vector<std::size_t>{1}, "The nearest pop fills in first");
+        check(pop_height("low") == 0 && pop_height("high") == 2 && pop_height("") == -1, "Pop heights in order");
+    }
     {
         // The game's way: the flip at the same pace on every pop, a higher pop's extra air held at the catch. A trick made
         // on the low pop (flip 0.2 to 0.5 s, landing 0.6) played on the high one (the same flip, landing 0.75).

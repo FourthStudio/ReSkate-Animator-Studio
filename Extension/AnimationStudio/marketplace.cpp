@@ -162,6 +162,49 @@ std::string said(const Answer& a) {
     return "Thunderstore answered " + std::to_string(a.status) + (text.empty() ? std::string{} : " (" + text + ")");
 }
 
+// ---- downloads ------------------------------------------------------------------------------------
+// Why a download failed, in words. Thunderstore says 200 before the body comes, so a body cut short (the time ran out,
+// the connection dropped) was shown as "the download failed (200)" (2026-10-29), which says nothing.
+std::string download_failure(const https::Download& got) {
+    if (got.http_status && got.http_status != 200) return "Thunderstore answered " + std::to_string(got.http_status);
+    switch (got.error) {
+    case ERROR_TIMEOUT:
+    case ERROR_WINHTTP_TIMEOUT: return "it took too long (a slow or busy connection)";
+    case ERROR_FILE_TOO_LARGE: return "it is bigger than 256 MB";
+    case ERROR_CANCELLED: return "it was stopped";
+    case ERROR_WRITE_FAULT:
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL: return "it could not be written to the disk (is it full?)";
+    case ERROR_WINHTTP_NAME_NOT_RESOLVED:
+    case ERROR_WINHTTP_CANNOT_CONNECT: return "Thunderstore could not be reached (no connection?)";
+    case ERROR_WINHTTP_CONNECTION_ERROR:
+    case ERROR_WINHTTP_INVALID_SERVER_RESPONSE: return "the connection dropped part way";
+    default: return "Windows error " + std::to_string(got.error);
+    }
+}
+// A pack's zip, downloaded to `destination` (which must not be there): up to 30 minutes, for the big packs (a 127 MB one
+// needs 0.4 MB/s to come in the 5 minutes it was given), and twice more after a dropped connection or a timeout. Not
+// again after Thunderstore said no, it was too big, or it was stopped.
+https::Download download_pack(const std::string& url, const std::filesystem::path& destination, https::Watch* watch) {
+    https::Download got;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        std::error_code error;
+        std::filesystem::remove(destination, error);
+        if (watch) watch->received.store(0);
+        got = https::get(widen(url), destination, 256ull * 1024 * 1024, 1800, agent, watch);
+        if (got.ok) return got;
+        const bool again = !(got.http_status && got.http_status != 200) && got.error != ERROR_FILE_TOO_LARGE && got.error != ERROR_CANCELLED &&
+                           got.error != ERROR_DISK_FULL && got.error != ERROR_HANDLE_DISK_FULL && got.error != ERROR_WRITE_FAULT;
+        logging::log(Level::warning, Channel::skater, "Animator Studio market: a download failed ({}, try {} of 3){}", download_failure(got),
+                     attempt + 1, again && attempt < 2 ? "; trying again" : "");
+        if (!again) break;
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    std::error_code error;
+    std::filesystem::remove(destination, error);
+    return got;
+}
+
 // ---- the token, kept encrypted for this Windows user ---------------------------------------------
 std::string protect(std::string_view plain, bool encrypt) {
     DATA_BLOB in{static_cast<DWORD>(plain.size()), reinterpret_cast<BYTE*>(const_cast<char*>(plain.data()))}, out{};
@@ -474,7 +517,7 @@ bool search_packs(std::vector<Pack>& packs, std::string& error) {
         https::Download result{};
         const auto text = https::get_text(widen(url), 8 * 1024 * 1024, 30, agent, &result);
         if (!text) {
-            error = "Thunderstore could not be reached (" + std::to_string(result.http_status ? result.http_status : result.error) + ").";
+            error = "Thunderstore could not be reached: " + download_failure(result) + ".";
             return false;
         }
         std::string next;
@@ -625,12 +668,12 @@ std::vector<PreviewTrick> fetch_preview(const Pack& pack) {
                 if (thread.joinable()) thread.join();
             }
         } join_watcher{done, watcher};
-        const auto got = https::get(widen(pack.download_url), part, 256ull * 1024 * 1024, 300, agent, &watch);
+        const auto got = download_pack(pack.download_url, part, &watch);
         done.store(true);
         watcher.join();
         if (!got.ok) {
             std::filesystem::remove(part, error);
-            throw std::runtime_error("the download failed (" + std::to_string(got.http_status ? got.http_status : got.error) + ")");
+            throw std::runtime_error("the download failed: " + download_failure(got));
         }
         if (!studio_zip(part)) {
             std::filesystem::remove(part, error);
@@ -796,7 +839,7 @@ void refresh(bool force) {
             https::Download result{};
             const auto url = std::string(site) + "/c/" + community + "/api/v1/package/";
             const auto text = https::get_text(widen(url), 96ull * 1024 * 1024, 90, agent, &result);
-            if (!text) error = "Thunderstore could not be reached (" + std::to_string(result.http_status ? result.http_status : result.error) + ").";
+            if (!text) error = "Thunderstore could not be reached: " + download_failure(result) + ".";
             else
                 try {
                     packs = read_listing(*text);
@@ -966,11 +1009,10 @@ void install(const std::string& full_name) {
             previewed = std::filesystem::is_regular_file(kept, error) && std::filesystem::copy_file(kept, zip, error) && !error;
             if (!previewed) std::filesystem::remove(zip, error);
         }
-        const auto got = previewed ? https::Download{} : https::get(widen(pack.download_url), zip, 256ull * 1024 * 1024, 300, agent, &watch);
+        const auto got = previewed ? https::Download{} : download_pack(pack.download_url, zip, &watch);
         done.store(true);
         watcher.join();
-        if (!previewed && !got.ok)
-            throw std::runtime_error("the download failed (" + std::to_string(got.http_status ? got.http_status : got.error) + ")");
+        if (!previewed && !got.ok) throw std::runtime_error("the download failed: " + download_failure(got));
         // It has to be one of the studio's: its marker at the top.
         {
             const auto bytes = read_file(zip);

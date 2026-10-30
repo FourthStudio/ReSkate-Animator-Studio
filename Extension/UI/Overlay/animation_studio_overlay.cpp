@@ -1832,6 +1832,39 @@ std::string elide(ImFont* font, float size, const std::string& value, float widt
     while (!cut.empty() && text_size(font, size, (cut + "...").c_str()).x > width) cut.pop_back();
     return cut + "...";
 }
+// What the studio says, wrapped in a box at most `width` wide and three rows tall, the third cut short with "..." when it
+// runs on (one long line ran across the whole screen, 2026-10-30).
+void status_box(ImDrawList* d, const Fonts& f, ImVec2 at, float width, ImU32 colour, const std::string& line) {
+    const float k = f.k, size = 14 * k, row_h = 19 * k;
+    std::vector<std::string> rows;
+    std::string row;
+    for (std::size_t a = 0; a <= line.size();) {
+        auto b = line.find(' ', a);
+        if (b == std::string::npos) b = line.size();
+        const std::string word = line.substr(a, b - a);
+        a = b + 1;
+        if (word.empty()) continue;
+        const std::string longer = row.empty() ? word : row + " " + word;
+        if (!row.empty() && text_size(f.bold, size, longer.c_str()).x > width) {
+            rows.push_back(row);
+            row = word;
+        } else row = longer;
+    }
+    if (!row.empty()) rows.push_back(row);
+    if (rows.empty()) return;
+    if (rows.size() > 3) {
+        std::string rest = rows[2];
+        for (std::size_t r = 3; r < rows.size(); ++r) rest += " " + rows[r];
+        rows.resize(3);
+        rows[2] = elide(f.bold, size, rest, width);
+    }
+    float wide = 0;
+    for (const auto& r : rows) wide = std::max(wide, text_size(f.bold, size, r.c_str()).x);
+    const float high = row_h * static_cast<float>(rows.size() - 1) + size;
+    skate_theme::rough_rect(d, ImVec2(at.x - 14 * k, at.y - 9 * k), ImVec2(at.x + wide + 14 * k, at.y + high + 9 * k), IM_COL32(16, 16, 18, 230), 41,
+                            k * 0.6f);
+    for (std::size_t r = 0; r < rows.size(); ++r) text(d, f.bold, size, ImVec2(at.x, at.y + row_h * static_cast<float>(r)), colour, rows[r]);
+}
 // The one the pad has chosen: a white outline round it, as the game draws its own.
 void chosen_outline(ImDrawList* d, ImVec2 a, ImVec2 b, float k) {
     d->AddRect(ImVec2(a.x - 3 * k, a.y - 3 * k), ImVec2(b.x + 3 * k, b.y + 3 * k), white, 0, 0, 2.4f * k);
@@ -11628,12 +11661,9 @@ void draw_animation_studio() {
         timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
         selection_bar(d, f, v, (left + right) * 0.5f - side_w * 0.25f, display.y - timeline_h);
         shortcuts(d, f, v, ImVec2(right - 20 * k, display.y - timeline_h - 14 * k), right);
-        if (!line.empty()) {
-            const auto w = text_size(f.bold, 15 * k, line.c_str());
-            const ImVec2 at(view_min.x + 24 * k, 100 * k);
-            skate_theme::rough_rect(d, ImVec2(at.x - 14 * k, at.y - 7 * k), ImVec2(at.x + w.x + 14 * k, at.y + w.y + 7 * k), IM_COL32(16, 16, 18, 230), 41, k * 0.6f);
-            text(d, f.bold, 15 * k, at, v.failure.empty() ? white : skate_theme::danger, line);
-        }
+        if (!line.empty())
+            status_box(d, f, ImVec2(view_min.x + 24 * k, 100 * k), std::min(680 * k, view_max.x - view_min.x - 48 * k),
+                       v.failure.empty() ? white : skate_theme::danger, line);
         if (!card && !menu_open_at_input) keyboard(v);
     }
     ImGui::End();

@@ -128,6 +128,9 @@ struct CustomTrick {
     // only. "" the trick itself.
     std::string height;
     bool any_pop{};  // the trick itself on ANY pop: it plays when the pop is not known yet too
+    // Another maker's pack trick's version for a pop its pack has nothing for: how many heights from its own (fill_pop_rank),
+    // 0 not one.
+    int fill{};
     // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
 };
@@ -1852,6 +1855,15 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
         const std::string set_pop = animation->pop;
         if (set_pop != clip_pop)
             if (auto version = version_for(set_pop)) out = std::move(*version);
+        // Another maker's pack trick fills in on the other heights too (2026-10-30: "we need all the packs to be working"):
+        // its version for each, played only when nothing in the playlist is for that pop (fill_pop_rank). Yours do not.
+        if (p.foreign)
+            for (const char* height : {"low", "mid", "high"})
+                if (height != set_pop)
+                    if (auto version = version_for(height)) {
+                        version->fill = std::abs(pop_height(height) - pop_height(set_pop));
+                        heights->push_back(std::move(*version));
+                    }
     }
     return out;
 }
@@ -4337,6 +4349,7 @@ void on_animation(std::uintptr_t component) noexcept {
                             // A trick on ANY pop also while the pop is not known.
                             int rank = playback_pop_rank(pop, t.edits->pop);
                             if (pop.empty() && t.any_pop) rank = 1;
+                            rank = fill_pop_rank(rank, t.fill); // a pack's trick filling in: after all made for this pop
                             described.push_back({t.leads_right, t.fakie, rank});
                         }
                         if (!candidates.empty()) break;
@@ -4380,7 +4393,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 // What was chosen and why, for the diagnostics (Dump Doctor reads it).
                 if (found)
                     l.decision = std::format("{} ({}{}{})", found->name,
-                                             found->any_pop || found->edits->pop.empty() ? std::string("ANY pop")
+                                             found->fill                                     ? std::string("filling in: its pack has none for this pop")
+                                             : found->any_pop || found->edits->pop.empty() ? std::string("ANY pop")
                                                                                            : std::string("its own pop"),
                                              found->leads_right == live.leads_right ? "" : ", mirrored",
                                              variants.size() > 1 ? std::format(", one of {}", variants.size()) : std::string());

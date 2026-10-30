@@ -163,6 +163,12 @@ inline int playback_pop_rank(const std::string& wanted, const std::string& saved
     if (saved == wanted) return 0;
     return saved.empty() ? 1 : -1;
 }
+// A pack's trick filling in on a pop its pack has nothing for (CustomTrick::fill: how many heights away its own pop is,
+// 0 not one): after everything in the playlist made for that pop or for every pop, the nearest height first. Other makers'
+// packs mostly cover a trick on one or two pops, and on the rest the game's own trick played: "the pack does not work"
+// (2026-10-30). A trick of your own keeps to the pop it is set to.
+inline int fill_pop_rank(int rank, int fill) noexcept { return rank == 0 && fill > 0 ? 1 + fill : rank; }
+inline int pop_height(std::string_view pop) noexcept { return pop == "low" ? 0 : pop == "mid" ? 1 : pop == "high" ? 2 : -1; }
 inline bool episode_selection_changed(std::string_view selected, std::string_view reported,
                                       std::string_view selected_pop = {}, std::string_view wanted_pop = {}) noexcept {
     // Blank names are transient state. An explicit pop binding must be reconsidered
