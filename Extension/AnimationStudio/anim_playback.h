@@ -203,6 +203,7 @@ struct EditTransition {
     std::vector<Offset> from, current;
     float from_left{}; // how much of `from` is still in `current`: 1 as a fade starts, 0 when it is done
     float length{-1};  // a fade of its own length (a jump eased, jump_fade), -1 the caller's `seconds`
+    bool restarted{};  // the last evaluate began a fade into another animation (or none): PoseFade starts with it
     static constexpr float jump_fade = 0.1f;
     void reset() { *this = {}; }
     // Any joint whose wanted turn is more than `degrees` from the one drawn, or moved more than 25 cm.
@@ -227,7 +228,8 @@ struct EditTransition {
         if (generation != gen || current.size() != desired.size() || now < observed) {
             generation = gen; current.assign(desired.size(), Offset{}); started = -1;
         }
-        if (started < 0 || episode != attempt || source != selected) {
+        restarted = started < 0 || episode != attempt || source != selected;
+        if (restarted) {
             from = current; started = now; episode = attempt; source = selected; length = -1;
         } else if (jump_degrees > 0 && from_left <= 0 && jumps(current, desired, jump_degrees)) {
             from = current; started = now; length = jump_fade;
@@ -245,6 +247,65 @@ struct EditTransition {
                 current[i].offset[k] = u >= 1 ? desired[i].offset[k] : from[i].offset[k] + (desired[i].offset[k] - from[i].offset[k]) * u;
         }
         return current;
+    }
+};
+// ---- one animation into the next: a crossfade in the pose --------------------------------------------------------------
+// From one animation into the next - a grind or a manual of yours into a flip of yours, a trick into the game's own next
+// move - the pose drawn last is held as it was and blended into the next one's pose (its keys on the game's pose now, or
+// the game's own pose when nothing of yours comes next): each joint straight from where it was drawn to where it goes.
+// Blended as the changes each one makes to the game's pose instead, the last one's changes were laid on the game's pose of
+// another move while it faded: a grind's bent knees on the pop out of it, the legs and feet thrown about. Only the joints
+// either animation changes fade; every other one is the game's as it goes.
+struct PoseFade {
+    std::vector<Joint> from;            // the pose drawn last, as it was when the fade began
+    std::vector<unsigned char> joints;  // 1: this joint fades
+    double started{-1};
+    float length{};
+    void reset() noexcept {
+        from.clear();
+        joints.clear();
+        started = -1;
+    }
+    bool on(double now) const noexcept { return started >= 0 && now >= started && now - started < length; }
+    static bool differs(const Joint& a, const Joint& b) noexcept {
+        const float dot = std::abs(a.rotation[0] * b.rotation[0] + a.rotation[1] * b.rotation[1] + a.rotation[2] * b.rotation[2] +
+                                   a.rotation[3] * b.rotation[3]);
+        float moved = 0;
+        for (std::size_t k = 0; k < 3; ++k) moved += (a.position[k] - b.position[k]) * (a.position[k] - b.position[k]);
+        return dot < 0.9999995f || moved > 0.0005f * 0.0005f; // more than about a tenth of a degree, or half a millimetre
+    }
+    static bool changes(const Offset& o) noexcept {
+        return !(o.rotation == Quat{0, 0, 0, 1}) || o.offset[0] * o.offset[0] + o.offset[1] * o.offset[1] + o.offset[2] * o.offset[2] > 1e-8f;
+    }
+    // From `drawn` (the pose drawn last) into the animation whose changes to the game's pose now are `next`, over `seconds`.
+    void start(double now, float seconds, std::span<const Joint> drawn, std::span<const Joint> native, std::span<const Offset> next) {
+        from.assign(drawn.begin(), drawn.end());
+        joints.assign(from.size(), 0);
+        for (const auto& joint : editable_joints()) {
+            const auto i = joint.index;
+            if (i >= from.size() || i >= native.size()) continue;
+            joints[i] = differs(drawn[i], native[i]) || (i < next.size() && changes(next[i]));
+        }
+        started = now;
+        length = std::max(seconds, 0.02f);
+    }
+    // The faded pose as changes to the game's pose now, into `out` (the fading joints only): `next` is the next animation's
+    // changes to it (none: the game's own pose).
+    void apply(double now, std::span<const Joint> native, std::span<const Offset> next, std::span<Offset> out) const noexcept {
+        if (!on(now)) return;
+        float u = std::clamp(static_cast<float>(now - started) / length, 0.0f, 1.0f);
+        u = u * u * (3 - 2 * u);
+        for (std::size_t i = 0; i < joints.size() && i < native.size() && i < out.size(); ++i) {
+            if (!joints[i]) continue;
+            const Offset change = i < next.size() ? next[i] : Offset{};
+            const Quat target = normalised(multiply(native[i].rotation, change.rotation));
+            const Quat drawn = slerp(from[i].rotation, target, u);
+            out[i].rotation = normalised(multiply(conjugate(native[i].rotation), drawn));
+            for (std::size_t k = 0; k < 3; ++k) {
+                const float to = native[i].position[k] + change.offset[k];
+                out[i].offset[k] = from[i].position[k] + (to - from[i].position[k]) * u - native[i].position[k];
+            }
+        }
     }
 };
 // On a rail the board's pass gives the board back to the game at once, but the body fades the trick out over the
@@ -377,56 +438,4 @@ inline float lowest_ankle(bool rolling, bool over, float height) noexcept {
     if (rolling) return over ? ankle_on_deck : ankle_on_ground;
     return over && height >= -0.08f ? ankle_on_deck : -std::numeric_limits<float>::infinity();
 }
-// ---- off a drop: the catch slowed, never held still ------------------------------------------------------------------
-// Off a drop, down stairs or onto a ledge the air is longer or shorter than the trick's own. From its catch the
-// trick's time is its own (the game's pose is off the clip by then): it runs slower - or faster - so its landing comes on
-// the game's touchdown, easing into the new pace and out of it again, never standing still and never jumping. `hold` (the
-// trick's CATCH HOLD) says where the extra time goes: 1 around the catch (the knees up long, the legs reaching for the
-// ground late), 0 spread evenly from the catch to the landing. (It held the catch frozen until the ground came: on a big
-// set the skater stood still in the air for two seconds.)
-struct AirStretch {
-    static constexpr float slowest = 0.05f, fastest = 2.2f, ease = 0.1f; // trick seconds a second; seconds to change pace
-    // Seconds to slow down: from the catch little of the trick may be left (a tre's 0.1 s to its landing), and slowed over
-    // `ease` it ran into its landing and stood there for most of the drop.
-    static constexpr float ease_down = 0.03f;
-    float time{-1}; // the trick's time while it is its own (-1: still the game's clock)
-    float rate{1};
-    bool on() const noexcept { return time >= 0; }
-    void reset() noexcept { *this = {}; }
-    // Its slow part: from the catch to a share of the way on to the landing; after it, its own pace. (It began up to 0.1 s
-    // before the catch: a flip still turning there turned slowly beside him, the board off his feet, for a third of a
-    // second - a tre down the Tri-Towers gap, 2026-10-26.)
-    static float slow_from(float, float caught) noexcept { return caught; }
-    static float slow_until(float caught, float land, float hold) noexcept {
-        return std::min(land, caught + std::max(1.0f / 30, (land - caught) * (1 - std::clamp(hold, 0.0f, 1.0f))));
-    }
-    // One update. `clock`: the trick's time by the game's clock; `to_ground`: seconds until the board is down (below 0: not
-    // known); `step`: seconds since the last update. Returns the trick's time.
-    float update(float clock, float to_ground, float step, float takeoff, float caught, float land, float hold) noexcept {
-        if (!(caught > takeoff) || takeoff < 0 || !(land > caught) || !std::isfinite(clock) || clock < 0) return on() ? time : clock;
-        const bool known = std::isfinite(to_ground) && to_ground >= 0;
-        if (!on()) {
-            if (!known || clock < slow_from(takeoff, caught)) return clock;
-            const float left = land - clock; // its own air still to come
-            // In step with the game: its clock. A flat pop's air is the clip's give or take 0.06 s (a metre's drop adds 0.14).
-            if (!(to_ground > left + 0.1f) && !(to_ground < left - 0.1f)) return clock;
-            time = std::min(clock, land - 1.0f / 60);
-            rate = 1;
-        }
-        if (!(step > 0) || !std::isfinite(step)) return time;
-        float want = rate; // the ground not known for a moment: it keeps its pace
-        if (known) {
-            // Aimed at its last moment before the landing, on the touchdown (which brings the landing itself).
-            const float end = land - 1.0f / 60, until = std::min(end, slow_until(caught, land, hold));
-            const float tail = end - std::max(time, until); // after the slow part, at its own pace to the landing
-            // The slow part ends with time to come back up to pace before the tail (none needed when there is no tail).
-            const float ramp = tail > 1.0f / 60 ? 1.5f * ease : 0.0f;
-            want = time < until ? (until - time) / std::max(to_ground - tail - ramp, 0.02f) : (end - time) / std::max(to_ground, 0.02f);
-        }
-        want = std::clamp(want, slowest, fastest);
-        rate += (want - rate) * (1 - std::exp(-step / (want < rate ? ease_down : ease)));
-        time = std::min(time + rate * step, land - 1.0f / 60);
-        return time;
-    }
-};
 } // namespace dingosdk::anim_studio

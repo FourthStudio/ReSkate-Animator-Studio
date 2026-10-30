@@ -1543,69 +1543,12 @@ void authored_gameplay_matches_f8_limbs_and_source_key_times() {
     const auto finished = episode.sample(12, 0.2f, 0.75f, 2, 1, 1, true);
     check(finished.time == 2 && finished.weight == 0 && finished.finished, "Source playback ends and releases at clip duration without looping");
 }
-// Off a drop the catch is slowed, not held: the trick's landing comes by the touchdown, its time never stands still or goes
-// back, and a shorter air plays faster.
-void slow_catch_off_drops() {
-    constexpr float step = 1.0f / 60;
-    {
-        const float takeoff = 0.5f, caught = 1.0f, land = 1.1f, air = (land - takeoff) + 1.5f; // a drop 1.5 s longer
-        AirStretch s;
-        float last = -1, slowest = 10;
-        bool still = false, flip_slowed = false;
-        for (float t = step; t < air - 1e-4f; t += step) {
-            const float time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
-            if (takeoff + t < caught - 1e-4f && !near(time, takeoff + t, 1e-4f)) flip_slowed = true;
-            if (last >= 0 && time <= last && time < land - 1.0f / 60 - 1e-4f) still = true;
-            if (s.on()) slowest = std::min(slowest, s.rate);
-            last = time;
-        }
-        check(s.on(), "A longer air than its own gives the trick its own time");
-        check(!still, "It never stands still or goes back in the air");
-        check(!flip_slowed, "Before its catch it keeps the game's pace (a flip still turning is not slowed)");
-        check(slowest >= AirStretch::slowest && slowest < 0.3f, "It slows down through the catch");
-        check(land - last < 0.1f, "and comes to its landing by the touchdown");
-        AirStretch flat;
-        const float own = land - takeoff;
-        float shown = -1;
-        for (float t = step; t < own - 1e-4f; t += step) shown = flat.update(takeoff + t, own - t, step, takeoff, caught, land, default_catch_hold);
-        check(!flat.on() && near(shown, takeoff + own - step, 1e-3f), "In step with the game (flat ground) it is the game's clock");
-    }
-    {
-        // A Nollie 360 Flip down the Tri-Towers gap (2026-10-26): 0.1 s from its catch to its landing, 0.75 s more air than
-        // its own. It came to its landing 0.7 s before the touchdown and stood still there.
-        const float takeoff = 0.18f, caught = 0.52f, land = 0.617f, air = 1.17f;
-        AirStretch s;
-        float landed_at = air;
-        for (float t = step; t < air - 1e-4f; t += step) {
-            const float time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
-            if (time >= land - 1.0f / 60 - 1e-5f && landed_at == air) landed_at = t;
-        }
-        check(s.on() && air - landed_at < 0.05f, "A trick with little left after its catch comes to its landing by the touchdown");
-    }
-    {
-        const float takeoff = 0.5f, caught = 0.8f, land = 1.1f, air = 0.4f; // onto a ledge, 0.2 s sooner
-        AirStretch s;
-        float time = -1;
-        for (float t = step; t < air - 1e-4f; t += step) time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
-        check(s.on() && time > takeoff + air + 0.03f, "A shorter air plays faster, on towards its landing");
-    }
-    {
-        // A flat ollie as the game played it (2026-10-25): 0.13 s after the pop the board rose at 2.5 m/s, its lowest point
-        // 0.38 m up, and it was down 0.36 s later; at the top (0.6 m up) 0.26 s later. 9.81 said 0.63 s: a drop.
-        check(near(time_to_ground(2.5f, 0.38f), 0.36f, 0.02f) && near(time_to_ground(0.57f, 0.602f), 0.26f, 0.02f),
-              "The time to the ground is the game's, at the board's own gravity");
-        AirStretch s;
-        const float takeoff = 0.18f, caught = 0.42f, land = 0.667f;
-        float clock = 0.35f;
-        bool stretched = false;
-        for (float since = 0.133f; since < 0.484f; since += step, clock += step) {
-            const float height = 0.38f + 2.5f * (since - 0.133f) - 0.5f * board_gravity * (since - 0.133f) * (since - 0.133f);
-            const float speed = 2.5f - board_gravity * (since - 0.133f);
-            s.update(clock, time_to_ground(speed, height), step, takeoff, caught, land, default_catch_hold);
-            stretched = stretched || s.on();
-        }
-        check(!stretched, "A flat ollie is not taken for one off a drop");
-    }
+// How long until the board is down: at the board's own gravity, and along its path (the look ahead at a rail or a ledge).
+void time_to_the_ground() {
+    // A flat ollie as the game played it (2026-10-25): 0.13 s after the pop the board rose at 2.5 m/s, its lowest point 0.38 m
+    // up, and it was down 0.36 s later; at the top (0.6 m up) 0.26 s later.
+    check(near(time_to_ground(2.5f, 0.38f), 0.36f, 0.02f) && near(time_to_ground(0.57f, 0.602f), 0.26f, 0.02f),
+          "The time to the ground is the game's, at the board's own gravity");
     {
         // 22sh's flip over a gap (2026-10-25): straight down from the board is the gap's bottom, 3 m down, which took the
         // trick for one off a drop; along its path it lands on the far side.
@@ -2090,6 +2033,42 @@ void quarter_pipe_goes_under_the_handplant() {
               !same_ramp_spot(spot.at, spot.rotation, spot.at, half_turn),
           "A quarter pipe turned half round is not the same");
     check(!quarter_pipe_spot(*ramp, coping, {0, 1, 0}, -69.99f).valid, "No way up the wall, no quarter pipe");
+}
+
+// One animation into the next (a grind of yours into the pop out of it): blended as poses, from the pose drawn into the next
+// one's, never the last one's changes laid on the game's new pose (PoseFade).
+void animations_crossfade_as_poses() {
+    std::vector<Joint> native(skeleton_joints);
+    auto drawn = native;
+    const Quat bent = from_euler({40, 0, 0});
+    drawn[342].rotation = bent; // the grind's knee, as drawn
+    const std::vector<Offset> none(skeleton_joints); // nothing of yours next: the game's own pose
+    PoseFade fade;
+    fade.start(10.0, 0.2f, drawn, native, none);
+    // The game's pose moves on into its pop: its knee the other way, and a joint of its own turning too.
+    auto pop = native;
+    pop[342].rotation = from_euler({-30, 0, 0});
+    pop[8].rotation = from_euler({0, 20, 0});
+    const auto shown_at = [&](double now) {
+        std::vector<Offset> out(skeleton_joints);
+        fade.apply(now, pop, none, out);
+        auto shown = pop;
+        apply_pose_deltas(out, shown);
+        return shown;
+    };
+    const auto first = shown_at(10.0);
+    check(same_turn(first[342].rotation, bent), "The crossfade starts on the pose drawn, not the old changes on the game's new pose");
+    check(same_turn(first[8].rotation, pop[8].rotation), "A joint neither animation changes is the game's all the way");
+    const auto half = shown_at(10.1);
+    const auto angle = [](const Quat& a, const Quat& b) {
+        return 2 * std::acos(std::min(1.0f, std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3])));
+    };
+    check(angle(half[342].rotation, bent) > 0.1f && angle(half[342].rotation, pop[342].rotation) > 0.1f &&
+              angle(half[342].rotation, bent) < angle(bent, pop[342].rotation),
+          "Halfway it is between the two poses");
+    const auto end = shown_at(10.199);
+    check(angle(end[342].rotation, pop[342].rotation) < 0.01f, "and at its end it is the next pose");
+    check(!fade.on(10.21), "Then it is done");
 }
 
 // COPY TO INS AND OUTS (loop_copy.h): a loop's line, its free ends, and its pose onto an in's last frame and an out's first.
@@ -2767,7 +2746,7 @@ int main(int argc, char** argv) {
         preview_trajectory_uses_the_whole_clip();
         native_playback_contracts();
         fitting_the_air_keeps_the_flip();
-        slow_catch_off_drops();
+        time_to_the_ground();
         landing_and_retiming();
         native_clips_pop_where_the_game_does();
         native_clock_follows_the_game();
@@ -2814,6 +2793,7 @@ int main(int argc, char** argv) {
         grind_rail_goes_under_the_grind();
         quarter_pipe_goes_under_the_handplant();
         a_loop_hands_its_pose_to_its_line();
+        animations_crossfade_as_poses();
         game_clips_stand_on_the_floor_where_their_board_rests();
         a_grab_loop_is_known_by_the_games_grab();
         a_grind_is_known_by_the_games_name();

@@ -10651,10 +10651,8 @@ float panel_slider(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, flo
     d->AddCircleFilled(ImVec2(at.x + width * shown, at.y), (hot ? 8.5f : 7.0f) * k, enabled ? white : IM_COL32(255, 255, 255, 50), 20);
     return out;
 }
-// The catch's tools - CATCH on the timeline, CATCH HOLD in THIS TRICK. Down a drop the game slows a trick from its catch
-// to the touchdown (anim_studio.cpp, catch_latch), so they show.
-// The pill at the top right of the view opens it: the trick's stance, its own Crossfade (OWN on: the main one in SETTINGS
-// is skipped for it) and CATCH HOLD (off big drops, where the extra air goes). Closed, nothing of it covers the skater.
+// The pill at the top right of the view opens it: the trick's stance and its own Crossfade (OWN on: the main one in SETTINGS
+// is skipped for it). Closed, nothing of it covers the skater.
 void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corner) {
     auto& u = ui();
     const float k = f.k;
@@ -10665,10 +10663,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     if (action(d, f, "##trickpanel", pa, psize, pill, Look::dark, true, u.trick_panel)) u.trick_panel = !u.trick_panel;
     if (!u.trick_panel) return;
     const float w = 420 * k, row = 76 * k;
-    // (DROP PREVIEW is gone, 2026-10-29: it played the trick as off a drop here, which read as a setting of the trick and led to
-    // wrong keys.)
-    const bool catch_hold_shown = v.catch_marker;
-    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + (3 + (catch_hold_shown ? 1 : 0)) * row);
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 3 * row);
     skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
     const float x = a.x + 20 * k, bw = w - 40 * k;
@@ -10754,17 +10749,6 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         if (began) studio::begin_change();
         if (amount >= 0) studio::set_trick_crossfade(0.1f + amount * 0.7f);
         note(own ? "This trick hands over to the game's next move at its own pace." : "OWN: a crossfade for this trick alone. Off: the main one in SETTINGS.");
-        y += row;
-    }
-    // CATCH HOLD (SETTINGS > STUDIO > Catch marker).
-    if (catch_hold_shown) {
-        const bool can = v.catch_air && v.catch_at >= 0;
-        head("CATCH HOLD", !v.catch_air ? "NO AIR" : v.catch_at < 0 ? "NO CATCH" : std::format("{:.0f}%", v.catch_hold * 100), can, x + bw);
-        bool began = false;
-        const float amount = panel_slider(d, f, "##catchhold", ImVec2(x, y + 30 * k), bw, v.catch_hold, can, &began);
-        if (began) studio::begin_change();
-        if (amount >= 0) studio::set_catch_hold(amount);
-        note("Off big drops: high keeps the catch long and reaches for the ground late.");
         y += row;
     }
     // The rest of the panel takes the mouse, so a click on it does not reach the skater behind it.

@@ -211,16 +211,9 @@ using CustomTricks = std::vector<CustomTrick>;
 // setting (JOINTS): it holds in the studio and in game alike, so what is posed is what plays.
 constexpr float match_bent_joints = 0; // a joint with a key: its key on the game's pose
 constexpr float match_whole_body = 0;  // every other joint, and the board: the game's own
-// In the air the keys ride on the game's own pose and clock, as the 1.0.8 studio (2026-10-23) played them, which played
-// tricks right: no catch latch (the trick slowed through its catch to fill a longer air), no keys held as made off the
-// game's clip, no feet put on the deck or lifted onto it. Rolling on the ground a foot is still never drawn into the deck
-// or the ground.
-// Down a drop - the air longer than the trick's own by more than a flat pop's give - the trick still takes its own time
-// from its catch to its landing on the touchdown (AirStretch, the catch latch), with the keys as made off the
-// game's clip (off_clip): on the game's clock it played its landing in the air and stood
-// still to the touchdown, or handed back to the game's pose at its catch. The pose as made goes back to the game's from
-// this long before the touchdown, over this long (seconds), so he comes down in the game's landing with the keys on it.
-constexpr float drop_pose_back_by = 0.05f, drop_pose_back_over = 0.4f;
+// In the air the keys ride on the game's own pose and clock: a trick plays at the speed of the game's own trick, whatever
+// the air - a kicker's or a gap's longer air too, where it is never slowed to fill it. Rolling on the ground a foot is still
+// never drawn into the deck or the ground.
 // Why a trick lets go at its catch on a higher pop than it was made on (and over at least 0.3 s, whatever the crossfade).
 constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it was made on: the game's own pose from here";
 struct Snapshot {
@@ -246,7 +239,7 @@ struct History {
     std::vector<Track> tracks;
     float start{}, end{-1};
     std::optional<float> catch_at; // CATCH, as it was
-    std::optional<float> crossfade, catch_hold; // THIS TRICK, as they were
+    std::optional<float> crossfade; // THIS TRICK, as it was
 };
 // The playlists (presets/playlists.json, read_playlists): any number, one on at a time.
 struct NamedPlaylist {
@@ -507,21 +500,12 @@ struct Live {
     double clock_locked_at{-1};   // when the game's clip was found
     float clock_weight{};         // the layer, ramped in when found and out when the game moves on (eased when used)
     bool clock_fallback{};        // its clip was not found: the trick plays on its own clock instead
-    // Off the game's clip in the air (a kicker's or a drop's longer air, where the game holds a pose of its own, or no clip
-    // of the game's found): 0..1, eased in and out. The keys then go on the pose they were made on, the feet on the deck.
-    float off_clip{};
-    bool off_clip_said{};
     // On the game's clip for another pop than the trick was made on: 0..1, eased in and out. The trick then plays whole, as
     // made (its own body and board, its keys on them), on the game's height and air.
     float other_pop{};
     bool other_pop_said{};
-    // Off a drop (catch_latch): the trick's own clock from its catch (AirStretch), the time it was at on the
-    // touchdown, its last time, and the board's shape for where it touches.
-    AirStretch stretch;
-    float latch_touch_from{-1}, latch_last{-1};
-    float to_ground_now{-1}; // its last look at the ground under the board (seconds; -1 none)
-    float to_ground_smooth{-1}; // that look followed smoothly while the trick takes its own time (-1 none)
     float crossfade_now{-1}; // the playing trick's Crossfade (its own, or the main one)
+    // The board's shape, for the look ahead at a rail or a ledge (raised_lead).
     BoardShape latch_shape;
     bool latch_shape_ok{};
     // Once the game's pose leaves the clip (its own landing, a recording drifting off it) the trick goes on at
@@ -561,10 +545,6 @@ struct Live {
     std::uint64_t states_generation{~std::uint64_t{0}};
     double states_search_at{-1};
     int states_searches{};
-    // SMOOTH: the next trick asked for (Bool.Intent.Trick, about 0.2 s before the game's pop) while ours still plays on the
-    // board or a rail: from then its legs and board lean over to the game's (intent_release_seconds).
-    bool intent_before{};
-    double intent_release_at{-1};
     // The game's own trick phase (Float.Anim.TrickPhase) against the trick's time while the clock follows the game's clip:
     // a straight line through them, which carries the trick's time on when the clock loses the clip in the air.
     std::vector<std::pair<float, float>> phase_fit;
@@ -676,7 +656,6 @@ struct GameplayPacket {
     bool fakie{};           // he took off rolling fakie (for the playback verification's report)
     float match{};     // how far a keyed joint goes to the pose it has in the studio (match_bent_joints)
     float match_rest{}; // and how far every other joint and the board do (match_whole_body)
-    float feet_match{}; // how far a foot on the deck goes where the studio has it on the board (off the game's clip)
     bool limits{};      // keyed joints are kept inside the game's range
     float lower_release{}; // how far the board, hips and legs are the game's ahead of a rail or a ledge (raised_lead)
     // What the game was doing when this was made (riding, air, rail): the passes go by it, not by a state stored ahead of the
@@ -749,10 +728,6 @@ std::atomic<double> handover_at{-1};
 // not known), this update: the lean onto a rail goes by them as well as by the board turning.
 std::atomic<bool> game_targeting_grind{};
 std::atomic<float> game_time_to_land{-1};
-// SMOOTH: the next trick asked for while ours plays on the board or a rail leans its legs and board over in the Crossfade
-// (the trick's own or the main one), never less than 0.2 s. It was 0.1 s whatever the Crossfade: the hand-back to the game's
-// next trick snapped, and a leg went through the deck on the way (2026-10-29).
-float intent_release_seconds() noexcept { return std::max(0.2f, std::clamp(trick_blend.load(std::memory_order_relaxed) * 2, 0.1f, 0.8f)); }
 Live& live();
 struct GameplayPackets {
     std::mutex mutex;
@@ -3050,10 +3025,6 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     packet->board_frame_local = play.board_frame; packet->board_frame_valid = play.board_frame_ok;
     packet->board_owned = true;
     packet->motion = motion;
-    if (l.intent_release_at >= 0) {
-        const float u = std::clamp(static_cast<float>(at - l.intent_release_at) / intent_release_seconds(), 0.0f, 1.0f);
-        packet->lower_release = u * u * (3 - 2 * u);
-    }
     if (play.board_frame_ok && l.board_ok) {
         Joint frame;
         frame.rotation = normalised(multiply(live_placement.rotation, play.board_frame));
@@ -3516,17 +3487,10 @@ void on_animation(std::uintptr_t component) noexcept {
             last = layout.count;
         } else if (snap->play_in_game && !bailing && snap->tricks && !snap->tricks->empty()) {
             const bool began = l.episode.observe(at, motion);
-            // SMOOTH: the next trick asked for while ours still plays on the board or a rail (its landing, a grind loop):
-            // its legs and board lean over to the game's from now, so the game's pop starts from its own pose. A new trick
-            // starts with none of it.
-            {
-                const bool intent = l.game.trick_intent.value_or(false);
-                if (began) l.intent_release_at = -1;
-                if (smooth_transitions.load(std::memory_order_relaxed) && intent && !l.intent_before && l.game_trick &&
-                    (motion == MotionState::riding || motion == MotionState::rail) && l.intent_release_at < 0)
-                    l.intent_release_at = at;
-                l.intent_before = intent;
-            }
+            // The next trick asked for while ours still plays (its landing, a grind or a manual loop): ours plays on until the
+            // game's next move starts, and that crossfades from the pose drawn (PoseFade) - into the next of yours, or into
+            // the game's own when none of yours is for it. Leaning over to the game's pose first bent the legs out of a
+            // grind on the way into a flip of yours.
             // Rolling: the board's heading under him, kept a second (for the board's keys of the next trick).
             if (motion == MotionState::riding && l.board_ok && !began) {
                 const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
@@ -3567,7 +3531,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.mirrored_edits.clear();
                 }
                 l.game_tricks = snap->tricks;
-                l.native_clock.reset(); l.clock_weight = 0; l.off_clip = 0; l.other_pop = 0;
+                l.native_clock.reset(); l.clock_weight = 0; l.other_pop = 0;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.used_pop.clear(); l.used_pop_source.clear(); l.decision.clear();
                 l.takeoff_mount_ok = false; l.raised_release = 0; l.raised_said = false; l.raised_asked_at = -1;
@@ -3741,11 +3705,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     // Its clock starts looking for the game's clip of it.
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
-                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false;
+                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0;
                     l.other_pop = 0; l.other_pop_said = false;
-                    l.stretch.reset(); l.latch_touch_from = l.latch_last = -1;
-                    l.to_ground_now = l.to_ground_smooth = -1;
-                    // The board's shape: for the catch latch (a trick with a catch) and the probe ahead of a rail (raised_lead).
+                    // The board's shape: for the probe ahead of a rail (raised_lead).
                     l.latch_shape_ok = false;
                     if (found) {
                         l.latch_shape = board_shape(*found->clip);
@@ -3803,59 +3765,6 @@ void on_animation(std::uintptr_t component) noexcept {
                 // as the game moves into anything else. The brackets only mask the edits, as in the studio.
                 PlaybackSample sampled;
                 NativeClock::Reading reading;
-                // Off a drop, down stairs or over a kicker the game stays in the air longer than the timeline did (or
-                // shorter, onto a ledge): from its catch the trick takes its own time (AirStretch), slowed
-                // through the catch - board caught, knees up - and on to its landing on the touchdown, the ground looked for
-                // under the board. Never held still. On flat ground, in step with the game, it is the game's clock.
-                std::optional<double> touch_at;
-                if (l.episode.contact.since) touch_at = *l.episode.contact.since;
-                else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch_at = l.episode.landing;
-                const auto catch_latch = [&](float time) -> float {
-                    const float caught = trick->caught, land = clip.landing;
-                    if (!(caught > 0) || !(land > caught) || time < 0 || !l.latch_shape_ok) return time;
-                    // A trick that let go before it was slowed (on a higher pop, its hand-back at the catch) fades out
-                    // on the game's clock. Slowed from here, it stood still while it faded.
-                    if (!l.stretch.on() && !l.clock_why.empty()) return time;
-                    if (touch_at) {
-                        if (!l.stretch.on()) return time;
-                        if (l.latch_touch_from < 0) l.latch_touch_from = l.latch_last >= 0 ? l.latch_last : l.stretch.time;
-                        return landed_time(static_cast<float>(at - *touch_at), land, l.latch_touch_from);
-                    }
-                    // How long until the ground, from how high the board's lowest point is over it and how fast it falls.
-                    std::optional<float> to_ground;
-                    if (l.board_ok) {
-                        const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
-                        const float lowest = lowest_point(mount, l.latch_shape);
-                        auto& probe = ground_probe();
-                        const float landing_in = probe.to_ground.load(std::memory_order_acquire);
-                        const double found = probe.found_at.load(std::memory_order_acquire);
-                        const auto velocity = board_velocity(base, component);
-                        if (finite(mount) && std::isfinite(lowest) && velocity) {
-                            probe.x.store(mount.position[0], std::memory_order_release);
-                            probe.z.store(mount.position[2], std::memory_order_release);
-                            probe.low.store(lowest, std::memory_order_release);
-                            probe.vx.store((*velocity)[0], std::memory_order_release);
-                            probe.vy.store((*velocity)[1], std::memory_order_release);
-                            probe.vz.store((*velocity)[2], std::memory_order_release);
-                            probe.wanted.store(true, std::memory_order_release);
-                        }
-                        // Worked out on the client thread a moment ago (along the board's path): less the time since.
-                        if (landing_in >= 0 && found >= 0 && now_seconds() - found < 0.15)
-                            to_ground = std::max(0.0f, landing_in - static_cast<float>(now_seconds() - found));
-                    }
-                    const bool was_on = l.stretch.on();
-                    const float hold = played.catch_hold.value_or(default_catch_hold);
-                    l.to_ground_now = to_ground ? *to_ground : -1.0f;
-                    time = l.stretch.update(time, to_ground ? *to_ground : -1.0f, 1.0f / 60, clip.takeoff, caught, land, hold);
-                    if (l.stretch.on() && !was_on)
-                        logging::log(Level::info, Channel::skater,
-                                     "Animation Studio: {} takes its own time from {:.2f} s ({} catch at {:.2f} s, hold {:.0f}%): {:.2f} s to the ground, "
-                                     "{:.2f} s in the timeline.", trick->name, l.stretch.time,
-                                     trick->edits && trick->edits->catch_at && *trick->edits->catch_at == caught ? "its maker's" : "the studio's", caught,
-                                     hold * 100, to_ground ? *to_ground : -1.0f, land - l.stretch.time);
-                    l.latch_last = time;
-                    return time;
-                };
                 if (!l.clock_fallback) {
                     reading = l.native_clock.update(l.pose, 1.0f / 60); // the game's own pose, before any edit
                     if (!reading.locked && at - l.clock_selected_at > 0.25) {
@@ -3883,9 +3792,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     // On the game's clip of a higher pop than the trick was made on: from its catch (its own; else four fifths
                     // into its air, where a flip is done) the trick hands back to the game's own pose, crossfaded, and the game
                     // holds its catch and lands as it does. Played to its landing it stood still in the air until the game's
-                    // touchdown, then let go in one frame. Down a drop it takes its own time to the touchdown instead (AirStretch).
+                    // touchdown, then let go in one frame.
                     float hand_back = -1;
-                    if (reading.locked && reading.clip > 0 && trick->native && !l.stretch.on()) {
+                    if (reading.locked && reading.clip > 0 && trick->native) {
                         const auto c = static_cast<std::size_t>(reading.clip);
                         if (c < trick->native->higher_pop.size() && trick->native->higher_pop[c] && up >= 0 && down > up)
                             // The later of its catch and 85% of its air: an ollie's catch comes just after the pop, and it was
@@ -3944,7 +3853,6 @@ void on_animation(std::uintptr_t component) noexcept {
                                 time = std::max(time, landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from));
                         }
                     }
-                    time = catch_latch(time);
                     if (time >= 0 && l.clock_last_time >= 0) time = std::max(time, l.clock_last_time);
                     if (time >= 0) l.clock_last_time = time;
                     // Letting go when the game starts something new: the next pop (its crouch), a grind, the end of the
@@ -3954,10 +3862,6 @@ void on_animation(std::uintptr_t component) noexcept {
                     std::string why;
                     if (l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail) why = "a grind";
                     else if (touch && current_state && *current_state == 103) why = "the next pop";
-                    // Off a drop nothing follows the game's clip after the touchdown to see it move on: riding on, any state
-                    // but plain riding (100) is the game's next move (a manual, a powerslide).
-                    else if (touch && l.stretch.on() && current_state && *current_state != 100 && motion == MotionState::riding)
-                        why = "the game's next move";
                     else if (time >= 0 && time >= edit_end - 0.5f / 60) why = "its end";
                     // Rolling after the touchdown looks like the end of every trick, so the clock holds its time there (a held
                     // pose): a trick with keys after its landing then held its last pose until the pose drifted away, seconds
@@ -4001,42 +3905,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     // Always at x1 in game: the speed is the studio's, for watching a trick (it was the saved one, so a trick
                     // saved while watched at x.5 played at half speed on its own clock).
                     sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), 1.0f, l.predicted_air, true, true);
-                    if (sampled.time >= 0) sampled.time = std::min(clip.duration(), catch_latch(sampled.time));
-                }
-                // Off the game's clip in the air - the game holding a pose of its own through a kicker's or a drop's longer
-                // air, or no clip of the game's found at all: the keys rode on a pose made for something else (a foot
-                // through the deck, a pose not the timeline's). Then they go on the pose they were made on, and the feet on
-                // the deck as the studio has them; by the touchdown it is the game's pose again, as on flat ground.
-                // (From 2026-10-25 15:44 to 23:30 every trick also played its catch as made and held the feet on the deck from the
-                // pop on, for feet through the deck that were the board keys' frame - fixed on its own. It held the feet to the
-                // board after the catch like a magnet, on every pop: taken out again.)
-                // Down a drop the pose as made (off_clip, and other_pop's whole body and board) goes back to the game's over
-                // the end of the fall. Let go at the touchdown, the upright catch turned into the landing's crouch and the
-                // board as made, 32 cm under the game's, came up onto it in one frame (a tre down the Tri-Towers gap, 2026-10-26).
-                // The look at the ground jumps by up to 0.06 s from one update to the next (the board's path is looked along
-                // again each time), and the board blended with it jerked 6 cm to and fro: it is followed smoothly, counting
-                // down as the time goes, and once the pose goes back it only counts down (one look of 0.83 s among 0.36s
-                // moved the board 4 cm back).
-                if (!(l.stretch.on())) l.to_ground_smooth = -1;
-                else if (l.to_ground_smooth < 0) l.to_ground_smooth = l.to_ground_now;
-                else {
-                    const float expected = std::max(0.0f, l.to_ground_smooth - 1.0f / 60);
-                    const float next = l.to_ground_now >= 0 ? expected + (l.to_ground_now - expected) * 0.15f : expected;
-                    l.to_ground_smooth = l.to_ground_smooth < drop_pose_back_by + drop_pose_back_over ? std::min(next, expected) : next;
-                }
-                const float as_made_till_ground = l.to_ground_smooth >= 0
-                    ? std::clamp((l.to_ground_smooth - drop_pose_back_by) / drop_pose_back_over, 0.0f, 1.0f) : 1.0f;
-                {
-                    const bool touched_down = l.episode.contact.since.has_value() || (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0);
-                    const bool off = !touched_down && l.stretch.on() && l.clock_why.empty();
-                    constexpr float off_step = (1.0f / 60) / 0.15f;
-                    l.off_clip = off ? std::min(1.0f, l.off_clip + off_step) : std::max(0.0f, l.off_clip - off_step);
-                    l.off_clip = std::min(l.off_clip, as_made_till_ground);
-                    if (off && !l.off_clip_said) {
-                        l.off_clip_said = true;
-                        logging::log(Level::info, Channel::skater, "Animation Studio: {} is off the game's clip in the air ({}): keys as made, feet on the deck as in the studio.",
-                                     trick->name, l.clock_fallback ? "no clip of the game's found" : l.stretch.on() ? "it takes its own time off a drop" : "the game holds a pose of its own");
-                    }
+                    if (sampled.time >= 0) sampled.time = std::min(clip.duration(), sampled.time);
                 }
                 // A trick made on one pop, on the game's clip of another (its pack says any pop): the keys laid on that clip's
                 // body - tucked otherwise on a higher pop - drew the legs through the board (renztre, low, on a high pop). It
@@ -4049,7 +3918,6 @@ void on_animation(std::uintptr_t component) noexcept {
                                        static_cast<std::size_t>(reading.clip) < pops->size() && (*pops)[static_cast<std::size_t>(reading.clip)];
                     constexpr float other_step = (1.0f / 60) / 0.15f;
                     l.other_pop = other ? std::min(1.0f, l.other_pop + other_step) : std::max(0.0f, l.other_pop - other_step);
-                    l.other_pop = std::min(l.other_pop, as_made_till_ground);
                     if (other && !l.other_pop_said) {
                         l.other_pop_said = true;
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is on the game's clip of another pop (clip {}): it plays whole, as made.",
@@ -4126,20 +3994,14 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->at = at; packet->time = sampled.time; packet->weight = weight;
                     packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
                     // The edits ride on the game's own pose (its IK, its height, its board), at its clip's time: nothing of
-                    // the studio's pose is forced over it - but off the game's clip in the air (off_clip), the keyed joints go
-                    // to the pose they were made on and the feet onto the deck as the studio has them.
-                    const float off = l.off_clip * l.off_clip * (3 - 2 * l.off_clip);
+                    // the studio's pose is forced over it.
                     const float whole = l.other_pop * l.other_pop * (3 - 2 * l.other_pop);
-                    packet->mirrored = l.played_mirrored; packet->match = std::max(off, whole); packet->feet_match = off;
+                    packet->mirrored = l.played_mirrored; packet->match = whole;
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
                     packet->match_rest = whole; // on another pop's clip: body and board as made (other_pop)
                     packet->limits = snap->limits;
                     packet->lower_release = l.raised_release;
-                    if (l.intent_release_at >= 0) {
-                        const float u = std::clamp(static_cast<float>(at - l.intent_release_at) / intent_release_seconds(), 0.0f, 1.0f);
-                        packet->lower_release = std::max(packet->lower_release, u * u * (3 - 2 * u));
-                    }
                     packet->motion = motion;
                     packet->caught = trick->caught;
                     // The board keys are authored in the board's own frame and played in it (nose-relative both
@@ -4330,6 +4192,11 @@ struct BodyPublicationState {
     std::uint64_t feet_generation{~std::uint64_t{0}};
     double on_rail_at{-1};
     bool feet_at_lock_ok{};
+    // The pose drawn last (every joint, local) and when: where the next animation's crossfade starts from (PoseFade).
+    std::vector<Joint> drawn;
+    std::uint64_t drawn_generation{~std::uint64_t{0}};
+    double drawn_at{-1};
+    PoseFade pose_fade;
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 // While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
@@ -4820,9 +4687,18 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             const float blend = trick_blend.load(std::memory_order_relaxed);
             const bool grinding = motion == MotionState::rail;
             const double now = now_seconds();
+            const float fade_seconds = grinding ? std::clamp(blend, grind_ease_min, grind_ease_max) : blend;
             const auto deltas = publication.transition.evaluate(now, generation, packet ? packet->episode : 0,
-                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas,
-                grinding ? std::clamp(blend, grind_ease_min, grind_ease_max) : blend);
+                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas, fade_seconds);
+            // Into the next animation, or the game's own move: a crossfade from the pose drawn (PoseFade) - but into a grind
+            // with none of yours for it, where the hips and legs go onto the game's deck first and the rest eases in (below).
+            if (publication.transition.restarted) {
+                const bool drawn_ok = publication.drawn_generation == generation && now - publication.drawn_at < 0.2 &&
+                                      publication.drawn.size() == native.size();
+                if (drawn_ok && !(grinding && !packet)) publication.pose_fade.start(now, fade_seconds, publication.drawn, native, desired_deltas);
+                else publication.pose_fade.reset();
+            }
+            publication.pose_fade.apply(now, native, desired_deltas, publication.transition.current);
             // Into a grind the hips and legs land with the board (grind_feet_on_deck, the board's pass eases the same way)
             // while the rest of the body eases in over the Crossfade: legs still keyed mid-flip on a board already on the
             // rail put a knee or a foot through the deck for a few frames on some grinds (test.2, 2026-10-27).
@@ -4855,7 +4731,10 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                         place_foot(edited, foot, Vec3{drawn.position[0], own.position[1], drawn.position[2]}, nullptr, 1.0f);
                 }
             }
-        } else publication.transition.reset();
+        } else {
+            publication.transition.reset();
+            publication.pose_fade.reset();
+        }
         if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
             (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) continue;
         for (const auto& joint : edited)
@@ -4881,6 +4760,9 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                 std::memcpy(shot.skater[i].position.data(), native[i].position.data(), 12);
             }
         }
+        publication.drawn = edited;
+        publication.drawn_generation = generation;
+        publication.drawn_at = now_seconds();
         publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
         return;
     }
@@ -5112,9 +4994,8 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
         return false;
     }
 }
-// After the keys are on: a foot that is on the deck in the studio goes where the studio has it on the board, as far as the
-// trick is off the game's clip (feet_match) - the game's board and the keyed legs had come apart there; and a foot is never
-// drawn sunk into an upright deck, whatever the keys and the game did. The board is the one drawn this frame.
+// After the keys are on: a foot is never drawn sunk into an upright deck, whatever the keys and the game did. The board is
+// the one drawn this frame.
 void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept {
     try {
         if (!(packet.weight > 0) || edited.size() < skeleton_joints || native.size() < skeleton_joints) return;
@@ -5133,47 +5014,7 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
         };
         constexpr std::array<std::pair<std::uint16_t, std::uint16_t>, 2> legs{{{left_foot_joint, 341}, {right_foot_joint, 8}}};
         const float w = std::min(packet.weight, 1.0f);
-        // 1. Off the game's clip: the studio's foot on the studio's board - the recording's body and board, the keys on
-        // both, under the live placement (which drops out of the relation) - put on the drawn board.
-        if (packet.feet_match > 0 && packet.clip->joints == skeleton_joints && !packet.clip->board.empty()) {
-            Joint rel;
-            if (packet.clip->sample_board(std::clamp(packet.time, 0.0f, packet.clip->duration()), rel)) {
-                rel = nose_forward(*packet.clip, rel);
-                if (packet.mirrored) rel = mirror_board_pose(rel);
-                if (packet.board_backwards) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
-                const auto placement = compose(native[0], native[1]);
-                Joint frame;
-                frame.rotation = normalised(multiply(placement.rotation, packet.board_frame_local));
-                const auto studio_board = board_edited(compose(placement, rel), *packet.edits, packet.time, ground_turn(frame));
-                const auto studio = studio_pose(*packet.clip, packet.time, packet.mirrored);
-                std::vector<Joint> body(native.begin(), native.end());
-                for (std::uint16_t j = 0; j < skeleton_joints; ++j)
-                    if (gameplay_body_joint(j) && editable(j) && editable(j)->group != JointGroup::fingers) body[j] = studio[j];
-                apply_edits(*packet.edits, packet.time, body);
-                if (packet.limits) limit_keyed_joints(*packet.edits, packet.time, body);
-                for (const auto& [foot, thigh] : legs) {
-                    const auto on_board = relative(studio_board, world(body, foot));
-                    float height = 0;
-                    if (!finite(on_board) || !on_deck(on_board.position, height) || height < 0.02f) continue;
-                    // On the deck up to 13 cm (the ankle stands 10.4 cm over the mount), let go by 20.
-                    const float x = std::clamp((0.20f - height) / 0.07f, 0.0f, 1.0f);
-                    const auto want = compose(board, on_board);
-                    // Only a foot already near it is put on the deck: a foot the trick has far from the drawn board (an
-                    // overgap's longer air, the board still falling or turning) was pulled the whole way there and stuck to
-                    // it after the catch, as if magnetic (22sh, 2026-10-25). Full up to 12 cm away, none from 30.
-                    const auto now_at = world(edited, foot).position;
-                    const float gap = std::sqrt((want.position[0] - now_at[0]) * (want.position[0] - now_at[0]) +
-                                                (want.position[1] - now_at[1]) * (want.position[1] - now_at[1]) +
-                                                (want.position[2] - now_at[2]) * (want.position[2] - now_at[2]));
-                    const float near_x = std::clamp((0.30f - gap) / 0.18f, 0.0f, 1.0f);
-                    const float share = packet.feet_match * x * x * (3 - 2 * x) * near_x * near_x * (3 - 2 * near_x) * w *
-                                        std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
-                    if (share <= 0) continue;
-                    place_foot(edited, foot, want.position, &want.rotation, share);
-                }
-            }
-        }
-        // 2. Never sunk into the deck, nor into the ground while it rolls on it (lowest_ankle).
+        // Never sunk into the deck, nor into the ground while it rolls on it (lowest_ankle).
         const auto placement = compose(edited[0], edited[1]);
         const Vec3 board_up = rotate(board.rotation, up), body_up = rotate(placement.rotation, Vec3{0, 1, 0});
         if (board_up[0] * body_up[0] + board_up[1] * body_up[1] + board_up[2] * body_up[2] < 0.5f) return;
@@ -6388,7 +6229,6 @@ View view() {
         v.keys_past_landing = keys_past_landing(s.edits, s.clip->takeoff, s.clip->landing, s.clip->duration());
     }
     v.trick_crossfade = s.edits.crossfade;
-    v.catch_hold = s.edits.catch_hold.value_or(default_catch_hold);
     v.can_undo = !s.undo.empty();
     v.can_redo = !s.redo.empty();
     v.orbit = s.orbit;
@@ -6606,7 +6446,7 @@ void set_solo(bool on) {
 void begin_change() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade, s.edits.catch_hold});
+    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade});
     if (s.undo.size() > 200) s.undo.pop_front();
     s.redo.clear();
 }
@@ -6889,16 +6729,6 @@ void set_trick_crossfade(float seconds) {
     }
     changed_locked(s);
 }
-void set_catch_hold(float amount) {
-    if (!std::isfinite(amount)) return;
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    if (s.previewing || !s.clip || s.clip->empty()) return;
-    const float hold = std::round(std::clamp(amount, 0.0f, 1.0f) * 100) / 100;
-    if (s.edits.catch_hold && std::abs(*s.edits.catch_hold - hold) < 0.005f) return;
-    s.edits.catch_hold = hold;
-    changed_locked(s);
-}
 
 void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     auto& s = state();
@@ -7063,12 +6893,11 @@ void undo() {
     std::lock_guard lock(s.mutex);
     if (s.previewing) return; // a preview is to watch only
     if (s.undo.empty()) return;
-    s.redo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade, s.edits.catch_hold});
+    s.redo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade});
     s.edits.start = s.undo.back().start;
     s.edits.end = s.undo.back().end;
     s.edits.catch_at = s.undo.back().catch_at;
     s.edits.crossfade = s.undo.back().crossfade;
-    s.edits.catch_hold = s.undo.back().catch_hold;
     s.edits.tracks = std::move(s.undo.back().tracks);
     s.undo.pop_back();
     changed_locked(s);
@@ -7078,12 +6907,11 @@ void redo() {
     std::lock_guard lock(s.mutex);
     if (s.previewing) return; // a preview is to watch only
     if (s.redo.empty()) return;
-    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade, s.edits.catch_hold});
+    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade});
     s.edits.start = s.redo.back().start;
     s.edits.end = s.redo.back().end;
     s.edits.catch_at = s.redo.back().catch_at;
     s.edits.crossfade = s.redo.back().crossfade;
-    s.edits.catch_hold = s.redo.back().catch_hold;
     s.edits.tracks = std::move(s.redo.back().tracks);
     s.redo.pop_back();
     changed_locked(s);
