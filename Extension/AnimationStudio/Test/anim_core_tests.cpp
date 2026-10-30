@@ -1577,6 +1577,19 @@ void time_to_the_ground() {
         const float to_street = time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, flat, 0.05f, 16, &street);
         check(to_rail > 0 && to_rail < to_street && near(on, 0.15f, 0.001f) && near(street, 0.0f, 0.001f),
               "Onto a rail it lands on the rail's top, sooner than on the street");
+        // A tester's FS Pop Shuv-its off a kicker (2026-10-30): popped partway up it, the ramp ahead is higher than the
+        // takeoff as a rail is, and the board and legs were handed to the game's for the whole air. A rail has a step up on
+        // the way to it; a ramp only rises little by little.
+        const auto kicker = [](float dx, float, float top) -> std::optional<float> {
+            const float ground = 0.5f * std::clamp(dx, 0.0f, 2.0f); // up to 1 m over 2 m
+            return ground < top ? std::optional<float>(ground) : std::nullopt;
+        };
+        float on_ramp = -1, ramp_edge = -1, rail_edge = -1, street_edge = -1;
+        const float to_ramp = time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, kicker, 0.05f, 16, &on_ramp, board_gravity, &ramp_edge);
+        time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, rail_ahead, 0.05f, 16, nullptr, board_gravity, &rail_edge);
+        time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, flat, 0.05f, 16, nullptr, board_gravity, &street_edge);
+        check(to_ramp > 0 && on_ramp > 0.12f && ramp_edge < 0.02f, "A kicker's ramp ahead is higher, but has no step up");
+        check(near(rail_edge, 0.15f, 0.001f) && near(street_edge, 0.0f), "A rail ahead is a step up as high as the rail; flat ground none");
         check(motion_state(701) == MotionState::rail && motion_state(401) == MotionState::rail && motion_state(501) == MotionState::offboard,
               "701 is a grind, as the 400s are");
         // A mid tre flip on flat ground (1.0.10): the ray from over the board's path hit the skater's own body, 0.5 m up,
@@ -1653,6 +1666,25 @@ void landing_and_retiming() {
           "Moved onto another pop's clip, 0 stays 0, an air key stays in the air, the end at the end");
 }
 // A trick fitted to the game's air: the flip at its own pace, the landing on the game's touchdown.
+// After the touchdown the game's own landing bends him away from the trick's clip (a tester's FS Pop Shuv-it, 2026-10-30,
+// 60 updates a second): not the next move. Going clearly further than that bend is.
+void the_landing_is_not_the_next_move() {
+    const float bend[] = {9.8f, 16.7f, 20.9f, 21.5f, 21.7f, 21.1f, 20.3f, 19.5f, 18.5f, 17.6f, 16.9f, 16.5f, 16.0f, 15.4f, 14.9f,
+                          14.4f, 14.2f, 14.4f, 14.7f, 15.0f, 15.2f, 15.3f, 15.2f, 15.0f, 14.7f, 14.3f, 14.0f, 13.8f, 13.8f};
+    LandingDrift landing;
+    bool let_go = false;
+    for (std::size_t i = 0; i < std::size(bend); ++i) let_go = landing.next_move(10 + i / 60.0, bend[i]) || let_go;
+    check(!let_go, "The landing's own bend is not taken for the game's next move");
+    LandingDrift push;
+    bool pushed = false;
+    int when = -1;
+    for (int i = 0; i < 20; ++i) {
+        const float error = i < 9 ? bend[i] : 18.0f + 4.0f * (i - 9);
+        if (push.next_move(10 + i / 60.0, error) && when < 0) when = i;
+        pushed = when >= 0;
+    }
+    check(pushed && when <= 13, "Going on past it (a push) is, within a few updates");
+}
 void fitting_the_air_keeps_the_flip() {
     const float recorded = 0.63f;
     check(near(fitted_air_time(0.2f, recorded, 1.0f), 0.2f), "A longer air leaves the trick at its own pace");
@@ -2746,6 +2778,7 @@ int main(int argc, char** argv) {
         preview_trajectory_uses_the_whole_clip();
         native_playback_contracts();
         fitting_the_air_keeps_the_flip();
+        the_landing_is_not_the_next_move();
         time_to_the_ground();
         landing_and_retiming();
         native_clips_pop_where_the_game_does();

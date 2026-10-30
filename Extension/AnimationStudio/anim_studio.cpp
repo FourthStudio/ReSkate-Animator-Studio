@@ -512,9 +512,10 @@ struct Live {
     // its own pace, its landing on the game's touchdown, until the game starts something new.
     double clock_lost_at{-1}, clock_touch_at{-1};
     float clock_touch_from{-1}, clock_last_time{-1};
-    double drift_since{-1};      // measuring how far the game's pose is from the trick after the landing
-    float drift_base{};
-    int drift_count{};
+    // The catch-up to the trick's landing after the touchdown (landed_time): when it began, from the time shown then.
+    double catch_up_at{-1};
+    float catch_up_from{-1};
+    LandingDrift drift;          // how far the game's pose goes from the trick after the landing
     std::string clock_why;       // why it let go, said once
     std::uint64_t finished_episode{~std::uint64_t{0}}; // a trick let go is not taken up again in its air
     std::string finished_trick;
@@ -536,7 +537,7 @@ struct Live {
     Joint takeoff_mount{};
     bool takeoff_mount_ok{};
     float raised_release{};
-    bool raised_said{};
+    bool raised_said{}, slope_said{};
     double raised_asked_at{-1};
     double raised_contact_at{-1}, raised_last{-1}; // when the probe says it meets the rail; the release's last step
     std::uint64_t recent_episode{~std::uint64_t{0}}; // the trick last told to the menu's feed (remember_trick_done)
@@ -676,7 +677,10 @@ constexpr std::array<std::uint16_t, 9> grind_lower_body{7, 8, 9, 10, 11, 341, 34
 // Onto a rail or a ledge: landing on something this much higher than the board took off from (metres), the board, hips and
 // legs go to the game's pose over the last raised_lead seconds before it, never in less than raised_min_ease (test.4's 0.15 s
 // lead was still a fraction of a second too quick, 2026-10-27; 0.12 s still snapped and clipped going onto a rail, 2026-10-29).
-constexpr float raised_landing = 0.12f, raised_lead = 0.25f, raised_min_ease = 0.18f;
+// Only with a step up of raised_edge or more on the way to it (a rail's side, a ledge's): popped partway up a kicker, the
+// ramp ahead is higher than the takeoff too, and every such pop handed the board and the legs to the game's for the whole air
+// (a tester's FS Pop Shuv-its off a kicker, 2026-10-30: "lands on something 0.41 m higher in 0.19 s", landed 0.3 s later).
+constexpr float raised_landing = 0.12f, raised_edge = 0.06f, raised_lead = 0.25f, raised_min_ease = 0.18f;
 std::atomic<bool> overrides_allowed{true};
 // SETTINGS > TRICKS > Transitions: SMOOTH (true) hands a trick over to a grind the way the game does its own (Handover);
 // CLASSIC is 1.0.16's, kept to compare.
@@ -786,14 +790,15 @@ void invalidate_outputs() noexcept {
     } catch (...) {}
 }
 std::atomic<bool> open_flag{};
-// The ground under the board in the air (ground_below), for the catch latch: where to look (the animation thread says, while a
-// trick with a catch is in the air) and what was found there (the client thread looks, tick), with when.
+// The ground along the board's path in the air, for the look ahead at a rail or a ledge (raised_lead): where to look (the
+// animation thread says, while a trick is in the air) and what was found there (the client thread looks, tick), with when.
 struct GroundProbe {
     std::atomic<bool> wanted{};
     std::atomic<float> x{}, z{}, low{};       // the board's lowest point
     std::atomic<float> vx{}, vy{}, vz{};      // and how fast it flies
     std::atomic<float> to_ground{-1};         // seconds until it lands (time_to_landing), below 0 not known
     std::atomic<float> surface{0};            // the height of what it lands on (a rail or a ledge stands over the street)
+    std::atomic<float> edge{0};               // the highest step up on the way there (a slope has none)
     std::atomic<double> found_at{-1};
 };
 GroundProbe& ground_probe() { static GroundProbe probe; return probe; }
@@ -3534,7 +3539,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.native_clock.reset(); l.clock_weight = 0; l.other_pop = 0;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.used_pop.clear(); l.used_pop_source.clear(); l.decision.clear();
-                l.takeoff_mount_ok = false; l.raised_release = 0; l.raised_said = false; l.raised_asked_at = -1;
+                l.takeoff_mount_ok = false; l.raised_release = 0; l.raised_said = l.slope_said = false; l.raised_asked_at = -1;
                 l.raised_contact_at = -1; l.raised_last = -1;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
@@ -3714,7 +3719,8 @@ void on_animation(std::uintptr_t component) noexcept {
                         l.latch_shape_ok = true;
                     }
                     l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1;
-                    l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear();
+                    l.catch_up_at = -1; l.catch_up_from = -1;
+                    l.drift.reset(); l.clock_why.clear();
                     l.clock_fallback = !found || !found->native || found->native->models.empty();
                     if (found) {
                         const bool lead_matches = found->leads_right == live.leads_right;
@@ -3849,8 +3855,18 @@ void on_animation(std::uintptr_t component) noexcept {
                                                  trick->name, time);
                                 }
                             } else if (!touch) time = up + fitted_air_time(time - up, down - up, 0); // eases in to just before its landing
-                            else if (l.clock_touch_from >= 0 && l.clock_touch_from < down)
-                                time = std::max(time, landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from));
+                            else if (l.clock_touch_from >= 0 && l.clock_touch_from < down) {
+                                // From the time shown when it leaves the game's clip, not from the touchdown: the game's clip
+                                // runs on a frame or two past the touchdown, slowing, and the catch-up then jumped the time it
+                                // had made up meanwhile (a tester's FS Pop Shuv-it off a kicker, 2026-10-30: 0.59 to 0.64 s in
+                                // one frame, the right leg and the board snapping into the landing).
+                                if (l.catch_up_at < 0) {
+                                    l.catch_up_at = at;
+                                    l.catch_up_from = l.clock_last_time >= 0 ? l.clock_last_time : time;
+                                }
+                                if (l.catch_up_from < down)
+                                    time = std::max(time, landed_time(static_cast<float>(at - l.catch_up_at), down, l.catch_up_from));
+                            }
                         }
                     }
                     if (time >= 0 && l.clock_last_time >= 0) time = std::max(time, l.clock_last_time);
@@ -3873,16 +3889,10 @@ void on_animation(std::uintptr_t component) noexcept {
                     // Followed through the landing and lost well after it: that is the game going into its next
                     // animation (a push), not its landing.
                     else if (reading.locked && reading.lost && touch && l.clock_lost_at - *touch > 0.3) why = "the game's next animation";
-                    else if (reading.locked && reading.lost && touch) {
-                        // Quick to notice (two updates), so the crossfade into a manual or the next move starts while the
-                        // game is still blending into it.
-                        if (l.drift_since < 0) { l.drift_since = at; l.drift_base = reading.error; l.drift_count = 0; }
-                        else if (at - l.drift_since < 0.1) l.drift_base = std::min(l.drift_base, reading.error);
-                        else {
-                            l.drift_count = reading.error > l.drift_base + 6.0f ? l.drift_count + 1 : 0;
-                            if (l.drift_count >= 2) why = "the game's next animation";
-                        }
-                    }
+                    // Quick to notice (two updates), so the crossfade into a manual or the next move starts while the game
+                    // is still blending into it - but not the landing's own bend (LandingDrift).
+                    else if (reading.locked && reading.lost && touch && l.drift.next_move(at, reading.error))
+                        why = "the game's next animation";
                     if (!why.empty() && l.clock_why.empty()) {
                         l.clock_why = why;
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go at {:.2f} s: {}.", trick->name, time, why);
@@ -3948,19 +3958,27 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float landing_in = probe.to_ground.load(std::memory_order_acquire);
                     const double found = probe.found_at.load(std::memory_order_acquire);
                     const float surface = probe.surface.load(std::memory_order_acquire);
+                    const float edge = probe.edge.load(std::memory_order_acquire);
                     const float took_off = lowest_point(l.takeoff_mount, l.latch_shape);
                     const double t_now = now_seconds(), since = t_now - found;
-                    if (landing_in >= 0 && l.raised_asked_at >= 0 && found >= l.raised_asked_at && since < 0.15 &&
-                        std::isfinite(surface) && std::isfinite(took_off) && surface - took_off > raised_landing) {
+                    const bool higher = landing_in >= 0 && l.raised_asked_at >= 0 && found >= l.raised_asked_at && since < 0.15 &&
+                                        std::isfinite(surface) && std::isfinite(took_off) && surface - took_off > raised_landing;
+                    if (higher && !(edge >= raised_edge) && !l.slope_said) {
+                        l.slope_said = true;
+                        logging::log(Level::info, Channel::skater,
+                                     "Animation Studio: {} goes over a slope {:.2f} m higher (a ramp, not a rail or a ledge): it plays on.",
+                                     trick->name, surface - took_off);
+                    }
+                    if (higher && edge >= raised_edge) {
                         // When it meets it, as a time: the probe answers a frame or two late and not every frame, so between
                         // its answers the release goes on from the last one rather than standing still.
                         l.raised_contact_at = found + std::max(0.0f, landing_in);
                         if (!l.raised_said) {
                             l.raised_said = true;
                             logging::log(Level::info, Channel::skater,
-                                         "Animation Studio: {} lands on something {:.2f} m higher in {:.2f} s (a rail or a ledge): "
-                                         "the board and the legs go to the game's first.", trick->name, surface - took_off,
-                                         std::max(0.0f, landing_in - static_cast<float>(since)));
+                                         "Animation Studio: {} lands on something {:.2f} m higher in {:.2f} s (a rail or a ledge, a {:.2f} m "
+                                         "step): the board and the legs go to the game's first.", trick->name, surface - took_off,
+                                         std::max(0.0f, landing_in - static_cast<float>(since)), edge);
                         }
                     }
                     if (l.raised_contact_at >= 0) {
@@ -5806,17 +5824,19 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
     prop_tick(rail_prop(), open);
     prop_tick(ramp_prop(), open);
     studio_sound(open, sound_marker());
-    // When the board lands, for the catch latch: the ground along its path (time_to_landing), on this (the client) thread.
+    // Where the board lands, for the look ahead at a rail or a ledge: the ground along its path (time_to_landing), on this
+    // (the client) thread.
     if (auto& probe = ground_probe(); probe.wanted.exchange(false, std::memory_order_acq_rel)) {
         const float x = probe.x.load(std::memory_order_acquire), z = probe.z.load(std::memory_order_acquire);
-        float surface = 0;
+        float surface = 0, edge = 0;
         const float low = probe.low.load(std::memory_order_acquire);
         const auto ground = [&](float dx, float dz, float top) { return local_ground_height(x + dx, z + dz, top, top - 60.0f); };
         const float t = time_to_landing(low, probe.vx.load(std::memory_order_acquire),
                                         probe.vy.load(std::memory_order_acquire), probe.vz.load(std::memory_order_acquire),
                                         [&](float dx, float dz, float top) { return ground_not_self(ground, dx, dz, top, low); },
-                                        0.05f, 16, &surface, board_gravity * air_gravity_in_force());
+                                        0.05f, 16, &surface, board_gravity * air_gravity_in_force(), &edge);
         probe.surface.store(surface, std::memory_order_release);
+        probe.edge.store(edge, std::memory_order_release);
         probe.to_ground.store(t, std::memory_order_release);
         probe.found_at.store(now_seconds(), std::memory_order_release);
     }

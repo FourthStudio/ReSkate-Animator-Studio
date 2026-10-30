@@ -366,6 +366,33 @@ inline std::optional<Quat> rest_heading_before(const std::deque<std::pair<double
     }
     return std::nullopt;
 }
+// After the touchdown, off the game's clip: the game going into its next move (a push, a manual), or only landing? The
+// game's own landing bends him away from the trick's clip at once (10 to 21 degrees in 0.07 s, then back to about 14: a
+// tester's FS Pop Shuv-it, 2026-10-30). Measured from the least of it, nearly every landing was taken for the next move and
+// the trick's own landing let go 0.17 s after the touchdown. The base is the most of it over the landing's first `settle`
+// seconds; the next move is the pose going `margin` degrees further than that, two updates running.
+struct LandingDrift {
+    static constexpr double settle = 0.15;
+    static constexpr float margin = 6.0f;
+    double since{-1};
+    float base{};
+    int count{};
+    void reset() noexcept { *this = {}; }
+    bool next_move(double at, float error) noexcept {
+        if (since < 0) {
+            since = at;
+            base = error;
+            count = 0;
+            return false;
+        }
+        if (at - since < settle) {
+            base = std::max(base, error);
+            return false;
+        }
+        count = error > base + margin ? count + 1 : 0;
+        return count >= 2;
+    }
+};
 // ---- the ground -------------------------------------------------------------------------------------------------------
 // The board falls at 20 m/s2 in the game, not the Earth's 9.81: measured 2026-10-25 from the board body's speed and height
 // through flat ollies (the speed falls 6 m/s in 0.28 s; from the top it drops 0.58 m in 0.23 s). With 9.81 the time to the
@@ -388,17 +415,34 @@ inline float time_to_ground(float up_speed, float height, float gravity = board_
 // dz, top)` is the ground's height under that point moved (dx, dz), the topmost below `top` (none: nothing there). Samples
 // along the path every `step` seconds; past the last, straight down from there. Below 0: not known. `surface`: the height of
 // what it lands on (a rail or a ledge stands over the ground it took off from).
+// `edge`: the highest step up in the ground on the way there - a rail's side, a ledge's - where a slope (a kicker, a bank)
+// rises little by little. A rise between two samples is halved five times towards where it rises most: a step keeps nearly
+// all of it in the last 32nd of the way, a slope a 32nd of it.
+inline constexpr float edge_looked_at = 0.04f; // a rise between two samples worth halving (metres)
 template <class GroundAt>
 float time_to_landing(float low, float vx, float vy, float vz, GroundAt&& ground_at, float step = 0.05f, int samples = 16,
-                      float* surface = nullptr, float gravity = board_gravity) {
+                      float* surface = nullptr, float gravity = board_gravity, float* edge = nullptr) {
+    if (edge) *edge = 0;
     if (!std::isfinite(low) || !std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(vz)) return -1;
+    const auto path = [&](float t) { return low + vy * t - 0.5f * gravity * t * t; };
+    const auto step_between = [&](float ta, float ga, float tb, float gb) {
+        for (int i = 0; i < 5; ++i) {
+            const float tm = 0.5f * (ta + tb);
+            const std::optional<float> gm = ground_at(vx * tm, vz * tm, path(tm) + 0.6f);
+            if (!gm || !std::isfinite(*gm)) break;
+            if (*gm - ga >= gb - *gm) { tb = tm; gb = *gm; } else { ta = tm; ga = *gm; }
+        }
+        return gb - ga;
+    };
     float last_t = -1, last_gap = 0, last_ground = 0;
     for (int k = 0; k <= samples; ++k) {
         const float t = static_cast<float>(k) * step;
-        const float y = low + vy * t - 0.5f * gravity * t * t;
+        const float y = path(t);
         // Now: from just under the board. Ahead: from a little over its path, so ground it would meet is found.
         const std::optional<float> ground = ground_at(vx * t, vz * t, k == 0 ? low - 0.03f : y + 0.6f);
         if (!ground || !std::isfinite(*ground)) continue;
+        if (edge && last_t >= 0 && *ground - last_ground > edge_looked_at)
+            *edge = std::max(*edge, step_between(last_t, last_ground, t, *ground));
         const float gap = y - *ground;
         if (gap <= 0) {
             if (surface) *surface = *ground;
