@@ -1,4 +1,5 @@
 #include "anim_studio.h"
+#include "held_loop_selection.h"
 #include "native_asset_names.h"
 #include "pop_grades.h"
 #include "Extension/Trainer/trainer_gamestate.h"
@@ -3122,8 +3123,10 @@ std::optional<PieceMatch> manual_play(Live& l, float dt) {
 std::optional<PieceMatch> said_loop(Live& l, float dt, Live::HeldKind kind, const std::function<int(std::size_t)>& rank, const std::string& doing,
                                     const char* left) {
     auto& g = l.held;
-    if (g.playing >= 0 && rank(static_cast<std::size_t>(g.playing)) < 0) {
-        logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go: {}.", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, left);
+    const auto choice = held_loop_ranks<Live::HeldKind>(l.held_loops, kind, g.playing, rank);
+    if (g.playing >= 0 && !choice.keep) {
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go: {}.", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name,
+                     choice.best < 0 ? left : "a better matching saved loop is available");
         g.playing = g.candidate = -1;
     }
     if (g.playing >= 0) {
@@ -3133,10 +3136,7 @@ std::optional<PieceMatch> said_loop(Live& l, float dt, Live::HeldKind kind, cons
         if (length > 0) g.time = std::fmod(g.time, length);
         return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, 0};
     }
-    int best = -1;
-    for (const auto& [index, k] : l.held_loops)
-        if (k == kind)
-            if (const int r = rank(index); r >= 0 && (best < 0 || r < best)) best = r;
+    const int best = choice.best;
     if (best < 0) return std::nullopt;
     std::vector<std::size_t> pieces;
     std::vector<const Clip*> clips;
@@ -5304,9 +5304,7 @@ Joint part_of(const Joint& change, float k) noexcept {
 // The key's way round kept frame to frame within one trick (scaled_turn needs it: a key read on its own can come either
 // sign). `update`: the board pass, which draws it, keeps the sign; drawn_board_now only reads it. Caller holds the mutex.
 Offset key_its_own_way(Handover& h, Offset key, std::uint64_t episode, bool update) noexcept {
-    const auto& p = h.key_sign;
-    if (h.key_episode == episode && key.rotation[0] * p[0] + key.rotation[1] * p[1] + key.rotation[2] * p[2] + key.rotation[3] * p[3] < 0)
-        key.rotation = {-key.rotation[0], -key.rotation[1], -key.rotation[2], -key.rotation[3]};
+    key.rotation = key_way_round(key.rotation, h.key_episode == episode ? std::optional<Quat>{h.key_sign} : std::nullopt);
     if (update) {
         h.key_sign = key.rotation;
         h.key_episode = episode;
