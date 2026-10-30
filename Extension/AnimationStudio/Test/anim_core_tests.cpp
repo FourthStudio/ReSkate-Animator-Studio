@@ -2373,6 +2373,11 @@ void smooth_transitions_contracts() {
     check(near(angle_x(scaled_turn(about_x(200), 0.5f)), 100, 0.05f), "Half of a 200 degree flip is 100 degrees on, not 80 back");
     check(near(angle_x(scaled_turn(about_x(90), 0.5f)), 45, 0.05f), "Half of a quarter turn is an eighth");
     check(scaled_turn(about_x(300), 0) == (Quat{0, 0, 0, 1}), "None of a turn is no turn");
+    const auto stored_other_sign = [](Quat q) { return Quat{-q[0], -q[1], -q[2], -q[3]}; };
+    check(near(angle_x(scaled_turn(key_way_round(stored_other_sign(about_x(40)), std::nullopt), 0.5f)), 20, 0.05f),
+          "A small board key saved with w below 0 is half turned the short way at a trick's start, not 160 degrees round");
+    check(near(angle_x(scaled_turn(key_way_round(stored_other_sign(about_x(200)), about_x(170)), 0.5f)), 100, 0.05f),
+          "A flip that went past half a turn the frame before keeps going on round");
     EditTransition t;
     std::array<Offset, 1> flat{}, turned{};
     turned[0].rotation = about_x(90);

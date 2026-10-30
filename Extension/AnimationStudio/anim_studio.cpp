@@ -5304,9 +5304,7 @@ Joint part_of(const Joint& change, float k) noexcept {
 // The key's way round kept frame to frame within one trick (scaled_turn needs it: a key read on its own can come either
 // sign). `update`: the board pass, which draws it, keeps the sign; drawn_board_now only reads it. Caller holds the mutex.
 Offset key_its_own_way(Handover& h, Offset key, std::uint64_t episode, bool update) noexcept {
-    const auto& p = h.key_sign;
-    if (h.key_episode == episode && key.rotation[0] * p[0] + key.rotation[1] * p[1] + key.rotation[2] * p[2] + key.rotation[3] * p[3] < 0)
-        key.rotation = {-key.rotation[0], -key.rotation[1], -key.rotation[2], -key.rotation[3]};
+    key.rotation = key_way_round(key.rotation, h.key_episode == episode ? std::optional<Quat>{h.key_sign} : std::nullopt);
     if (update) {
         h.key_sign = key.rotation;
         h.key_episode = episode;

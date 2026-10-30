@@ -778,6 +778,9 @@ Quat scaled_turn(const Quat& q, float k) noexcept {
     const float half = std::acos(w) * k, f = std::sin(half) / sine;
     return {q[0] * f, q[1] * f, q[2] * f, std::cos(half)};
 }
+Quat key_way_round(const Quat& key, const std::optional<Quat>& before) noexcept {
+    return nearest(key, before.value_or(Quat{0, 0, 0, 1}));
+}
 Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& ground, bool mirror) {
     const auto edit = board_key(edits, seconds, mirror);
     return edit ? board_edited_by(board, *edit, ground) : board;
