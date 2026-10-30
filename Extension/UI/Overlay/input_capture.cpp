@@ -24,6 +24,20 @@ namespace dingosdk::overlay::detail {
 thread_local HRAWINPUT noted_raw_input = nullptr;
 std::atomic<ULONGLONG> mode_input_paused_until{};
 std::atomic<std::uint16_t> mode_hidden_buttons{}, mode_held_buttons{};
+// Mask, held/block flags and a 32-bit timestamp in one publication: no stale mask survives a stopped client tick.
+std::atomic<std::uint64_t> studio_modifier_input{};
+std::uint64_t live_modifier_input() noexcept {
+    const auto value = studio_modifier_input.load(std::memory_order_acquire);
+    const DWORD at = static_cast<DWORD>(value >> 32);
+    if (static_cast<DWORD>(GetTickCount64()) - at > 200 ||
+        GetForegroundWindow() != state().window.load() || interactive_visible(state()) || animation_studio_loading_pending()) return 0;
+    return value;
+}
+std::uint16_t modifier_hidden_buttons() noexcept {
+    if (overlay_input_access) return 0;
+    const auto value = live_modifier_input();
+    return (value & (1ull << 17)) ? static_cast<std::uint16_t>(value) : 0;
+}
 std::atomic<int> mode_mouse_wheel{};
 std::atomic<bool> challenge_menu_capture{};
 std::atomic<bool> challenge_native_panel{};
@@ -221,6 +235,8 @@ void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
     if (block_polled_input()) neutral_hid(read, size);
     else {
         filter_hid(read, size);
+        if (const auto hidden = modifier_hidden_buttons(); hidden && read.buffer && size <= read.capacity)
+            (void)hide_playstation_buttons(read.kind, playstation_bluetooth(size), static_cast<std::uint8_t*>(read.buffer), size, hidden);
         int stick{};
         SHORT value{};
         if (!overlay_input_access && read.buffer && size <= read.capacity && held_stick(stick, value)) {
@@ -880,7 +896,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const bool capture = block_polled_input();
     note_prompt_read(prompt_xinput);
     const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
-        mode_hidden_buttons.load(std::memory_order_relaxed) |
+        mode_hidden_buttons.load(std::memory_order_relaxed) | modifier_hidden_buttons() |
         (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
     DWORD result;
     { // XInput exports can forward through another hooked XInput export.
@@ -939,6 +955,14 @@ DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE ou
     if (result == ERROR_SUCCESS && output && block_polled_input()) { *output = {}; return ERROR_EMPTY; }
     if(result==ERROR_SUCCESS && output && suppress_challenge_menu() && output->VirtualKey==VK_PAD_START) {
         *output={};return ERROR_EMPTY;
+    }
+    if (result == ERROR_SUCCESS && output && !(output->Flags & XINPUT_KEYSTROKE_KEYUP)) {
+        const auto hidden = modifier_hidden_buttons();
+        const auto key = output->VirtualKey;
+        const std::uint16_t button = key == VK_PAD_RSHOULDER ? 0x0200 : key == VK_PAD_LSHOULDER ? 0x0100 :
+            key == VK_PAD_A ? 0x1000 : key == VK_PAD_B ? 0x2000 : key == VK_PAD_X ? 0x4000 : key == VK_PAD_Y ? 0x8000 :
+            key == VK_PAD_LTHUMB_PRESS ? 0x0040 : key == VK_PAD_RTHUMB_PRESS ? 0x0080 : 0;
+        if (button & hidden) { *output = {}; return ERROR_EMPTY; }
     }
     // VK_PAD_DPAD_DOWN 0x5811, LEFT 0x5812, RIGHT 0x5813 (UP 0x5810 stays), while Dark Pop hides the D-pad.
     if (result == ERROR_SUCCESS && output && !overlay_input_access && output->VirtualKey >= 0x5811 && output->VirtualKey <= 0x5813 &&
@@ -1254,6 +1278,21 @@ namespace dingosdk::overlay {
 // every caller uses this one.)
 void set_plugin_dialog_active(bool active) noexcept { detail::state().plugin_dialog_visible.store(active); }
 bool interface_open() noexcept { return detail::interactive_visible(detail::state()); }
+void update_trick_modifier(std::uint16_t mask, bool block, bool gameplay) {
+    const auto pad = gameplay && mask ? read_gamepad() : Gamepad{};
+    std::uint64_t value = 0;
+    if (gameplay && mask && pad.valid) {
+        value = mask;
+        if (pad.buttons & mask) value |= 1ull << 16;
+        if (block) value |= 1ull << 17;
+        value |= static_cast<std::uint64_t>(static_cast<DWORD>(GetTickCount64())) << 32;
+    }
+    detail::studio_modifier_input.store(value, std::memory_order_release);
+}
+bool trick_modifier_held(std::uint16_t mask) noexcept {
+    const auto value = detail::live_modifier_input();
+    return static_cast<std::uint16_t>(value) == mask && (value & (1ull << 16)) != 0;
+}
 void hide_game_buttons(std::uint16_t buttons) noexcept { detail::mode_hidden_buttons.store(buttons, std::memory_order_relaxed); }
 void capture_challenge_menu_input(bool active,bool native_panel,bool opening_key_down) noexcept {
     detail::challenge_menu_release.store(game::owned_menu_release_latch(

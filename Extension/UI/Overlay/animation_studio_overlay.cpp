@@ -7600,6 +7600,29 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(studio::settings_rows::trick_matching(now));
         rows.push_back(studio::settings_rows::transitions(now));
         {
+            auto bind = studio::modifier_binding();
+            rows.push_back(choice("EXPERIMENTAL - Modifier bind", studio::modifier_button_names[static_cast<std::size_t>(bind.button)],
+                "Hold this button at takeoff for the modifier playlist. Input tricks only in this prototype; OFF disables it.",
+                [bind](int by) mutable { bind.button = (bind.button + by + 9) % 9; studio::set_modifier_binding(bind); }));
+            const auto lists = studio::playlists_now();
+            std::vector<std::string> names{""};
+            for (const auto& list : lists.lists) names.push_back(list.name);
+            const auto at = std::find(names.begin(), names.end(), bind.playlist);
+            const int selected = at == names.end() ? 0 : static_cast<int>(at - names.begin());
+            rows.push_back(choice("Modifier playlist", bind.playlist.empty() ? "NONE" : bind.playlist,
+                "Any playlist can supply the modifier tricks. No matching trick: use your normal playlist. Release after takeoff does not change the selected route.",
+                [bind, names, selected](int by) mutable {
+                    const auto next = (selected + by + static_cast<int>(names.size())) % static_cast<int>(names.size());
+                    bind.playlist = names[static_cast<std::size_t>(next)]; studio::set_modifier_binding(bind);
+                }));
+            rows.push_back(on_off("Replace native button", bind.block_native,
+                "Only during gameplay: hide this button from the game while Studio still reads it. Menus, focus loss and a disconnected pad release the capture.",
+                [bind](bool on) mutable { bind.block_native = on; studio::set_modifier_binding(bind); }));
+            rows.push_back(button_row("Modifier playlist from tags",
+                "Create and assign a modifier playlist from saved animations carrying the author hint. Tags never stop normal playback. Choose a bind above.",
+                [] { std::string message; studio::playlist_from_modifier_tags(message); say(message); }));
+        }
+        {
             const auto build = studio::library_build();
             Setting s = button_row("Trick library",
                                    "The game's tricks, made on this PC from your own copy of skate. (nothing of the game's comes with the "
@@ -10138,7 +10161,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     // (DROP PREVIEW is gone, 2026-10-29: it played the trick as off a drop here, which read as a setting of the trick and led to
     // wrong keys.)
     const bool catch_hold_shown = show_catch_tools && v.catch_marker;
-    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + (3 + (catch_hold_shown ? 1 : 0)) * row);
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + (4 + (catch_hold_shown ? 1 : 0)) * row);
     skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
     const float x = a.x + 20 * k, bw = w - 40 * k;
@@ -10149,6 +10172,12 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         text(d, f.bold, 14 * k, ImVec2(value_right - vw.x, y), enabled ? soft : faint, value);
     };
     const auto note = [&](const char* words) { text(d, f.bold, 11 * k, ImVec2(x, y + 44 * k), faint, elide(f.bold, 11 * k, words, bw)); };
+    head("MODIFIER HINT", v.modifier_hint ? "ON" : "OFF", !v.previewing, x + bw);
+    if (action(d, f, "##modifierhint", ImVec2(x, y + 22 * k), ImVec2(bw, 24 * k),
+               v.modifier_hint ? "RECOMMENDED FOR MODIFIERS" : "NO RECOMMENDATION", Look::ghost, !v.previewing))
+        studio::set_modifier_hint(!v.modifier_hint);
+    note("Author hint only: this trick can still play normally.");
+    y += row;
     // Its stance: which way round it is done, saved so, and played when riding so.
     {
         const bool can = v.trick_stance >= 0 && !v.previewing;

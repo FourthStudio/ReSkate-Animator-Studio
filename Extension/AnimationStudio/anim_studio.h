@@ -1,5 +1,6 @@
 #pragma once
 #include "anim_core.h"
+#include "trick_modifier.h"
 #include "anim_library.h"
 #include "anim_presets.h"
 #include <array>
@@ -45,7 +46,14 @@ struct Orbit {
     float yaw{0.6f}, pitch{0.18f}, distance{3.4f};
     Vec3 pan{}; // added to the skater's centre
 };
+ModifierBinding modifier_binding();
+void set_modifier_binding(ModifierBinding binding);
+void modifier_tick(bool gameplay);
+void set_modifier_hint(bool on);
+void playlist_from_modifier_tags(std::string& message);
+
 struct View {
+    bool modifier_hint{};
     bool open{};       // the studio has the screen
     bool pose_seen{};  // a pose of the local skater was read lately
     std::string status, failure;

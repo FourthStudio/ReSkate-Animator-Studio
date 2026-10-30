@@ -119,4 +119,25 @@ inline bool set_playstation_stick(PlayStationPad kind, bool bluetooth, std::uint
     return true;
 }
 
+// Remove only the requested face/shoulder/click buttons; retain sticks, triggers, d-pad, sensors and counters.
+inline bool hide_playstation_buttons(PlayStationPad kind, bool bluetooth, std::uint8_t* report, std::size_t size,
+                                    std::uint16_t mask) noexcept {
+    if (!parse_playstation_report(kind, bluetooth, report, size)) return false;
+    const unsigned offset = report[0] == 0x31 ? 2 : report[0] == 0x11 ? 3 : 1;
+    const bool sense = kind == PlayStationPad::dualsense && (report[0] == 0x31 || (report[0] == 1 && !bluetooth));
+    auto* data = report + offset;
+    auto& face = data[sense ? 7 : 4];
+    auto& shoulder = data[sense ? 8 : 5];
+    if (mask & 0x1000) face &= 0xdf; // cross
+    if (mask & 0x2000) face &= 0xbf; // circle
+    if (mask & 0x4000) face &= 0xef; // square
+    if (mask & 0x8000) face &= 0x7f; // triangle
+    if (mask & 0x0100) shoulder &= 0xfe;
+    if (mask & 0x0200) shoulder &= 0xfd;
+    if (mask & 0x0040) shoulder &= 0xbf;
+    if (mask & 0x0080) shoulder &= 0x7f;
+    refresh_playstation_bluetooth_crc(report, size);
+    return true;
+}
+
 }

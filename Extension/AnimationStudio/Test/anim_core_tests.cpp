@@ -586,6 +586,12 @@ void profiles_read_back_and_bad_ones_are_refused() {
     set_key(animation, 7, 0.4f, {from_euler({0, 10, 0}), {0, 0.1f, 0}});
     set_key(animation, 278, 1.0f, {from_euler({20, 0, 5}), {}}).ease = Ease::linear;
     const auto back = from_json(to_json(animation));
+    check(!back.modifier_hint, "Old animations have no modifier recommendation by default");
+    animation.modifier_hint = true;
+    const auto hinted = from_json(to_json(animation));
+    check(hinted.modifier_hint && hinted.trick == animation.trick && hinted.pop == animation.pop,
+          "The author recommendation survives save/share without changing the native trick or its pop");
+    animation.modifier_hint = false;
     check(back.name == "Kickflip 2" && back.trick == "Kickflip" && near(back.speed, 0.5f), "Name, trick and speed read back");
     check(back.key_count() == 2 && back.track(278) && back.track(278)->keys[0].ease == Ease::linear, "Keys read back");
     check(same_turn(back.track(7)->keys[0].rotation, from_euler({0, 10, 0})) && near(back.track(7)->keys[0].offset[1], 0.1f),

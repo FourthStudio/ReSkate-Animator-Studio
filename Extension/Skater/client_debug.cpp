@@ -2,6 +2,7 @@
 #include "Extension/AnimationStudio/studio_room.h"
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
+#include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include "no_bail.h"
 #include "skater_animation.h"
 #include "offboard_flight.h"
@@ -1313,6 +1314,8 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
     float fov{};
     if (debug.camera_owned && debug.camera_identity.camera)
         (void)first_person_read(debug.camera_identity.camera + camera_fov_offset, &fov, sizeof(fov));
+    const auto menu = multiplayer::sample_game_ui_state(trial.base);
+    anim_studio::modifier_tick(can_control && phase && component && !debug.animation_studio && !debug.park_editor && menu.available && !menu.in_menu);
     const auto wanted = anim_studio::tick(trial.base, component, debug.animation_studio, fov);
     // Open, the studio holds the skater still (client_noclip.cpp applies it in the physics step).
     if (debug.animation_studio && can_control) {

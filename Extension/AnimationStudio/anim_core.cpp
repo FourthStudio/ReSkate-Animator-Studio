@@ -1017,6 +1017,7 @@ std::string to_json(const Animation& animation) {
     if (!animation.label.empty()) root["label"] = animation.label;
     root["speed"] = animation.speed;
     root["loop"] = animation.loop;
+    if (animation.modifier_hint) root["modifier_hint"] = true;
     root["pop"] = animation.pop;
     if (!animation.stance.empty()) root["stance"] = animation.stance;
     if (animation.switch_stance) root["switch_stance"] = *animation.switch_stance;
@@ -1082,6 +1083,7 @@ Animation from_json(std::string_view text) {
     result.label = utf8_prefix(root.value("label", ""), 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
+    result.modifier_hint = root.value("modifier_hint", false);
     result.pop = root.value("pop", "");
     result.stance = root.value("stance", "");
     result.entry = root.value("entry", "ground");
