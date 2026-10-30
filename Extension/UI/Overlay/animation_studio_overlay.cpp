@@ -5571,23 +5571,28 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         return open;
     };
     {
-        // MY TRICKS: every trick of yours (in a pack of yours or in none), and anything else in no pack, open at first. Each goes
-        // in as itself, with its pop: a trick of yours needs no pack to play.
-        std::vector<const studio::Preset*> mine;
-        for (const auto& p : v.presets)
-            if (!p.foreign || std::none_of(v.packs.begin(), v.packs.end(), [&](const auto& pack) { return pack.pack.has(p.name); }))
-                mine.push_back(&p);
-        if (!mine.empty()) {
+        // MY TRICKS: the tricks MY TRICKS shows (the ones you made, from_a_pack), open at first, each going in as itself with
+        // its pop: a trick of yours needs no pack to play. Other makers' tricks in no pack (their pack deleted, or they came
+        // without one) are a row of their own, folded, as FROM PACKS has them - never among yours.
+        std::vector<const studio::Preset*> mine, loose;
+        for (const auto& p : v.presets) {
+            if (!from_a_pack(v, p.name)) mine.push_back(&p);
+            else if (std::none_of(v.packs.begin(), v.packs.end(), [&](const auto& pack) { return pack.pack.has(p.name); })) loose.push_back(&p);
+        }
+        const auto group = [&](const std::vector<const studio::Preset*>& list, const char* key, const std::string& title, bool open_at_first) {
+            if (list.empty()) return;
             const ImVec2 ra(px, qy), rb(px + pw - 14 * k, qy + 44 * k);
             flat_rect(d, ra, rb, IM_COL32(30, 32, 38, 244), seed_of(ra), k * 0.6f);
-            text(d, f.heading, 15 * k, ImVec2(ra.x + 14 * k, ra.y + 13 * k), white, "      MY TRICKS  (" + std::to_string(mine.size()) + ")");
-            const bool open = fold("*mine", ra.y, rb.y, rb.x, true);
+            text(d, f.heading, 15 * k, ImVec2(ra.x + 14 * k, ra.y + 13 * k), white, "      " + title + "  (" + std::to_string(list.size()) + ")");
+            const bool open = fold(key, ra.y, rb.y, rb.x, open_at_first);
             qy = rb.y + 6 * k;
             if (open)
-                for (const auto* p : mine)
+                for (const auto* p : list)
                     add_row({"", p->name}, shown_name(v, p->name) + "   /   " + (p->pop.empty() ? std::string("ANY POP") : upper(p->pop) + " POP"), false);
             qy += 8 * k;
-        }
+        };
+        group(mine, "*mine", "MY TRICKS", true);
+        group(loose, "*loose", "OTHER MAKERS' TRICKS IN NO PACK", false);
     }
     for (const auto& pack : v.packs) {
         const float row_top = qy;
