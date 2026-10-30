@@ -22,8 +22,9 @@
 namespace dingosdk::anim_studio::market {
 inline constexpr char community[] = "reskate";
 inline constexpr char site[] = "https://thunderstore.io";
-// The category a pack is listed in: the community has no Animations one (yet).
-inline constexpr char category[] = "misc";
+// The community's section for the studio's packs (Thunderstore's "Animation Packs" category): every pack published from
+// the studio goes in it, and the MARKET lists what is in it besides what Thunderstore's search finds.
+inline constexpr char category[] = "animation-packs";
 // What marks a package as the studio's: its manifest's website_url, and the start of its description.
 inline constexpr char studio_url[] = "https://github.com/FourthStudio/ReSkate-Animator-Studio";
 inline constexpr char description_tag[] = "Animator Studio pack: ";
@@ -76,6 +77,18 @@ inline const Builder* builder_of(std::string_view team) {
 // Packs the shop puts up front (FEATURED), by Team-Name, in this order. With none, or none of them out, it picks: the
 // crew's newest, then the most liked.
 inline constexpr std::array<std::string_view, 0> featured_packs{};
+// VERIFIED makers, by their Thunderstore team: their packs carry the yellow VERIFIED tag and have a shelf of their own on
+// the MARKET's front page. In the build, like THE CREW, so nobody can verify themselves.
+inline constexpr std::array<std::string_view, 0> verified_makers{};
+inline bool verified_maker(std::string_view team) {
+    if (team.empty()) return false;
+    for (const auto& maker : verified_makers)
+        if (maker.size() == team.size() && std::equal(team.begin(), team.end(), maker.begin(), [](char a, char b) {
+                return (a >= 'A' && a <= 'Z' ? a + 32 : a) == (b >= 'A' && b <= 'Z' ? b + 32 : b);
+            }))
+            return true;
+    return false;
+}
 inline const CrewMember* crew_member(std::string_view team) {
     for (const auto& member : crew_members)
         if (member.team.size() == team.size() && std::equal(team.begin(), team.end(), member.team.begin(), [](char a, char b) {
@@ -100,6 +113,8 @@ struct Pack {
     bool favorite{}, mine{};    // favorite: liked here (the heart)
     bool crew{};                // made by one of THE CREW, or one of BUILT BY (with `dev`)
     bool dev{};                 // made by one of BUILT BY: stamped DEV, not CREW CERTIFIED
+    bool verified{};            // made by a VERIFIED maker (verified_makers)
+    bool section{};             // listed in the community's Animation Packs section
     std::string installed;      // the version installed here, "" none
     std::string installed_as;   // the pack it became in the library ("" not known: installed before this was kept)
     // Its README, read in the background for every pack (so a search finds a pack by the tricks in it): what its maker
@@ -223,7 +238,7 @@ inline std::string readme(const std::string& title, const std::string& descripti
     for (const auto& t : tricks) out += "- " + t + "\n";
     out += "\n## Install\n\nOpen the Animator Studio in game (F8), go to MARKET and install it there, or install it with the ReSkate launcher. "
            "It goes straight into the playlist that plays (LIBRARY changes what plays). Each trick above plays on the game's trick "
-           "and pop it says.\n";
+           "and pop it says, and fills in on the pops the pack has nothing for.\n";
     if (!made_by.empty()) out += "\nMade by " + made_by + " in the ReSkate Animator Studio.\n";
     return out;
 }

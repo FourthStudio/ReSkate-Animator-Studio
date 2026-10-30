@@ -30,7 +30,7 @@ void register_animation_studio_commands(Commands& registry) {
         out(anim_studio::research_trace(values.empty() ? "status" : std::get<std::string>(values[0])));
     };
     registry.add(std::move(entry));
-    auto dump = action("animstudio dump", "Export the last 15 gameplay seconds as local diagnostic text files", Group::gameplay, {});
+    auto dump = action("animstudio dump", "Export the last 25 gameplay seconds as local diagnostic text files", Group::gameplay, {});
     dump.run = [](const Model&, const Values&, const Output& out) {
         std::string message; anim_studio::export_diagnostics(message); out(message);
     };

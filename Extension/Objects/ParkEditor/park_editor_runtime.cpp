@@ -546,15 +546,15 @@ void update_park_editor() {
         if (tx.history < 0) {
             e.redo.push_back(e.undo.back());
             e.undo.pop_back();
-        } else if (tx.history > 0) {
+        } else if (tx.history == 1) {
             e.undo.push_back(e.redo.back());
             e.redo.pop_back();
-        } else {
+        } else if (tx.history == 0) {
             e.undo.push_back(tx.change);
             e.redo.clear();
             if (e.undo.size() > 64)
                 e.undo.pop_front();
-        }
+        } // 2: kept out of the history (edit_local_park's "no-history")
         e.transaction.reset();
         ++e.revision;
         e.status = r.personal_document ? "Park edit applied for this session."

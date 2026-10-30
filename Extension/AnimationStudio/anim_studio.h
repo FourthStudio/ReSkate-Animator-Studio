@@ -115,6 +115,21 @@ struct View {
     std::string library_path;             // ReSkate.Tricks itself (UTF-8)
     std::string test_trick;    // Test in game: the trick played in game until the studio opens again
     std::string test_returned; // back from testing it: the studio says something about it (clear_test_returned)
+    // A manual's or a grind's loop just saved: its pose can go onto the clips of its line that go into it and come out of
+    // it (copy_loop_pose), the same stance and way in only. Empty: nothing offered.
+    struct LoopOffer {
+        std::string loop; // the saved loop
+        bool manual{};    // a manual's loop, else a grind's
+        bool copied{};    // copied: the card offers to open them
+        struct Part {
+            std::string asset, label;
+            std::string saved; // your own saved edit of it ("" none yet: copying makes one)
+            bool in{};         // goes into the loop, else comes out of it
+            bool copied{};
+        };
+        std::vector<Part> parts;
+    };
+    std::optional<LoopOffer> loop_offer;
     std::vector<PackView> packs;
     std::string open_pack; // the pack open in PACKS
     // The playlists (PACKS > PLAYLIST): any number, one on at a time (playlist_playing, "" none). The one on decides what
@@ -338,6 +353,11 @@ void open_pack_folder(bool exporting);
 // studio is opened again; then View::test_returned names it, until clear_test_returned.
 bool test_in_game(const std::string& animation, std::string& message);
 void clear_test_returned();
+// COPY TO INS AND OUTS (View::loop_offer): the saved loop is closed on its own pose (its first and last frame hold it) and
+// that pose goes onto the meeting frame of each of these clips of its line (by their assets): an in's last frame, an out's
+// first. Each is saved as your own (yours kept and changed where you have one) and put in the loop's playlists.
+bool copy_loop_pose(const std::vector<std::string>& assets, std::string& message);
+void dismiss_loop_offer();
 // The name a saved animation is shown by in MY TRICKS and the packs; empty takes it off. Its file keeps its
 // name, so the packs it is in keep it.
 bool set_label(const std::string& animation, const std::string& label, std::string& message);
@@ -514,7 +534,7 @@ void stop_library_build();  // the build stops soon after; the library stays as 
 // that failed waits for TRY AGAIN.
 void build_library_when_needed(bool now);
 bool export_diagnostics(std::string& message);
-// REPORT A BUG: the last 15 seconds, the game's log, the studio's settings and the build in one zip in
+// REPORT A BUG: the last 25 seconds of play, the game's log, the studio's settings and the build in one zip in
 // ReSkate.Tricks\bug reports, shown in Explorer. Nothing is sent.
 bool report_bug(std::string& message);
 bool load_game_trick(const GameTrick& trick, std::string& message);

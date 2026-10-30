@@ -232,6 +232,7 @@ add_library(dingosdk_runtime SHARED
     Extension/AnimationStudio/anim_commands.cpp
     Extension/AnimationStudio/pop_grades.cpp
     Extension/AnimationStudio/studio_room.cpp
+    Extension/AnimationStudio/studio_sound.cpp
     Extension/Customization/worn_items.cpp
     Extension/Rendering/Capture/capture_runtime.cpp
     Extension/Rendering/Capture/capture_commands.cpp

@@ -53,6 +53,9 @@ inline std::vector<Pack> read_search(const std::string& text, std::string& next)
             if (p.created.empty()) p.created = p.updated;
             p.downloads = static_cast<std::uint64_t>(std::max(0.0, num("download_count")));
             p.rating = static_cast<int>(std::max(0.0, num("rating_count")));
+            if (r.contains("categories") && r.at("categories").is_array())
+                for (const auto& c : r.at("categories"))
+                    if (c.is_object() && c.contains("slug") && c.at("slug").is_string() && c.at("slug").string() == category) p.section = true;
             out.push_back(std::move(p));
         } catch (...) {}
     }
