@@ -9,7 +9,7 @@
 namespace dingosdk::anim_studio {
 namespace {
 struct Given {
-    std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, drop_preview, guide_seen, smooth, advanced, fingers;
+    std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, guide_seen, smooth, advanced, fingers;
     std::optional<int> stance, combo;
     std::optional<float> crossfade;
     std::optional<std::string> your_name;
@@ -31,7 +31,6 @@ void set_stance(int choice) { given.stance = choice; }
 void set_crossfade(float seconds) { given.crossfade = seconds; }
 void set_your_name(const std::string& name) { given.your_name = name; }
 void set_catch_marker(bool on) { given.catch_marker = on; }
-void set_drop_preview_tool(bool on) { given.drop_preview = on; }
 void set_guide_seen(bool seen) { given.guide_seen = seen; }
 void set_smooth_transitions(bool on) { given.smooth = on; }
 void play_playlist(const std::string& name, std::string& message) {
@@ -177,15 +176,13 @@ void playing_is_none_and_greyed_with_no_playlists() {
     const auto row = playing_playlist({}, [](const std::string&) {});
     check(row.options == std::vector<std::string>{"NONE"} && row.selected == 0 && !row.enabled, "Playing is not NONE and greyed with no playlists");
 }
-void the_catch_tools_are_on_by_default_and_each_sets_its_own() {
+void the_catch_marker_is_on_by_default_and_sets_itself() {
     reset();
     const anim_studio::Settings now;
-    const auto marker = catch_marker(now), drop = drop_height_preview(now);
-    check(marker.on_off && marker.selected == 1 && drop.on_off && drop.selected == 1, "Catch marker or Drop height preview is not ON by default");
+    const auto marker = catch_marker(now);
+    check(marker.on_off && marker.selected == 1, "Catch marker is not ON by default");
     marker.pick(0);
-    check(anim_studio::given.catch_marker == false && !anim_studio::given.drop_preview, "Catch marker OFF did not set it alone");
-    drop.pick(0);
-    check(anim_studio::given.drop_preview == false, "Drop height preview OFF did not set it");
+    check(anim_studio::given.catch_marker == false, "Catch marker OFF did not set it");
 }
 void how_it_works_opens_the_guide_again() {
     reset();
@@ -219,7 +216,7 @@ int main() {
         playing_lists_none_and_each_playlist_and_switches_by_name();
         playing_is_none_and_greyed_with_no_playlists();
         the_mode_is_the_playing_playlists_and_set_by_its_name();
-        the_catch_tools_are_on_by_default_and_each_sets_its_own();
+        the_catch_marker_is_on_by_default_and_sets_itself();
         how_it_works_opens_the_guide_again();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "animation studio settings tests passed\n";

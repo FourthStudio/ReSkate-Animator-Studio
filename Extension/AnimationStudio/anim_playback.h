@@ -218,8 +218,8 @@ struct EditTransition {
         return false;
     }
     // `jump_degrees` (0 off): a jump inside one trick - its weight cut at its end, a clip that turns its board round in a
-    // frame, frames the game did not draw - eases over jump_fade instead of showing in one frame (Team B measured 48 to 174
-    // degrees in one update, 2026-10-29).
+    // frame, frames the game did not draw - eases over jump_fade instead of showing in one frame (48 to 174 degrees in one
+    // update were measured, 2026-10-29).
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
                                      std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f,
                                      float jump_degrees = 0) {
@@ -260,7 +260,7 @@ inline bool rail_lock_fade_continues(bool playing, double started, double at_loc
     return !playing && started == at_lock;
 }
 // ---- SMOOTH transitions: the handover into a grind ----------------------------------------------------------------------
-// How the game hands its own trick over (its animation data and its own grinds, Team A, 2026-10-29): the board is the game's
+// How the game hands its own trick over (its animation data and its own grinds, read 2026-10-29): the board is the game's
 // from the lock on, and the body goes over part by part, shrinking the difference from the pose it leaves rather than
 // mixing two poses - the board and legs in 8 animation ticks (1/60 s each), the arms in 16, the hips and torso in 32
 // (BlendBehaviour_TrickToInAir, TrickToGrind). Hips and arms here go in 15, the back, neck and head in 24.
@@ -314,7 +314,7 @@ inline constexpr float board_gravity = 20.0f;
 // Seconds until the board is down: from how fast it goes up now (metres a second, falling below 0) and how high its lowest
 // point is over the ground. Below 0: not known.
 // `gravity`: the board's gravity now (board_gravity times the trainer's gravity: at twice the gravity the air is shorter, and
-// at the game's own the catch was held waiting for a landing that had already come - "janky with higher gravity", 2026-10-29).
+// at the game's own the catch was held waiting for a landing that had already come, 2026-10-29).
 inline float time_to_ground(float up_speed, float height, float gravity = board_gravity) noexcept {
     if (!std::isfinite(up_speed) || !std::isfinite(height) || !(gravity > 0)) return -1;
     const float h = std::max(0.0f, height);
@@ -429,42 +429,4 @@ struct AirStretch {
         return time;
     }
 };
-// The studio's DROP PREVIEW: the trick played as off a drop `metres` lower than its own landing, on the same AirStretch the
-// game's touchdown drives in game, so its CATCH and CATCH HOLD can be set by eye.
-struct DropPlay {
-    float metres{}, takeoff{-1}, caught{-1}, land{-1}, duration{}, hold{default_catch_hold};
-    bool on() const noexcept { return metres > 0.01f && takeoff >= 0 && caught > takeoff && land > caught && duration >= land; }
-};
-// The air off a drop `metres` lower: the clip's own takeoff (the speed that gives it `air`) falling that much further.
-inline float drop_air(float air, float metres) noexcept {
-    if (!(air > 0) || !(metres > 0) || !std::isfinite(air) || !std::isfinite(metres)) return air;
-    const float g = board_gravity, up = g * air / 2;
-    return (up + std::sqrt(up * up + 2 * g * metres)) / g;
-}
-// `real` seconds from the clip's start, off that drop -> the clip's time: its own up to its catch, slowed through it, its
-// landing on the touchdown and its own pace from there.
-inline float drop_clip_time(const DropPlay& p, float real) noexcept {
-    if (!p.on() || !std::isfinite(real) || real <= p.takeoff) return real;
-    const float air = drop_air(p.land - p.takeoff, p.metres), in_air = real - p.takeoff, until = std::min(in_air, air);
-    AirStretch stretch;
-    float time = p.takeoff;
-    for (float t = 0; t < until - 1e-6f;) {
-        const float step = std::min(1.0f / 60, until - t);
-        t += step;
-        time = stretch.update(p.takeoff + t, air - t, step, p.takeoff, p.caught, p.land, p.hold);
-    }
-    if (!stretch.on()) time = std::min(time, p.land - 1.0f / 60);
-    if (in_air <= air) return time;
-    return std::min(p.duration, landed_time(in_air - air, p.land, time));
-}
-// The moment off the drop that shows `clip_time` (the first: it never goes back).
-inline float drop_real_time(const DropPlay& p, float clip_time) noexcept {
-    if (!p.on() || !std::isfinite(clip_time) || clip_time <= p.takeoff) return clip_time;
-    float low = p.takeoff, high = p.duration + drop_air(p.land - p.takeoff, p.metres) + 1;
-    for (int i = 0; i < 40; ++i) {
-        const float mid = (low + high) / 2;
-        (drop_clip_time(p, mid) >= clip_time ? high : low) = mid;
-    }
-    return high;
-}
 } // namespace dingosdk::anim_studio

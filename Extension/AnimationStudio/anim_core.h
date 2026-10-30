@@ -318,16 +318,13 @@ void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joi
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.
 void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
                     std::span<Joint> target, bool mirror, bool reverse_facing = false);
-// Add only authored edits over a fresh native pose; no recorded rest transforms or scales.
-void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
-                             std::span<Joint> native, bool mirror, float weight, bool reverse_facing = false);
 Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
 // The board's key at `seconds` (its turn and move in the board's ground frame); none where the trick has no board key then.
 std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror = false);
 // `board` with a board key on it: turned and moved in the ground frame (board_edited is board_key and this).
 Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& frame) noexcept;
 // `k` of a turn, its own way round: a quaternion past half a turn (w below 0) goes on round to it, where slerp from no turn
-// takes the short way back (a flip drawn in part seemed to flip back - Team B, 2026-10-29).
+// takes the short way back (a flip drawn in part seemed to flip back, 2026-10-29).
 Quat scaled_turn(const Quat& q, float k) noexcept;
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
@@ -335,8 +332,6 @@ void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
 float animation_window_weight(const Animation& animation, float seconds) noexcept;
 // Sets (adds or replaces) the key of `joint` at `seconds`; keys closer than `merge` are one key.
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge = 1.0f / 120);
-// Moves every key of every track by `delta` seconds (the start bracket moves with them); keys never go before 0.
-void shift_keys(Animation& animation, float delta, float duration = std::numeric_limits<float>::infinity()) noexcept;
 // Moves one bracket: 1 the start, 2 the end, to `to`. Only the keys sitting on that bracket go with it -
 // everything between the brackets stays where it is, so nothing is stretched and the timeline keeps its
 // whole frames. A key the bracket is pulled back past is left where it is and stops applying until the
@@ -345,14 +340,8 @@ bool move_window_edge(Animation& animation, int which, float to, float duration)
 bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float merge = 1.0f / 120);
 // Moves a key to `to` (clamped to the clip), keeping the track in time order. Returns its new index.
 std::size_t move_key(Track& track, std::size_t index, float to, float duration) noexcept;
-// Smooths a track's keys: every key eases smoothly, keys that say nothing the curve would not have said
-// anyway are dropped, and the rest are drawn towards their neighbours so the motion runs evenly. The keys
-// at `keep_start` and `keep_end` (the brackets) are never moved or dropped. Returns how many keys it
-// changed or removed; they are all marked `smooth`.
-std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcept;
-// Smooths only the keys at `times`: each eases smoothly, is drawn a little towards its neighbours (as
-// smooth_track draws them) and is marked round. Keys on the brackets keep their pose. Returns how many
-// keys changed.
+// Smooths only the keys at `times`: each eases smoothly, is drawn a little towards its neighbours and is
+// marked round. Keys on the brackets keep their pose. Returns how many keys changed.
 std::size_t smooth_keys_at(Track& track, std::span<const float> times, float keep_start, float keep_end) noexcept;
 
 // ---- skeleton -------------------------------------------------------------------------------------
@@ -389,10 +378,6 @@ void place_foot(std::vector<Joint>& pose, std::uint16_t foot, const Vec3& to, co
 Quat mirror_rotation(const Quat& q) noexcept;
 Vec3 mirror_vector(const Vec3& v) noexcept;
 Joint mirror_pose(const Joint& joint) noexcept;
-// The game's fakie layer on a pose (GAME_STANCE_NOTES: riding fakie it plays the same trick clip with an upper-body
-// additive on it - the back, neck and head turned to look the way he rolls): `layer`, each joint's turn after its own
-// (identity where it does not reach), as the game's clips stand (goofy); `mirrored` for a pose standing the other way.
-void apply_fakie_layer(std::span<Joint> pose, std::span<const Quat> layer, bool mirrored) noexcept;
 // FAKIE (2026-10-29, after the game's fakie layer): a trick set to fakie or switch fakie stands with its upper body - the
 // lower back and all of the body above it - mirrored across his own middle (the plane across the hips, between the
 // thighs), the hips and legs as they are, so the arm that led towards the nose leads towards the tail. Measured on the
@@ -417,12 +402,11 @@ Quat mirror_board_rotation(const Quat& q) noexcept;
 Vec3 mirror_board_vector(const Vec3& v) noexcept;
 // The clip on the other side: every frame, and the board. Only for a skater clip (joints == 395).
 Clip mirror_clip(const Clip& clip);
-// The same, but only across the skinned body (gameplay_body_joint): the placement, the board's own joints
-// and the effector subtrees are left exactly as they were. The render rig parts company with the animation
-// rig after Ground (375), so mirroring every joint puts those on the wrong bones and tears the skater up.
-Clip mirror_body_clip(const Clip& clip);
-// One frame, mirrored the same way: out of the parent-local pose into the skater's own frame, reflected
-// there, each joint swapped for its opposite number, and back to parent-local against mirrored parents.
+// One frame, mirrored: out of the parent-local pose into the skater's own frame, reflected there, each joint
+// swapped for its opposite number, and back to parent-local against mirrored parents. `body_only`: only across
+// the skinned body (gameplay_body_joint): the placement, the board's own joints and the effector subtrees are
+// left exactly as they were. The render rig parts company with the animation rig after Ground (375), so
+// mirroring every joint puts those on the wrong bones and tears the skater up.
 void mirror_pose_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_only = true);
 // The animation on the other side: its clip, and every track and key on the mirror joints.
 Animation mirror_animation(const Animation& animation);

@@ -6,7 +6,6 @@
 #include <map>
 #include "Extension/AnimationStudio/skater_mirror.h"
 #include "Extension/AnimationStudio/anim_presets.h"
-#include "Extension/AnimationStudio/anim_research.h"
 #include "Extension/AnimationStudio/anim_runtime_rules.h"
 #include "Extension/AnimationStudio/anim_diagnostics.h"
 #include "Extension/AnimationStudio/anim_library.h"
@@ -319,8 +318,6 @@ void native_names_and_search() {
 
 void pop_grades_read_back() {
     check(graded_pop_name(1) == "low" && graded_pop_name(3) == "high" && graded_pop_name(4).empty(), "Only the game's three pop grades have a name");
-    check(pop_grade_since(100, 0.5) == 0 && pop_grade_since(5000, 0.5) == 4200,
-          "Grade lookup uses a bounded recent time window without unsigned wraparound");
     {
         // Online every skater's pop is graded: his are told apart by his skater's graph (2026-10-25: online the studio went
         // by the air time, which takes a low pop for a mid one).
@@ -890,42 +887,6 @@ void one_channel_changes_alone() {
         }
     }
 }
-void smoothing_tidies_a_track() {
-    Track track;
-    track.joint = 343;
-    const auto key_at = [&](float t, float y, Ease e = Ease::smooth) {
-        Key k; k.time = t; k.offset = {0, y, 0}; k.ease = e; track.keys.push_back(k);
-    };
-    key_at(0.0f, 0.0f);          // the start bracket
-    key_at(0.5f, 0.5f);
-    key_at(1.0f, 1.0f, Ease::step); // straight between its neighbours: it says nothing
-    key_at(1.5f, 1.5f);
-    key_at(2.0f, 2.0f);          // the end bracket
-    const auto before = track.keys.size();
-    const auto changed = smooth_track(track, 0.0f, 2.0f);
-    check(changed > 0, "Smoothing reports what it changed");
-    check(track.keys.size() < before, "A key that says nothing is dropped");
-    check(track.keys.front().time == 0.0f && track.keys.back().time == 2.0f, "The bracket keys stay where they are");
-    check(near(track.keys.front().offset[1], 0.0f) && near(track.keys.back().offset[1], 2.0f), "and keep their values");
-    for (const auto& k : track.keys) {
-        check(k.ease == Ease::smooth, "Every key eases smoothly afterwards");
-        check(k.smooth, "and is marked as smoothed");
-    }
-
-    Track blended;
-    blended.joint = 343;
-    for (const float t : {0.0f, 0.5f, 1.0f, 1.5f, 2.0f}) {
-        Key k; k.time = t; k.offset = {0, t, 0}; blended.keys.push_back(k);
-    }
-    blended.keys[2].blend_out = 0.2f; // straight between its neighbours, but it has a blend out
-    blended.keys[1].blend_in = 0.1f;  // the same, with a blend in
-    smooth_track(blended, 0.0f, 2.0f);
-    check(std::ranges::any_of(blended.keys, [](const Key& k) { return near(k.time, 1.0f) && near(k.blend_out, 0.2f); }),
-          "A key with a blend out is kept, with its blend out");
-    check(std::ranges::any_of(blended.keys, [](const Key& k) { return near(k.time, 0.5f) && near(k.blend_in, 0.1f); }),
-          "and a key with a blend in, with its blend in");
-}
-
 // Solo: turning a joint on its own. The joints hanging off it are turned back by as much, so they keep
 // the way they face. This is the sum the studio does in set_offset, on the arm and its elbow and hand.
 void solo_turn_holds_the_joints_below() {
@@ -1165,34 +1126,6 @@ void review_fixes_hold() {
     const auto both = from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1,"tracks":[{"joint":7,"keys":[{"t":1,"r":[0,0,0,1],"p":[0,0,0]},{"t":1.03,"r":[0,0,0,1],"p":[0,0,0]}]}]})");
     check(both.tracks[0].keys.size() == 1, "and gives way to a key already on the end");
 }
-void research_keeps_short_transitions_and_is_bounded() {
-    ResearchBuffer buffer;
-    ResearchSample sample;
-    sample.physics = 200;
-    buffer.append(sample);
-    sample.seconds = 0.001;
-    buffer.append(sample);
-    check(buffer.samples.size() == 1, "Unchanged state is sampled periodically");
-    sample.physics = 403;
-    buffer.append(sample);
-    sample.seconds = 0.002;
-    sample.physics = 401;
-    buffer.append(sample);
-    check(buffer.samples.size() == 3, "Rail transitions between periodic samples are retained");
-    sample.seconds = 0.003;
-    sample.physics.reset();
-    buffer.append(sample);
-    check(!buffer.samples.back().physics, "Unavailable state is preserved, never guessed as ground");
-    sample.seconds = 61;
-    check(!buffer.append(sample) && buffer.samples.size() == 4, "Trace ends after its bounded duration");
-    buffer.samples.clear();
-    for (std::size_t i = 0; i < ResearchBuffer::capacity + 4; ++i) {
-        sample.seconds = static_cast<double>(i) / 1000.0;
-        sample.physics = static_cast<std::uint32_t>(i);
-        buffer.append(sample);
-    }
-    check(buffer.samples.size() == ResearchBuffer::capacity, "Trace memory stays bounded even with a state change each tick");
-}
 void merged_library_and_timing() {
     check(episode_selection_changed("", "ollie") && episode_selection_changed("ollie", "kickflip"),
           "A first recognized trick and a late flip can select a preset");
@@ -1331,12 +1264,6 @@ void merged_library_and_timing() {
     check(!move_window_edge(animation, 2, 0.2f, 4) && near(animation.end, 3), "and that holds for the end as well");
     check(move_window_edge(animation, 1, 0.0f, 4) && animation.tracks[0].keys.size() == 3 && near(animation.tracks[0].keys[0].time, 0),
           "Taken back onto a key that is already there, the two become one");
-    // Smoothing puts keys back on whole frames, which is where an older stretched animation is mended.
-    Track drifted{9, {}, false, false};
-    drifted.keys = {{0, {}, {}, Ease::smooth}, {0.337f, {}, {0, 0.4f, 0}, Ease::step}, {0.681f, {}, {0, 0.1f, 0}, Ease::linear}, {1, {}, {}, Ease::smooth}};
-    smooth_track(drifted, 0, 1);
-    for (const auto& k : drifted.keys)
-        check(near(k.time, on_a_frame(k.time), 1e-5f), "Every key sits on a whole frame after smoothing");
 }
 void preview_trajectory_uses_the_whole_clip() {
     Clip clip;
@@ -1400,8 +1327,6 @@ void timing_and_stance_edge_cases() {
     check(near(advance_time(0.8f, 0.7f, 2, 1, false), 1), "Non-looping playback ends at the last frame");
     const auto nan = std::numeric_limits<float>::quiet_NaN();
     check(near(advance_time(0.4f, nan, 1, 1, false), 0.4f), "Nonfinite elapsed time cannot corrupt the playhead");
-    check(!fresh_sample(10, 9.99, 9.99), "A render pose cannot be recorded again with a new animation timestamp");
-    check(!fresh_sample(10, 10.01, 9.99) && fresh_sample(10, 9.995, 9.99), "Render capture rejects future and accepts fresh timestamps");
     const auto a = variation_name(std::string(48, 'a'), 2), b = variation_name(std::string(48, 'a'), 3);
     check(a.size() <= 48 && file_safe(a) == a && file_safe(a) != file_safe(b), "Long variation names retain their unique suffix after filename sanitization");
     Animation animation;
@@ -1429,19 +1354,11 @@ void timing_and_stance_edge_cases() {
     bool refused = false;
     try { (void)clip_bytes(clip); } catch (const std::runtime_error&) { refused = true; }
     check(refused, "Incomplete poses cannot be written as a valid-looking clip");
-    Animation shifted;
-    shifted.clip.times = {0, 1};
-    set_key(shifted, 7, 0.2f, {}).offset = {0.1f, 0, 0};
-    set_key(shifted, 7, 0.8f, {});
-    set_key(shifted, 7, 1.0f, {});
-    set_key(shifted, 49, 0.3f, {});
-    shifted.track(49)->locked = true;
-    shift_keys(shifted, 0.5f, 1.0f);
-    const auto restored = from_json(to_json(shifted));
-    check(restored.track(7)->keys.size() == 2 && near(restored.track(7)->keys.back().time, 1),
-          "Moving a start bracket keeps saturated keys unique and the profile reloadable");
-    check(near(restored.track(49)->keys[0].time, 0.3f), "Bracket shifts preserve locked tracks");
-    auto track = *restored.track(7);
+    Animation moved;
+    moved.clip.times = {0, 1};
+    set_key(moved, 7, 0.7f, {}).offset = {0.1f, 0, 0};
+    set_key(moved, 7, 1.0f, {});
+    auto track = *moved.track(7);
     move_key(track, 0, 1, 1);
     check(track.keys.size() == 1 && near(track.keys[0].offset[0], 0.1f), "Dropping a key on another frame replaces its pose instead of introducing a duplicate timestamp");
     Animation window;
@@ -1627,7 +1544,7 @@ void authored_gameplay_matches_f8_limbs_and_source_key_times() {
     check(finished.time == 2 && finished.weight == 0 && finished.finished, "Source playback ends and releases at clip duration without looping");
 }
 // Off a drop the catch is slowed, not held: the trick's landing comes by the touchdown, its time never stands still or goes
-// back, and a shorter air plays faster. The studio's DROP PREVIEW plays it the same way.
+// back, and a shorter air plays faster.
 void slow_catch_off_drops() {
     constexpr float step = 1.0f / 60;
     {
@@ -1766,24 +1683,6 @@ void slow_catch_off_drops() {
         check(lowest_ankle(true, false, -0.05f) == ankle_on_ground, "Rolling, a foot keyed out over the edge goes no lower than the ground");
         check(lowest_ankle(false, true, -0.15f) < -1, "In the air, a foot well under the deck is past the board: left as it is");
         check(lowest_ankle(false, false, 0.0f) < -1 && lowest_ankle(false, true, 0.05f) == ankle_on_deck, "In the air, only a foot on the deck is held on it");
-    }
-    {
-        const DropPlay p{1.0f, 0.5f, 1.0f, 1.1f, 2.0f, default_catch_hold};
-        check(near(drop_clip_time(p, 0.3f), 0.3f), "Before the pop the drop preview is the clip as it is");
-        const float extra = drop_air(0.6f, 1.0f) - 0.6f;
-        check(extra > 0.1f && extra < 0.3f, "A metre's drop gives it a little more air (at the board's gravity)");
-        float previous = -1;
-        bool back = false;
-        for (float r = 0; r < 3; r += 0.01f) {
-            const float t = drop_clip_time(p, r);
-            if (t < previous - 1e-5f) back = true;
-            previous = t;
-        }
-        check(!back, "It plays on through the drop, never back");
-        check(near(drop_clip_time(p, 0.5f + 0.6f + extra + 0.5f), 1.6f, 0.03f), "From the touchdown at its own pace");
-        check(near(drop_clip_time(p, drop_real_time(p, 1.02f)), 1.02f, 0.01f), "A time on the timeline has its moment in the drop");
-        const DropPlay none{0.0f, 0.5f, 1.0f, 1.1f, 2.0f, default_catch_hold};
-        check(near(drop_clip_time(none, 0.9f), 0.9f), "No drop: the clip as it is");
     }
 }
 // A knee tucked at the catch with nothing keyed after it runs on past the landing to END ANIM.; keyed back at the landing,
@@ -2003,24 +1902,6 @@ void native_clips_pop_where_the_game_does() {
 }
 // SMOOTH transitions (2026-10-29): part of a flip past half a turn goes on round, a jump inside one trick is eased, and in
 // a handover the legs go over first, then the hips and arms, then the back and head.
-// The game's fakie layer goes on each joint it reaches, after its own turn; on a pose standing the other way it goes on
-// the other side, reflected (2026-10-29).
-void fakie_layer_goes_on_as_the_game_plays_it() {
-    const auto same = [](const Quat& a, const Quat& b) {
-        return std::abs(std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) - 1) < 1e-5f;
-    };
-    std::vector<Quat> layer(skeleton_joints, Quat{0, 0, 0, 1});
-    layer[103] = Quat{0, std::sin(0.4f), 0, std::cos(0.4f)};
-    layer[47] = Quat{std::sin(0.2f), 0, 0, std::cos(0.2f)};
-    std::vector<Joint> pose(skeleton_joints);
-    apply_fakie_layer(pose, layer, false);
-    check(same(pose[103].rotation, layer[103]) && same(pose[47].rotation, layer[47]), "The fakie layer turns each joint it reaches");
-    check(same(pose[10].rotation, Quat{0, 0, 0, 1}), "and leaves the rest as they were");
-    std::vector<Joint> other(skeleton_joints);
-    apply_fakie_layer(other, layer, true);
-    check(same(other[mirror_joint[47]].rotation, mirror_rotation(layer[47])) && same(other[47].rotation, Quat{0, 0, 0, 1}),
-          "Standing the other way round, it goes on the other arm, reflected");
-}
 // FAKIE (2026-10-29): a trick set to fakie stands with its upper body mirrored across the plane between the thighs, the
 // hips and legs as they are; twice is the pose back; the keys mirrored with it come to the mirror of the keyed pose; a file
 // saved before has its upper body's keys mirrored once as it is read.
@@ -2593,13 +2474,12 @@ void native_playback_contracts() {
           "A missing first preview sample cannot publish only one half later in the same presentation");
     }
 
-    std::vector<Joint> native(skeleton_joints), source(skeleton_joints);
+    std::vector<Joint> native(skeleton_joints);
     native[7].position = {1, 2, 3}; native[7].scale = {1.2f, 0.8f, 1};
-    source[7].position = {90, 80, 70}; source[7].rotation = from_euler({90, 30, 80});
     Animation keys; keys.tracks.push_back({7, {{0, {}, {}, Ease::linear}}, false, false});
     auto fresh = native;
-    apply_native_edit_layer(keys, 0, source, fresh, false, 1);
-    check(fresh == native, "An untouched source preset preserves the complete native pose exactly, regardless of its recorded coordinates");
+    apply_authored_edit_layer(keys, 0, fresh, 1);
+    check(fresh == native, "An untouched key preserves the complete native pose exactly");
     Joint board; board.position = {80, 60, 40}; board.rotation = from_euler({0, 70, 0});
     keys.tracks.push_back({board_joint, {{0, {}, {}, Ease::linear}}, false, false});
     check(board_edited(board, keys, 0, from_euler({0, 90, 0})) == board, "Neutral board keys preserve native physics exactly");
@@ -2608,7 +2488,7 @@ void native_playback_contracts() {
     check(near(board_edit.position[2], board.position[2] - 0.2f) && board_edit.rotation == board.rotation && board_edit.scale == board.scale,
           "A board offset uses its explicit edit frame and does not import source coordinates or modify rotation/scale");
     keys.tracks[0].keys[0].offset = {0.2f, 0, 0};
-    apply_native_edit_layer(keys, 0, source, fresh, false, 0.5f);
+    apply_authored_edit_layer(keys, 0, fresh, 0.5f);
     check(fresh[7].rotation == native[7].rotation, "A translation-only edit leaves native joint rotation exactly unchanged");
     check(fresh[7].scale == native[7].scale && fresh[placement_joint] == native[placement_joint] && fresh[50] == native[50],
           "Authored edits retain native scale, placement and attachment ownership");
@@ -2616,7 +2496,7 @@ void native_playback_contracts() {
     cache.commit(1, 10, 100, native, fresh);
     auto repeated = fresh; cache.restore(1, 10, 100, repeated);
     check(repeated == native, "Repeated publication unwraps our prior writes before reapplying keys");
-    apply_native_edit_layer(keys, 0, source, repeated, false, 0.5f);
+    apply_authored_edit_layer(keys, 0, repeated, 0.5f);
     check(repeated == fresh, "Network capture of an already edited render pose applies the keys exactly once");
     const auto deltas = pose_edit_deltas(native, fresh);
     auto moved_native = native; moved_native[7].position[1] += 20;
@@ -2819,7 +2699,8 @@ void lead_foot_is_read_from_the_clip() {
     // Make the feet children of the placement for the test by giving their chain no offsets of its own.
     const auto right = clip_leads_right(clip);
     check(right.has_value() && *right, "Right foot on +X: the clip leads with the right foot");
-    const auto mirrored = mirror_body_clip(clip);
+    auto mirrored = clip;
+    mirror_pose_frame(clip.frames, mirrored.frames, true);
     const auto left = clip_leads_right(mirrored);
     check(left.has_value() && !*left, "Mirrored the game's way it leads with the left");
     clip.frames[343].position = {0.1f, -0.8f, 0.07f};
@@ -2829,6 +2710,8 @@ void lead_foot_is_read_from_the_clip() {
 // switch, fakie and switch fakie, in front-foot and exact-stance modes.
 void every_stance_finds_its_recording() {
     const auto pick = [](std::vector<StanceCandidate> c, LiveStance live, bool front_foot) { return choose_stance_variants(c, live, front_foot); };
+    // A recording made on the other foot is played mirrored, the game's way.
+    const auto plays_mirrored = [](const StanceCandidate& c, LiveStance live) { return c.leads_right != live.leads_right; };
     const StanceCandidate normal_left{false, false, 0}, normal_right{true, false, 0}, fakie_left{false, true, 0}, fakie_right{true, true, 0};
     const std::vector<StanceCandidate> all{normal_left, normal_right, fakie_left, fakie_right};
     // With a recording for every case, exact stance gives each live stance its own one, unmirrored. Front foot takes
@@ -2898,7 +2781,6 @@ int main(int argc, char** argv) {
     several_packs_play_together();
     pack_slots_are_fixed_or_alternate();
     packs_on_together_and_their_rules();
-        research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
         native_names_and_search();
         native_trick_cards();
@@ -2917,7 +2799,6 @@ int main(int argc, char** argv) {
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
         smooth_keys_never_overshoot();
-        smoothing_tidies_a_track();
         smoothing_chosen_keys();
         one_channel_changes_alone();
         solo_turn_holds_the_joints_below();
@@ -2928,7 +2809,6 @@ int main(int argc, char** argv) {
         blend_in_eases_in_from_the_game();
         keys_can_be_dragged_in_time();
         smooth_transitions_contracts();
-        fakie_layer_goes_on_as_the_game_plays_it();
         fakie_mirrors_the_upper_body();
         additive_clips_go_on_their_pose();
         grind_rail_goes_under_the_grind();

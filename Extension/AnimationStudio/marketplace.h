@@ -74,9 +74,6 @@ inline const Builder* builder_of(std::string_view team) {
             return &builder;
     return nullptr;
 }
-// Packs the shop puts up front (FEATURED), by Team-Name, in this order. With none, or none of them out, it picks: the
-// crew's newest, then the most liked.
-inline constexpr std::array<std::string_view, 0> featured_packs{};
 // VERIFIED makers, by their Thunderstore team: their packs carry the yellow VERIFIED tag and have a shelf of their own on
 // the MARKET's front page. In the build, like THE CREW, so nobody can verify themselves.
 inline constexpr std::array<std::string_view, 0> verified_makers{};

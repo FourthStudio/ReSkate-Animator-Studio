@@ -59,7 +59,6 @@ struct View {
     std::string source_kind, entry;
     std::string source_position_codec;
     std::size_t source_pose_count{};
-    float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
     // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
@@ -68,11 +67,9 @@ struct View {
     std::string kept_name;
     bool room{true}; // the studio opens in its room (studio_room.h)
     bool solo{};     // a turn moves one joint alone (set_solo)
-    // Which way round the skater stands in the studio: 0 as the game has him, 1 regular, 2 goofy, and
-    // which that works out to right now.
+    // Which way round the skater stands in the studio: 0 as the game has him, 1 regular, 2 goofy.
     int stance_choice{};
     bool own_lead_right{}; // the skater's own stance leads with the right foot (goofy): stance versions are told apart by it
-    bool showing_goofy{};
     bool grab_board{};   // a hand near the deck closes its fingers on it
     bool advanced_bones{}, finger_bones{}; // SETTINGS > SKATER: the advanced bones' and the fingers' rows shown (JointGroup)
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
@@ -145,9 +142,9 @@ struct View {
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
-    // SETTINGS > STUDIO: the CATCH flag on the timeline with CATCH HOLD, and DROP PREVIEW, shown or not; and whether the
-    // first-start guide has been read (it opens by itself until it has).
-    bool catch_marker{true}, drop_preview_tool{true}, guide_seen{true};
+    // SETTINGS > STUDIO: the CATCH flag on the timeline with CATCH HOLD shown or not; and whether the first-start guide has
+    // been read (it opens by itself until it has).
+    bool catch_marker{true}, guide_seen{true};
     // The editor's keys rebound in SETTINGS > STUDIO > EDITOR KEYS: an action's name to its key's name (the overlay's
     // names). Only those not on their own key.
     std::map<std::string, std::string> keys;
@@ -161,12 +158,9 @@ struct View {
     // Joints keyed in the air whose pose runs on past LAND to END ANIM. (keys_past_landing): the timeline offers to key them
     // back to the game's pose at the landing.
     std::vector<std::uint16_t> keys_past_landing;
-    // THIS TRICK: its own Crossfade (empty: the main one), its CATCH HOLD (catch_hold_set: its maker set it), and the
-    // studio's DROP PREVIEW (metres, 0 off) with the extra air that drop gives it (seconds; -1 off).
+    // THIS TRICK: its own Crossfade (empty: the main one) and its CATCH HOLD.
     std::optional<float> trick_crossfade;
     float catch_hold{default_catch_hold};
-    bool catch_hold_set{};
-    float drop_preview{}, drop_extra{-1};
     // The open trick's stance (THIS TRICK > STANCE): 0 your own, 1 fakie, 2 switch, 3 switch fakie; -1 none (a game piece).
     int trick_stance{-1};
     bool can_undo{}, can_redo{};
@@ -178,14 +172,6 @@ struct View {
     std::uint64_t clip_serial{};
 };
 View view();
-// Arms a one-off search of the running game for where it keeps the clip it is playing. It is taken riding,
-// at the pop and in the air of the next trick, and written to ReSkate.Tricks/research/live-graph-probe.txt.
-// Read only. Returns what it said.
-std::string arm_live_probe();
-// Turns the stance readout on or off (ReSkate.Tricks/research/stance-readout.txt). Returns what it said.
-std::string toggle_stance_readout();
-// Opt-in 60-second read-only trace; exported under ReSkate.Tricks/research.
-std::string research_trace(const std::string& action);
 // Cheap, any thread: whether the studio has the screen.
 bool is_open() noexcept;
 // The studio's settings (SETTINGS), cheaply, for a page that shows them with the studio closed: no trick, joint or
@@ -198,7 +184,7 @@ struct Settings {
     bool advanced_bones{}, finger_bones{};
     int open_combo{}; // open_combo_names
     float crossfade{0.3f};
-    bool catch_marker{true}, drop_preview_tool{true};
+    bool catch_marker{true};
     bool smooth_transitions{true}; // SETTINGS > TRICKS > Transitions: SMOOTH or CLASSIC
     std::string your_name;
     std::string export_folder, import_folder; // "" the defaults
@@ -286,13 +272,12 @@ void move_bracket(int which, float seconds);
 // CATCH: where the trick is caught (on a frame, between a frame after the pop and a frame before the landing); below 0
 // gives it back to the studio. Call begin_change once when a drag starts.
 void set_catch(float seconds);
-// THIS TRICK: its own Crossfade in seconds (below 0: the main one again), its CATCH HOLD (0 to 1), and the studio's DROP
-// PREVIEW (metres, 0 off; nothing saved). Call begin_change once when a drag of the first two starts.
+// THIS TRICK: its own Crossfade in seconds (below 0: the main one again) and its CATCH HOLD (0 to 1). Call begin_change
+// once when a drag of either starts.
 // THIS TRICK > STANCE: the open trick as its normal (0), fakie (1), switch (2) or switch fakie (3) version, saved so.
 void set_trick_stance(int version);
 void set_trick_crossfade(float seconds);
 void set_catch_hold(float amount);
-void set_drop_preview(float metres);
 // The joints that can be put somewhere rather than only turned, and how much of the limb above them bends
 // to reach: 3 for a hand or a foot (the elbow or knee and the limb above it bend), 2 for an elbow or a
 // knee (only the upper arm or the thigh turns, so placing a knee never swings the hips). 0 for the rest.
@@ -326,7 +311,6 @@ bool save(std::string& message);
 // on, every saved animation plays. Every change to a pack is saved at once and plays at once.
 bool create_preset_pack(std::string& message, const std::string& name = {}); // empty, off, and opened
 void open_pack(const std::string& name); // the pack open in PACKS; "" for the list of packs
-bool set_pack_on(const std::string& name, bool on, std::string& message);
 bool set_pack_member(const std::string& pack, const std::string& animation, bool in, std::string& message);
 // Where the pack has more than one of a trick and pop (`slot`, preset_slot): Fixed plays its first one,
 // Alternate one of the ones linked into its cycle each attempt, at random (never the same twice running).
@@ -412,9 +396,6 @@ struct UnpackedTrick {
 bool unpack_preview(const std::filesystem::path& zip, const std::filesystem::path& into, std::vector<UnpackedTrick>& tricks, std::string& message);
 std::filesystem::path studio_folder();       // ReSkate.Tricks
 std::filesystem::path pack_export_folder();  // where exports go
-// PLAY (MY TRICKS): on, the trick plays in game on its own, whichever packs are on; off, it does not play at all - from
-// its packs neither (it is switched off in each). A trick saved or put in a pack starts switched off.
-bool set_trick_play(const std::string& animation, bool on, std::string& message);
 // ACTIVE on a trick in a pack: on, it plays with the pack (when the pack is in the playlist that is on); off, it stays in
 // the pack but does not play.
 bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
@@ -478,9 +459,8 @@ std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& en
 // PLAY on a pack's card: the whole pack into the playlist that is on (or "My packs", switched on, when none is), or out of it.
 bool set_pack_playing(const std::string& pack, bool on, std::string& message);
 void set_hover_preview(bool on);
-// SETTINGS > STUDIO: the catch's tools shown (View::catch_marker, drop_preview_tool). Off, DROP PREVIEW goes back to 0.
+// SETTINGS > STUDIO: the catch's tools shown (View::catch_marker).
 void set_catch_marker(bool on);
-void set_drop_preview_tool(bool on);
 // The first-start guide read (true), or to open again (false).
 void set_guide_seen(bool seen);
 // The editor's rebound keys (View::keys), kept in studio-settings.json; empty puts every key back.

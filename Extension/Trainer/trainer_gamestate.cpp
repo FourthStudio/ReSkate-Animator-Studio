@@ -139,7 +139,7 @@ StateObject grind_objects[]{
 // enumeration, three vectors).
 // The Animator Studio's (read_studio_states): what the game's animation is doing, read every update. The ids are the
 // assets' GUIDs as the game holds them (the first three parts little-endian): the decoded animation graph names them
-// (Team A, 2026-10-29; Float.Anim.TrickFlipSpeed's, 086c7bb0-e742-c7ef-..., gives flip_speed_object's bytes exactly).
+// (read 2026-10-29; Float.Anim.TrickFlipSpeed's, 086c7bb0-e742-c7ef-..., gives flip_speed_object's bytes exactly).
 StateObject studio_objects[]{
     {{0xb7, 0xfb, 0x17, 0x34, 0xe9, 0x38, 0xd6, 0xbd, 0x34, 0x17, 0xfb, 0xb7, 0x38, 0xe9, 0xbd, 0xd6}, "Animation/Dingo/Float.Anim.TrickPhase"},
     {{0x35, 0xc2, 0x8d, 0xe8, 0x37, 0x79, 0x75, 0xb8, 0xe8, 0x8d, 0xc2, 0x35, 0x79, 0x37, 0xb8, 0x75}, "Animation/Dingo/Bool.Intent.Trick"},

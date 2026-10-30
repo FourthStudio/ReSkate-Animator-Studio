@@ -80,12 +80,6 @@ Setting catch_marker(const studio::Settings& now) {
                   "timeline. A trick's catch still plays in game as it was set.",
                   [](bool on) { studio::set_catch_marker(on); });
 }
-Setting drop_height_preview(const studio::Settings& now) {
-    return on_off("Drop height preview", now.drop_preview_tool,
-                  "On: DROP PREVIEW shows in THIS TRICK, to play the trick here as off a drop, its catch slowed as in game. Off: "
-                  "it is hidden and the trick plays as it is. Only the studio's view: nothing in game changes.",
-                  [](bool on) { studio::set_drop_preview_tool(on); });
-}
 Setting how_it_works() {
     return button_row("How it works",
                       "The guide from the first start again: how packs play, Exact stance and Front foot, putting your own "
@@ -167,7 +161,8 @@ Setting trick_matching(const studio::Settings& now) {
 Setting transitions(const studio::Settings& now) {
     return one_of("Transitions", {"SMOOTH", "CLASSIC"}, now.smooth_transitions ? 0 : 1,
                   "Smooth: into a grind your trick hands over the way the game hands over its own - the board and legs first, "
-                  "then the arms, then the back and head, the trick going on meanwhile. Classic: as before, to compare.",
+                  "then the arms, then the back and head, the trick going on meanwhile. Classic: your trick lets go as the "
+                  "board locks onto the rail, and the game takes over from there.",
                   [](int picked) { studio::set_smooth_transitions(picked == 0); });
 }
 Setting made_by(const studio::Settings& now, Tell tell) {

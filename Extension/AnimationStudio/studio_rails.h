@@ -17,9 +17,8 @@ struct StudioRail {
     float top;             // the bar's top above the floor at full size, metres
     float length;          // metres
 };
-// The one rail the studio puts up: the square 4 m rail at 60%, 30 cm high and 2.4 m long (the user's pick, 2026-10-29;
-// fixed, nothing else, 2026-10-30). The game's are big for a skater (a 50 cm rail with a bar near 10 cm thick: "the rail
-// looks so big"); the build kit scales an object whole, lower, thinner and shorter.
+// The one rail the studio puts up: the square 4 m rail at 60%, 30 cm high and 2.4 m long. The game's are big for a skater
+// (a 50 cm rail with a bar near 10 cm thick); the build kit scales an object whole, lower, thinner and shorter.
 inline constexpr std::array<StudioRail, 1> studio_rails{{
     {"own_bkrails_generic_flatrailsquare_00001", "square rail, 4 m", 0.5f, 4},
 }};

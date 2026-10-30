@@ -11,7 +11,7 @@
 // How they are made (their meshes, read from the game 2026-10-30; every colour of a size has the same one): the item's
 // origin is on the floor at the middle of its footprint, the ramp faces its own +Z (the transition there, the deck at -Z),
 // and its coping runs along X at the deck's front edge. `coping` is that edge's Z, `top` the coping's top above the floor.
-// The studio always puts up the M, 2.25 m high (the user's pick in game, 2026-10-30: "just the 2.25m is correct"), its
+// The studio always puts up the M, 2.25 m high (the size that fits the game's handplants), its
 // last 25 cm straight up. Played on it (all 36 clips, against its mesh) a plant's board goes 8 cm into it at most (a
 // wheel at the coping as he comes up), a wind-up's (_antic) 14 cm into its transition. (The L, 3.25 m: 7 cm at most;
 // the S, 1.74 m: 73 cm.)
