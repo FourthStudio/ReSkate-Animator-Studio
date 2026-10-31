@@ -355,8 +355,9 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message);
 // the one made fakie plays when he rolls fakie). It keeps its foot when it is edited and saved. `made` is its name.
 bool make_stance_version(const std::string& animation, int version, std::string& made, std::string& message);
 // COPY in MY TRICKS (SELECT): a copy of each, keys, stance and pop and all, named with the next number free ("Kickflip mid
-// 2"), in no pack and no playlist. Locked ones are left out and said. `made`: the copies' names.
-bool copy_saved(const std::vector<std::string>& animations, std::vector<std::string>& made, std::string& message);
+// 2"), in no pack and no playlist. Locked ones are left out and said. `made`: the copies' names. `not_reached`: the ones
+// left when the time for one press ran out.
+bool copy_saved(const std::vector<std::string>& animations, std::vector<std::string>& made, std::vector<std::string>& not_reached, std::string& message);
 bool delete_pack(const std::string& name, std::string& message); // the pack, not the tricks in it
 // What its maker says of a pack (up to 2000 characters), shown wherever it is shared.
 bool set_pack_description(const std::string& pack, const std::string& description, std::string& message);
@@ -459,6 +460,8 @@ bool delete_playlist(std::string& message);     // the open one
 std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message);
 // PLAY on a pack's card: the whole pack into the playlist that is on (or "My packs", switched on, when none is), or out of it.
 bool set_pack_playing(const std::string& pack, bool on, std::string& message);
+// The ReSkate menu's PACKS: the switch shows whether the pack is in the playlist that is on, so it changes that playlist.
+bool set_pack_in_playlist_on(const std::string& pack, bool on, std::string& message);
 void set_hover_preview(bool on);
 // SETTINGS > STUDIO: the catch's tools shown (View::catch_marker).
 void set_catch_marker(bool on);

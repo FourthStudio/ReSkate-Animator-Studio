@@ -206,6 +206,7 @@ struct Animation {
     std::string maker_key; // the key of the PC it was made on: on any other it plays, but is not opened to edit or copied
     std::string maker_team; // the Thunderstore team its maker was signed in as when it went out: theirs on any PC signed in so
     bool editable{};       // its maker let others edit and copy it (the pack it was shared in said so)
+    bool changed_here{};   // another maker's trick that was edited and saved on this PC: an update of its pack does not replace it
     std::string label;  // the name it is shown by in MY TRICKS and the packs (PACKS); empty: its name
     Clip clip;
     std::vector<Track> tracks;
@@ -319,11 +320,16 @@ Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& frame)
 // `k` of a turn, its own way round: a quaternion past half a turn (w below 0) goes on round to it, where slerp from no turn
 // takes the short way back (a flip drawn in part would seem to flip back).
 Quat scaled_turn(const Quat& q, float k) noexcept;
+// The direction a board key turns for scaled_turn: the direction it had on the frame before (`before`), or on the first
+// frame a trick draws it the short way from no edit. The sign of a saved key gives no direction: smonk's Pop Shuv-it low 2
+// has keys of 6 and 12 degrees saved with w below 0. scaled_turn read them as turns of about 350 degrees, and at part weight
+// the board went upside down (2026-10-30).
+Quat key_way_round(const Quat& key, const std::optional<Quat>& before) noexcept;
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
 // The weight of the keys at `seconds`: 0 outside the brackets, and it eases in and out at them. A trick with no brackets stays at 1.
 float animation_window_weight(const Animation& animation, float seconds) noexcept;
-// Sets (adds or replaces) the key of `joint` at `seconds`; keys closer than `merge` are one key.
+// Sets (adds or replaces) the key of `joint` at `seconds`. Keys closer than 1/120 s are one key.
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value);
 // Moves one bracket: 1 the start, 2 the end, to `to`. Only the keys sitting on that bracket go with it -
 // everything between the brackets stays where it is, so nothing is stretched and the timeline keeps its
@@ -408,8 +414,18 @@ Animation mirror_animation(const Animation& animation);
 // small binary file. Both throw std::runtime_error on bad input; nothing half-read is returned.
 std::string to_json(const Animation& animation);
 Animation from_json(std::string_view text); // without the clip
+// A saved trick's file under another name. Edits the file's text: to_json(from_json(text)) has no clip, so it writes a
+// duration of 0, and the file then fails to load.
+std::string renamed_trick_json(std::string_view text, const std::string& name, const std::string& label);
 std::vector<std::uint8_t> clip_bytes(const Clip& clip);
 Clip clip_from_bytes(std::span<const std::uint8_t> bytes);
+// A saved trick's clip: as clip_from_bytes, and no longer than a trick can be. The studio steps through a clip's air frame by
+// frame. A downloaded clip with times of 1e30 seconds holds that loop for ever: at 524288 s, a step of 1/60 does not move a float.
+inline constexpr float longest_trick_seconds = 120;
+// How large a saved trick's clip may go. Of the 8307 clips on a test PC (2026-10-31), every scale is 1 and the largest position
+// is 20002, because the root is in world space. A preview at position 1e6 lost the skater and stopped a plugin for the session.
+inline constexpr float largest_trick_scale = 10, farthest_trick_position = 50000;
+Clip trick_clip_from_bytes(std::span<const std::uint8_t> bytes);
 // ---- which of the game's own clips is playing -----------------------------------------------------
 // The game says which trick it is doing, never which of its clips it plays - and most of what it plays is
 // not a trick at all (setups, loops, exits, the pieces a trick is blended from). Nothing in its memory names

@@ -4561,12 +4561,12 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         if (action(d, f, "##copyticked", ImVec2(bx, top), ImVec2(cw, bh), ticked ? "COPY " + std::to_string(ticked) : std::string("COPY"), Look::blue,
                    ticked > 0)) {
             const std::vector<std::string> names(u.ticked_tricks.begin(), u.ticked_tricks.end());
-            std::vector<std::string> made;
+            std::vector<std::string> made, not_reached;
             std::string m;
-            studio::copy_saved(names, made, m);
+            studio::copy_saved(names, made, not_reached, m);
             say(m);
-            u.ticked_tricks.clear();
-            u.selecting = false;
+            u.ticked_tricks = std::set<std::string>(not_reached.begin(), not_reached.end());
+            u.selecting = !not_reached.empty();
         }
         bx += cw + 8 * k;
         if (action(d, f, "##tickdone", ImVec2(bx, top), ImVec2(bw, bh), "DONE", Look::ghost)) {

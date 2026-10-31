@@ -1338,9 +1338,10 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
                 debug.studio_reopen = true;
                 anim_studio::request_open(false);
             } else if (!anim_studio::room_wanted() && debug.studio_in_room) {
-                debug.studio_in_room = false;
-                anim_studio::set_loading(anim_studio::Loading::leaving, 1.2f);
-                room::leave();
+                // As for the room switched on: close and open again. Leaving the room with the studio open left the
+                // skater drawn at the room's spot, and the studio's camera in the room's space.
+                debug.studio_reopen = true;
+                anim_studio::request_open(false);
             }
         }
     }
