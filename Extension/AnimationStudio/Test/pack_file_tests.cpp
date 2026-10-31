@@ -1,4 +1,5 @@
 #include "Extension/AnimationStudio/pack_file_transaction.h"
+#include "Extension/AnimationStudio/saved_trick_files.h"
 #include <iostream>
 #ifdef _WIN32
 #include <windows.h>
@@ -93,6 +94,26 @@ void a_backup_failure_leaves_all_installed_files_untouched() {
     check(failed && read(f.root / "a.clip") == "old clip" && fs::is_directory(f.root / "z.json"),
           "A backup failure applied part of the update");
 }
+void saved_trick_pair_rolls_back_together() {
+    Fixture f;
+    const auto clip = f.root / "Flip/Flip.clip", json = f.root / "Flip/Flip.json";
+    write_saved_trick_files(f.root, "Flip", "old metadata", "old clip");
+#ifdef _WIN32
+    const HANDLE held = CreateFileW(json.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    check(held != INVALID_HANDLE_VALUE, "Could not lock saved trick metadata");
+    bool failed = false;
+    try { write_saved_trick_files(f.root, "Flip", "new metadata", "new clip"); } catch (const std::exception&) { failed = true; }
+    CloseHandle(held);
+    check(failed && read(clip) == "old clip" && read(json) == "old metadata",
+          "A metadata replacement failure must restore the matching old clip, not leave a half-new animation");
+#endif
+    const std::string binary("new\0clip", 8);
+    write_saved_trick_files(f.root, "Flip", "new metadata", binary);
+    check(read(clip) == binary && read(json) == "new metadata", "Retry saves the complete binary clip and matching metadata");
+    bool refused = false;
+    try { write_saved_trick_files(f.root, "../outside", "metadata", "clip"); } catch (const std::exception&) { refused = true; }
+    check(refused && read(clip) == binary, "Invalid save destinations must leave installed data unchanged");
+}
 void cancelled_recycling_never_falls_back_to_deletion() {
     Fixture f;
     const auto trick = f.root / "trick.clip", metadata = f.root / "pack.json";
@@ -126,6 +147,7 @@ int main() {
         commit_failure_restores_replaced_removed_and_new_files();
         invalid_destinations_and_failed_staging_preserve_the_pack();
         a_backup_failure_leaves_all_installed_files_untouched();
+        saved_trick_pair_rolls_back_together();
         cancelled_recycling_never_falls_back_to_deletion();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "studio pack file tests passed\n";

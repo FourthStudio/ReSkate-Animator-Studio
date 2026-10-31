@@ -1,6 +1,8 @@
 #include "gui_internal.h"
 
 #include "Engine/Game/World/world_names.h"
+#include "Engine/Core/Log/logging.h"
+#include "Engine/Vfs/initfs.h"
 
 #include <cmath>
 #include <format>
@@ -438,6 +440,18 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         setting_check("Discord status", "Show on your Discord profile where you are skating: the map, the server or lobby "
                       "and how many are in it. Off, the game does not talk to Discord at all.", settings.discord_status);
         if (start_map_choice(settings, launcher.session(), ui)) launcher.save();
+        if (!ui.plugin_developer) {
+            try { ui.plugin_developer = initfs::plugin_developer_mode(paths.directory); } catch (const std::exception&) { ui.plugin_developer = false; }
+        }
+        bool developer = *ui.plugin_developer;
+        setting_check("Plugin developer mode", "Updates to plugins you already approved won't ask again while this is on. "
+                      "A plugin you have not approved is still held until you answer.", developer);
+        if (developer != *ui.plugin_developer) {
+            try { initfs::set_plugin_developer_mode(paths.directory, developer); } catch (const std::exception& error) {
+                logging::log(logging::Level::warning, logging::Channel::launcher, "Plugin developer mode was not saved: {}", error.what());
+            }
+            ui.plugin_developer = developer;
+        }
         ImGui::Spacing();
         section_caption(fonts, "EXTRA GAME ARGUMENTS");
         std::array<char, 1024> arguments{};
@@ -483,7 +497,8 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                       "Hide while you play and return when Skate closes. Turn off to close after a successful launch.",
                       settings.keep_open_after_launch);
         {
-            const bool updates_were = settings.updates, prereleases_were = settings.prereleases;
+            const bool updates_were = settings.updates, prereleases_were = settings.prereleases,
+                       official_was = settings.official_reskate;
             setting_check("Install ReSkate updates",
                           "Turn off to keep the ReSkate.dll and launcher you have, such as a test build someone gave you. "
                           "Skate's own Steam updates are not affected.",
@@ -495,8 +510,18 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                               "Update to the newest pre-release on GitHub, to try what is coming before it is released. "
                               "Pre-releases are less tested. Turn off to go back to the latest release.",
                               settings.prereleases);
-            // Either flipped: checked again now, so PLAY or the update button changes to match.
-            if (settings.updates != updates_were || settings.prereleases != prereleases_were) {
+            // The front page's base ReSkate tile, here too. One way: SWITCH installs official ReSkate's
+            // launcher, which cannot bring this build back.
+            if (offers_base_reskate())
+                setting_check("Use base ReSkate",
+                              std::format("Install official ReSkate and its own launcher in place of {}. Nothing changes "
+                                          "until you press SWITCH. Official ReSkate's launcher has no way back: to get {} "
+                                          "again, download it from its releases page. Your tricks, mods and settings stay.",
+                                          reskate_product_name, reskate_mod_name).c_str(),
+                              settings.official_reskate);
+            // Any flipped: checked again now, so PLAY or the update button changes to match.
+            if (settings.updates != updates_were || settings.prereleases != prereleases_were ||
+                settings.official_reskate != official_was) {
                 launcher.save();
                 launcher.check_again_if_update_choices_changed();
             }
@@ -551,6 +576,7 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         // Read again the next time: the game may have run in between, and mods may have changed.
         ui.game.loaded = false;
         ui.start_maps.reset();
+        ui.plugin_developer.reset();
     }
 }
 

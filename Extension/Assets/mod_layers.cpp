@@ -222,7 +222,7 @@ bool start_mod_layers(std::uintptr_t base, std::string& error) {
                         progress.total ? static_cast<float>(progress.done) / static_cast<float>(progress.total)
                                        : -1.0f);
     });
-    startup::status("Starting ReSkate\xE2\x80\xA6");
+    startup::status(startup::starting_heading());
     logging::log(logging::Level::info, logging::Channel::assets, "Mods read in {} ms",
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
     for (const auto& note : catalog.notes)

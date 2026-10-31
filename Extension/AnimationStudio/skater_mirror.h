@@ -5,9 +5,9 @@
 // The skater's joints mirrored across its middle (the Animation Studio's goofy copy of a regular trick):
 // for each joint of the 395-joint AnimBase_Default_Skeleton, the joint on the other side of the body, or
 // its own index when it sits on the middle line. The names are the game's (animation/dingo/
-// animbase_default_skeleton, read 2026-10-19): a joint whose name has Left in it pairs with the same name
-// with Right, and back. A pair's two joints are mirror images, so a pose mirrors by swapping them and
-// reflecting each (anim_core.h: mirror_pose).
+// animbase_default_skeleton): a joint whose name has Left in it pairs with the same name with Right, and
+// back. A pair's two joints are mirror images, so a pose mirrors by swapping them and reflecting each
+// (anim_core.h: mirror_pose).
 namespace dingosdk::anim_studio {
 inline constexpr std::array<std::uint16_t, 395> mirror_joint{
     0, 1, 2, 3, 4, 5, 6, 7, 341, 342, 343, 344, 345, 346, 347, 348,

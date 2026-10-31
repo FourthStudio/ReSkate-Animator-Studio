@@ -567,9 +567,6 @@ Clip Library::mirror(const Clip& clip) const {
     }
     return out;
 }
-std::string_view Library::joint_name(std::uint16_t joint) const {
-    return joint < data_->rig.names.size() ? std::string_view(data_->rig.names[joint]) : std::string_view{};
-}
 
 std::vector<std::string> Library::names(std::string_view containing, std::size_t most) const {
     const auto wanted = lower(containing);

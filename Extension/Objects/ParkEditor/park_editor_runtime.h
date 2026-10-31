@@ -45,6 +45,10 @@ struct WorldPick {
     std::string blueprint;
 };
 std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to);
+// The park editor's picking reader (park_editor_selection.cpp), for a native surface ray cast
+// outside the editor: the physics body that hit `index` of the ray's result met. False when the
+// picking calls did not match their bytes or the body is not valid in `world`.
+bool local_surface_hit_body(std::uintptr_t world, std::uint32_t index, std::uintptr_t data, std::array<std::uint64_t, 2> &body);
 // Gives world_entities the physics world (its objects made not solid, and those standing on the floor).
 void register_world_physics() noexcept;
 struct WorldRayHit {
@@ -62,7 +66,8 @@ void tick_local_world_rays() noexcept;
 
 // Invoked through the console's verified game-thread dispatcher. `texts`
 // carries a park mod's name, author, version and description (mod-create:
-// all four; mod-details: the same after the folder in `argument`).
+// all four; mod-details: the same after the folder in `argument`). A place,
+// move or delete with `argument` "no-history" stays out of undo and redo.
 std::string edit_local_park(std::string_view operation, std::string_view map, std::uint64_t generation,
                             std::uint64_t revision, std::string_view argument,
                             const profile::PlacedObject &object = {},

@@ -34,12 +34,19 @@ void draw_notices() {
         // "ReSkate 0.6.0 loaded" and the keys the launcher chose for the menu and console.
         const auto keys = dingosdk::launcher::overlay_keys();
         const auto name = [](unsigned key) { return key == VK_OEM_3 ? std::string("~") : dingosdk::launcher::key_name(key); };
+        // A build that carries a named mod says both: "ReSkate 2.1.2 + Animator Studio 1.0.11 loaded".
+        const std::string mod_version(dingosdk::reskate_mod_version.substr(0, dingosdk::reskate_mod_version.find('+')));
+        const std::string with_mod = dingosdk::reskate_mod_name.empty() ? std::string()
+            : " + " + std::string(dingosdk::reskate_mod_name) + (dingosdk::reskate_release_build && !mod_version.empty() ? " " + mod_version : "");
         dingosdk::overlay::notify(NoticeLevel::info,
-            dingosdk::reskate_release_build ? "ReSkate " + std::string(dingosdk::reskate_version) + " loaded"
-                                            : std::string("ReSkate loaded (development build)"),
+            dingosdk::reskate_release_build ? "ReSkate " + std::string(dingosdk::reskate_version) + with_mod + " loaded"
+                                            : "ReSkate" + with_mod + " loaded (development build)",
             "Press " + name(keys.menu) + " for the menu and " + name(keys.console) + " for the console." +
+                // The mod's own name and its version as players read them ("Animator Studio 1.0.10"): what follows a '+' in
+                // the version is build metadata ("+reskate.2.1.2"), kept in crash reports and the log, not shown here.
                 (dingosdk::reskate_modified_build
-                    ? " Modified build: " + std::string(dingosdk::reskate_mod_id) + " " + std::string(dingosdk::reskate_mod_version) +
+                    ? " Modified build: " + std::string(dingosdk::reskate_mod_name) + " " +
+                          std::string(dingosdk::reskate_mod_version.substr(0, dingosdk::reskate_mod_version.find('+'))) +
                           ". If the game crashes, the report says so."
                     : std::string()));
     }

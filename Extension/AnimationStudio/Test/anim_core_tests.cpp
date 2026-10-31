@@ -11,8 +11,19 @@
 #include "Extension/AnimationStudio/anim_diagnostics.h"
 #include "Extension/AnimationStudio/anim_library.h"
 #include "Extension/AnimationStudio/anim_playback.h"
+#include "Extension/AnimationStudio/temporary_playback.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
+#include "Extension/AnimationStudio/native_additive.h"
+#include "Extension/AnimationStudio/studio_rails.h"
+#include "Extension/AnimationStudio/grind_types.h"
+#include "Extension/AnimationStudio/editor_floor.h"
+#include "Extension/AnimationStudio/grab_types.h"
+#include "Extension/AnimationStudio/held_loop_selection.h"
+#include "Extension/AnimationStudio/stance_copy.h"
+#include "Extension/AnimationStudio/loop_copy.h"
+#include "Extension/AnimationStudio/studio_ramps.h"
+#include "Extension/AnimationStudio/pack_update_rules.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -107,6 +118,29 @@ void market_package_words() {
 }
 
 // Packs: tricks switched off, a maker's lock, the playlist, and a trick's stance versions.
+// COPY in MY TRICKS: 1.0.50 wrote to_json(from_json(file)), which has no clip. Every copy had a duration of 0 and failed to load.
+void a_copied_trick_still_loads() {
+    Animation made;
+    made.name = "Kickflip mid";
+    made.label = "Kickflip";
+    made.trick = "kickflip";
+    made.clip.times = {0, 2};
+    made.clip.takeoff = 0.5f;
+    made.clip.landing = 1.5f;
+    made.end = 1.8f;
+    made.tracks.push_back({7, {{1.5f, {0, 0, 0, 1}, {}, Ease::linear}}});
+    const auto file = to_json(made);
+    bool round_trip_loads = true;
+    try { (void)from_json(to_json(from_json(file))); } catch (const std::runtime_error&) { round_trip_loads = false; }
+    check(!round_trip_loads, "A trick read and written again has no clip, so its keys lie past the end");
+    const auto copy_file = renamed_trick_json(file, "Kickflip mid 2", "Kickflip 2");
+    const auto copy = from_json(copy_file);
+    const auto root = dingosdk::Json::parse(copy_file);
+    check(copy.name == "Kickflip mid 2" && copy.label == "Kickflip 2", "The copy has its new name and label");
+    check(root.at("duration") == dingosdk::Json::parse(file).at("duration") && copy.tracks.size() == 1, "The copy keeps its duration and its keys");
+    check(root.at("takeoff") == dingosdk::Json::parse(file).at("takeoff") && root.at("landing") == dingosdk::Json::parse(file).at("landing"), "and its takeoff and landing");
+    check(from_json(renamed_trick_json(file, "No label", "")).label.empty(), "A copy can have no label");
+}
 void packs_and_playlist() {
     PresetPack pack;
     pack.name = "Street";
@@ -114,9 +148,11 @@ void packs_and_playlist() {
     pack.slots["heelflip|mid"] = {"Heelflip a"};
     pack.off = {"Kickflip a"};
     pack.maker_key = "abc";
+    pack.maker_team = "FourthStudio";
     pack.editable = true;
     const auto back = read_pack_json(pack_json(pack));
     check(back.off.contains("Kickflip a") && back.maker_key == "abc" && back.editable, "A pack keeps what is off, its maker and whether others may edit it");
+    check(back.maker_team == "FourthStudio", "A pack keeps the team it went out with, so it is its maker's on any PC signed in to it");
     std::vector<Preset> presets{{"Kickflip a", "kickflip", "mid"}, {"Kickflip b", "kickflip", "mid"}, {"Heelflip a", "heelflip", "mid"}, {"Mine", "ollie", "mid"}};
     select_presets(presets, std::span<const PresetPack>(&pack, 1));
     check(!presets[0].active && !presets[0].included && presets[1].active && presets[2].active && !presets[3].included,
@@ -205,8 +241,10 @@ void packs_and_playlist() {
           "A trick's stance version, against the skater's own stance");
     Animation locked;
     locked.maker_key = "k";
+    locked.maker_team = "FourthStudio";
     locked.keep_leads_right = true;
     const auto read = from_json(to_json(locked));
+    check(read.maker_team == "FourthStudio", "A trick keeps the team it went out with");
     check(read.maker_key == "k" && !read.editable && read.keep_leads_right == std::optional<bool>(true), "A trick keeps its maker, its lock and the foot it leads with");
     check(!read.catch_at, "A trick with no catch set has none: the studio finds it");
     auto caught = from_json(to_json(locked));
@@ -253,10 +291,16 @@ void native_trick_cards() {
     check(fakie.size() == 2 && fakie[0].trick == "5-0" && fakie[0].side == "FAKIE FS" && fakie[1].side == "FAKIE BS" && fakie[0].part == "INTO",
           "bf grinds are the fakie ones, and 5_0 is the 5-0");
     const auto out = parts("c_proto_onb_grind_fakie_fs_lipslide_bs_boardslide_rail_dark_popout_bs_inair");
-    check(out.size() == 2 && out[0].part == "DARK OUT BS AIR" && out[0].side == "FAKIE FS", "Pop-outs keep their way out, air and darkslide");
+    check(out.size() == 2 && out[0].part == "DARK OUT BS AIR" && out[0].trick == "Lipslide" && out[0].side == "FAKIE BS" &&
+              out[1].trick == "Boardslide" && out[1].side == "FAKIE FS",
+          "Pop-outs keep their way out, air and darkslide; a fakie clip of two tricks is the other way round");
+    const auto fakie_slide = parts("c_proto_onb_grind_bf_fs_tailslide_rail_loop");
+    check(fakie_slide.size() == 1 && fakie_slide[0].trick == "Noseslide" && fakie_slide[0].side == "FAKIE FS",
+          "A fakie slide's clip is named by the end on the rail: bf_fs_tailslide is the fakie FS noseslide");
     const auto melon = parts("c_proto_onb_inair_bs_grab_melon_mid_loop");
     check(melon.size() == 1 && melon[0].trick == "Melon" && melon[0].side == "BS GRAB" && melon[0].part == "HOLD MID" && melon[0].kind == "Grabs",
           "A grab's tweak is a card of its own, on the grab it is done from");
+    check(parts("c_proto_onb_inair_fs_grab_fingerflip_to").empty(), "A name that ends on \"to\" is no part, and is not read past its end");
     const auto flip = parts("c_proto_inair_grab_stale_kick_fingerflip_to_inair");
     check(flip.size() == 1 && flip[0].trick == "Kick fingerflip" && flip[0].side == "STALEFISH" && flip[0].part == "TO AIR", "Fingerflips by style and grab");
     const auto manual = parts("c_proto_onb_manual_n_fakie_med_turn_bs");
@@ -571,6 +615,16 @@ void profiles_read_back_and_bad_ones_are_refused() {
     set_key(animation, 7, 0.4f, {from_euler({0, 10, 0}), {0, 0.1f, 0}});
     set_key(animation, 278, 1.0f, {from_euler({20, 0, 5}), {}}).ease = Ease::linear;
     const auto back = from_json(to_json(animation));
+    check(!back.modifier_hint, "Old animations have no modifier recommendation by default");
+    animation.modifier_hint = true;
+    const auto hinted = from_json(to_json(animation));
+    check(hinted.modifier_hint && hinted.trick == animation.trick && hinted.pop == animation.pop,
+          "The author recommendation survives save/share without changing the native trick or its pop");
+    animation.modifier_hint = false;
+    auto malformed_hint = dingosdk::Json::parse(to_json(animation));
+    malformed_hint["modifier_hint"] = "recommended";
+    const auto ignored_hint = from_json(malformed_hint.dump());
+    check(!ignored_hint.modifier_hint && ignored_hint.key_count() == animation.key_count(), "Malformed advisory metadata does not invalidate an animation");
     check(back.name == "Kickflip 2" && back.trick == "Kickflip" && near(back.speed, 0.5f), "Name, trick and speed read back");
     check(back.key_count() == 2 && back.track(278) && back.track(278)->keys[0].ease == Ease::linear, "Keys read back");
     check(same_turn(back.track(7)->keys[0].rotation, from_euler({0, 10, 0})) && near(back.track(7)->keys[0].offset[1], 0.1f),
@@ -1530,7 +1584,7 @@ void switch_edits_follow_the_native_body_facing() {
 }
 void diagnostic_history_is_bounded() {
     DiagnosticBuffer history;
-    for (int i = 0; i < 5000; ++i) {
+    for (int i = 0; i < 9000; ++i) {
         DiagnosticSample sample; sample.at = i / 240.0; sample.sequence = i;
         // Deliberately submit poses at callback frequency: the history enforces its own cap.
         sample.native.resize(1); sample.desired.resize(1); sample.render_native.resize(1); sample.render_edited.resize(1);
@@ -1544,7 +1598,7 @@ void diagnostic_history_is_bounded() {
         if (!sample.native.empty()) ++poses;
         else check(sample.render_edited.empty(), "Post-edit diagnostic poses obey the same sampling/memory bound as native poses");
     }
-    check(poses <= 151, "Diagnostic poses cannot grow past the 10 Hz time window even at 240 callbacks per second");
+    check(poses <= static_cast<std::size_t>(std::ceil(DiagnosticBuffer::duration / DiagnosticBuffer::pose_interval)) + 1, "Diagnostic poses cannot grow past the 10 Hz time window even at 240 callbacks per second");
     const auto size = history.samples.size();
     DiagnosticSample bad; bad.at = std::numeric_limits<double>::quiet_NaN(); history.append(std::move(bad));
     check(history.samples.size() == size, "Invalid diagnostic timestamps cannot corrupt the ring");
@@ -1677,6 +1731,41 @@ void slow_catch_off_drops() {
             return ground < top ? std::optional<float>(ground) : std::nullopt;
         };
         check(time_to_landing(0.3f, 4.0f, 2.0f, 0.0f, off_a_ledge) > time_to_ground(2.0f, 0.3f) + 0.1f, "Off a ledge, the drop is still a drop");
+        // A low pop onto a rail (2026-10-27): what it lands on is the rail's top, sooner than the street; on flat ground the street.
+        const auto rail_ahead = [](float dx, float, float top) -> std::optional<float> {
+            const float ground = dx > 0.6f ? 0.15f : 0.0f; // a low rail, 15 cm high from 0.6 m ahead
+            return ground < top ? std::optional<float>(ground) : std::nullopt;
+        };
+        float on = -1, street = -1;
+        const float to_rail = time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, rail_ahead, 0.05f, 16, &on);
+        const float to_street = time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, flat, 0.05f, 16, &street);
+        check(to_rail > 0 && to_rail < to_street && near(on, 0.15f, 0.001f) && near(street, 0.0f, 0.001f),
+              "Onto a rail it lands on the rail's top, sooner than on the street");
+        check(motion_state(701) == MotionState::rail && motion_state(401) == MotionState::rail && motion_state(501) == MotionState::offboard,
+              "701 is a grind, as the 400s are");
+        // A mid tre flip on flat ground (1.0.10): the ray from over the board's path hit the skater's own body, 0.5 m up,
+        // and it was taken for a landing on a rail. Near the board, a hit over its lowest point is him, not ground.
+        const auto with_skater = [](float dx, float, float top) -> std::optional<float> {
+            if (std::abs(dx) < 0.5f && top > 0.6f) return 0.9f; // his body, over the board
+            return 0.0f < top ? std::optional<float>(0.0f) : std::nullopt;
+        };
+        const float board_low = 0.4f;
+        float hit_self = -1, hit_clean = -1;
+        time_to_landing(board_low, 3.0f, 2.0f, 0.0f, with_skater, 0.05f, 16, &hit_self);
+        time_to_landing(board_low, 3.0f, 2.0f, 0.0f,
+                        [&](float dx, float dz, float top) { return ground_not_self(with_skater, dx, dz, top, board_low); }, 0.05f, 16,
+                        &hit_clean);
+        check(near(hit_self, 0.9f, 0.001f) && near(hit_clean, 0.0f, 0.001f), "The skater's own body is not a rail to land on");
+        // ... and a rail the board comes down on, under it, still is one.
+        const auto rail_close = [](float dx, float, float top) -> std::optional<float> {
+            const float ground = dx > 0.1f ? 0.15f : 0.0f; // a low rail just ahead, under the board
+            return ground < top ? std::optional<float>(ground) : std::nullopt;
+        };
+        float hit_rail = -1;
+        time_to_landing(0.25f, 4.0f, 0.0f, 0.0f,
+                        [&](float dx, float dz, float top) { return ground_not_self(rail_close, dx, dz, top, 0.25f); }, 0.05f, 16,
+                        &hit_rail);
+        check(near(hit_rail, 0.15f, 0.001f), "A rail under the board is still found");
     }
     {
         // Heatz's Nollie 360 Flip (2026-10-25): rolling, the board lay at 90 degrees to the placement; the pop had turned it to
@@ -1935,6 +2024,573 @@ void native_clips_pop_where_the_game_does() {
     check(!place_native_marks(boardless) && near(boardless.takeoff, 0.283f), "A clip without its board keeps its mark");
     auto piece = make(-1, -1);
     check(!place_native_marks(piece) && piece.takeoff < 0, "and a piece with no pop gets none");
+}
+// SMOOTH transitions (2026-10-29): part of a flip past half a turn goes on round, a jump inside one trick is eased, and in
+// a handover the legs go over first, then the hips and arms, then the back and head.
+// The game's fakie layer goes on each joint it reaches, after its own turn; on a pose standing the other way it goes on
+// the other side, reflected (2026-10-29).
+void fakie_layer_goes_on_as_the_game_plays_it() {
+    const auto same = [](const Quat& a, const Quat& b) {
+        return std::abs(std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) - 1) < 1e-5f;
+    };
+    std::vector<Quat> layer(skeleton_joints, Quat{0, 0, 0, 1});
+    layer[103] = Quat{0, std::sin(0.4f), 0, std::cos(0.4f)};
+    layer[47] = Quat{std::sin(0.2f), 0, 0, std::cos(0.2f)};
+    std::vector<Joint> pose(skeleton_joints);
+    apply_fakie_layer(pose, layer, false);
+    check(same(pose[103].rotation, layer[103]) && same(pose[47].rotation, layer[47]), "The fakie layer turns each joint it reaches");
+    check(same(pose[10].rotation, Quat{0, 0, 0, 1}), "and leaves the rest as they were");
+    std::vector<Joint> other(skeleton_joints);
+    apply_fakie_layer(other, layer, true);
+    check(same(other[mirror_joint[47]].rotation, mirror_rotation(layer[47])) && same(other[47].rotation, Quat{0, 0, 0, 1}),
+          "Standing the other way round, it goes on the other arm, reflected");
+}
+// FAKIE (2026-10-29): a trick set to fakie stands with its upper body mirrored across the plane between the thighs, the
+// hips and legs as they are; twice is the pose back; the keys mirrored with it come to the mirror of the keyed pose; a file
+// saved before has its upper body's keys mirrored once as it is read.
+// The game's additive clips go on the pose they add to (native_additive.h): a manual's loop on that manual's pose, a
+// riding pose less the neutral one on the neutral one, a lean on the clip it is named after.
+void additive_clips_go_on_their_pose() {
+    namespace nl = native_library;
+    const std::string dingo = "animation/dingo/";
+    const auto first = [&](const char* name) { return nl::additive_bases(dingo + name).front(); };
+    const auto offers = [&](const char* name, const std::string& base) {
+        const auto all = nl::additive_bases(dingo + name);
+        return std::find(all.begin(), all.end(), dingo + base) != all.end();
+    };
+    check(first("c_proto_onb_manual_t_loop_med") == dingo + "c_proto_onb_manual_t_med_pose", "A manual's loop goes on its medium pose");
+    check(first("c_proto_onb_manual_n_fakie_loop_med") == dingo + "c_proto_onb_manual_n_fakie_med_pose", "A fakie nose manual's loop goes on its own pose");
+    check(first("c_proto_onb_manual_t_land_addi") == dingo + "c_proto_onb_manual_t_med_pose", "A manual's landing goes on its pose");
+    check(first("c_proto_onb_idle_rolling_pump_bs_pose_addi") == dingo + "c_proto_onb_idle_rolling_neutral_pose" &&
+              !offers("c_proto_onb_idle_rolling_pump_bs_pose_addi", "c_proto_onb_idle_rolling_pump_bs_pose"),
+          "A riding pose less the neutral one goes on the neutral one, never on itself");
+    check(first("c_proto_onb_idle_rolling_pump_fakie_neutral_pose_addi") == dingo + "c_proto_onb_idle_rolling_fakie_neutral_pose" &&
+              first("c_proto_onb_idle_rolling_regular_to_fakie_pose_addi") == dingo + "c_proto_onb_idle_rolling_neutral_pose",
+          "Fakie ones on fakie's neutral pose, regular-to-fakie on the regular one");
+    check(offers("c_ofb_slide_loop_left_addi", "c_ofb_slide_loop_left") && offers("c_proto_onb_setup_ollie_low_loop_01", "c_proto_onb_setup_ollie_low_pose") &&
+              offers("c_proto_onb_idle_rolling_bs_fast_noise_addi", "c_proto_onb_idle_rolling_bs_fast_pose"),
+          "Others go on the clip they are named after");
+    const auto climb = nl::additive_bases(dingo + "c_proto_climb_idle_lean_left_01");
+    const auto gesture = nl::additive_bases(dingo + "c_proto_ofbnb_gesture_clap_corrective");
+    check(climb[climb.size() - 2] == dingo + "c_proto_climb_idle_center_01" && gesture[gesture.size() - 2] == dingo + "c_proto_ofbnb_idle_lfoot" &&
+              climb.back() == dingo + "c_proto_onb_idle_rolling_neutral_pose",
+          "Then by kind: the climb idle, the standing idle, the riding pose last");
+
+    // Laid over: a tracked turn after the base's, a tracked position added, the rest the base's.
+    using J10 = std::array<float, 10>;
+    const Quat base_turn = normalised(Quat{0.3f, -0.2f, 0.1f, 0.9f}), change = normalised(Quat{0.05f, 0.1f, -0.02f, 1.0f});
+    std::vector<J10> base(3);
+    for (auto& joint : base) joint = {1, 1, 1, base_turn[0], base_turn[1], base_turn[2], base_turn[3], 0.1f, 0.9f, -0.2f};
+    std::vector<J10> frames{{1, 1, 1, change[0], change[1], change[2], change[3], 0.01f, -0.02f, 0.03f},
+                            {1, 1, 1, change[0], change[1], change[2], change[3], 0.01f, -0.02f, 0.03f},
+                            {2, 2, 2, 0, 0, 0, 1, 0.5f, 0.5f, 0.5f}};
+    const std::vector<std::uint8_t> animated{nl::tracks_rotation, nl::tracks_position, 0};
+    nl::add_onto(frames, 3, base, animated);
+    const auto wanted = multiply(base_turn, change);
+    check(near(frames[0][3], wanted[0]) && near(frames[0][4], wanted[1]) && near(frames[0][5], wanted[2]) && near(frames[0][6], wanted[3]) &&
+              near(frames[0][7], 0.1f) && near(frames[0][8], 0.9f),
+          "A tracked turn goes after the base's own, its position stays the base's");
+    check(near(frames[1][3], base_turn[0]) && near(frames[1][6], base_turn[3]) && near(frames[1][7], 0.11f) && near(frames[1][8], 0.88f) && near(frames[1][9], -0.17f),
+          "A tracked position is added to the base's, its turn stays the base's");
+    check(frames[2] == base[2], "A joint with no track is the base's, scale and all");
+    bool refused = false;
+    try {
+        nl::add_onto(frames, 3, std::span(base).first(2), animated);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    check(refused, "A base of another size is refused");
+}
+
+// The studio's grind rail (studio_rails.h): only the game's grinds get one, under their Ground joint along the way he
+// travels, and the same spot is not moved again.
+// The game's clips on the studio's floor (editor_floor.h), with board heights shaped like the trick library's (measured
+// 2026-10-29 by putting every clip down as the editor does).
+void game_clips_stand_on_the_floor_where_their_board_rests() {
+    std::vector<float> times;
+    for (int i = 0; i <= 120; ++i) times.push_back(static_cast<float>(i) / 60.0f);
+    const std::vector<float> flat(times.size(), 1.0f);
+    const auto lifted = [&](const std::vector<float>& low, const std::vector<float>& lift, std::size_t i) { return low[i] + lift[i]; };
+    // A whole kickflip: on its wheels 2 mm under the floor before the pop and after the landing, its tail 1.5 cm under at
+    // the pop, up in the air between.
+    std::vector<float> kickflip(times.size(), -0.002f);
+    for (std::size_t i = 12; i < 14; ++i) kickflip[i] = -0.015f;
+    for (std::size_t i = 14; i < 44; ++i) kickflip[i] = 0.6f * std::sin(static_cast<float>(i - 14) / 30.0f * 3.14159f);
+    auto lift = floor_lifts(times, kickflip, flat);
+    check(lift.size() == times.size() && near(lifted(kickflip, lift, 0), 0) && near(lifted(kickflip, lift, 120), 0) && near(lift[30], 0.002f),
+          "A whole trick stays as the game has it, its board on the floor before and after");
+    // A dark catch: the same pop, then the board upside down 9.5 cm up to the end.
+    std::vector<float> dark = kickflip;
+    std::vector<float> dark_level = flat;
+    for (std::size_t i = 44; i < times.size(); ++i) {
+        dark[i] = 0.095f;
+        dark_level[i] = 1.0f; // upside down lies as flat
+    }
+    lift = floor_lifts(times, dark, dark_level);
+    check(near(lifted(dark, lift, 0), 0) && near(lifted(dark, lift, 120), 0) && near(lifted(dark, lift, 60), 0),
+          "A dark catch lands on the floor, not 9.5 cm over it");
+    check(lift[20] < 0 && lift[20] > -0.095f, "and goes there smoothly through the air");
+    // A fingerflip's way in: from the floor, then 46 cm into it. Nothing rests: lifted once, all of it off the floor.
+    std::vector<float> into(times.size());
+    for (std::size_t i = 0; i < times.size(); ++i) into[i] = -0.46f * std::sin(static_cast<float>(i) / 120.0f * 3.14159f * 0.5f);
+    lift = floor_lifts(times, into, flat);
+    check(near(lift.front(), lift.back()) && near(lift.front(), 0.46f), "A piece in the air is lifted once, off the floor");
+    // A held flip high in the air: the game's own height.
+    std::vector<float> held(times.size());
+    for (std::size_t i = 0; i < times.size(); ++i) held[i] = 0.7f + 0.15f * std::sin(static_cast<float>(i) * 0.3f);
+    lift = floor_lifts(times, held, flat);
+    check(near(lift.front(), 0) && near(lift.back(), 0), "A piece high in the air keeps the game's height");
+    // A no comply that ends still falling (its landing is the next clip's): its start on the floor, nothing more.
+    std::vector<float> falling(times.size(), -0.002f);
+    for (std::size_t i = 20; i < times.size(); ++i) falling[i] = 0.05f + 0.5f * std::sin(static_cast<float>(i - 20) / 110.0f * 3.14159f);
+    lift = floor_lifts(times, falling, flat);
+    check(near(lift.front(), 0.002f) && near(lift.back(), 0.002f), "A clip that ends in the air keeps its start on the floor");
+    // A board held tilted (a manual's tail down 40 degrees) is not resting flat: off the floor only.
+    std::vector<float> tilted(times.size(), 0.05f);
+    const std::vector<float> steep(times.size(), 0.7f);
+    lift = floor_lifts(times, tilted, steep);
+    check(near(lift.front(), 0), "A steep board is not stood on the floor by its rest");
+    check(near(floor_lift_at(times, lift, 0.5f), lift[30]) && floor_lifts(times, {}, flat).empty(), "The lift is read between frames");
+}
+// The game's grab loop table (cdb_onboard_grab_loop, EnumGS.GrabType 1 to 10) and its styles (Enum.GS.DetailedGrabType).
+void a_grab_loop_is_known_by_the_games_grab() {
+    const auto melon = grab_loop_of("native:animation/dingo/c_proto_onb_inair_bs_grab_melon_mid_loop");
+    check(melon.family == 2 && melon.style == "melon" && !melon.fakie, "A BS grab's melon loop is family 2, style melon");
+    check(grab_loop_of("c_proto_inair_fs_grab_tailbone_tuckknee_mid_loop_01").style == "tailbone_tuckknee", "Mid and the number are not style");
+    check(grab_loop_of("c_proto_onb_inair_grab_weddle_japan_loop").family == 8, "The weddle loops are the mute grab");
+    check(grab_loop_of("c_proto_onb_inair_double_grab_left_loop").family == 9 && grab_loop_of("c_proto_onb_grab_rocket_loop").family == 10,
+          "Double and rocket");
+    check(grab_loop_of("c_proto_onb_inair_grab_crail_bs_shifty_loop").family == 5 &&
+              grab_loop_of("c_proto_onb_inair_grab_crail_bs_shifty_loop").style == "bs_shifty",
+          "A crail's BS shifty is the crail, not a BS grab");
+    check(grab_loop_of("c_proto_onb_inair_fakie_bs_grab_loop").fakie && grab_loop_of("c_proto_onb_inair_fakie_bs_grab_loop").style.empty(),
+          "A fakie loop is fakie, its plain style");
+    check(grab_loop_of("c_proto_onb_grab_bs_1ft_judo_loop").family == 0 && grab_loop_of("c_proto_onb_grab_ground_fs_loop").family == 0 &&
+              grab_loop_of("c_proto_onb_inair_bs_grab_into").family == 0,
+          "One-foot grabs, ground grabs and ways in are not in the table");
+    check(grab_style_words(4) == "melon" && grab_style_words(13) == "fs_shifty" && grab_style_words(1).empty() && grab_style_words(99).empty(),
+          "The game's styles read as the loops' words");
+    const auto plain = grab_loop_of("c_proto_onb_inair_bs_grab_loop"), japan = grab_loop_of("c_proto_onb_inair_bs_grab_japan_loop");
+    check(grab_loop_rank(melon, 2, 4, nullptr) == 0 && grab_loop_rank(plain, 2, 4, nullptr) == 1 && grab_loop_rank(japan, 2, 4, nullptr) == 2,
+          "A melon plays its own loop first, then the plain one, then another style");
+    check(grab_loop_rank(melon, 1, 4, nullptr) < 0 && grab_loop_rank(melon, 0, 0, nullptr) < 0, "Never on another grab, or no grab");
+    const bool fakie = true;
+    check(grab_loop_rank(plain, 2, 1, &fakie) == 3 && grab_loop_rank(grab_loop_of("c_proto_onb_inair_fakie_bs_grab_loop"), 2, 1, &fakie) == 0,
+          "Riding fakie, the fakie loop first");
+}
+void held_loops_follow_style_changes() {
+    const std::array<GrabLoop, 4> saved{
+        grab_loop_of("c_proto_onb_inair_bs_grab_melon_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_fakie_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop")};
+    std::vector<std::pair<std::size_t, int>> loops{{0, 1}, {1, 1}, {2, 1}, {3, 1}};
+    int family = 2, detail = 4, playing = -1;
+    bool fakie = false;
+    const auto rank = [&](std::size_t index) { return grab_loop_rank(saved[index], family, detail, &fakie); };
+    const auto choose = [&] { return held_loop_ranks<int>(loops, 1, playing, rank); };
+    check(choose().best == 0 && !choose().keep, "A new melon selects an eligible loop");
+    playing = 0;
+    check(choose().keep, "Holding the same style retains its playback clock");
+    detail = 3;
+    check(!choose().keep && choose().best == 0 && rank(playing) == 2,
+          "Melon gives way to saved Japan even though melon is still a valid same-family fallback");
+    playing = 1;
+    check(choose().keep, "Japan does not restart each frame or switch to an equal-ranked variant");
+    playing = 3;
+    check(choose().keep, "An equally ranked playing variant keeps priority over an earlier index");
+    fakie = true;
+    check(!choose().keep && choose().best == 0, "A held loop yields to a better matching fakie version");
+    playing = 2;
+    check(choose().keep, "The matching fakie loop continues");
+    family = 1;
+    check(!choose().keep && choose().best < 0, "Changing grab family releases all incompatible saved loops");
+    family = 2;
+    playing = 0;
+    loops = {{0, 1}};
+    check(choose().keep && choose().best >= 0, "An available fallback continues when no better loop exists");
+    loops = {{0, 2}};
+    check(!choose().keep && choose().best < 0, "Another held-move kind cannot retain the grab");
+    loops.clear();
+    check(!choose().keep && choose().best < 0, "Removing the saved loops releases the current selection");
+}
+void grind_rail_goes_under_the_grind() {
+    check(grind_clip("animation/dingo/c_proto_onb_grind_fs_bs_5_0_rail_loop") && grind_clip("animation/dingo/c_proto_ofb_grind_5050_feet_rail_loop") &&
+              !grind_clip("animation/dingo/c_proto_onb_trick_o_kickflip_mid") && !grind_clip("animation/dingo/c_proto_onb_manual_t_loop_med") &&
+              !grind_clip("animation/dingo/c_proto_onb_powerslide_bs_fast_loop"),
+          "Only the game's grinds and slides on a rail get the rail");
+    check(studio_rail(default_studio_rail) != nullptr && studio_rail("own_bkrails_generic_snakewavy_00005") == nullptr,
+          "The rail is one of the straight ones");
+    check(studio_rail_size(0.62f) == 0.6f && studio_rail_size(5) == 1.0f && studio_rail_size(0) == 0.4f, "A size is one of the sizes");
+    for (const auto& rail : studio_rails) check(rail.top > 0.4f && rail.top < 0.8f && rail.length >= 4, "Each straight rail's top and length are known");
+    // Facing as the game's own placement does (a quarter turn about up): the rail runs along his X, under the Ground joint.
+    const float h = std::sqrt(0.5f);
+    const std::array<float, 4> facing{0, -h, 0, h};
+    const auto spot = rail_spot(facing, {10, -69, 5}, facing, {0.0f, 0.97f, 0.3f}, -69.99f); // a clip that starts him as the studio does
+    check(spot.valid, "A grind has its rail");
+    // His X turned a quarter about up is the world's Z, and the Ground joint's (0, _, 0.3) lies 0.3 back along world X.
+    check(near(spot.at[0], 9.7f) && near(spot.at[1], -69.99f) && near(spot.at[2], 5.0f), "The rail stands on the floor under the Ground joint");
+    const auto bar = rotate(Quat{spot.rotation[0], spot.rotation[1], spot.rotation[2], spot.rotation[3]}, Vec3{0, 0, 1});
+    const auto along = rotate(Quat{facing[0], facing[1], facing[2], facing[3]}, Vec3{1, 0, 0});
+    check(near(std::abs(bar[0] * along[0] + bar[2] * along[2]), 1) && near(bar[1], 0), "Its bar runs along the clip's Z");
+    // A clip that starts him turned another way (a noseslide at 0 degrees): the bar still runs along the clip's Z, turned as
+    // the studio turns the clip - here a quarter round from the other.
+    const auto turned = rail_spot(facing, {10, -69, 5}, {0, 0, 0, 1}, {0.0f, 0.97f, 0.3f}, -69.99f);
+    const auto turned_bar = rotate(Quat{turned.rotation[0], turned.rotation[1], turned.rotation[2], turned.rotation[3]}, Vec3{0, 0, 1});
+    check(turned.valid && near(std::abs(turned_bar[0]), 1) && near(turned_bar[2], 0), "A clip turned another way has its rail turned with it");
+    check(same_rail_spot(spot.at, spot.rotation, {spot.at[0] + 0.01f, spot.at[1], spot.at[2]}, spot.rotation) &&
+              !same_rail_spot(spot.at, spot.rotation, {spot.at[0] + 0.05f, spot.at[1], spot.at[2]}, spot.rotation),
+          "Within 2 cm it is the same spot");
+    const std::array<float, 4> half_turn{0, spot.rotation[3], 0, -spot.rotation[1]}; // turned another half round about up
+    check(same_rail_spot(spot.at, spot.rotation, spot.at, half_turn), "A rail turned half round is the same rail");
+}
+
+// A saved grind plays only on the grinds its clip is for, as the game names them (grind_types.h).
+void a_grind_is_known_by_the_games_name() {
+    const auto of = [](const char* name) { return grind_types_of(std::string("animation/dingo/") + name); };
+    using V = std::vector<std::uint32_t>;
+    const auto id = [](const char* name) { return skate_grind_type(name); };
+    check(id("FS_Blunt") == 14 && id("BF_FS_NoseSlide") == 38 && id("Exit") == 77 && skate_grind_types.size() == 78, "The game's grind types");
+    check(of("c_proto_onb_grind_fs_blunt_rail_loop") == V{id("FS_Blunt")}, "A FS blunt is a FS blunt only");
+    check(of("c_proto_onb_grind_5050_rail_loop") == V{id("FS_50_50"), id("BS_50_50")}, "A 50-50 with no side is both sides");
+    check(of("c_proto_onb_grind_bf_5050_rail_into") == V{id("BF_FS_50_50"), id("BF_BS_50_50")}, "bf is the fakie way in");
+    check(of("c_proto_onb_grind_fs_boardslide_bs_lipslide_rail_loop") == V{id("FS_Board"), id("BS_Lip")}, "A shared clip is both its tricks");
+    check(of("c_proto_onb_grind_fs_boardslide_bs_lipslide_rail_loop_dark") == V{id("FS_DarkSlide"), id("BS_Darklip")}, "Dark is the darkslide");
+    check(of("c_proto_onb_grind_fs_bs_5_0_rail_loop") == V{id("FS_5_0"), id("BS_5_0")}, "fs_bs is both sides of one trick");
+    // Fakie: the clip is named by the end on the rail (the game's own grind table).
+    check(of("c_proto_onb_grind_bf_fs_tailslide_rail_loop") == V{id("BF_FS_NoseSlide")} && of("c_proto_onb_grind_bf_fs_blunt_rail_loop") == V{id("BF_FS_NoseBlunt")} &&
+              of("c_proto_onb_grind_bf_bs_noseslide_rail_loop") == V{id("BF_BS_TailSlide")},
+          "A fakie slide on one side swaps its nose and tail");
+    check(of("c_proto_onb_grind_bf_fs_feeble_bs_smith_rail_loop") == V{id("BF_FS_Smith"), id("BF_BS_Feeble")} &&
+              of("c_proto_onb_grind_bf_fs_lipslide_bs_boardslide_rail_loop_dark") == V{id("BF_FS_DarkSlide"), id("BF_BS_Darklip")},
+          "A fakie clip of two tricks is the other way round");
+    check(of("c_proto_onb_grind_fakie_fs_noseslide_rail_popout_bs") == V{id("BF_FS_TailSlide")}, "A fakie pop-out is the fakie grind");
+    // The game's own grind table (cdb_onboard_grind_loop, read 2026-10-29): each grind and the loop clip it plays.
+    static constexpr std::pair<std::uint32_t, const char*> game_loops[]{
+        {1, "fs_lipslide_bs_boardslide_rail_loop"},
+        {2, "fs_boardslide_bs_lipslide_rail_loop"},
+        {3, "5050_rail_loop"},
+        {4, "fs_noseslide_rail_loop"},
+        {5, "fs_tailslide_rail_loop"},
+        {6, "fs_bs_nosegrind_rail_loop"},
+        {7, "fs_bs_5_0_rail_loop"},
+        {8, "fs_salad_bs_oversalad_rail_loop"},
+        {9, "fs_smith_bs_feeble_rail_loop"},
+        {10, "fs_feeble_bs_smith_rail_loop"},
+        {11, "fs_willy_bs_overwilly_rail_loop"},
+        {12, "fs_overwilly_bs_willy_rail_loop"},
+        {13, "fs_noseblunt_rail_loop"},
+        {14, "fs_blunt_rail_loop"},
+        {15, "fs_crook_bs_overcrook_rail_loop"},
+        {16, "fs_overcrook_bs_crook_rail_loop"},
+        {18, "fs_boardslide_bs_lipslide_rail_loop"},
+        {19, "fs_lipslide_bs_boardslide_rail_loop"},
+        {20, "5050_rail_loop"},
+        {21, "bs_noseslide_rail_loop"},
+        {22, "bs_tailslide_rail_loop"},
+        {23, "fs_bs_nosegrind_rail_loop"},
+        {24, "fs_bs_5_0_rail_loop"},
+        {25, "bs_salad_fs_oversalad_rail_loop"},
+        {26, "fs_feeble_bs_smith_rail_loop"},
+        {27, "fs_smith_bs_feeble_rail_loop"},
+        {28, "fs_overwilly_bs_willy_rail_loop"},
+        {29, "fs_willy_bs_overwilly_rail_loop"},
+        {30, "bs_noseblunt_rail_loop"},
+        {31, "bs_blunt_rail_loop"},
+        {32, "fs_overcrook_bs_crook_rail_loop"},
+        {33, "fs_crook_bs_overcrook_rail_loop"},
+        {37, "bf_5050_rail_loop"},
+        {40, "bf_fs_bs_nosegrind_rail_loop"},
+        {41, "bf_fs_bs_5_0_rail_loop"},
+        {42, "bf_bs_salad_fs_oversalad_rail_loop"},
+        {43, "bf_fs_feeble_bs_smith_rail_loop"},
+        {44, "bf_fs_smith_bs_feeble_rail_loop"},
+        {45, "bf_fs_overwilly_bs_willy_rail_loop"},
+        {46, "bf_fs_willy_bs_overwilly_rail_loop"},
+        {49, "bf_fs_overcrook_bs_crook_rail_loop"},
+        {50, "bf_fs_crook_bs_overcrook_rail_loop"},
+        {54, "bf_5050_rail_loop"},
+        {57, "bf_fs_bs_nosegrind_rail_loop"},
+        {58, "bf_fs_bs_5_0_rail_loop"},
+        {59, "bf_fs_salad_bs_oversalad_rail_loop"},
+        {60, "bf_fs_smith_bs_feeble_rail_loop"},
+        {61, "bf_fs_feeble_bs_smith_rail_loop"},
+        {62, "bf_fs_willy_bs_overwilly_rail_loop"},
+        {63, "bf_fs_overwilly_bs_willy_rail_loop"},
+        {66, "bf_fs_crook_bs_overcrook_rail_loop"},
+        {67, "bf_fs_overcrook_bs_crook_rail_loop"},
+        {53, "bf_fs_boardslide_bs_lipslide_rail_loop"},
+        {35, "bf_fs_boardslide_bs_lipslide_rail_loop"},
+        {55, "bf_bs_tailslide_rail_loop"},
+        {65, "bf_bs_noseblunt_rail_loop"},
+        {52, "bf_fs_lipslide_bs_boardslide_rail_loop"},
+        {36, "bf_fs_lipslide_bs_boardslide_rail_loop"},
+        {38, "bf_fs_tailslide_rail_loop"},
+        {39, "bf_fs_noseslide_rail_loop"},
+        {47, "bf_fs_blunt_rail_loop"},
+        {48, "bf_fs_noseblunt_rail_loop"},
+        {56, "bf_bs_noseslide_rail_loop"},
+        {64, "bf_bs_blunt_rail_loop"},
+        {69, "bs_salad_fs_oversalad_rail_loop"},
+        {70, "bf_fs_salad_bs_oversalad_rail_loop"},
+        {71, "fs_salad_bs_oversalad_rail_loop"},
+        {72, "bf_bs_salad_fs_oversalad_rail_loop"},
+        {17, "fs_boardslide_bs_lipslide_rail_loop_dark"},
+        {51, "bf_fs_lipslide_bs_boardslide_rail_loop_dark"},
+        {34, "fs_lipslide_bs_boardslide_rail_loop_dark"},
+        {68, "bf_fs_boardslide_bs_lipslide_rail_loop_dark"},
+        {73, "fs_boardslide_bs_lipslide_rail_loop_dark"},
+        {74, "bf_fs_lipslide_bs_boardslide_rail_loop_dark"},
+        {75, "fs_lipslide_bs_boardslide_rail_loop_dark"},
+        {76, "bf_fs_boardslide_bs_lipslide_rail_loop_dark"},
+    };
+    for (const auto& [type, clip] : game_loops) {
+        const auto types = of((std::string("c_proto_onb_grind_") + clip).c_str());
+        check(std::find(types.begin(), types.end(), type) != types.end(), "A grind is not on the loop clip the game plays for it");
+    }
+    check(of("c_proto_onb_grind_bs_salad_fs_oversalad_rail_loop") == V{id("BS_Salad"), id("FS_Suski")}, "An oversalad is the game's suski");
+    check(of("c_proto_onb_trick_o_kickflip_mid").empty() && of("c_proto_ofb_grind_5050_feet_rail_loop").empty() &&
+              of("c_proto_onb_grind_fs_wobble_rail_loop").empty(),
+          "Anything else, or a name it cannot read, is no grind");
+    check(grind_type_label(id("FS_Blunt")) == "FS Bluntslide" && grind_type_label(id("BF_FS_NoseSlide")) == "Fakie FS Noseslide" &&
+              grind_types_words({id("FS_Board"), id("BS_Lip")}) == "FS Boardslide or BS Lipslide",
+          "Grinds are named as the game says them");
+}
+
+void fakie_mirrors_the_upper_body() {
+    std::mt19937 random(7);
+    std::uniform_real_distribution<float> spread(-1, 1);
+    const auto any_turn = [&] { return normalised(Quat{spread(random), spread(random), spread(random), 1.5f + spread(random)}); };
+    // A skeleton as wide on both sides (a pair's bones mirror each other), turned every which way.
+    std::vector<Joint> pose(skeleton_joints);
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        const auto other = mirror_joint[j];
+        if (other < j) continue;
+        Vec3 bone{0.05f + 0.1f * std::abs(spread(random)), 0.1f * spread(random), other == j ? 0.0f : 0.04f + 0.08f * std::abs(spread(random))};
+        pose[j].position = bone;
+        pose[other].position = mirror_vector(bone);
+        pose[j].rotation = any_turn();
+        pose[other].rotation = any_turn();
+    }
+    const auto same_turn = [](const Quat& a, const Quat& b) { return std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) > 1 - 1e-5f; };
+    const auto same_place = [](const Vec3& a, const Vec3& b) { return std::abs(a[0] - b[0]) + std::abs(a[1] - b[1]) + std::abs(a[2] - b[2]) < 1e-4f; };
+    auto once = pose;
+    mirror_upper_body(once);
+    bool legs_kept = true, upper_moved = false;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        if (upper_body_joint(j)) upper_moved = upper_moved || !same_turn(once[j].rotation, pose[j].rotation);
+        else legs_kept = legs_kept && same_turn(once[j].rotation, pose[j].rotation) && same_place(once[j].position, pose[j].position);
+    }
+    check(upper_moved && legs_kept, "Fakie mirrors the upper body and leaves the hips and legs as they are");
+    // Each hand goes where the other was, reflected across the plane between the thighs through the lower back.
+    const auto hips = world(pose, hips_joint);
+    auto across = rotate(hips.rotation, Vec3{pose[8].position[0] - pose[341].position[0], pose[8].position[1] - pose[341].position[1],
+                                             pose[8].position[2] - pose[341].position[2]});
+    const float n = std::sqrt(across[0] * across[0] + across[1] * across[1] + across[2] * across[2]);
+    for (auto& c : across) c /= n;
+    const auto back = world(pose, 42).position;
+    const auto reflect = [&](const Vec3& p) {
+        const Vec3 d{p[0] - back[0], p[1] - back[1], p[2] - back[2]};
+        const float along = d[0] * across[0] + d[1] * across[1] + d[2] * across[2];
+        return Vec3{back[0] + d[0] - 2 * along * across[0], back[1] + d[1] - 2 * along * across[1], back[2] + d[2] - 2 * along * across[2]};
+    };
+    check(same_place(world(once, right_hand_joint).position, reflect(world(pose, left_hand_joint).position)) &&
+              same_place(world(once, left_hand_joint).position, reflect(world(pose, right_hand_joint).position)),
+          "and the right hand goes where the left was, reflected across his middle, and back");
+    auto twice = once;
+    mirror_upper_body(twice);
+    bool back_again = true;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j)
+        back_again = back_again && same_turn(twice[j].rotation, pose[j].rotation) && same_place(twice[j].position, pose[j].position);
+    check(back_again, "Mirrored twice, it is the pose it was");
+    // The keys mirrored on the mirrored pose: the keyed pose mirrored.
+    Animation keyed;
+    for (const std::uint16_t joint : {std::uint16_t{42}, std::uint16_t{right_hand_joint}, std::uint16_t{276}}) {
+        Track track{joint, {}, false, false};
+        Key key;
+        key.rotation = any_turn();
+        track.keys.push_back(key);
+        keyed.tracks.push_back(track);
+    }
+    auto with_keys = pose;
+    apply_edits(keyed, 0, with_keys);
+    mirror_upper_body(with_keys);
+    auto mirrored_keys = keyed;
+    mirror_upper_keys(mirrored_keys);
+    auto keys_on_mirror = pose;
+    mirror_upper_body(keys_on_mirror);
+    apply_edits(mirrored_keys, 0, keys_on_mirror);
+    bool same = true;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) same = same && same_turn(world(with_keys, j).rotation, world(keys_on_mirror, j).rotation);
+    check(same, "Its keys mirrored with it on the mirrored pose come to the keyed pose mirrored");
+    check(mirrored_keys.track(left_hand_joint) && !mirrored_keys.track(right_hand_joint) && mirrored_keys.track(42),
+          "A key on the right hand goes to the left one");
+    // A fakie trick saved before: its upper keys go to the other side once, as it is read; saved since, they stay.
+    Animation file;
+    file.fakie = true;
+    file.source.kind = "native_asset";
+    file.tracks.push_back(Track{right_hand_joint, {Key{}}, false, false});
+    auto text = to_json(file);
+    check(from_json(text).track(right_hand_joint) != nullptr, "A fakie trick saved since keeps its keys where they are");
+    text.replace(text.find("\"fakie_upper\""), 13, "\"fakie_upperx\"");
+    check(from_json(text).track(left_hand_joint) != nullptr && !from_json(text).track(right_hand_joint),
+          "and one saved before has them mirrored once, as it is read");
+    file.source.kind = "render_capture";
+    text = to_json(file);
+    text.replace(text.find("\"fakie_upper\""), 13, "\"fakie_upperx\"");
+    check(from_json(text).track(right_hand_joint) != nullptr, "A recording made riding fakie is left as it is");
+}
+void held_loop_handoffs_keep_valid_fallbacks() {
+    const std::array<GrabLoop, 4> saved{
+        grab_loop_of("c_proto_onb_inair_bs_grab_melon_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_fakie_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop")};
+    std::vector<std::pair<std::size_t, int>> loops{{0, 1}, {1, 1}, {2, 1}, {3, 1}};
+    int family = 2, detail = 4, playing = -1;
+    bool fakie = false;
+    const auto rank = [&](std::size_t index) { return grab_loop_rank(saved[index], family, detail, &fakie); };
+    const auto choose = [&] { return held_loop_ranks<int>(loops, 1, playing, rank); };
+    check(choose().best == 0 && !choose().keep, "A new melon selects an eligible loop");
+    playing = 0;
+    check(choose().keep, "Holding the same style retains its playback clock");
+    detail = 3;
+    check(!choose().keep && choose().best == 0 && rank(playing) == 2,
+          "Melon gives way to saved Japan even though melon is still a valid same-family fallback");
+    playing = 1;
+    check(choose().keep, "Japan does not restart each frame or switch to an equal-ranked variant");
+    playing = 3;
+    check(choose().keep, "An equally ranked playing variant keeps priority over an earlier index");
+    fakie = true;
+    check(!choose().keep && choose().best == 0, "A held loop yields to a better matching fakie version");
+    playing = 2;
+    check(choose().keep, "The matching fakie loop continues");
+    family = 1;
+    check(!choose().keep && choose().best < 0, "Changing grab family releases all incompatible saved loops");
+    family = 2;
+    playing = 0;
+    loops = {{0, 1}};
+    check(choose().keep && choose().best >= 0, "An available fallback continues when no better loop exists");
+    loops = {{0, 2}};
+    check(!choose().keep && choose().best < 0, "Another held-move kind cannot retain the grab");
+    loops.clear();
+    check(!choose().keep && choose().best < 0, "Removing the saved loops releases the current selection");
+    check(held_loop_better_for > 0 && held_loop_better_for < 0.25f, "A better loop takes over soon, but not on one frame's flicker");
+    // What the running loop does with those ranks.
+    check(held_loop_step(-1, false, -1, {}) == HeldLoopStep::pick_best, "Nothing is playing: the best loop is picked");
+    check(held_loop_step(5, false, -1, {0, false}) == HeldLoopStep::play_on, "A one-foot grab's loop, which the game does not name, is not let go of");
+    check(held_loop_step(5, true, 2, {0, false}) == HeldLoopStep::pick_best, "A named fallback gives way to a better loop");
+    check(held_loop_step(5, true, 0, {0, true}) == HeldLoopStep::play_on, "The best loop plays on, its clock running");
+    check(held_loop_step(5, true, -1, {0, false}) == HeldLoopStep::let_go, "A loop the game has left is let go of");
+    check(held_loop_step(5, true, 1, {-1, false}) == HeldLoopStep::let_go, "A loop that is no longer among the saved loops is let go of");
+}
+// What a downloaded pack can do.
+void downloaded_packs_are_held_to_their_own_files() {
+    Clip clip;
+    clip.joints = 1;
+    clip.times = {0, 1e30f};
+    clip.frames.resize(2);
+    const auto huge = clip_bytes(clip);
+    bool refused = false;
+    try { (void)trick_clip_from_bytes(huge); } catch (const std::runtime_error&) { refused = true; }
+    check(refused, "A clip of 1e30 seconds is no trick: stepping through it would never end");
+    check(clip_from_bytes(huge).duration() > 1e29f, "The plugin API's clips keep their own length");
+    clip.times = {0, longest_trick_seconds - 1};
+    check(trick_clip_from_bytes(clip_bytes(clip)).duration() == longest_trick_seconds - 1, "A long trick still loads");
+    clip.times = {0, longest_trick_seconds};
+    refused = false;
+    try { (void)trick_clip_from_bytes(clip_bytes(clip)); } catch (const std::runtime_error&) { refused = true; }
+    check(refused, "The limit is the one a trick's file is held to");
+    const auto refused_with = [&](const Joint& joint) {
+        clip.times = {0, 1};
+        clip.frames.assign(2, joint);
+        try { (void)trick_clip_from_bytes(clip_bytes(clip)); } catch (const std::runtime_error&) { return true; }
+        return false;
+    };
+    Joint joint;
+    joint.position = {1e6f, 0, 0};
+    check(refused_with(joint), "A joint a thousand km away is no trick: a preview lost the skater to it");
+    joint.position = {0, 0, 0};
+    joint.scale = {1000, 1000, 1000};
+    check(refused_with(joint), "Nor one a thousand times its size");
+    joint.scale = {1, 1, 1};
+    joint.position = {20002, -20002, 20002};
+    check(!refused_with(joint), "The game's own clips reach 20 km: the root is in world space");
+    clip.frames.resize(2);
+
+    check(file_safe("Kickfli/../p") == "Kickflip" && !pack_member_names_its_files("Kickfli/../p"),
+          "A member that reads as one trick and files as another is not taken");
+    check(!pack_member_names_its_files(std::string(48, 'a') + "bcdef"), "Nor one that is cut to another trick's name");
+    check(!pack_member_names_its_files("Kickflip.") && !pack_member_names_its_files("..\\x"), "Nor one with what a file name cannot have");
+    check(pack_member_names_its_files("FS Pop Shuv-it low_2"), "A trick's own name is taken");
+
+    Animation saved;
+    saved.maker_key = "someone";
+    check(update_may_replace(saved, true), "An update replaces its maker's trick");
+    check(!update_may_replace(saved, false), "An update does not replace a trick made here");
+    saved.changed_here = true;
+    check(!update_may_replace(saved, true), "An update does not replace an edit saved here");
+    check(from_json(to_json(saved)).changed_here, "An edit stays marked as one when it is read back");
+    saved.changed_here = false;
+    check(!from_json(to_json(saved)).changed_here && to_json(saved).find("changed_here") == std::string::npos, "A trick not edited here has no mark in its file");
+    check(marked_as_made_here(saved, false) && !marked_as_made_here(saved, true), "This PC's mark is the player's, another's is not");
+    PresetPack updated;
+    updated.slots["kickflip|"] = {"Other", "E 2"};
+    keep_edit_ahead_of_update(updated, "E", "E 2");
+    check(updated.slots["kickflip|"] == std::vector<std::string>{"Other", "E", "E 2"} && updated.off.contains("E 2") && !updated.off.contains("E"),
+          "A kept edit goes ahead of the update's copy, which is switched off");
+    saved.maker_key.clear();
+    check(!marked_as_made_here(saved, false), "A trick with no mark counts as its pack's");
+}
+void the_listing_is_held_to_what_the_search_is() {
+    const auto listing = [](const std::string& full_name, const std::string& owner, const std::string& name) {
+        return R"([{"full_name":")" + full_name + R"(","owner":")" + owner + R"(","name":")" + name +
+               R"(","versions":[{"version_number":"1.0.0","website_url":"https://github.com/FourthStudio/ReSkate-Animator-Studio","download_url":"https://thunderstore.io/x"}]}])";
+    };
+    check(market::read_listing(listing("Fourth_Studio-Tricks", "Fourth_Studio", "Tricks")).size() == 1, "A studio package of the listing is read");
+    check(market::read_listing(listing("../../../../x", "Worthless", "x")).empty(), "A full name that climbs out of the market's folder is not");
+    check(market::read_listing(listing("Worthless-x", "Worthless", "../x")).empty(), "Nor a name that does");
+    check(market::read_listing(listing("Someone-x", "Worthless", "x")).empty(), "Nor an owner that is not the one in its full name: that is what a badge goes by");
+    auto bad_version = listing("Fourth_Studio-Tricks", "Fourth_Studio", "Tricks");
+    bad_version.replace(bad_version.find("1.0.0"), 5, "1/../../../../x");
+    check(market::read_listing(bad_version).empty(), "Nor a version that climbs out: a version goes in file names too");
+
+    std::map<std::string, std::string> installed{{"A-Street", "Street"}, {"A-Other", "Other"}};
+    check(market::rename_installed_pack(installed, "Street", "Mine") && installed["A-Street"] == "Mine" && installed["A-Other"] == "Other",
+          "The market's record follows a renamed pack, so UPDATE replaces it");
+    check(!market::rename_installed_pack(installed, "Gone", "Mine"), "A pack no package became changes nothing");
+}
+void smooth_transitions_contracts() {
+    const auto about_x = [](float degrees) {
+        const float h = degrees * 3.14159265f / 360;
+        return Quat{std::sin(h), 0, 0, std::cos(h)};
+    };
+    const auto angle_x = [](const Quat& q) { return 2 * std::atan2(q[0], q[3]) * 180 / 3.14159265f; };
+    check(near(angle_x(scaled_turn(about_x(200), 0.5f)), 100, 0.05f), "Half of a 200 degree flip is 100 degrees on, not 80 back");
+    check(near(angle_x(scaled_turn(about_x(90), 0.5f)), 45, 0.05f), "Half of a quarter turn is an eighth");
+    check(scaled_turn(about_x(300), 0) == (Quat{0, 0, 0, 1}), "None of a turn is no turn");
+    const auto stored_other_sign = [](Quat q) { return Quat{-q[0], -q[1], -q[2], -q[3]}; };
+    check(near(angle_x(scaled_turn(key_way_round(stored_other_sign(about_x(40)), std::nullopt), 0.5f)), 20, 0.05f),
+          "A small board key saved with w below 0 is half turned the short way at a trick's start, not 160 degrees round");
+    check(near(angle_x(scaled_turn(key_way_round(stored_other_sign(about_x(200)), about_x(170)), 0.5f)), 100, 0.05f),
+          "A flip that went past half a turn the frame before keeps going on round");
+    EditTransition t;
+    std::array<Offset, 1> flat{}, turned{};
+    turned[0].rotation = about_x(90);
+    t.evaluate(1, 1, 1, 10, flat, 0.15f, board_jump_degrees);
+    t.evaluate(1.2, 1, 1, 10, flat, 0.15f, board_jump_degrees);
+    const auto eased = t.evaluate(1.217, 1, 1, 10, turned, 0.15f, board_jump_degrees)[0];
+    check(std::abs(angle_x(eased.rotation)) < 45, "A 90 degree jump inside one trick is eased, not drawn in one frame");
+    check(std::abs(angle_x(t.evaluate(1.33, 1, 1, 10, turned, 0.15f, board_jump_degrees)[0].rotation) - 90) < 0.5f,
+          "and reaches it after the jump's fade");
+    EditTransition plain;
+    plain.evaluate(1, 1, 1, 10, flat);
+    plain.evaluate(1.2, 1, 1, 10, flat);
+    check(std::abs(angle_x(plain.evaluate(1.217, 1, 1, 10, turned)[0].rotation) - 90) < 0.5f, "Without the guard it is drawn at once");
+    check(handover_left(10, 0) == 1 && handover_left(10, handover_legs) == 0, "A foot goes over in the legs' time");
+    check(handover_left(10, 0.1f) < handover_left(47, 0.1f) && handover_left(47, 0.1f) < handover_left(44, 0.1f),
+          "The legs go first, then the arms, then the chest");
+    check(handover_left(103, handover_torso) == 0, "and the head is over by the torso's time");
 }
 void native_playback_contracts() {
     EditTransition transition;
@@ -2242,6 +2898,85 @@ void bent_joints_match_the_studio() {
 }
 // Joint limits: the game's own range for each joint. The average pose is left alone, limiting twice is the
 // same as once, and a knee is a hinge - it cannot be twisted round or bent the wrong way.
+void transitions_start_from_the_drawn_pose() {
+    std::vector<Joint> old_native(skeleton_joints), drawn = old_native, next_native = old_native;
+    drawn[9].rotation = from_euler({60, 0, 0}); drawn[hips_joint].position[1] = 0.1f;
+    next_native[9].rotation = from_euler({20, 0, 0}); next_native[342].rotation = from_euler({70, 0, 0});
+    next_native[hips_joint].position[1] = 0.5f;
+    std::vector<Offset> next(skeleton_joints);
+    next[9].rotation = from_euler({-10, 0, 0}); next[hips_joint].offset[1] = 0.03f;
+    PoseFade fade;
+    fade.start(1, 0.2f, drawn, old_native, next);
+    const auto at = [&](double now) {
+        auto changes = next; fade.apply(now, next_native, next, changes);
+        auto pose = next_native; apply_pose_deltas(changes, pose); return pose;
+    };
+    const auto first = at(1), half = at(1.1), last = at(1.21);
+    check(same_turn(first[9].rotation, drawn[9].rotation) && near(first[hips_joint].position[1], 0.1f),
+          "A new native move cannot receive the old trick's edits again at the start of a handoff");
+    check(same_turn(half[9].rotation, from_euler({35, 0, 0})) && near(half[hips_joint].position[1], 0.315f),
+          "The last drawn pose blends directly into the next edited pose");
+    check(same_turn(first[342].rotation, next_native[342].rotation) && same_turn(half[342].rotation, next_native[342].rotation),
+          "Native motion in an unedited joint is never mistaken for an outgoing custom edit");
+    check(same_turn(last[9].rotation, from_euler({10, 0, 0})) && near(last[hips_joint].position[1], 0.53f),
+          "An elapsed fade leaves the next animation and its native motion fully in control");
+    const auto interrupted = at(1.08);
+    fade.start(1.08, 0.2f, interrupted, next_native, next);
+    check(same_turn(at(1.08)[9].rotation, interrupted[9].rotation) && near(at(1.08)[hips_joint].position[1], interrupted[hips_joint].position[1]),
+          "An interrupted handoff resumes from what was actually drawn without a discontinuity");
+    fade.reset(); check(!fade.on(1.1), "A reset cannot keep a pose from another episode alive");
+}
+void release_playback_regressions() {
+    check(to_euler({0, 0, 0, 0}) == Vec3{} && to_euler({1e30f, 1e30f, 1e30f, 1e30f}) == Vec3{},
+          "Degenerate inspector rotations retain the identity fallback instead of producing nonfinite angles");
+    PlaybackEpisode episode;
+    episode.observe(10, MotionState::riding); episode.observe(10.1, MotionState::air); episode.select(10.1);
+    episode.sample(10.3, 0.8f, 2, 3, 1, 0.7f, true, true);
+    episode.landed_from = 1.2f;
+    episode.select(10.31);
+    check(episode.last_time < 0 && episode.landed_from < 0, "Selecting another source clears the old clip's playback history");
+    const auto refined = episode.sample(10.31, 0.1f, 0.75f, 1, 1, 0.7f, true, true);
+    check(near(refined.time, 0.31f) && !refined.finished,
+          "Late flip recognition uses its own source offset at the original takeoff, without skipping to the previous clip's time");
+    for (const bool lead : {false, true}) for (const bool fakie : {false, true}) {
+        const LiveStance fallback{lead, fakie};
+        const auto missing = takeoff_stance(fallback, {}, {});
+        check(missing.leads_right == lead && missing.fakie == fakie, "Unreadable native flags retain each stance fallback");
+        for (const bool mirrored : {false, true}) for (const bool riding_fakie : {false, true}) {
+            const auto native = takeoff_stance(fallback, mirrored, riding_fakie);
+            check(native.leads_right == !mirrored && native.fakie == riding_fakie,
+                  "Exact stance uses readable native flags even when a false flag disagrees with the fallback");
+        }
+        check(takeoff_stance(fallback, {}, !fakie).leads_right == lead && takeoff_stance(fallback, !lead, {}).fakie == fakie,
+              "One readable native flag never overwrites the other unavailable flag's fallback");
+    }
+    const float up = 0.18f, down = 0.73f;
+    float before = continued_air_time(0.58f, up, down);
+    for (int frame = 1; frame < 240; ++frame) {
+        const float now = continued_air_time(0.58f + static_cast<float>(frame) / 60, up, down);
+        check(now >= before && now < down && now - before < 0.017f,
+              "A lost high-pop clock advances without a phase-driven landing jump or reaching touchdown in the air");
+        before = now;
+    }
+    for (const bool preference : {false, true}) {
+        bool enabled = preference; TemporaryPlayback temporary;
+        temporary.begin(enabled); temporary.begin(enabled);
+        check(enabled && temporary.saved(enabled) == preference, "Repeated TEST IN GAME never persists its forced playback setting");
+        temporary.finish(enabled);
+        check(enabled == preference && !temporary.previous, "Returning from a test restores the original playback preference");
+        temporary.begin(enabled); temporary.choose(enabled, !preference); temporary.finish(enabled);
+        check(enabled == !preference && temporary.saved(enabled) == !preference, "An explicit playback choice during a test wins over automatic restoration");
+    }
+    for (const float y : {-90.5f, -90.001f, -90.f, -89.999f, -89.9f, -89.5f, -89.2f, 89.2f, 89.9f, 89.999f, 90.f, 90.001f, 90.5f})
+        for (const float x : {-135.f, -20.f, 0.f, 40.f, 150.f}) for (const float z : {-170.f, 0.f, 28.f, 130.f}) {
+            const auto original = from_euler({x, y, z}), rebuilt = from_euler(to_euler(original));
+            for (const Vec3 basis : {Vec3{1, 0, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1}}) {
+                const auto a = rotate(original, basis), b = rotate(rebuilt, basis);
+                for (std::size_t k = 0; k < 3; ++k) check(std::abs(a[k] - b[k]) < 0.00002f,
+                    "Reading inspector angles near either gimbal pole preserves the actual rotation");
+            }
+        }
+}
 void joints_stay_in_their_range() {
     check(has_joint_limit(9) && has_joint_limit(342) && has_joint_limit(48) && !has_joint_limit(7), "Knees and elbows are limited, the hips are not");
     for (const auto& l : joint_limits) {
@@ -2259,6 +2994,20 @@ void joints_stay_in_their_range() {
     const Vec3 axis{knee.axis[0], knee.axis[1], knee.axis[2]};
     const auto twisted = normalised(multiply(ref, axis_angle(axis, 1.2f)));
     check(angle_between(limit_rotation(9, twisted), ref) < 0.2f, "A knee twisted round is turned back");
+    Animation keyed;
+    keyed.tracks.push_back({9, {{0, axis_angle({1, 0, 0}, 0.3f), {}, Ease::linear}}});
+    keyed.tracks.push_back({277, {{0, axis_angle({1, 0, 0}, 0.3f), {}, Ease::linear}}});
+    const auto& elbow = *std::find_if(joint_limits.begin(), joint_limits.end(), [](const JointLimit& l) { return l.joint == 277; });
+    const Quat elbow_ref{elbow.reference[0], elbow.reference[1], elbow.reference[2], elbow.reference[3]};
+    std::vector<Joint> pose(skeleton_joints);
+    pose[9].rotation = twisted;
+    pose[277].rotation = normalised(multiply(elbow_ref, axis_angle({elbow.axis[0], elbow.axis[1], elbow.axis[2]}, 1.4f)));
+    auto in_game = pose, in_studio = pose;
+    limit_keyed_joints(keyed, 0, in_game, false);
+    limit_keyed_joints(keyed, 0, in_studio);
+    check(same_turn(in_game[9].rotation, pose[9].rotation) && !same_turn(in_game[277].rotation, pose[277].rotation),
+          "Gameplay retains authored leg bends while limiting the upper body");
+    check(!same_turn(in_studio[9].rotation, pose[9].rotation), "The Studio still limits the keyed knee");
 }
 // The lead foot comes from the clip: right foot on the skater's +X side is the game's own goofy layout, and
 // mirroring the clip the game's way turns it into the left foot leading.
@@ -2282,6 +3031,114 @@ void lead_foot_is_read_from_the_clip() {
     check(left.has_value() && !*left, "Mirrored the game's way it leads with the left");
     clip.frames[343].position = {0.1f, -0.8f, 0.07f};
     check(!clip_leads_right(clip).has_value(), "Feet together cannot tell");
+}
+// Whole-pose playback retains the authored placement when the game's body size differs from the clip.
+void whole_poses_fit_body_size() {
+    std::vector<Joint> source(skeleton_joints);
+    source[placement_joint].scale = {1.7f, 1.7f, 1.7f};
+    source[placement_joint].rotation = from_euler({0, 53, 0});
+    source[hips_joint].position = {0, 1, 0};
+    source[8].position = {0.1f, 0, 0}; source[341].position = {-0.1f, 0, 0};
+    for (const std::uint16_t j : {std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{342}, std::uint16_t{343}})
+        source[j].position = {0, -0.4f, 0};
+    Animation animation;
+    set_key(animation, hips_joint, 0, {{0, 0, 0, 1}, {0.03f, 0.02f, 0.01f}});
+    set_key(animation, 9, 0, {from_euler({18, 0, 0}), {}});
+    const auto midpoint = [](std::span<const Joint> pose) {
+        const auto a = world(pose, 10).position, b = world(pose, 343).position;
+        return Vec3{(a[0] + b[0]) * 0.5f, (a[1] + b[1]) * 0.5f, (a[2] + b[2]) * 0.5f};
+    };
+    for (const float size : {0.85f, 0.92f, 1.0f, 1.08f, 1.15f}) {
+        auto expected = source;
+        apply_authored_edit_layer(animation, 0, expected, 1, nullptr, source, 1, 1);
+        auto native = source;
+        native[hips_joint].scale = {size, size, size};
+        auto actual = native;
+        apply_authored_edit_layer(animation, 0, actual, 1, nullptr, source, 1, 1);
+        const auto wanted = midpoint(expected), got = midpoint(actual);
+        for (std::size_t k = 0; k < 3; ++k) check(near(got[k], wanted[k], 0.00001f),
+            "A whole authored pose keeps its foot frame across body sizes without a smaller skater floating");
+        check(actual[hips_joint].scale == native[hips_joint].scale && actual[9].position == native[9].position &&
+              actual[342].position == native[342].position && same_turn(actual[9].rotation, expected[9].rotation),
+              "Fitting body size retains the live scales, leg lengths and authored bend");
+        const auto right = world(actual, 10).position, left = world(actual, 343).position;
+        const auto reference_right = world(expected, 10).position, reference_left = world(expected, 343).position;
+        for (std::size_t k = 0; k < 3; ++k) check(near(right[k] - left[k], (reference_right[k] - reference_left[k]) * size, 0.00001f),
+            "Different keyed foot heights remain different; size fitting does not plant both feet on a deck");
+        auto partial = native, raw = native, reference = source;
+        apply_authored_edit_layer(animation, 0, partial, 0.5f, nullptr, source, 1, 1);
+        apply_authored_edit_layer(animation, 0, raw, 0.5f);
+        apply_authored_edit_layer(animation, 0, reference, 0.5f, nullptr, source, 1, 1);
+        const auto halfway = midpoint(partial), from = midpoint(raw), to = midpoint(reference);
+        for (std::size_t k = 0; k < 3; ++k) check(near(halfway[k], (from[k] + to[k]) * 0.5f, 0.00001f),
+            "The body-size placement correction fades with playback weight rather than snapping");
+        auto off = native;
+        apply_authored_edit_layer(animation, 0, off, 0, nullptr, source, 1, 1);
+        check(off == native, "No custom weight means no body-size placement change");
+        LimbWeights released; released.limb[0] = 0;
+        auto hands_only = native;
+        apply_authored_edit_layer(animation, 0, hands_only, 1, &released, source, 1, 1);
+        check(hands_only[hips_joint].position == native[hips_joint].position,
+              "Returning the hips to the game also disables the body-size placement correction");
+        auto thigh_scaled = source;
+        thigh_scaled[8].scale = thigh_scaled[341].scale = {size, size, size};
+        apply_authored_edit_layer(animation, 0, thigh_scaled, 1, nullptr, source, 1, 1);
+        const auto thigh_feet = midpoint(thigh_scaled);
+        for (std::size_t k = 0; k < 3; ++k) check(near(thigh_feet[k], wanted[k], 0.00001f),
+            "Body-size fitting also works before the renderer rebases the live thigh scales onto the hips");
+    }
+}
+void native_stance_copies_keep_their_source_and_edits() {
+    Clip clip;
+    clip.joints = skeleton_joints;
+    clip.times = {0.0f};
+    clip.frames.assign(skeleton_joints, Joint{});
+    clip.frames[10].position = {0.15f, -0.8f, 0.05f};
+    clip.frames[343].position = {-0.2f, -0.8f, 0.07f};
+    clip.turned_only.resize(skeleton_joints);
+    clip.turned_only[341] = 1;
+    clip.board.resize(1);
+    clip.board[0].position = {0.12f, 0.2f, -0.08f};
+    for (const char* asset : {"manual", "grab", "grind", "invert", "fingerflip", "other-piece"}) {
+        Animation a;
+        a.trick = std::string("native:") + asset;
+        a.source.kind = "native_asset"; a.source.asset = asset; a.stance = "regular";
+        a.modifier_hint = true; a.fakie = true; a.crossfade = 0.27f; a.clip.times = {0, 1};
+        a.tracks.push_back({341, {{0, axis_angle({0, 1, 0}, 0.3f), {0.06f, 0.02f, -0.03f}, Ease::linear}}});
+        a.tracks.push_back({board_joint, {{0, axis_angle({1, 0, 0}, 0.4f), {0.04f, 0.03f, 0.02f}, Ease::linear}}});
+        for (const bool own_right : {false, true}) {
+            const auto normal = stance_copy(a, clip, own_right, 0);
+            const auto switched = stance_copy(a, clip, own_right, 2);
+            check(clip_leads_right(normal.second) == own_right && clip_leads_right(switched.second) == !own_right,
+                  "Every native family has its own normal and switch clip for regular and goofy riders");
+            check(switched.first.keep_leads_right == !own_right && switched.first.fakie == a.fakie &&
+                  switched.first.trick == a.trick && switched.first.source.asset == a.source.asset &&
+                  switched.first.modifier_hint && switched.first.crossfade == a.crossfade && switched.first.clip.times == a.clip.times,
+                  "A native stance copy keeps its source, existing fakie asset semantics, timing, crossfade and modifier hint");
+            const auto returned = stance_copy(switched.first, switched.second, own_right, 0);
+            check(returned.first.tracks[0].joint == normal.first.tracks[0].joint &&
+                  same_turn(returned.first.tracks[0].keys[0].rotation, normal.first.tracks[0].keys[0].rotation) &&
+                  near(returned.first.tracks[0].keys[0].offset[0], normal.first.tracks[0].keys[0].offset[0]) &&
+                  same_turn(returned.first.tracks[1].keys[0].rotation, normal.first.tracks[1].keys[0].rotation) &&
+                  returned.second.turned_only == normal.second.turned_only &&
+                  near(returned.second.board[0].position[0], normal.second.board[0].position[0]),
+                  "Copying a native animation to switch and back preserves the limb, board keys and rotation-only mask");
+        }
+        for (const int invalid : {-1, 1, 3, 4}) {
+            bool refused = false;
+            try { (void)stance_copy(a, clip, false, invalid); } catch (const std::invalid_argument&) { refused = true; }
+            check(refused, "Native pieces cannot accidentally acquire a whole-trick fakie layer through unsupported stance choices");
+        }
+    }
+    Animation recorded;
+    recorded.trick = "kickflip"; recorded.stance = "goofy";
+    const auto switched_recording = stance_copy(recorded, clip, true, 2);
+    check(switched_recording.first.stance == "regular" && switched_recording.first.switch_stance == false,
+          "A mirrored recording's stance label is computed after mirroring its authored stance");
+    for (int version = 0; version < 4; ++version) {
+        const auto ordinary = stance_copy(recorded, clip, false, version);
+        check(ordinary.first.fakie == (version % 2 == 1), "Whole tricks retain all four existing stance options");
+    }
 }
 // Every trigger the game gives at takeoff, through the one rule that picks the recording: regular, goofy,
 // switch, fakie and switch fakie, in front-foot and exact-stance modes.
@@ -2335,8 +3192,91 @@ void fakie_recordings_have_their_own_slot() {
     check(presets[1].active, "The fakie recording plays beside the normal one");
     check(presets[0].active != presets[2].active, "and two normal ones still share a slot");
 }
+void quarter_pipe_goes_under_the_handplant() {
+    check(invert_clip("animation/dingo/c_proto_onb_invert_fs_handplant") && invert_clip("animation/dingo/c_proto_onb_invert_bs_handplant_antic") &&
+              !invert_clip("animation/dingo/c_proto_onb_grind_5050_rail_loop") && !invert_clip("animation/dingo/c_proto_onb_flip_kickflip"),
+          "Only the game's inverts get the quarter pipe");
+    const auto* ramp = studio_quarter_pipe(studio_quarter_pipe_item);
+    check(ramp && near(ramp->top, 2.25f) && near(ramp->coping, -0.75f) && studio_quarter_pipes.size() == 1,
+          "The quarter pipe is the M, 2.25 m high, its coping 75 cm back");
+    // The hand on the coping at (10, -69.99, 5) with him riding up a wall that faces +X.
+    const std::array<float, 3> coping{10.0f, -69.99f, 5.0f};
+    const auto spot = quarter_pipe_spot(*ramp, coping, {1, 0, 0}, -69.99f);
+    check(spot.valid && near(spot.at[1], -69.99f), "The quarter pipe stands on the floor");
+    const Quat turn{spot.rotation[0], spot.rotation[1], spot.rotation[2], spot.rotation[3]};
+    const auto faces = rotate(turn, Vec3{0, 0, 1});
+    check(near(faces[0], 1) && near(faces[2], 0), "Its transition faces the way he rides up");
+    const auto top = rotate(turn, Vec3{0, ramp->top, ramp->coping - studio_coping_radius});
+    check(near(spot.at[0] + top[0], coping[0]) && near(spot.at[2] + top[2], coping[2]), "Its coping's top is under the hand");
+    check(spot.at[0] > coping[0], "It stands out on the open side, the deck behind the coping");
+    // The same spot within 2 cm; turned half round it faces the other way, so it is not.
+    const std::array<float, 4> half_turn{0, spot.rotation[3], 0, -spot.rotation[1]};
+    check(same_ramp_spot(spot.at, spot.rotation, {spot.at[0] + 0.01f, spot.at[1], spot.at[2]}, spot.rotation) &&
+              !same_ramp_spot(spot.at, spot.rotation, spot.at, half_turn),
+          "A quarter pipe turned half round is not the same");
+    check(!quarter_pipe_spot(*ramp, coping, {0, 1, 0}, -69.99f).valid, "No way up the wall, no quarter pipe");
+}
+
+void a_loop_hands_its_pose_to_its_line() {
+    Preset target;
+    const std::string asset = "animation/dingo/c_proto_onb_manual_t_exit";
+    target.trick = "native:" + asset; target.leads_right = false;
+    check(loop_copy_target(target, asset, false) && !loop_copy_target(target, asset, true),
+          "Loop copy updates only an existing version on the loop's foot");
+    target.foreign = true;
+    check(!loop_copy_target(target, asset, false), "Loop copy never overwrites an imported save");
+    target.foreign = false; target.available = false;
+    check(!loop_copy_target(target, asset, false), "A missing target is not selected for an overwrite");
+    const auto loop = line_place("animation/dingo/c_proto_onb_manual_t_loop_med");
+    check(loop.role == LineRole::loop && loop.line && manual_line(*loop.line), "A manual's loop is the loop of its line");
+    check(line_place("animation/dingo/c_proto_onb_manual_t_exit").role == LineRole::out &&
+              line_place("animation/dingo/c_proto_onb_manual_t_land_addi").role == LineRole::in,
+          "Its landing goes into it, its exit comes out of it");
+    check(line_place("animation/dingo/c_proto_onb_manual_t_revert_fs").role == LineRole::none,
+          "A revert changes stance: on no line");
+    const auto fakie = line_place("animation/dingo/c_proto_onb_manual_t_fakie_brake_rolling_slow");
+    check(fakie.role == LineRole::out && fakie.line && fakie.line->loop == "c_proto_onb_manual_t_fakie_loop_med",
+          "The fakie manual's brake is on the fakie line, not the normal one");
+    const auto grind = line_place("animation/dingo/c_proto_onb_grind_fs_noseslide_rail_popout_bs");
+    check(grind.role == LineRole::out && grind.line && grind.line->loop == "c_proto_onb_grind_fs_noseslide_rail_loop" && !manual_line(*grind.line),
+          "A grind's popout comes out of its own loop");
+    check(line_place("animation/dingo/c_proto_onb_flip_kickflip_mid").role == LineRole::none, "A flip is on no line");
+    check(free_ends(LineRole::loop).start && free_ends(LineRole::loop).end && !free_ends(LineRole::in).start && free_ends(LineRole::in).end &&
+              free_ends(LineRole::out).start && !free_ends(LineRole::out).end && !free_ends(LineRole::none).start,
+          "The frames that meet the next clip are free, the rest stay at the game's pose");
+    // A loop keyed in its middle: the brackets' keys (nothing) at 0 and 1, a knee bent at 0.5.
+    Animation looped;
+    const float end = 1.0f;
+    for (const float at : {0.0f, end}) set_key(looped, 342, at, Offset{});
+    const Offset bent{normalised(Quat{0.2f, 0, 0, 1}), {0, 0, 0}};
+    set_key(looped, 342, 0.5f, bent);
+    set_key(looped, board_joint, 0.5f, bent);
+    const auto pose = loop_pose(looped);
+    check(pose.size() == 1 && pose.front().first == 342, "The loop's pose is its knee's key, and never the board's");
+    close_loop(looped, pose, end);
+    const auto start = loop_start_pose(looped), finish = loop_end_pose(looped, end);
+    check(start.size() == 1 && finish.size() == 1 && edit_shows(start.front().second) &&
+              same_turn(start.front().second.rotation, bent.rotation) && same_turn(finish.front().second.rotation, bent.rotation),
+          "Closed, the loop starts and ends on its pose: it goes round without a jump");
+    // An in of 0.6 s with a key of its own at 0.3: the pose on its last frame, its own key kept.
+    Animation in;
+    for (const float at : {0.0f, 0.6f}) set_key(in, 342, at, Offset{});
+    set_key(in, 8, 0.3f, bent);
+    put_pose(in, start, 0.6f);
+    const auto* knee = in.track(342);
+    check(knee && knee->keys.size() == 2 && same_turn(knee->keys.back().rotation, bent.rotation) && !edit_shows(evaluate(*knee, 0)),
+          "The in ends on the loop's pose and still starts on the game's");
+    check(in.track(8) && in.track(8)->keys.size() == 1, "Its own keys stay");
+    check(line_names("a|b|c").size() == 3 && line_names("").empty(), "A line's list splits on |");
+}
+
 int main(int argc, char** argv) {
     try {
+        check(fill_pop_rank(0, 1) > playback_pop_rank("high", "") && fill_pop_rank(0, 2) > fill_pop_rank(0, 1) &&
+              fill_pop_rank(-1, 1) == -1 && fill_pop_rank(0, 0) == 0,
+              "Imported pop fallbacks rank after explicit and ANY choices, retain rejection and prefer the nearest height");
+        a_loop_hands_its_pose_to_its_line();
+        quarter_pipe_goes_under_the_handplant();
         timing_and_stance_edge_cases();
         merged_library_and_timing();
         preview_trajectory_uses_the_whole_clip();
@@ -2361,14 +3301,19 @@ int main(int argc, char** argv) {
         native_names_and_search();
         native_trick_cards();
         trick_names_match();
+        a_copied_trick_still_loads();
         packs_and_playlist();
         market_package_words();
         pop_grades_read_back();
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();
         bent_joints_match_the_studio();
+        transitions_start_from_the_drawn_pose();
+        release_playback_regressions();
         joints_stay_in_their_range();
         lead_foot_is_read_from_the_clip();
+        whole_poses_fit_body_size();
+        native_stance_copies_keep_their_source_and_edits();
         every_stance_finds_its_recording();
         fakie_recordings_have_their_own_slot();
         mirroring_puts_each_joint_where_its_reflection_belongs();
@@ -2385,6 +3330,18 @@ int main(int argc, char** argv) {
         blend_out_eases_back_to_the_game();
         blend_in_eases_in_from_the_game();
         keys_can_be_dragged_in_time();
+        smooth_transitions_contracts();
+        fakie_layer_goes_on_as_the_game_plays_it();
+        held_loops_follow_style_changes();
+        downloaded_packs_are_held_to_their_own_files();
+        the_listing_is_held_to_what_the_search_is();
+        fakie_mirrors_the_upper_body();
+        additive_clips_go_on_their_pose();
+        grind_rail_goes_under_the_grind();
+        game_clips_stand_on_the_floor_where_their_board_rests();
+        a_grab_loop_is_known_by_the_games_grab();
+        held_loop_handoffs_keep_valid_fallbacks();
+        a_grind_is_known_by_the_games_name();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
         profiles_read_back_and_bad_ones_are_refused();

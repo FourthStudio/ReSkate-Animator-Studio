@@ -4,6 +4,7 @@
 #include "mod_manager.h"
 #include "text_encoding.h"
 #include "start_maps.h"
+#include "reskate_version.h"
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -72,6 +73,7 @@ Settings load_settings(const fs::path& path) {
         settings.crash_reports = json.value("crash_reports", settings.crash_reports);
         settings.performance_timings = json.value("performance_timings", settings.performance_timings);
         settings.prereleases = json.value("prereleases", settings.prereleases);
+        settings.official_reskate = json.value("official_reskate", settings.official_reskate);
         settings.steam_username = json.value("steam_username", std::string());
         settings.steam_remember = json.value("steam_remember", settings.steam_remember);
         settings.steam_prefer_code = json.value("steam_prefer_code", settings.steam_prefer_code);
@@ -117,6 +119,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["crash_reports"] = settings.crash_reports;
     json["performance_timings"] = settings.performance_timings;
     json["prereleases"] = settings.prereleases;
+    json["official_reskate"] = settings.official_reskate;
     json["steam_username"] = settings.steam_username;
     json["steam_remember"] = settings.steam_remember;
     json["steam_prefer_code"] = settings.steam_prefer_code;
@@ -220,7 +223,8 @@ void Launcher::check_again_if_update_choices_changed() {
     // so the release that applies (or keeping the files there are) is offered without a restart.
     // Not while a download, an update or a launch is under way, the game runs, or a merge waits
     // on an answer about mods: the next check or start picks it up then.
-    if (settings_.updates == checked_updates_.load() && settings_.prereleases == checked_prereleases_.load()) return;
+    if (settings_.updates == checked_updates_.load() && settings_.prereleases == checked_prereleases_.load() &&
+        settings_.official_reskate == checked_official_.load()) return;
     if (busy_ || launched_) return;
     const auto phase = snapshot().phase;
     if (phase == Phase::ready || phase == Phase::update_available || phase == Phase::game_missing ||
@@ -231,6 +235,7 @@ void Launcher::check_again_if_update_choices_changed() {
 template<class Task> void Launcher::start(Task task) {
     if (busy_) return;
     if (worker_.joinable()) worker_.join();
+    worker_update_choices_ = {settings_.updates, settings_.prereleases, settings_.official_reskate};
     busy_ = true;
     cancel_ = false;
     worker_ = std::thread([this, task] {
@@ -368,6 +373,19 @@ update::Progress Launcher::progress_for(std::string label) {
     };
 }
 
+std::string build_name(update::Channel channel) {
+    if (channel == update::Channel::official) return "Base ReSkate";
+    return std::string(reskate_product_name);
+}
+
+std::string build_version_name(update::Channel channel, const std::string& version) {
+    if (channel == update::Channel::official || reskate_mod_name.empty()) return build_name(channel) + " " + version;
+    // Our releases are "<mod version>+reskate.<ReSkate version>" (contrib/make_launcher_json.py).
+    const auto split = version.find("+reskate.");
+    if (split == std::string::npos) return build_name(channel) + " " + version;
+    return std::format("ReSkate {} + {} {}", version.substr(split + 9), reskate_mod_name, version.substr(0, split));
+}
+
 bool Launcher::launcher_outdated(const update::Config& config) const {
     return !relaunched_ && !config.launcher.url.empty() && !update::file_matches(session_.self, config.launcher);
 }
@@ -377,22 +395,38 @@ bool Launcher::runtime_outdated(const update::Config& config) const {
 }
 
 void Launcher::run_check() {
-    checked_updates_ = settings_.updates;
-    checked_prereleases_ = settings_.prereleases;
+    const auto choices = worker_update_choices_;
+    checked_updates_ = choices.updates;
+    checked_prereleases_ = choices.prereleases;
+    checked_official_ = choices.official;
     set(Phase::checking, "Checking for updates");
     update::remove_previous_launcher(session_.self);
-    auto config = update::fetch_config(settings_.prereleases);
+    const auto channel = choices.official && offers_base_reskate() ? update::Channel::official : update::Channel::own;
+    auto config = update::fetch_config(choices.prereleases, channel);
     {
         std::lock_guard lock(mutex_);
         state_.config = config;
+        state_.config_channel = channel;
     }
     // (Unreachable GitHub: what the last check found stands.)
     if (config) prerelease_available_ = config->prerelease_available;
     const bool newer = config && (launcher_outdated(*config) || runtime_outdated(*config));
-    if (newer && update::binary_updates_enabled() && binaries_ && settings_.updates) {
-        set(Phase::update_available, "A ReSkate update is ready",
-            std::format("{} {} will be downloaded and installed.", config->prerelease ? "Pre-release" : "Version",
-                config->runtime.version.empty() ? config->launcher.version : config->runtime.version));
+    if (newer && update::binary_updates_enabled() && binaries_ && choices.updates) {
+        const auto version = config->runtime.version.empty() ? config->launcher.version : config->runtime.version;
+        if (!offers_base_reskate()) {
+            set(Phase::update_available, "A ReSkate update is ready",
+                std::format("{} {} will be downloaded and installed.", config->prerelease ? "Pre-release" : "Version", version));
+        } else if (channel == update::Channel::official) {
+            // Said before it happens: official ReSkate's launcher has no way back to this build.
+            set(Phase::update_available, "Switch to base ReSkate?",
+                std::format("SWITCH installs base ReSkate {} and its own launcher in place of {}. That launcher has "
+                            "no way back: to get {} again, download it from {}. Your tricks, mods and settings stay.",
+                            version, reskate_product_name, reskate_mod_name, update::releases_page()));
+        } else {
+            set(Phase::update_available, std::format("{} is ready to install", reskate_product_name),
+                std::format("{}{} will be downloaded and installed.", config->prerelease ? "Pre-release " : "",
+                    build_version_name(channel, version)));
+        }
         return;
     }
     set(Phase::checking, "Checking game files");
@@ -427,7 +461,7 @@ void Launcher::run_check() {
         return;
     }
     std::string detail = !config ? "Offline: update check skipped."
-        : !settings_.updates ? (newer ? "ReSkate updates are off; keeping your ReSkate files." : "ReSkate updates are off.")
+        : !choices.updates ? (newer ? "ReSkate updates are off; keeping your ReSkate files." : "ReSkate updates are off.")
         : "Up to date.";
     if (const auto advice = launcher_app::memory_advice(); !advice.empty()) {
         logging::write(logging::Level::info, logging::Channel::launcher, advice);
@@ -436,7 +470,21 @@ void Launcher::run_check() {
     set(Phase::ready, "Ready to skate", std::move(detail));
 }
 
+// Official ReSkate's launcher cannot bring this build back, so a link to where it can be
+// downloaded again is left beside it (the game folder, in a normal install).
+void Launcher::leave_way_back() const {
+    const auto shortcut = session_.self.parent_path() / (L"Get " + wide(reskate_product_name) + L" back.url");
+    std::ofstream file(shortcut, std::ios::binary | std::ios::trunc);
+    file << "[InternetShortcut]\r\nURL=" << update::releases_page() << "\r\n";
+    file.close();
+    logging::write(file ? logging::Level::info : logging::Level::warning, logging::Channel::launcher,
+        (file ? L"Switched to base ReSkate; left " : L"Switched to base ReSkate; could not write ") + shortcut.wstring());
+}
+
 void Launcher::run_updates() {
+    const update::UpdateChoices checked{checked_updates_.load(), checked_prereleases_.load(), checked_official_.load()};
+    if (!update::can_apply_update(checked, worker_update_choices_, update::binary_updates_enabled(), binaries_))
+        return run_check();
     const auto config = this->config();
     if (!config) return run_check();
     set(Phase::updating, "Updating ReSkate");
@@ -444,6 +492,7 @@ void Launcher::run_updates() {
         update::replace_file(session_.paths.dll, config->runtime, progress_for("ReSkate.dll"));
     if (launcher_outdated(*config)) {
         update::replace_running_launcher(session_.self, config->launcher, progress_for("Launcher"));
+        if (snapshot().config_channel == update::Channel::official) leave_way_back();
         logging::flush();
         restart_ = true;
         return;
@@ -607,6 +656,10 @@ void Launcher::run_play() {
         fail("Skate is already running from this folder. Close it before starting it again.");
         return;
     }
+    // Updates and uninstalls the game's Mod Manager could not make while it ran (mod_manager.h),
+    // now that nothing holds the mods' files.
+    for (const auto& line : launcher_mods::apply_pending(mods_data_root() / mods::mods_folder))
+        logging::write(logging::Level::info, logging::Channel::launcher, line);
     if (!ignore_mod_problems_ && !run_mod_merge()) return;
     ignore_mod_problems_ = false;
     set(Phase::launching, "Starting Skate");

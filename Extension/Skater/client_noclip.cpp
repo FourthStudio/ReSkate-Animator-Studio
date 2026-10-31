@@ -1312,6 +1312,12 @@ float air_animation_rate() noexcept {
     return g.animation_rate.load(std::memory_order_relaxed);
 }
 std::uint32_t air_gravity_steps() noexcept { return air_gravity().steps.load(std::memory_order_relaxed); }
+float air_gravity_in_force() noexcept {
+    auto& g = air_gravity();
+    if (GetTickCount64() >= g.expires.load(std::memory_order_acquire)) return 1.0f;
+    const float factor = g.factor.load(std::memory_order_relaxed);
+    return std::isfinite(factor) && factor >= 0.02f && factor <= 20.0f ? factor : 1.0f;
+}
 void note_flight_record(std::uintptr_t trajectory) noexcept {
     auto& g = air_gravity();
     for (const auto& slot : g.records)

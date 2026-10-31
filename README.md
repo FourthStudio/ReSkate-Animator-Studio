@@ -4,7 +4,7 @@ Edit skate animations in game, build your own trick packs, and choose how they p
 
 Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
 
-> **Current candidate:** Animator Studio 1.0.10 on ReSkate 2.1.2. Automated checks cover animation logic and pack files; final in-game release acceptance is tracked in the [release checklist](contrib/studio-release-checklist.md).
+> **Version 1.1:** Animator Studio on ReSkate 2.1.3. See the [1.1 release notes](contrib/release-1.1.md) and [integration record](contrib/studio-library-integration.md).
 >
 > This is a fan project, unaffiliated with Electronic Arts or Full Circle. You need your own copy of skate. on Steam. The game is not included.
 
@@ -12,9 +12,9 @@ Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio,
 
 **For now, the Animator Studio is one file: a `ReSkate.dll` that takes the place of ReSkate's own.** You swap the DLL and turn ReSkate's updates off. Once the ReSkate team brings the studio into ReSkate itself, none of this is needed: you will just update ReSkate.
 
-You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.2** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
+You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.3** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
 
-1. Install **ReSkate 2.1.2** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.2) and start it once the normal way, so it is set up and up to date.
+1. Install **ReSkate 2.1.3** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.3) and start it once the normal way, so it is set up and up to date.
 2. In the launcher, open **Settings > LAUNCHER** and turn **Install ReSkate updates** off. While it is on, the launcher puts the official `ReSkate.dll` back.
 3. Close the launcher and the game.
 4. Open your ReSkate folder (the one with `Skate.exe` and `ReSkateLauncher.exe`). Back up `ReSkate.dll`, and your `ReSkate.Tricks` folder if you already have one.
@@ -32,10 +32,14 @@ On the first start the studio builds its trick library from your own game: about
 1. Open **TRICKS**, search for an animation, and choose a native trick/pop to edit.
 2. Scrub or play the timeline, move or rotate body/board joints, and add keys. Use key blend-in/out to ease edits into the game's pose. Undo/redo and save are available in the editor.
 3. Save with a name of your own. Preview speed affects watching the timeline; gameplay uses normal timing.
-4. In **MY TRICKS**, tick **ACTIVE**. Choose a playlist if asked, and make sure that playlist is switched on.
+4. In **LIBRARY > PLAYLISTS**, create or select a playlist and choose **+ ADD ANIMATIONS**. Add your save, choose **SET AS DEFAULT**, and **RESUME** if playback is paused.
 5. Close the studio and perform the trick in game.
 
-**Saving alone does not activate a trick.** Only one playlist is on at a time; with none on, custom tricks do not play. Also check **Custom tricks in game** in settings. **TEST IN GAME** is a temporary override until you reopen the studio or restart; ACTIVE/playlists keep the selection for later sessions.
+**Saving alone does not activate a trick.** One default playlist plays normally; an optional button playlist supplies alternate animations while its modifier is held. Also check **Custom tricks in game** in settings. **TEST IN GAME** is a temporary override until you reopen the studio or restart; Library playlists keep the selection for later sessions.
+
+The Library shows which playlist you are editing separately from the default and button playlists.
+**SET AS DEFAULT** assigns a list; **RESUME** enables paused playback. **TEST IN GAME** restores your
+previous playback setting when you return. See the [Library guide](contrib/library-workspace.md).
 
 ### Playlists, packs and stances
 
@@ -100,7 +104,7 @@ cmake --preset ci-windows
 cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher --parallel 4
 ```
 
-Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 1.0.9 / ReSkate 2.1.2 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
+Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 1.1.0 / ReSkate 2.1.3 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
 
 See the [Studio implementation notes](contrib/animator-studio.md), [repository structure](STRUCTURE.md), and [release checklist](contrib/studio-release-checklist.md). Keep gameplay changes, tests and UI descriptions together; use focused PRs and wait for review before merging.
 

@@ -48,10 +48,14 @@ Vec3 to_euler(const Quat& q) noexcept;
 bool finite(const Joint& joint) noexcept;
 
 // ---- the joints a player edits --------------------------------------------------------------------
+// Which rows show a joint (SETTINGS > SKATER): the usual ones always, the advanced bones (toes, the spine and neck between
+// the usual ones) and the fingers when their setting is on - and any joint with keys, whatever the setting.
+enum class JointGroup : std::uint8_t { usual, advanced, fingers };
 struct EditableJoint {
     std::uint16_t index;
     std::string_view label; // as the timeline shows it
     bool moves;              // takes a position as well as a rotation (the hips)
+    JointGroup group{JointGroup::usual};
 };
 // In the order of the timeline's rows.
 std::span<const EditableJoint> editable_joints() noexcept;
@@ -201,12 +205,15 @@ struct Animation {
     std::string trick;  // what the player says it is (Kickflip, Heelflip ...)
     std::string author; // who made it, kept with it so a shared trick says whose it is
     std::string maker_key; // the key of the PC it was made on: on any other it plays, but is not opened to edit or copied
+    std::string maker_team; // the Thunderstore team its maker was signed in as when it went out: theirs on any PC signed in so
     bool editable{};       // its maker let others edit and copy it (the pack it was shared in said so)
+    bool changed_here{};   // another maker's trick that was edited and saved on this PC: an update of its pack does not replace it
     std::string label;  // the name it is shown by in MY TRICKS and the packs (PACKS); empty: its name
     Clip clip;
     std::vector<Track> tracks;
     float speed{1}; // Studio preview speed; gameplay source seconds stay at 1x.
     bool loop{true};
+    bool modifier_hint{}; // author recommendation only; never gates normal playback
     // Which pop it is for: "" any, or "low", "mid", "high" (a trick can have one of each).
     std::string pop;
     // The stance the trick was recorded in: "regular" or "goofy" ("" for a file from before stances: regular).
@@ -307,7 +314,9 @@ bool has_joint_limit(std::uint16_t joint) noexcept;
 Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept;
 // Keeps every joint the animation has a real key on inside its limits; joints without keys (the game's own
 // pose, which is always natural) are left alone.
-void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
+// Gameplay leaves the legs as keyed: limiting the additive knee bend can push a tucked foot through the board.
+// The editor keeps full limits. `legs` only changes post-edit gameplay limiting, never stored keys or body size.
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose, bool legs = true) noexcept;
 // Explicit cross-frame transfer experiment; gameplay uses anatomical apply_authored_edit_layer.
 // Transfers authored offsets through placement-relative joint frames onto a native pose.
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.
@@ -317,6 +326,18 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
                              std::span<Joint> native, bool mirror, float weight, bool reverse_facing = false);
 Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
+// The board's key at `seconds` (its turn and move in the board's ground frame); none where the trick has no board key then.
+std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror = false);
+// `board` with a board key on it: turned and moved in the ground frame (board_edited is board_key and this).
+Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& frame) noexcept;
+// `k` of a turn, its own way round: a quaternion past half a turn (w below 0) goes on round to it, where slerp from no turn
+// takes the short way back (a flip drawn in part seemed to flip back - Team B, 2026-10-29).
+Quat scaled_turn(const Quat& q, float k) noexcept;
+// The direction a board key turns for scaled_turn: the direction it had on the frame before (`before`), or on the first
+// frame a trick draws it the short way from no edit. The sign of a saved key gives no direction: smonk's Pop Shuv-it low 2
+// has keys of 6 and 12 degrees saved with w below 0. scaled_turn read them as turns of about 350 degrees, and at part weight
+// the board went upside down (2026-10-30).
+Quat key_way_round(const Quat& key, const std::optional<Quat>& before) noexcept;
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
 // Native/custom blend at explicitly edited bracket boundaries. Legacy full-clip windows stay at 1.
@@ -377,6 +398,27 @@ void place_foot(std::vector<Joint>& pose, std::uint16_t foot, const Vec3& to, co
 Quat mirror_rotation(const Quat& q) noexcept;
 Vec3 mirror_vector(const Vec3& v) noexcept;
 Joint mirror_pose(const Joint& joint) noexcept;
+// The game's fakie layer on a pose (GAME_STANCE_NOTES: riding fakie it plays the same trick clip with an upper-body
+// additive on it - the back, neck and head turned to look the way he rolls): `layer`, each joint's turn after its own
+// (identity where it does not reach), as the game's clips stand (goofy); `mirrored` for a pose standing the other way.
+void apply_fakie_layer(std::span<Joint> pose, std::span<const Quat> layer, bool mirrored) noexcept;
+// FAKIE (2026-10-29, after the game's fakie layer): a trick set to fakie or switch fakie stands with its upper body - the
+// lower back and all of the body above it - mirrored across his own middle (the plane across the hips, between the
+// thighs), the hips and legs as they are, so the arm that led towards the nose leads towards the tail. Measured on the
+// game's own riding poses (normal, slow, fast, pump against their fakie poses) it halves how far the plain pose is from
+// the game's fakie one, and it carries the arms, which the game's layer (made for one riding pose) did not. Mirroring
+// twice gives the pose back. Only on a trick made on one of the game's clips (fakie_mirrored): a recording made riding
+// fakie already stands so.
+bool upper_body_joint(std::uint16_t joint) noexcept;
+void mirror_upper_body(std::span<Joint> pose) noexcept;
+// `pose`'s upper body turned to `to`'s, `share` of the way (each limb as far as `limbs` gives it): in game, the trick's
+// mirrored upper body in place of the game's own fakie one.
+void match_upper_body(std::span<Joint> pose, std::span<const Joint> to, float share, const LimbWeights* limbs = nullptr) noexcept;
+// The keys on the upper body moved to the other side as mirror_upper_body mirrors the pose (a trick turned fakie, or
+// back): each one to its joint's opposite number, reflected. The pose under them mirrored and these on it come to the
+// mirror of the pose with the keys on it.
+void mirror_upper_keys(Animation& animation) noexcept;
+bool fakie_mirrored(const Animation& animation) noexcept; // set to fakie or switch fakie, on one of the game's clips
 // The board under the game's mirror: not turned end for end, its offset across reflected.
 Joint mirror_board_pose(const Joint& board) noexcept;
 // A board key (in the board's own frame) under the game's mirror: across is what reflects.
@@ -399,8 +441,18 @@ Animation mirror_animation(const Animation& animation);
 // small binary file. Both throw std::runtime_error on bad input; nothing half-read is returned.
 std::string to_json(const Animation& animation);
 Animation from_json(std::string_view text); // without the clip
+// A saved trick's file under another name. Edits the file's text: to_json(from_json(text)) has no clip, so it writes a
+// duration of 0, and the file then fails to load.
+std::string renamed_trick_json(std::string_view text, const std::string& name, const std::string& label);
 std::vector<std::uint8_t> clip_bytes(const Clip& clip);
 Clip clip_from_bytes(std::span<const std::uint8_t> bytes);
+// A saved trick's clip: as clip_from_bytes, and no longer than a trick can be. The studio steps through a clip's air frame by
+// frame. A downloaded clip with times of 1e30 seconds holds that loop for ever: at 524288 s, a step of 1/60 does not move a float.
+inline constexpr float longest_trick_seconds = 120;
+// How large a saved trick's clip may go. Of the 8307 clips on a test PC (2026-10-31), every scale is 1 and the largest position
+// is 20002, because the root is in world space. A preview at position 1e6 lost the skater and stopped a plugin for the session.
+inline constexpr float largest_trick_scale = 10, farthest_trick_position = 50000;
+Clip trick_clip_from_bytes(std::span<const std::uint8_t> bytes);
 // ---- which of the game's own clips is playing -----------------------------------------------------
 // The game says which trick it is doing, never which of its clips it plays - and most of what it plays is
 // not a trick at all (setups, loops, exits, the pieces a trick is blended from). Nothing in its memory was

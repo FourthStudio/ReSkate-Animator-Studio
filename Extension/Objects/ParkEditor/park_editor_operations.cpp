@@ -127,7 +127,10 @@ std::string edit_local_park(std::string_view operation, std::string_view map, st
             }
         } else if (operation != "mod-open" && operation != "mod-load" && operation != "new")
             throw std::runtime_error("Unknown park editor operation.");
-        begin(std::move(target), 0);
+        // A place, move or delete with the argument "no-history" stays out of undo and redo (an object that comes and goes
+        // by itself, as the Animator Studio's rail and quarter pipe).
+        const bool outside_history = (operation == "place" || operation == "move" || operation == "delete") && argument == "no-history";
+        begin(std::move(target), outside_history ? 2 : 0);
         if (operation == "mod-open" || operation == "mod-load")
             e.status = "Loading " + title_of(argument) + "...";
         return e.status;

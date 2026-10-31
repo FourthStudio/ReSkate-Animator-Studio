@@ -39,9 +39,11 @@ struct Preset {
     // The foot it leads with, as the studio reads its file (authored_goofy and its switch label, which a save and the
     // upgrade keep true to its clip). Empty: from its stance and switch labels.
     std::optional<bool> leads_right;
+    bool modifier_hint{};
+    bool available{true}; // local clip file exists; never exported as author metadata
 };
 // The foot a saved trick leads with: what decides which takeoffs it plays on, as the game mirrors by it. A goofy normal
-// and a regular switch recording both lead with the right foot.
+// and a regular switch trick both lead with the right foot.
 inline bool preset_leads_right(const Preset& p) {
     return p.leads_right ? *p.leads_right : (p.stance == "goofy") != p.switch_stance.value_or(false);
 }
@@ -75,6 +77,7 @@ struct PresetPack {
     // pop, or "low", "mid" or "high" only.
     std::string pop_rule;
     std::string maker_key;     // the key of the PC it was made on (export_pack), so its tricks stay its maker's
+    std::string maker_team;    // the Thunderstore team its maker was signed in as when it went out: theirs on any PC signed in so
     std::set<std::string> off; // members switched off: kept in the pack, but they do not play
     // Its maker lets others open its tricks to edit and copy them. Off (the default), they play for others, but are locked.
     bool editable{};
@@ -115,7 +118,7 @@ inline int stance_version(const std::string& stance, std::optional<bool> switch_
 // own clips is labelled regular but stands goofy, and read from its labels alone it was filed under the wrong stance
 // for a goofy rider (OWN STANCE then made another copy each press).
 inline int stance_version(const Preset& p, bool own_lead_right) {
-    return (preset_leads_right(p) == own_lead_right ? 0 : 2) + (p.fakie.value_or(false) ? 1 : 0);
+    return (preset_leads_right(p) == own_lead_right ? 0 : 2) + (!p.trick.starts_with("native:") && p.fakie.value_or(false) ? 1 : 0);
 }
 inline std::string preset_slot(std::string trick, const std::string& pop) {
     for (char& c : trick) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
@@ -283,6 +286,7 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
 struct PlaylistEntry {
     std::string pack;      // the pack it is, or the pack the trick is from ("" a trick of your own)
     std::string animation; // "" the whole pack
+    std::set<std::string> omitted; // whole pack only: exclusions in this playlist, never the source pack
     bool operator==(const PlaylistEntry&) const = default;
 };
 enum class PlaylistMode { fixed, turns, shuffle };
@@ -316,7 +320,7 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
     };
     const auto take = [&](const std::string& name, const PresetPack* pack) {
         for (auto& p : presets) {
-            if (p.name != name || p.included) continue;
+            if (p.name != name || p.included || !p.available) continue;
             p.included = true;
             p.order = order++;
             source_of[p.name] = source;
@@ -327,15 +331,17 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
     for (const auto& entry : playlist) {
         ++source;
         const auto* pack = entry.pack.empty() ? nullptr : find_pack(entry.pack);
+        if (!entry.pack.empty() && !pack) continue; // a missing pack must not silently lose its playback rules
         if (!entry.animation.empty()) {
-            if (pack && pack->off.contains(entry.animation)) continue;
+            if (pack && !pack->has(entry.animation)) continue;
+            // Choosing a single trick explicitly opts into it even when it is disabled in the whole pack.
             take(entry.animation, pack);
             continue;
         }
         if (!pack) continue;
         for (const auto& [slot, names] : pack->slots)
             for (const auto& name : names)
-                if (!pack->off.contains(name)) take(name, pack);
+                if (!pack->off.contains(name) && !entry.omitted.contains(name)) take(name, pack);
     }
     // One trick and pop, in one stance, off one kind of takeoff: Fixed plays its first; the others take turns.
     std::map<std::string, Preset*> first;
@@ -379,6 +385,7 @@ inline Json pack_json(const PresetPack& pack) {
     if (!pack.unlinked.empty()) out["unlinked"] = Json(std::vector<std::string>(pack.unlinked.begin(), pack.unlinked.end()));
     if (!pack.pop_rule.empty()) out["pop_rule"] = pack.pop_rule;
     if (!pack.maker_key.empty()) out["maker_key"] = pack.maker_key;
+    if (!pack.maker_team.empty()) out["maker_team"] = pack.maker_team;
     if (!pack.off.empty()) out["off"] = Json(std::vector<std::string>(pack.off.begin(), pack.off.end()));
     if (pack.editable) out["editable"] = true;
     if (!pack.description.empty()) out["description"] = pack.description;
@@ -413,6 +420,7 @@ inline PresetPack read_pack_json(const Json& root) {
             if (name.is_string() && !name.string().empty()) out.unlinked.insert(name.string());
     if (const auto rule = root.value("pop_rule", ""); rule == "any" || rule == "low" || rule == "mid" || rule == "high") out.pop_rule = rule;
     out.maker_key = root.value("maker_key", "").substr(0, 64);
+    out.maker_team = root.value("maker_team", "").substr(0, 64);
     out.editable = root.value("editable", false);
     out.description = utf8_prefix(root.value("description", ""), 2000);
     out.version = root.value("release", "1.0.0").substr(0, 32);

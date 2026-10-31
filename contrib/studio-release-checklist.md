@@ -1,5 +1,50 @@
 # Studio release acceptance
 
+## Version 1.1 combined release (2026-11-01)
+
+The user reported successful in-game testing of Library .5 (`0522ef23`) and authorized the full team integration and merge. The exact 1.1 DLL additionally includes Fourth's Market, handplant preview, bulk-copy and loop-copy workflow. Record the source/hash when checking those additions. Automated results belong in the release PR/build-info; unchecked visual scenarios below remain checks to repeat, not failures observed.
+
+- [ ] Edit a playlist different from the default and button playlists. Its contents change without changing either playback assignment.
+- [ ] Add one pack variation, remove it, restore it and Undo/Redo. Other playlists and the source pack remain intact.
+- [ ] Preview from the picker and from Collection, including a locked save. Back returns to the same filters, groups, scroll and destination.
+- [ ] Create a named playlist from Collection's chooser, cancel another creation, rename/duplicate, and confirm clear/delete. No unrelated list or animation file changes.
+- [ ] Use a controller through playlist contents, picker, settings and button setup at 1366x768. No hidden controls activate under setup or confirmation.
+- [ ] Resume paused playback, choose distinct default/button playlists and compare the same trick input with/without the bind.
+- [ ] Compare `tre_low_wip` at Size 1/default, normal/switch, through catch and landing. Check an intentionally raised foot and an additive-only animation.
+- [ ] Repeat modifier manuals, grind entries/transfers and grab style changes; release the button during a hold, edit its list and reconnect the pad. Missing variants fall back correctly.
+- [ ] Compare local/remote playback online. Export a mismatch and confirm the ZIP contains summary, timeline and skeleton.
+- [ ] Kickflip high and high fakie: lose matching near catch/landing without a jump or body/board time drift. Repeat on a long drop.
+- [ ] Exact stance: normal/switch/fakie/nollie inputs select the intended physical leg, including nollie heelflip.
+- [ ] Custom grind/manual into a flip and then native riding: the outgoing pose fades without snapping or applying old bends to the new move.
+- [ ] Start with Custom tricks OFF, TEST IN GAME twice, reopen F8: it stays OFF. An explicit ON choice during the test stays ON.
+- [ ] Inspector near -90 and +90 degrees Y: changing an unrelated channel preserves orientation.
+- [ ] SAVE failure on a locked metadata file preserves the matching old clip and leaves the editor's unsaved changes available.
+
+- [ ] Market magazine: search, category/verified filters, install/update and Preview/Back.
+- [ ] Open a handplant/invert and a grind in the Studio room: the quarter pipe or rail appears under the correct move and is removed on close; neither is inserted online.
+- [ ] Save a manual/grind loop, copy its pose to selected ins/outs, then reopen them. Existing normal/switch versions, edits and playlist membership remain correct.
+
+## Norms' #27 audit: checks to repeat on the reconciled candidate (2026-10-31)
+
+The CTest suites cover helpers. Production-function harnesses also check native route selection and
+playlist/report failure handling with controlled dependencies; they do not link the complete runtime
+or prove visual gameplay. Repeat these checks in a temporary test installation.
+
+- [ ] Pack update: a pack names a member that files as your own trick (`Kickfli/../p`). Update the pack twice. Your trick stays.
+- [ ] Edit, then update: edit an editable pack's trick, press SAVE twice, then update the pack. Your edit stays first and the maker's copy is off. A SAVE without any prior edit adds no mark.
+- [ ] Pack that names your trick: the pack does not claim the trick. You can share your own pack that holds it, and deleting the pack keeps the trick.
+- [ ] Rename, then UPDATE: no second copy.
+- [ ] Failed save: make `playlists.json` read-only and flip a pack in the ReSkate menu. A message shows and the overlay keeps running.
+- [ ] Name Windows cannot spell: add an emoji folder to the tricks folder. The log says it is passed over and the overlay keeps running.
+- [ ] ReSkate menu: set Playing to another playlist, then switch a pack ON. The pack goes in the playlist that is on.
+- [ ] Room: switch Studio room off while in the room. The studio closes and opens again on the street, with the trick still open.
+- [ ] REPORT A BUG after using the editor: the game stays in the level, and the zip holds `ReSkate.log`, the settings and the timelines. A freeze of about 7 s or more on the game or render thread drops the player out of the level.
+- [ ] Shuv-it board: play smonk's Pop Shuv-it low 2 with SMOOTH on. The board does not turn over in the fades.
+- [ ] Grab style: with melon and japan loops saved, change the style during a grab. The loop follows after 0.1 s.
+- [ ] COPY in MY TRICKS > SELECT > ALL > COPY. Copies retain duration, stance and metadata. The backend fix is present here.
+- [ ] bulk COPY stops after about 3 s and leaves unprocessed items selected; a second press continues without duplicating completed items.
+- [ ] Controller: reach OPEN ANIMATION STUDIO with the D-pad, then try to reach HOW IT WORKS, REPORT A BUG and the rows below it.
+
 ## 1.0.10 review (2026-10-27)
 
 Candidate integrates #14 (`2912763`, grind entry and drop timing) and #15 (`6d5aea8`, menu entry buttons), plus rail capture lifetime fixes. A rail lock capture belongs to one fade and one skater generation: starting a saved grind or another fade invalidates it, even if both fades start at full weight. Ground prediction smoothing resets when the selected trick changes.

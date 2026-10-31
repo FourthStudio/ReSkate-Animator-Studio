@@ -163,6 +163,9 @@ inline int playback_pop_rank(const std::string& wanted, const std::string& saved
     if (saved == wanted) return 0;
     return saved.empty() ? 1 : -1;
 }
+// An imported pack may fill a missing height, after all explicitly matching and ANY-pop choices.
+inline int fill_pop_rank(int rank, int fill) noexcept { return rank == 0 && fill > 0 ? 1 + fill : rank; }
+inline int pop_height(std::string_view pop) noexcept { return pop == "low" ? 0 : pop == "mid" ? 1 : pop == "high" ? 2 : -1; }
 inline bool episode_selection_changed(std::string_view selected, std::string_view reported,
                                       std::string_view selected_pop = {}, std::string_view wanted_pop = {}) noexcept {
     // Blank names are transient state. An explicit pop binding must be reconsidered
@@ -190,6 +193,10 @@ struct LiveStance {
     bool leads_right{}; // the game's mirror: clear when the right foot leads
     bool fakie{};       // rolling backwards at takeoff
 };
+// Native clip flags define exact stance when readable; each missing flag keeps its own fallback.
+inline LiveStance takeoff_stance(LiveStance fallback, std::optional<bool> mirrored, std::optional<bool> riding_fakie) noexcept {
+    return {mirrored ? !*mirrored : fallback.leads_right, riding_fakie.value_or(fallback.fakie)};
+}
 // The recordings that may play now, best first: exact stance only takes one made on the foot that leads now
 // and in the same fakie state, and never mirrors it. Front foot takes any, the closest first: the pop the game
 // graded, then the same fakie state (a fakie recording carries the game's fakie upper body). The foot it was made

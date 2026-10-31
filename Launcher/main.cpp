@@ -81,6 +81,7 @@ void run_headless(const app::Session& session, std::vector<std::wstring> argumen
     if (!map.empty()) options.map = std::move(map);
     update::remove_previous_launcher(session.self);
     if (updates) {
+        // This build's own releases only: a switch to base ReSkate needs SWITCH in the window.
         const auto config = update::fetch_config(dingosdk::launcher_gui::prereleases_enabled(session));
         if (config && apply_headless_updates(session, *config, original, relaunched)) return;
     }
