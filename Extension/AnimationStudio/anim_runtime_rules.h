@@ -147,21 +147,17 @@ struct GameplayClipClock {
 };
 // The pop a saved trick is for, against the pop the game graded: 0 the same, 1 any pop (made so, or a pack's ANY). With
 // `nearest` - a trick on its own pop (a pack's OWN, or no pack) - then the other pops, the nearest first, so a trick made at
-// one pop plays on every pop there is no version of it for: a heelflip saved at mid played on mid pops alone, and the game
-// grades a pop by how it is popped (TEST IN GAME plays on any pop, so there it did play). The game's clock follows the
-// clip of whichever pop it plays and stretches it onto the trick's own air (NativeModels). A pop a pack's LOW, MID or HIGH
-// fixed plays on that pop alone. Below 0: never.
+// one pop plays on every pop there is no version of it for. The game's clock follows the clip of whichever pop it plays and
+// stretches it onto the trick's own air (NativeModels). A pop a pack's LOW, MID or HIGH fixed plays on that pop alone.
+// Below 0: never.
 inline int playback_pop_rank(const std::string& wanted, const std::string& saved) noexcept {
     // A trick on its own pop plays only on that height; on every pop only when its pack's rule says any (saved empty).
-    // (From 2026-10-24 it also played on the pops it had no version for: a low trick on the game's high pop laid its keys
-    // on a body tucked otherwise, not the editor's pose, a foot through the deck - renztre, 2026-10-25.)
     if (saved == wanted) return 0;
     return saved.empty() ? 1 : -1;
 }
 // A pack's trick filling in on a pop its pack has nothing for (CustomTrick::fill: how many heights away its own pop is,
 // 0 not one): after everything in the playlist made for that pop or for every pop, the nearest height first. Other makers'
-// packs mostly cover a trick on one or two pops, and on the rest the game's own trick played, so the pack seemed not to work
-// (2026-10-30). A trick of your own keeps to the pop it is set to.
+// packs mostly cover a trick on one or two pops. A trick of your own keeps to the pop it is set to.
 inline int fill_pop_rank(int rank, int fill) noexcept { return rank == 0 && fill > 0 ? 1 + fill : rank; }
 inline int pop_height(std::string_view pop) noexcept { return pop == "low" ? 0 : pop == "mid" ? 1 : pop == "high" ? 2 : -1; }
 inline bool episode_selection_changed(std::string_view selected, std::string_view reported,
@@ -195,9 +191,8 @@ struct LiveStance {
 // and in the same fakie state, and never mirrors it. Front foot takes any, the closest first: the pop the game
 // graded, then the same fakie state (a fakie recording carries the game's fakie upper body). The foot it was made
 // leading with does not part them: one made on the other foot plays mirrored, which is exact, and shuffle and In
-// turns go round all of them. (The same lead foot came first too until 2026-10-26: a playlist of tricks made in
-// different stances shuffled only those made on the foot that led, often one, so shuffle seemed not to shuffle.)
-// Only the best group is returned, so cycling variants alternates between equally good recordings.
+// turns go round all of them. Only the best group is returned, so cycling variants alternates between equally good
+// recordings.
 inline std::vector<std::size_t> choose_stance_variants(std::span<const StanceCandidate> candidates, LiveStance live, bool front_foot) {
     std::vector<std::size_t> out;
     int best_pop = 1 << 20, best_tier = 1 << 20;

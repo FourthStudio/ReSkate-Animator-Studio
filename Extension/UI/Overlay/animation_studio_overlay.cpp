@@ -110,7 +110,7 @@ struct Ui {
     std::string packs_group;                 // FROM PACKS: the trick group open in a pack ("pack|trick"; "" none)
     std::string playlist_for;                // + PLAYLIST on a trick with no playlist on: the card asks which playlist it goes in
     studio::PlaylistEntry playlist_for_entry;
-    std::array<char, 64> playlist_name{};    // PACKS > PLAYLIST: the open playlist's name, being typed
+    std::array<char, 64> playlist_name{};    // LIBRARY > NOW PLAYING: the open playlist's name, being typed
     std::string playlist_name_for, playlist_delete_armed;
     int binding_since{-1}, binding_shown{-1}, binding_done{-1}; // frames: asked, last drawn, answered
     ImGuiKey binding_key{ImGuiKey_None};     // the new key pressed for it, not saved yet
@@ -319,7 +319,7 @@ struct Ui {
     bool asset_ready_only{}, asset_inspect{};
     std::array<char, 64> asset_query{}; // the search box over TRICKS
     std::array<char, 64> pack_query{};  // the search box over MY PACKS
-    bool pack_settings{};               // PACKS > SETTINGS is open (the playlist)
+    bool pack_settings{};               // LIBRARY > NOW PLAYING is open (the playlist)
     float pack_settings_scroll{}, playlist_pick_scroll{};
     // Watching a saved trick (preview mode): the pack it is from, and where to go back to.
     std::string preview_pack, preview_name;
@@ -1770,7 +1770,7 @@ std::string elide(ImFont* font, float size, const std::string& value, float widt
     return cut + "...";
 }
 // What the studio says, wrapped in a box at most `width` wide and three rows tall, the third cut short with "..." when it
-// runs on (one long line ran across the whole screen, 2026-10-30).
+// runs on.
 void status_box(ImDrawList* d, const Fonts& f, ImVec2 at, float width, ImU32 colour, const std::string& line) {
     const float k = f.k, size = 14 * k, row_h = 19 * k;
     std::vector<std::string> rows;
@@ -1907,8 +1907,7 @@ bool toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, bool on, f
     return clicked;
 }
 // + PLAYLIST on a saved trick: it goes in the playlist that is on (with none on, the card asks which). IN PLAYLIST when it
-// is in the playlist that is on, as itself or in a whole pack there: pressed, that playlist opens. (It was an ACTIVE tick
-// box: a switch of its own beside the playlist, which is what says what plays - testers read it as two settings.)
+// is in the playlist that is on, as itself or in a whole pack there: pressed, that playlist opens.
 bool playlist_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, bool in) {
     return action(d, f, id, at, size, in ? "IN PLAYLIST" : "+ PLAYLIST", in ? Look::ghost : Look::blue);
 }
@@ -2796,10 +2795,9 @@ void controller(const studio::View& v, const Projector& p) {
 }
 
 // ---- the editor's keys (SETTINGS > STUDIO > EDITOR KEYS) -------------------------------------------
-// Every one-key shortcut of the editor, with the key it has unless rebound: a tester had to move sandbox and ReShade keys
-// off the editor's. The Ctrl ones (Ctrl + Z, Y, C, V, S, A), Esc, Enter, Q and E (the menu's tabs), the camera views 1 to
-// 5 and 0, and F8 stay as they are. Every key the studio names - its buttons, the tool strip, the shortcuts, its messages -
-// is the one bound.
+// Every one-key shortcut of the editor, with the key it has unless rebound (sandbox and ReShade keys can clash). The Ctrl
+// ones (Ctrl + Z, Y, C, V, S, A), Esc, Enter, Q and E (the menu's tabs), the camera views 1 to 5 and 0, and F8 stay as they
+// are. Every key the studio names - its buttons, the tool strip, the shortcuts, its messages - is the one bound.
 struct KeyAction {
     const char* id;    // as kept in studio-settings.json
     const char* label; // as SETTINGS lists it
@@ -3126,8 +3124,8 @@ std::string pop_words(const std::string& pop) { return pop.empty() ? "ANY POP" :
 // A saved trick's tags: the pop it plays on, the stance it was made in and how it was done - what to do in game to see
 // it play. Drawn leftwards from `right`, which is left where they stop.
 // A nollie trick (popped off the nose): set to FAKIE it is what the game plays popping off the nose riding fakie, which
-// looks like switch - the way the game does switch tricks riding fakie (a tester found it, 2026-10-29; GAME_STANCE_NOTES:
-// nollie is clips of its own, fakie a layer over them). Its stance is named so wherever stances are named.
+// looks like switch - the way the game does switch tricks riding fakie (nollie is clips of its own, fakie a layer over
+// them). Its stance is named so wherever stances are named.
 bool nollie_trick(const std::string& trick) { return trick == "nollie" || trick.starts_with("n_"); }
 const char* stance_word(int version, bool nollie) {
     static constexpr std::array<const char*, 4> words{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
@@ -4260,8 +4258,8 @@ void cover_peek_hole() {
     const auto& u = ui();
     if (u.peek_hole) ImGui::GetWindowDrawList()->AddRectFilled(u.peek_a, u.peek_b, IM_COL32(10, 10, 12, 252));
 }
-// Leaving TRICKS (for the editor, another tab) ends a preview at once. Left playing, he went on doing the trick in the
-// editor with the camera held at his side, and the menu came back with the old window still cut in it.
+// Leaving TRICKS (for the editor, another tab) ends a preview at once: left playing, he would go on doing the trick in
+// the editor with the camera held at his side.
 void end_hover_preview() {
     auto& u = ui();
     if (!u.hover.peeking && !u.peek_hole && u.hover.key.empty()) return;
@@ -5457,9 +5455,8 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
     end_region(d, ga, gb, rows * (card_h + gap) + 20 * k, u.hub_scroll, k);
 }
 // The LIBRARY's playlist: whole packs and single tricks, in order, and how the same trick from more than one of them takes
-// turns. On, it decides what plays in game. `panel`: NOW PLAYING, at the Library's left, always there (it was a page of its
-// own most people never found - a tester's playlist was on and empty, 2026-10-28); `adder`: the tricks and packs to put in
-// it, at the Library's right.
+// turns. On, it decides what plays in game. `panel`: NOW PLAYING, at the Library's left, always there; `adder`: the tricks
+// and packs to put in it, at the Library's right.
 enum class PlaylistPart { panel, adder };
 void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b, PlaylistPart part) {
     auto& u = ui();
@@ -6268,7 +6265,7 @@ std::string maker_of(const MarketPack& p) {
     if (const auto* member = studio::market::crew_member(p.owner)) return std::string(member->name);
     return p.owner;
 }
-// Installed from the MARKET, but its pack is no longer in the library (deleted in PACKS): it can be put back.
+// Installed from the MARKET, but its pack is no longer in the library (deleted): it can be put back.
 bool removed_here(const studio::View& v, const MarketPack& p) {
     if (p.installed.empty()) return false;
     if (!p.installed_as.empty()) return pack_named(v, p.installed_as) == nullptr;
@@ -9231,7 +9228,7 @@ void key_card(ImDrawList* d, const Fonts& f, const studio::View&, ImVec2 display
     if (action(d, f, "##keysave", ImVec2(x + bw + 12 * k, by), ImVec2(bw, 46 * k), "SAVE", Look::blue, !waiting && u.binding_key != now)) save();
 }
 // + PLAYLIST on a trick with no playlist on: which playlist it goes in, or a new one. One playlist plays at a time; the
-// page (PACKS > PLAYLIST) opens on the one it went in.
+// page (LIBRARY > NOW PLAYING) opens on the one it went in.
 // A manual's or a grind's loop just saved: its pose onto the clips of its line that go into it and come out of it
 // (studio::copy_loop_pose), each ticked or not; once copied, each one opens from here.
 void loop_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
@@ -9398,8 +9395,7 @@ void reshare_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 96 * k;
     // Your own, made on another PC (a new PC, a Windows reinstall, EXPORT ALL and back): its maker is you by name, or it went
-    // out with your team. Then the card says so, where your sign-in stands and what to do - creators were told their own
-    // pack was "Fourth's, not yours" (2026-10-27).
+    // out with your team. Then the card says so, where your sign-in stands and what to do.
     const auto m = studio::market::view();
     const auto same = [](const std::string& a, const std::string& b) { return !a.empty() && _stricmp(a.c_str(), b.c_str()) == 0; };
     const bool looks_mine = pack->installed && (same(pack->made_by, v.your_name) || same(pack->pack.maker_team, m.team));

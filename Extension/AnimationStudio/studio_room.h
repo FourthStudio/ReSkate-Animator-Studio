@@ -4,8 +4,8 @@
 
 // The studio's room: the character room of the game menu's Skaters page (a plain lit studio under every
 // map). The game draws and lights it only while that page is open, so the studio walks the game's menu
-// there when it opens, and back to the world when it closes. The walk is PR #230's (menu_room.cpp, by
-// 22sh): the menu's own navigation events, and RB on a scripted pad from page to page.
+// there when it opens, and back to the world when it closes. The walk is menu_room.cpp's: the menu's own
+// navigation events, and RB on a scripted pad from page to page.
 namespace dingosdk::anim_studio::room {
 enum class Phase : std::uint8_t { idle, opening, arrived, leaving, failed };
 // Any thread. Starts the walk to the Skaters page.

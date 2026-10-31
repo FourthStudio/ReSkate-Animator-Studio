@@ -9,8 +9,8 @@
 
 namespace dingosdk::anim_studio {
 // The first-start guide's version: a guide that changed opens once again for everyone (studio-settings.json "guide_read"
-// keeps the one read). 2 (2026-10-28): no ACTIVE, your own tricks straight into playlists, pop heights.
-inline constexpr int guide_version = 3; // 3 (2026-10-29): the LIBRARY
+// keeps the one read). 2: no ACTIVE, your own tricks straight into playlists, pop heights.
+inline constexpr int guide_version = 3; // 3: the LIBRARY
 // What studio-settings.json keeps, apart from the studio's state: the studio reads it into its state at start and
 // writes it back whole after each change. A key the file does not have keeps the value it is given.
 struct SettingsFile {

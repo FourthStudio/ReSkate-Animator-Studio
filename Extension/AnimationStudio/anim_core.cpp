@@ -463,54 +463,6 @@ Animation retimed_with(const Animation& animation, const std::function<float(flo
     if (animation.catch_at) out.catch_at = map(*animation.catch_at);
     return out;
 }
-void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
-                    std::span<Joint> target, bool mirror, bool reverse_facing) {
-    if (!std::isfinite(seconds) || seconds < animation.start || (animation.end >= 0 && seconds > animation.end) ||
-        source.size() < skeleton_joints || target.size() < skeleton_joints) return;
-    // Read every frame from the unmodified poses: editing a parent must not change the
-    // coordinate conversion for its children later in the track list.
-    const std::vector<Joint> native(target.begin(), target.end());
-    const auto source_placement = world(source, placement_joint).rotation;
-    const auto target_placement = world(native, placement_joint).rotation;
-    // Switch changes the body's facing relative to placement independently of
-    // which limbs lead. Transfer deltas through that half turn before converting
-    // to the live joint basis; a reflection alone reverses local X/Z edits.
-    constexpr Quat half_turn{0, 1, 0, 0};
-    for (const auto& track : animation.tracks) {
-        if (track.hidden || track.keys.empty() || !editable(track.joint) || track.joint >= skeleton_joints) continue;
-        const auto to = mirror ? mirror_joint[track.joint] : track.joint;
-        const auto edit = evaluate(track, seconds);
-        if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 &&
-            edit.offset == Vec3{}) continue; // Neutral bracket keys preserve native transforms exactly.
-        auto& joint = target[to];
-        if (edit.rotation[0] != 0 || edit.rotation[1] != 0 || edit.rotation[2] != 0) {
-            const auto src_frame = normalised(multiply(conjugate(source_placement), world(source, track.joint).rotation));
-            const auto dst_frame = normalised(multiply(conjugate(target_placement), world(native, to).rotation));
-            auto delta = normalised(multiply(multiply(src_frame, edit.rotation), conjugate(src_frame)));
-            if (mirror) delta = mirror_rotation(delta);
-            if (reverse_facing) delta = normalised(multiply(multiply(half_turn, delta), conjugate(half_turn)));
-            const auto local_delta = normalised(multiply(multiply(conjugate(dst_frame), delta), dst_frame));
-            joint.rotation = normalised(multiply(native[to].rotation, local_delta));
-        }
-        const auto sp = parent(track.joint), tp = parent(to);
-        if (sp >= 0 && tp >= 0) {
-            const auto source_parent = world(source, static_cast<std::uint16_t>(sp));
-            const auto target_parent = world(native, static_cast<std::uint16_t>(tp));
-            const auto src_parent = normalised(multiply(conjugate(source_placement), source_parent.rotation));
-            const auto dst_parent = normalised(multiply(conjugate(target_placement), target_parent.rotation));
-            auto offset = rotate(src_parent, edit.offset);
-            if (mirror) offset = mirror_vector(offset);
-            if (reverse_facing) offset = rotate(half_turn, offset);
-            offset = rotate(conjugate(dst_parent), offset);
-            const float source_scale = world(source, placement_joint).scale[0];
-            const float target_scale = world(native, placement_joint).scale[0];
-            if (std::abs(source_scale) > 1e-6f && std::abs(target_parent.scale[0]) > 1e-6f) {
-                const float ratio = source_parent.scale[0] / source_scale * target_scale / target_parent.scale[0];
-                for (std::size_t k = 0; k < 3; ++k) joint.position[k] = native[to].position[k] + offset[k] * ratio;
-            }
-        }
-    }
-}
 int limb_group(std::uint16_t joint) noexcept {
     // The arms and legs by their own chains, read off the skeleton: everything hanging under the shoulder
     // or the thigh belongs to that limb, including the hands and the fingers.
@@ -935,7 +887,6 @@ std::string to_json(const Animation& animation) {
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     if (animation.catch_at) root["catch"] = *animation.catch_at;
     if (animation.crossfade) root["crossfade"] = *animation.crossfade;
-    if (animation.catch_hold) root["catch_hold"] = *animation.catch_hold;
     root["fakie_upper"] = "mirrored"; // its keys are as a trick set to fakie mirrors its upper body (from_json)
     root["start"] = animation.start;
     root["end"] = animation.end;
@@ -1021,12 +972,8 @@ Animation from_json(std::string_view text) {
         const float seconds = root.at("crossfade").get<float>();
         if (std::isfinite(seconds)) result.crossfade = std::clamp(seconds, 0.1f, 0.8f);
     }
-    if (root.contains("catch_hold") && root.at("catch_hold").is_number()) {
-        const float hold = root.at("catch_hold").get<float>();
-        if (std::isfinite(hold)) result.catch_hold = std::clamp(hold, 0.0f, 1.0f);
-    }
-    // A window up to a frame past the clip's end (a bracket rounded onto a frame past it, by builds before 2026-10-23)
-    // is put back on it rather than refusing the whole trick; anything else wrong is refused.
+    // A window up to a frame past the clip's end (a bracket older builds rounded onto a frame past it) is put back on it
+    // rather than refusing the whole trick; anything else wrong is refused.
     constexpr float frame = 1.0f / key_fps + 0.01f;
     require(result.start >= 0 && result.start <= duration + frame && (result.end == -1 ||
             (result.end >= result.start && result.end <= duration + frame)), "bad animation window");
@@ -1088,9 +1035,9 @@ Animation from_json(std::string_view text) {
     // A piece of the game's own animation (a grind's loop, a grab's hold) is known by the clip it came from: one
     // saved before pieces were given that name gets it here, so it plays in game like one saved since.
     if (result.trick.empty() && result.source.kind == "native_asset" && !result.source.asset.empty()) result.trick = "native:" + result.source.asset;
-    // A trick set to fakie saved before its upper body was mirrored (mirror_upper_body, 2026-10-29): its upper body's keys
-    // were made over the game's fakie layer, which left the arms as they were, or copied from the trick in its own stance.
-    // They go to the other side here, so it shows as the mirror of what it was, the arms too. Saved with the mark since.
+    // A trick set to fakie saved before its upper body was mirrored (mirror_upper_body): its upper body's keys were made over
+    // the game's fakie layer, which left the arms as they were, or copied from the trick in its own stance. They go to the
+    // other side here, so it shows as the mirror of what it was, the arms too. Saved with the mark since.
     if (fakie_mirrored(result) && root.value("fakie_upper", "") != "mirrored") mirror_upper_keys(result);
     return result;
 }
@@ -1238,12 +1185,11 @@ std::string file_safe(std::string_view name) {
 } // namespace dingosdk::anim_studio
 
 namespace dingosdk::anim_studio {
-// The game's mirror, measured 2026-10-22: a heelflip recorded riding normal (mirrored) matches the library's
-// heelflip reflected across the skater's Z = 0 plane exactly (median distance 0.0018), and nothing like it
-// reflected across X = 0 (0.275), which is what this used to do. Z = 0 holds the board's long axis (the
-// AITrajectory's X), so the feet keep their ends of the board, swap left for right, and he faces the other
-// side of it - regular from goofy, as the game draws it. Applied to every joint's own rotation it comes to
-// the same as reflecting the whole skeleton, as the left/right table keeps the hierarchy.
+// The game's mirror: a heelflip recorded riding normal (mirrored) matches the library's heelflip reflected across the
+// skater's Z = 0 plane exactly (median distance 0.0018), and nothing like it reflected across X = 0 (0.275). Z = 0 holds
+// the board's long axis (the AITrajectory's X), so the feet keep their ends of the board, swap left for right, and he
+// faces the other side of it - regular from goofy, as the game draws it. Applied to every joint's own rotation it comes
+// to the same as reflecting the whole skeleton, as the left/right table keeps the hierarchy.
 Quat mirror_rotation(const Quat& q) noexcept { return {-q[0], -q[1], q[2], q[3]}; }
 Vec3 mirror_vector(const Vec3& v) noexcept { return {v[0], v[1], -v[2]}; }
 Joint mirror_pose(const Joint& joint) noexcept {
@@ -1911,17 +1857,6 @@ std::vector<NativeModels::Model> native_models_of(const Clip& clip, std::size_t 
         model.frames = std::move(frames);
         out.push_back(std::move(model));
     }
-    return out;
-}
-std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own) {
-    auto out = std::make_shared<NativeModels>();
-    if (own < clips.size() && clips[own]) {
-        out->edit_up = clips[own]->takeoff;
-        out->edit_down = clips[own]->landing;
-    }
-    for (std::size_t c = 0; c < clips.size(); ++c)
-        if (clips[c])
-            for (auto& model : native_models_of(*clips[c], c, c == own)) out->models.push_back(std::move(model));
     return out;
 }
 void NativeClock::start(std::shared_ptr<const NativeModels> models) noexcept {

@@ -72,9 +72,9 @@ inline constexpr std::uint16_t board_joint = 900;
 // time puts it back on one, so the timeline never grows odd fractions of a frame between its keys.
 inline constexpr float key_fps = 30.0f;
 float on_a_frame(float seconds) noexcept;
-// The feet (343 and 10) ride this far above the board's mount, along the board's up: measured in the
-// game, riding, 2026-10-18. The board is pulled under the lower foot by this much on the ground, and
-// snapping puts a foot on the deck at this height in the air.
+// The feet (343 and 10) ride this far above the board's mount, along the board's up, measured in the game while
+// riding. The board is pulled under the lower foot by this much on the ground, and snapping puts a foot on the deck at
+// this height in the air.
 inline constexpr float feet_above_board = 0.104f;
 // The fingers, read off the skeleton's own parent table (animation_skeleton.h): each hand carries five
 // chains, the thumb and four fingers, and an attach joint the game hangs props on which is not one of
@@ -232,8 +232,8 @@ struct Animation {
     std::optional<bool> keep_leads_right;
     // Which upgrade this file has had (empty: made before upgrades). Older builds ignore it.
     std::string upgraded;
-    // The board's keys are in the board's nose-forward frame (every save since 2026-10-22). Older files
-    // made on a clip whose board points backwards had them the other way round; the upgrade turns them.
+    // The board's keys are in the board's nose-forward frame. Older files made on a clip whose board points backwards had
+    // them the other way round; the upgrade turns them.
     bool board_nose_forward{};
     // The catch its maker set on the timeline (CATCH): the moment between the pop and the landing that the board is
     // caught, held in the air off a bigger drop than the clip's and then played on to its landing. Empty: the studio
@@ -242,9 +242,6 @@ struct Animation {
     // Its own Crossfade (seconds, 0.1 to 0.8): how it hands back to the game's next move, in place of the main one
     // (SETTINGS) for this trick alone. Empty: the main one. Older builds ignore it.
     std::optional<float> crossfade;
-    // CATCH HOLD (0 to 1), as set in builds up to 1.0.44: off a bigger drop than its own, where the extra air went (they
-    // slowed a trick to fill it). Tricks now play at the game's own speed; it is kept in the file for those builds.
-    std::optional<float> catch_hold;
     Track* track(std::uint16_t joint) noexcept;
     const Track* track(std::uint16_t joint) const noexcept;
     std::size_t key_count() const noexcept;
@@ -312,18 +309,13 @@ Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept;
 // Keeps every joint the animation has a real key on inside its limits; joints without keys (the game's own
 // pose, which is always natural) are left alone.
 void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
-// Explicit cross-frame transfer experiment; gameplay uses anatomical apply_authored_edit_layer.
-// Transfers authored offsets through placement-relative joint frames onto a native pose.
-// Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.
-void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
-                    std::span<Joint> target, bool mirror, bool reverse_facing = false);
 Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
 // The board's key at `seconds` (its turn and move in the board's ground frame); none where the trick has no board key then.
 std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror = false);
 // `board` with a board key on it: turned and moved in the ground frame (board_edited is board_key and this).
 Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& frame) noexcept;
 // `k` of a turn, its own way round: a quaternion past half a turn (w below 0) goes on round to it, where slerp from no turn
-// takes the short way back (a flip drawn in part seemed to flip back, 2026-10-29).
+// takes the short way back (a flip drawn in part would seem to flip back).
 Quat scaled_turn(const Quat& q, float k) noexcept;
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
@@ -377,13 +369,12 @@ void place_foot(std::vector<Joint>& pose, std::uint16_t foot, const Vec3& to, co
 Quat mirror_rotation(const Quat& q) noexcept;
 Vec3 mirror_vector(const Vec3& v) noexcept;
 Joint mirror_pose(const Joint& joint) noexcept;
-// FAKIE (2026-10-29, after the game's fakie layer): a trick set to fakie or switch fakie stands with its upper body - the
-// lower back and all of the body above it - mirrored across his own middle (the plane across the hips, between the
-// thighs), the hips and legs as they are, so the arm that led towards the nose leads towards the tail. Measured on the
-// game's own riding poses (normal, slow, fast, pump against their fakie poses) it halves how far the plain pose is from
-// the game's fakie one, and it carries the arms, which the game's layer (made for one riding pose) did not. Mirroring
-// twice gives the pose back. Only on a trick made on one of the game's clips (fakie_mirrored): a recording made riding
-// fakie already stands so.
+// FAKIE: a trick set to fakie or switch fakie stands with its upper body - the lower back and all of the body above it -
+// mirrored across his own middle (the plane across the hips, between the thighs), the hips and legs as they are, so the
+// arm that led towards the nose leads towards the tail. Measured on the game's own riding poses (normal, slow, fast, pump
+// against their fakie poses) it halves how far the plain pose is from the game's fakie one, and it carries the arms,
+// which the game's layer (made for one riding pose) does not. Mirroring twice gives the pose back. Only on a trick made
+// on one of the game's clips (fakie_mirrored): a recording made riding fakie already stands so.
 bool upper_body_joint(std::uint16_t joint) noexcept;
 void mirror_upper_body(std::span<Joint> pose) noexcept;
 // `pose`'s upper body turned to `to`'s, `share` of the way (each limb as far as `limbs` gives it): in game, the trick's
@@ -419,13 +410,11 @@ std::vector<std::uint8_t> clip_bytes(const Clip& clip);
 Clip clip_from_bytes(std::span<const std::uint8_t> bytes);
 // ---- which of the game's own clips is playing -----------------------------------------------------
 // The game says which trick it is doing, never which of its clips it plays - and most of what it plays is
-// not a trick at all (setups, loops, exits, the pieces a trick is blended from). Nothing in its memory was
-// found to name the playing clip (two probes, 2026-10-21), so it is recognised the way a person would: by
-// the skater's pose. A piece is playing when the body has been moving through it, in step, for the last
-// quarter of a second. Looking like one frame of it is not enough - riding looks like the first frame of
-// half the tricks - so the window has to move through the piece, keep in time with it, and fit better
-// than holding any one of its frames still. Tried offline on 38 recordings: it found the kickflip pieces in
-// the kickflips, at the right time, and nothing in the rest.
+// not a trick at all (setups, loops, exits, the pieces a trick is blended from). Nothing in its memory names
+// the playing clip, so it is recognised the way a person would: by the skater's pose. A piece is playing
+// when the body has been moving through it, in step, for the last quarter of a second. Looking like one
+// frame of it is not enough - riding looks like the first frame of half the tricks - so the window has to
+// move through the piece, keep in time with it, and fit better than holding any one of its frames still.
 struct PieceMatch {
     std::size_t piece{}; // index into the clips given to set_pieces
     bool mirrored{};     // the piece is playing the other way round
@@ -489,14 +478,13 @@ private:
 // pop of it, each as it is and mirrored - and the edits are laid on at the time read off it. A clip the game
 // plays that is not the edit's own (another pop) is read across through the pop and landing marks. When the
 // game goes into another animation its pose stops matching and the trick lets go: the game leads, the edits
-// only ride on it. (Measured on testers' dumps: the clip playing is told apart from the others by 7 degrees or
-// more, and its time to about a frame.)
+// only ride on it. (The clip playing is told apart from the others by 7 degrees or more, and its time to about
+// a frame.)
 // ---- a trick on another pop's clip: its timing ---------------------------------------------------------------------
 // The game plays a trick's flip at the same pace on every pop: its low, mid and high clips have the board turned the same
 // way at the same time from the pop, and a higher pop's extra air goes into holding the catch before the landing. A trick
 // made on one pop and played on another's clip follows that clip by where its board is (board_time_map), not by stretching
-// its whole air evenly: that put the flip up to 90 degrees out of step with the legs, the board through them (renztre,
-// made on a low pop, on the game's high pop, 2026-10-25).
+// its whole air evenly, which would put the flip up to 90 degrees out of step with the legs and the board through them.
 struct BoardTrack {
     std::vector<float> times;
     std::vector<Quat> turn; // the board relative to the placement joint, each frame
@@ -515,7 +503,7 @@ struct TimeMap {
 TimeMap board_time_map(const BoardTrack& played, const BoardTrack& made);
 struct NativeModels {
     struct Model {
-        std::size_t clip{};    // which clip given to build_native_models
+        std::size_t clip{};    // which of the trick's clips (native_models_of's index)
         bool own{};            // the edit's own clip: its time is the edit's
         bool mirrored{};       // compared mirrored (the game mirrors the body by stance)
         float up{-1}, down{-1}, duration{};
@@ -544,8 +532,6 @@ struct NativeModels {
 // One clip's models, as it is and mirrored (none for a clip too short to follow): `index` is the clip's place among the
 // clips given for a trick, `own` whether it is the edit's own clip. Copies share the poses (Model::frames).
 std::vector<NativeModels::Model> native_models_of(const Clip& clip, std::size_t index, bool own);
-// `clips[own]` is the edit's own clip; the others are the clips the game may play for its trick instead.
-std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own);
 class NativeClock {
 public:
     static constexpr float lock_degrees = 4.5f; // how near the game's pose has to be to a clip to follow it
@@ -558,7 +544,7 @@ public:
         float time{-1};  // seconds into the edit's own clip
         float error{-1}; // degrees, the game's pose against the clip at that time (still measured once lost)
         float baseline{-1}; // the error it had while it was followed: how near this clip comes at best
-        int clip{-1};    // which clip (as given to build_native_models)
+        int clip{-1};    // which of the trick's clips (native_models_of's index)
         bool mirrored{};
         float confidence{}; // 1 on the clip, falling to 0 as the game blends away from it
         bool switched{};    // moved onto another of the clips, that fits the game better, this update

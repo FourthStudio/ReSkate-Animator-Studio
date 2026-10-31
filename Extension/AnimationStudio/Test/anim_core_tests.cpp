@@ -34,6 +34,18 @@
 
 using namespace dingosdk::anim_studio;
 namespace {
+// The clips the game may play for a trick, as the studio builds them for NativeClock: `clips[own]` the edit's own.
+std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own) {
+    auto out = std::make_shared<NativeModels>();
+    if (own < clips.size() && clips[own]) {
+        out->edit_up = clips[own]->takeoff;
+        out->edit_down = clips[own]->landing;
+    }
+    for (std::size_t c = 0; c < clips.size(); ++c)
+        if (clips[c])
+            for (auto& model : native_models_of(*clips[c], c, c == own)) out->models.push_back(std::move(model));
+    return out;
+}
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 struct NamedNativeFixture { std::string asset, label, category, context, search, state; };
 bool near(float a, float b, float within = 1e-3f) { return std::abs(a - b) < within; }
@@ -69,7 +81,7 @@ void market_package_words() {
     check(plain_name("Fourth_Studio") && !plain_name("a/b") && !plain_name("a-b") && !plain_name("") && plain_version("10.2.3") &&
               !plain_version("1.0.0/x") && !plain_version(".1"),
           "Only plain names and versions go into an address");
-    // A page of Thunderstore's search as it came (2026-10-23), with one of someone else's and one with nothing in it.
+    // A page of Thunderstore's search, with one of someone else's packages and one with nothing in it.
     const std::string page = R"({"count":3,"next":"https://thunderstore.io/api/cyberstorm/listing/reskate/?page=2&q=Animator","previous":null,"results":[
         {"categories":[{"id":"2759","name":"Misc","slug":"misc"}],"community_identifier":"reskate",
          "description":"Animator Studio pack: Reskate. Animator Studio - Animation Pack Test","download_count":1,
@@ -141,7 +153,7 @@ void packs_and_playlist() {
     select_playlist(presets, packs, playlist, PlaylistMode::turns);
     check(presets[4].active && presets[1].active && presets[4].order < presets[1].order, "In turns: all of them play, in the playlist's order");
     {
-        // A pack whose slot is on Alternate takes turns in a Fixed playlist too (testers: cycled tricks played one version).
+        // A pack whose slot is on Alternate takes turns in a Fixed playlist too.
         auto cycling = other;
         cycling.slots["kickflip|mid"] = {"Kickflip c", "Kickflip b"};
         cycling.slot_alternate["kickflip|mid"] = true;
@@ -170,8 +182,7 @@ void packs_and_playlist() {
               "Shuffle still includes both packs; priority applies only to Fixed");
     }
     {
-        // A tester with a lot of tricks (2026-10-25): past a few hundred, shuffle and In turns stuck to the first one. 1200
-        // kickflips in one pack: every one of them plays, in turns round and round, shuffled never twice running.
+        // 1200 kickflips in one pack: every one of them plays, in turns round and round, shuffled never twice running.
         PresetPack big;
         big.name = "Big";
         std::vector<Preset> many;
@@ -231,11 +242,9 @@ void packs_and_playlist() {
     check(to_json(with_catch).find("\"catch\"") != std::string::npos, "The catch is saved again with the trick");
     auto tuned = locked;
     tuned.crossfade = 0.45f;
-    tuned.catch_hold = 0.8f;
     const auto tuned_back = from_json(to_json(tuned));
-    check(tuned_back.crossfade && std::abs(*tuned_back.crossfade - 0.45f) < 1e-4f && tuned_back.catch_hold && std::abs(*tuned_back.catch_hold - 0.8f) < 1e-4f,
-          "A trick keeps its own crossfade and catch hold");
-    check(!read.crossfade && !read.catch_hold, "and one without them has the main crossfade and the default hold");
+    check(tuned_back.crossfade && std::abs(*tuned_back.crossfade - 0.45f) < 1e-4f, "A trick keeps its own crossfade");
+    check(!read.crossfade, "and one without it has the main crossfade");
 }
 
 // Every spelling the game has for a trick is one trick: what it says in the air, its scoring data, its flick list.
@@ -319,8 +328,8 @@ void native_names_and_search() {
 void pop_grades_read_back() {
     check(graded_pop_name(1) == "low" && graded_pop_name(3) == "high" && graded_pop_name(4).empty(), "Only the game's three pop grades have a name");
     {
-        // Online every skater's pop is graded: his are told apart by his skater's graph (2026-10-25: online the studio went
-        // by the air time, which takes a low pop for a mid one).
+        // Online every skater's pop is graded: his are told apart by his skater's graph, not by the air time (which takes
+        // a low pop for a mid one).
         PopGradeLog log;
         const std::uintptr_t mine = 0x1000, theirs = 0x2000, mine_after_joining = 0x3000;
         log.add(10'000, mine, 1);
@@ -357,8 +366,8 @@ void slerp_meets_both_ends() {
     check(same_turn(slerp(a, b, 0.5f), from_euler({0, 45, 0})), "and halfway is half the turn");
 }
 
-// Smooth keys never go past a key: a knee's keys like a user's kickflip (0 at the start bracket, still, a little, a
-// lot, the most, back to 0 at the end bracket) never dip below 0 before the rise and never go over the most.
+// Smooth keys never go past a key: a knee's keys like a kickflip's (0 at the start bracket, still, a little, a lot, the
+// most, back to 0 at the end bracket) never dip below 0 before the rise and never go over the most.
 void smooth_keys_never_overshoot() {
     Animation animation;
     animation.clip.times = {0, 2.2f};
@@ -652,9 +661,8 @@ void clips_read_back_and_broken_ones_are_refused() {
 
 // Goofy: the mirror pairs the joints on the two sides, is its own inverse, and moves a right key to the left.
 // A mirror has to be a mirror: wherever a joint was, its opposite number has to end up at the reflection
-// of that spot, in the world. Reflecting each bone in its own parent frame - which is what was done -
-// passes a does-it-come-back test and still fails this one as soon as the rest pose is not symmetrical,
-// and that is what tore the skater up on screen.
+// of that spot, in the world. Reflecting each bone in its own parent frame passes a does-it-come-back test
+// and still fails this one as soon as the rest pose is not symmetrical.
 void mirroring_puts_each_joint_where_its_reflection_belongs() {
     std::vector<Joint> pose(skeleton_joints);
     for (std::size_t j = 0; j < pose.size(); ++j) {
@@ -1075,7 +1083,7 @@ void packs_select_variants_without_filesystem_order() {
     check(stances[0].active && !stances[1].active && stances[2].active && !stances[3].active,
           "Fixed packs choose their first included compatible variant for each lead foot");
 }
-// The 22sh review of PR 8: what was fixed for 1.0.8, held.
+// Review fixes, each still holding.
 void review_fixes_hold() {
     // A name cut to its 48 bytes never ends inside a character (the cut made every later save fail).
     std::string accents = "A";
@@ -1236,8 +1244,8 @@ void merged_library_and_timing() {
     for (const bool left : {false, true})
         for (const bool goofy : {false, true})
             check(leads_right(goofy, riding_switch(left, goofy)) == !left, "The lead foot is the game's bit, whatever the stance setting says");
-    // Read the old way - the bit taken for a switch flag - a goofy skater came out right by luck and a
-    // regular one the wrong way round, every time.
+    // The bit is not a switch flag: read as one, a goofy skater comes out right by luck and a regular one the wrong way
+    // round.
     check(leads_right(true, false) == !false && leads_right(false, true) != !true, "The bit read as a switch flag is wrong for regular skaters");
     GameplayClipClock clock;
     check(near(clock.advance_air(10, 0.3f, 1, 2), 0.3f), "Newly selected presets begin at takeoff");
@@ -1380,98 +1388,12 @@ void timing_and_stance_edge_cases() {
         check(refused, "Malformed timeline and stance metadata is rejected before reaching playback");
     }
     {
-        // A clip 1.9167 s long (115 frames at 60): its end bracket used to round onto 1.9333 (58 frames at 30), past it.
+        // A clip 1.9167 s long (115 frames at 60): its end bracket must not round onto 1.9333 (58 frames at 30), past it.
         const auto rounded = from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1.9167,"start":0.5,"end":1.9333})");
         check(near(rounded.end, 1.9167f), "A bracket rounded a frame past the clip is put back on it, not refused");
         Animation edge;
         edge.start = 0.5f;
         check(move_window_edge(edge, 2, 1.9167f, 1.9167f) && edge.end <= 1.9167f, "The end bracket never goes past the clip");
-    }
-}
-void retargeted_edits_preserve_native_rig_and_convert_joint_frames() {
-    std::vector<Joint> source(skeleton_joints), native(skeleton_joints);
-    source[placement_joint].rotation = from_euler({0, 37, 0});
-    native[placement_joint].rotation = from_euler({0, -125, 0});
-    source[hips_joint].rotation = from_euler({12, 35, -8});
-    native[hips_joint].rotation = from_euler({-10, -25, 17});
-    source[8].rotation = from_euler({67, 11, -20});
-    native[341].rotation = from_euler({-32, 48, 91});
-    for (std::size_t i = 2; i < native.size(); ++i) {
-        native[i].position = {0.013f * static_cast<float>(i % 5), 0.03f, -0.02f};
-        native[i].scale = {1.1f, 1.1f, 1.1f};
-    }
-    Animation animation;
-    animation.tracks.push_back({8, {{0, {0, 0, 0, 1}, {}, Ease::linear}}});
-    auto target = native;
-    retarget_edits(animation, 0, source, target, true);
-    for (std::size_t i = 0; i < target.size(); ++i) {
-        check(target[i].position == native[i].position && target[i].scale == native[i].scale,
-              "Identity retarget never imports recorded bone positions or scale");
-        for (int k = 0; k < 4; ++k) check(near(target[i].rotation[k], native[i].rotation[k]), "Identity edit leaves native switch pose unchanged");
-    }
-    const auto edit = from_euler({23, -11, 8});
-    animation.tracks[0].keys[0].rotation = edit;
-    retarget_edits(animation, 0, source, target, true);
-    const auto sf = multiply(conjugate(world(source, placement_joint).rotation), world(source, 8).rotation);
-    const auto tf = multiply(conjugate(world(native, placement_joint).rotation), world(native, 341).rotation);
-    const auto local_delta = multiply(conjugate(native[341].rotation), target[341].rotation);
-    const auto actual = normalised(multiply(multiply(tf, local_delta), conjugate(tf)));
-    const auto expected = normalised(mirror_rotation(multiply(multiply(sf, edit), conjugate(sf))));
-    float dot = 0;
-    for (int k = 0; k < 4; ++k) dot += actual[k] * expected[k];
-    check(std::abs(dot) > 0.99999f, "Edit rotates in the reflected placement frame even with asymmetric local bone bases");
-    for (std::size_t i = 0; i < target.size(); ++i) {
-        check(target[i].position == native[i].position && target[i].scale == native[i].scale && finite(target[i]),
-              "Rotational retarget preserves all native local bone lengths and scales");
-        if (i != 341) check(target[i].rotation == native[i].rotation, "Only the paired editable joint is changed");
-    }
-    animation.tracks[0].keys[0].offset = {0.03f, -0.1f, 0.02f};
-    target = native;
-    retarget_edits(animation, 0, source, target, true);
-    const auto src_parent = world(source, hips_joint);
-    const auto dst_parent = world(native, hips_joint);
-    const auto source_frame = multiply(conjugate(world(source, placement_joint).rotation), src_parent.rotation);
-    const auto target_frame = multiply(conjugate(world(native, placement_joint).rotation), dst_parent.rotation);
-    const auto wanted_offset = mirror_vector(rotate(source_frame, animation.tracks[0].keys[0].offset));
-    Vec3 local_offset{};
-    for (int k = 0; k < 3; ++k) local_offset[k] = (target[341].position[k] - native[341].position[k]) * dst_parent.scale[0];
-    const auto actual_offset = rotate(target_frame, local_offset);
-    for (int k = 0; k < 3; ++k) check(near(actual_offset[k], wanted_offset[k]), "Offsets convert through parent frames and compensate target parent scale");
-    animation.tracks[0].hidden = true;
-    target = native;
-    retarget_edits(animation, 0, source, target, true);
-    check(target[341].rotation == native[341].rotation, "Hidden edits stay hidden in switch");
-}
-void switch_edits_follow_the_native_body_facing() {
-    std::vector<Joint> source(skeleton_joints);
-    source[placement_joint].rotation = from_euler({0, 37, 0});
-    source[hips_joint].rotation = from_euler({12, 35, -8});
-    source[341].rotation = from_euler({23, -17, 9});
-    source[341].position = {0.1f, -0.2f, 0.03f};
-    const auto rotation = from_euler({19, 11, -7});
-    const Vec3 offset{0.03f, 0.02f, -0.01f};
-    Animation animation;
-    animation.tracks.push_back({341, {{0, rotation, offset, Ease::linear}}});
-    for (const bool mirror : {false, true}) for (const bool reverse : {false, true}) {
-        auto native = source;
-        if (mirror) for (std::size_t j = 0; j < source.size(); ++j) native[mirror_joint[j]] = mirror_pose(source[j]);
-        native[placement_joint].rotation = from_euler({0, -125, 0});
-        if (reverse) native[hips_joint].rotation = multiply(Quat{0, 1, 0, 0}, native[hips_joint].rotation);
-        auto target = native;
-        retarget_edits(animation, 0, source, target, mirror, reverse);
-        const auto joint = mirror ? mirror_joint[341] : 341;
-        const auto expected_rotation = normalised(multiply(native[joint].rotation, mirror ? mirror_rotation(rotation) : rotation));
-        const auto expected_offset = mirror ? mirror_vector(offset) : offset;
-        float dot = 0;
-        for (int k = 0; k < 4; ++k) dot += expected_rotation[k] * target[joint].rotation[k];
-        check(std::abs(dot) > 0.99999f, "A native body half turn preserves anatomical rotation direction independently of limb mirroring");
-        for (int k = 0; k < 3; ++k)
-            check(near(target[joint].position[k] - native[joint].position[k], expected_offset[k]),
-                  "Switch conversion keeps authored parent-local offset signs in the turned native body");
-        for (std::size_t j = 0; j < native.size(); ++j) {
-            check(target[j].scale == native[j].scale, "Facing conversion preserves native bone scales");
-            if (j != joint) check(target[j] == native[j], "Facing conversion changes only the authored limb, never the native skeleton");
-        }
     }
 }
 void diagnostic_history_is_bounded() {
@@ -1545,13 +1467,13 @@ void authored_gameplay_matches_f8_limbs_and_source_key_times() {
 }
 // How long until the board is down: at the board's own gravity, and along its path (the look ahead at a rail or a ledge).
 void time_to_the_ground() {
-    // A flat ollie as the game played it (2026-10-25): 0.13 s after the pop the board rose at 2.5 m/s, its lowest point 0.38 m
-    // up, and it was down 0.36 s later; at the top (0.6 m up) 0.26 s later.
+    // A flat ollie as the game plays it: 0.13 s after the pop the board rises at 2.5 m/s, its lowest point 0.38 m up, and it
+    // is down 0.36 s later; at the top (0.6 m up) 0.26 s later.
     check(near(time_to_ground(2.5f, 0.38f), 0.36f, 0.02f) && near(time_to_ground(0.57f, 0.602f), 0.26f, 0.02f),
           "The time to the ground is the game's, at the board's own gravity");
     {
-        // 22sh's flip over a gap (2026-10-25): straight down from the board is the gap's bottom, 3 m down, which took the
-        // trick for one off a drop; along its path it lands on the far side.
+        // A flip over a gap: straight down from the board is the gap's bottom, 3 m down, which would take the trick for one
+        // off a drop; along its path it lands on the far side.
         const auto gap_ground = [](float dx, float, float top) -> std::optional<float> {
             const float x = 1.2f + dx; // the board is over the gap (1 to 1.8 m)
             const float ground = x > 1.0f && x < 1.8f ? -3.0f : 0.0f;
@@ -1567,7 +1489,7 @@ void time_to_the_ground() {
             return ground < top ? std::optional<float>(ground) : std::nullopt;
         };
         check(time_to_landing(0.3f, 4.0f, 2.0f, 0.0f, off_a_ledge) > time_to_ground(2.0f, 0.3f) + 0.1f, "Off a ledge, the drop is still a drop");
-        // A low pop onto a rail (2026-10-27): what it lands on is the rail's top, sooner than the street; on flat ground the street.
+        // A low pop onto a rail: what it lands on is the rail's top, sooner than the street; on flat ground the street.
         const auto rail_ahead = [](float dx, float, float top) -> std::optional<float> {
             const float ground = dx > 0.6f ? 0.15f : 0.0f; // a low rail, 15 cm high from 0.6 m ahead
             return ground < top ? std::optional<float>(ground) : std::nullopt;
@@ -1577,9 +1499,8 @@ void time_to_the_ground() {
         const float to_street = time_to_landing(0.05f, 4.0f, 2.5f, 0.0f, flat, 0.05f, 16, &street);
         check(to_rail > 0 && to_rail < to_street && near(on, 0.15f, 0.001f) && near(street, 0.0f, 0.001f),
               "Onto a rail it lands on the rail's top, sooner than on the street");
-        // A tester's FS Pop Shuv-its off a kicker (2026-10-30): popped partway up it, the ramp ahead is higher than the
-        // takeoff as a rail is, and the board and legs were handed to the game's for the whole air. A rail has a step up on
-        // the way to it; a ramp only rises little by little.
+        // Popped partway up a kicker, the ramp ahead is higher than the takeoff as a rail is, but it is not one: a rail has a
+        // step up on the way to it; a ramp only rises little by little.
         const auto kicker = [](float dx, float, float top) -> std::optional<float> {
             const float ground = 0.5f * std::clamp(dx, 0.0f, 2.0f); // up to 1 m over 2 m
             return ground < top ? std::optional<float>(ground) : std::nullopt;
@@ -1592,8 +1513,8 @@ void time_to_the_ground() {
         check(near(rail_edge, 0.15f, 0.001f) && near(street_edge, 0.0f), "A rail ahead is a step up as high as the rail; flat ground none");
         check(motion_state(701) == MotionState::rail && motion_state(401) == MotionState::rail && motion_state(501) == MotionState::offboard,
               "701 is a grind, as the 400s are");
-        // A mid tre flip on flat ground (1.0.10): the ray from over the board's path hit the skater's own body, 0.5 m up,
-        // and it was taken for a landing on a rail. Near the board, a hit over its lowest point is him, not ground.
+        // A mid tre flip on flat ground: the ray from over the board's path can hit the skater's own body, 0.5 m up, and take
+        // it for a rail. Near the board, a hit over its lowest point is him, not ground.
         const auto with_skater = [](float dx, float, float top) -> std::optional<float> {
             if (std::abs(dx) < 0.5f && top > 0.6f) return 0.9f; // his body, over the board
             return 0.0f < top ? std::optional<float>(0.0f) : std::nullopt;
@@ -1617,8 +1538,8 @@ void time_to_the_ground() {
         check(near(hit_rail, 0.15f, 0.001f), "A rail under the board is still found");
     }
     {
-        // Heatz's Nollie 360 Flip (2026-10-25): rolling, the board lay at 90 degrees to the placement; the pop had turned it to
-        // 35 by the takeoff, and the board's keys went on about that. They go on about the board as it lay before the pop.
+        // A nollie 360 flip: rolling, the board lies at 90 degrees to the placement, and the pop has turned it to 35 by the
+        // takeoff. The board's keys go on about the board as it lay before the pop.
         const auto heading = [](float degrees) {
             const float r = degrees * 3.14159265f / 360;
             return Quat{0, std::sin(r), 0, std::cos(r)};
@@ -1666,8 +1587,8 @@ void landing_and_retiming() {
           "Moved onto another pop's clip, 0 stays 0, an air key stays in the air, the end at the end");
 }
 // A trick fitted to the game's air: the flip at its own pace, the landing on the game's touchdown.
-// After the touchdown the game's own landing bends him away from the trick's clip (a tester's FS Pop Shuv-it, 2026-10-30,
-// 60 updates a second): not the next move. Going clearly further than that bend is.
+// After the touchdown the game's own landing bends him away from the trick's clip (an FS pop shuv-it, 60 updates a
+// second): not the next move. Going clearly further than that bend is.
 void the_landing_is_not_the_next_move() {
     const float bend[] = {9.8f, 16.7f, 20.9f, 21.5f, 21.7f, 21.1f, 20.3f, 19.5f, 18.5f, 17.6f, 16.9f, 16.5f, 16.0f, 15.4f, 14.9f,
                           14.4f, 14.2f, 14.4f, 14.7f, 15.0f, 15.2f, 15.3f, 15.2f, 15.0f, 14.7f, 14.3f, 14.0f, 13.8f, 13.8f};
@@ -1875,11 +1796,11 @@ void native_clips_pop_where_the_game_does() {
     auto piece = make(-1, -1);
     check(!place_native_marks(piece) && piece.takeoff < 0, "and a piece with no pop gets none");
 }
-// SMOOTH transitions (2026-10-29): part of a flip past half a turn goes on round, a jump inside one trick is eased, and in
-// a handover the legs go over first, then the hips and arms, then the back and head.
-// FAKIE (2026-10-29): a trick set to fakie stands with its upper body mirrored across the plane between the thighs, the
-// hips and legs as they are; twice is the pose back; the keys mirrored with it come to the mirror of the keyed pose; a file
-// saved before has its upper body's keys mirrored once as it is read.
+// SMOOTH transitions: part of a flip past half a turn goes on round, a jump inside one trick is eased, and in a handover
+// the legs go over first, then the hips and arms, then the back and head.
+// FAKIE: a trick set to fakie stands with its upper body mirrored across the plane between the thighs, the hips and legs
+// as they are; twice is the pose back; the keys mirrored with it come to the mirror of the keyed pose; a file saved before
+// has its upper body's keys mirrored once as it is read.
 // The game's additive clips go on the pose they add to (native_additive.h): a manual's loop on that manual's pose, a
 // riding pose less the neutral one on the neutral one, a lean on the clip it is named after.
 void additive_clips_go_on_their_pose() {
@@ -1936,8 +1857,8 @@ void additive_clips_go_on_their_pose() {
 
 // The studio's grind rail (studio_rails.h): only the game's grinds get one, under their Ground joint along the way he
 // travels, and the same spot is not moved again.
-// The game's clips on the studio's floor (editor_floor.h), with board heights shaped like the trick library's (measured
-// 2026-10-29 by putting every clip down as the editor does).
+// The game's clips on the studio's floor (editor_floor.h), with board heights shaped like the trick library's (measured by
+// putting every clip down as the editor does).
 void game_clips_stand_on_the_floor_where_their_board_rests() {
     std::vector<float> times;
     for (int i = 0; i <= 120; ++i) times.push_back(static_cast<float>(i) / 60.0f);
@@ -2168,7 +2089,7 @@ void a_grind_is_known_by_the_games_name() {
               of("c_proto_onb_grind_bf_fs_lipslide_bs_boardslide_rail_loop_dark") == V{id("BF_FS_DarkSlide"), id("BF_BS_Darklip")},
           "A fakie clip of two tricks is the other way round");
     check(of("c_proto_onb_grind_fakie_fs_noseslide_rail_popout_bs") == V{id("BF_FS_TailSlide")}, "A fakie pop-out is the fakie grind");
-    // The game's own grind table (cdb_onboard_grind_loop, read 2026-10-29): each grind and the loop clip it plays.
+    // The game's own grind table (cdb_onboard_grind_loop): each grind and the loop clip it plays.
     static constexpr std::pair<std::uint32_t, const char*> game_loops[]{
         {1, "fs_lipslide_bs_boardslide_rail_loop"},
         {2, "fs_boardslide_bs_lipslide_rail_loop"},
@@ -2784,8 +2705,6 @@ int main(int argc, char** argv) {
         native_clips_pop_where_the_game_does();
         native_clock_follows_the_game();
         diagnostic_history_is_bounded();
-        retargeted_edits_preserve_native_rig_and_convert_joint_frames();
-        switch_edits_follow_the_native_body_facing();
         authored_gameplay_matches_f8_limbs_and_source_key_times();
         packs_select_variants_without_filesystem_order();
         foot_placed_on_the_deck();
@@ -3092,13 +3011,6 @@ int main(int argc, char** argv) {
                     clip.sample(time, sampled);
                     apply_edits(animation, time, sampled);
                     for (const auto& joint : sampled) check(finite(joint), "Saved user animation produces a nonfinite joint");
-                    if (clip.joints == skeleton_joints) {
-                        std::vector<Joint> source(clip.joints), native(clip.joints);
-                        clip.sample(time, source);
-                        for (auto& joint : native) joint.rotation = from_euler({11, -29, 31});
-                        retarget_edits(animation, time, source, native, true);
-                        for (const auto& joint : native) check(finite(joint), "Saved user edits produce finite retargeted switch joints");
-                    }
                 }
                 ++files;
             }

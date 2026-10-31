@@ -32,8 +32,7 @@ inline constexpr char description_tag[] = "Animator Studio pack: ";
 // THE CREW: the testers who shaped the Animator Studio, by their Thunderstore team. Their packs are marked CREW
 // CERTIFIED, come first in the shop's own picks, and each of them has a page of their own in the MARKET. Kept here, in
 // the build and not in a file, so nobody can make themselves crew: a pack's team is the one Thunderstore published it
-// under, which only that team's members can publish to. A new tester comes in with a new build. (Each team was read
-// off the tester's own service key with Thunderstore's current-user call; the keys themselves are not kept anywhere.)
+// under, which only that team's members can publish to. A new tester comes in with a new build.
 struct CrewMember {
     std::string_view team, name, about;
     // Their pictures are built in when they sent them (assets/animator_studio/crew/<team>_profile.jpg and _thumbnail.jpg);
@@ -60,7 +59,7 @@ struct Builder {
 inline constexpr std::array builders{
     Builder{"22SH", "22sh", "", "Animation pipeline wizard. Built the internal tools that extract and bring every trick into the game."},
     Builder{"Fourth", "fourth", "Fourth_Studio", "Lead studio developer. Brought the team together and built the studio around it.", 0.5f, 0.45f},
-    // Norms' Thunderstore team: none yet (worthlessnorms 404s, checked 2026-10-25); put "worthlessnorms" back here once it exists.
+    // Norms' Thunderstore team: none yet; put "worthlessnorms" here once it exists.
     Builder{"Norms", "norms", "", "Scripting and animation logic: the rules that decide what plays, and when.", 0.5f, 0.39f},
     Builder{"Steez", "steez", "Worthless", "Made the animations run smooth, from the pop to the landing.", 0.48f, 0.4f},
 };

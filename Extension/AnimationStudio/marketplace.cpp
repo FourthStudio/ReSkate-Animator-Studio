@@ -165,7 +165,7 @@ std::string said(const Answer& a) {
 
 // ---- downloads ------------------------------------------------------------------------------------
 // Why a download failed, in words. Thunderstore says 200 before the body comes, so a body cut short (the time ran out,
-// the connection dropped) was shown as "the download failed (200)" (2026-10-29), which says nothing.
+// the connection dropped) needs its own words, not "the download failed (200)".
 std::string download_failure(const https::Download& got) {
     if (got.http_status && got.http_status != 200) return "Thunderstore answered " + std::to_string(got.http_status);
     switch (got.error) {
@@ -387,8 +387,7 @@ struct Market {
     int account_state{};       // View::account_state
     std::string account_checked; // the team that state is of
     // The last check that said yes (account.json "verified"): the team and a fingerprint of its token (never the token).
-    // While Thunderstore cannot be reached, or is still being asked, that yes stands for the same token: creators were told
-    // their own packs were not theirs whenever the check failed to get through (2026-10-27).
+    // While Thunderstore cannot be reached, or is still being asked, that yes stands for the same token.
     std::string verified_as, verified_token;
     std::string token_print; // the linked token's fingerprint, worked out once
     Job job;
@@ -426,7 +425,7 @@ void read_settings_locked(Market& m) {
     if (m.settings_read) return;
     m.settings_read = true;
     try {
-        // market/settings.json; market/market.json before 1.0.8 (its shape made it look like a saved trick called market).
+        // market/settings.json; market/market.json in older builds (its shape made it look like a saved trick called market).
         auto saved = read_file(folder() / L"settings.json");
         const bool old_name = saved.empty() && !(saved = read_file(folder() / L"market.json")).empty();
         if (!saved.empty()) {

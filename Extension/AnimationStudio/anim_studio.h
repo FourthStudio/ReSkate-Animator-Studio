@@ -98,7 +98,7 @@ struct View {
         PresetPack pack; // its slots, which are Fixed or Alternate, and what is left out of a cycle
         std::string thumbnail;        // its picture (presets/<pack>.png, thumbnail_side square), "" none
         std::int64_t thumbnail_stamp{}; // when that was last written: a new one is read again
-        bool favorite{};                // starred: shown first in PACKS
+        bool favorite{};                // starred: shown first in the LIBRARY
         bool installed{};               // made on another PC (its maker's key is not this one's): its tricks play, not open
         std::int64_t modified{};        // when its file was last written (the file clock's count), 0 not known
         bool playing{};                 // in the playlist NOW PLAYING shows (the open one), as a whole pack
@@ -128,8 +128,8 @@ struct View {
     };
     std::optional<LoopOffer> loop_offer;
     std::vector<PackView> packs;
-    std::string open_pack; // the pack open in PACKS
-    // The playlists (PACKS > PLAYLIST): any number, one on at a time (playlist_playing, "" none). The one on decides what
+    std::string open_pack; // the pack open in the LIBRARY
+    // The playlists (LIBRARY > NOW PLAYING): any number, one on at a time (playlist_playing, "" none). The one on decides what
     // plays in game instead of the packs that are on. playlist_mode and playlist are the open one's (playlist_open, the one
     // the page shows); playlist_on: one is on.
     struct PlaylistView {
@@ -142,17 +142,17 @@ struct View {
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
-    // SETTINGS > STUDIO: the CATCH flag on the timeline with CATCH HOLD shown or not; and whether the first-start guide has
-    // been read (it opens by itself until it has).
+    // SETTINGS > STUDIO: the CATCH flag on the timeline shown or not; and whether the first-start guide has been read (it
+    // opens by itself until it has).
     bool catch_marker{true}, guide_seen{true};
     // The editor's keys rebound in SETTINGS > STUDIO > EDITOR KEYS: an action's name to its key's name (the overlay's
     // names). Only those not on their own key.
     std::map<std::string, std::string> keys;
     std::string your_name; // MADE BY, remembered for new tricks and packs
     float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
-    // CATCH on the timeline: the moment the trick is caught, held in the air off a bigger drop or down stairs before it
-    // plays on to its landing. catch_air: it has air to hold one in; catch_at: -1 when none was found; catch_set: its
-    // maker put it there (else the studio found it).
+    // CATCH on the timeline: the moment the trick is caught (a lean onto a rail waits for it, and a trick on a higher pop
+    // does not hand back before it). catch_air: it has air to be caught in; catch_at: -1 when none was found; catch_set:
+    // its maker put it there (else the studio found it).
     bool catch_air{}, catch_set{};
     float catch_at{-1};
     // Joints keyed in the air whose pose runs on past LAND to END ANIM. (keys_past_landing): the timeline offers to key them
@@ -234,8 +234,8 @@ void set_stance(int choice);
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
 void set_advanced_bones(bool on); // SETTINGS > SKATER > Advanced bones
-// SETTINGS > STUDIO > Controller combo: what held on a controller opens and closes the studio (another mod may want L3 + R3,
-// 2026-10-29). 0 L3 + R3 (as before), 1 LB + R3, 2 RB + L3, 3 none (F8, or the ReSkate menu's ADDONS > ANIMATOR STUDIO).
+// SETTINGS > STUDIO > Controller combo: what held on a controller opens and closes the studio (another mod may want L3 + R3).
+// 0 L3 + R3 (the default), 1 LB + R3, 2 RB + L3, 3 none (F8, or the ReSkate menu's ADDONS > ANIMATOR STUDIO).
 inline constexpr std::array<const char*, 4> open_combo_names{"L3 + R3", "LB + R3", "RB + L3", "OFF"};
 inline constexpr std::array<std::uint16_t, 4> open_combo_buttons{0x0040 | 0x0080, 0x0100 | 0x0080, 0x0200 | 0x0040, 0};
 void set_open_combo(int combo);
@@ -247,7 +247,7 @@ std::uint64_t room_changes() noexcept;
 // one trick's keys blend into the next's over half of it. Saved with the studio's settings.
 void set_crossfade(float seconds);
 // Transitions: SMOOTH, a trick hands over to a grind the way the game hands over its own (the board and legs first, then the
-// arms, then the back and head, the trick going on meanwhile); CLASSIC, as 1.0.16 did.
+// arms, then the back and head, the trick going on meanwhile); CLASSIC, it fades out over the Crossfade.
 void set_smooth_transitions(bool on);
 // Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
 // elbows bend one way, nothing twists round) while you pose. Off, joints go where you push them. Editor only: in
@@ -272,8 +272,7 @@ void move_bracket(int which, float seconds);
 // CATCH: where the trick is caught (on a frame, between a frame after the pop and a frame before the landing); below 0
 // gives it back to the studio. Call begin_change once when a drag starts.
 void set_catch(float seconds);
-// THIS TRICK: its own Crossfade in seconds (below 0: the main one again) and its CATCH HOLD (0 to 1). Call begin_change
-// once when a drag of either starts.
+// THIS TRICK: its own Crossfade in seconds (below 0: the main one again). Call begin_change once when a drag of it starts.
 // THIS TRICK > STANCE: the open trick as its normal (0), fakie (1), switch (2) or switch fakie (3) version, saved so.
 void set_trick_stance(int version);
 void set_trick_crossfade(float seconds);
@@ -309,7 +308,7 @@ bool save(std::string& message);
 // Packs. Any number can be on at once (a trick more than one has is chosen between: View::conflicts); with none
 // on, every saved animation plays. Every change to a pack is saved at once and plays at once.
 bool create_preset_pack(std::string& message, const std::string& name = {}); // empty, off, and opened
-void open_pack(const std::string& name); // the pack open in PACKS; "" for the list of packs
+void open_pack(const std::string& name); // the pack open in the LIBRARY; "" for the list of packs
 bool set_pack_member(const std::string& pack, const std::string& animation, bool in, std::string& message);
 // Where the pack has more than one of a trick and pop (`slot`, preset_slot): Fixed plays its first one,
 // Alternate one of the ones linked into its cycle each attempt, at random (never the same twice running).
@@ -401,7 +400,7 @@ std::filesystem::path pack_export_folder();  // where exports go
 // ACTIVE on a trick in a pack: on, it plays with the pack (when the pack is in the playlist that is on); off, it stays in
 // the pack but does not play.
 bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
-void set_pack_favorite(const std::string& pack, bool favorite); // starred packs come first in PACKS
+void set_pack_favorite(const std::string& pack, bool favorite); // starred packs come first in the LIBRARY
 // Whether others may open the pack's tricks to edit and copy them once it is shared (its maker's choice; locked unless
 // set). It goes with the pack when it is exported.
 bool set_pack_editable(const std::string& pack, bool editable, std::string& message);
@@ -451,7 +450,7 @@ MenuSummary menu_summary();
 bool playlist_add(const PlaylistEntry& entry, std::string& message); // makes Playlist 1 when there is none
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
-void open_playlist(const std::string& name);   // the one PACKS > PLAYLIST shows
+void open_playlist(const std::string& name);   // the one LIBRARY > NOW PLAYING shows
 bool new_playlist(std::string& message);        // "Playlist N", empty and off, and opened
 bool rename_playlist(const std::string& to, std::string& message); // the open one
 bool delete_playlist(std::string& message);     // the open one

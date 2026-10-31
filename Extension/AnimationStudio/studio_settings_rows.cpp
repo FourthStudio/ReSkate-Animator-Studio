@@ -76,8 +76,8 @@ Setting controller_combo(const studio::Settings& now) {
 }
 Setting catch_marker(const studio::Settings& now) {
     return on_off("Catch marker", now.catch_marker,
-                  "On: the CATCH flag shows on the timeline, and CATCH HOLD in THIS TRICK. Off: both are hidden, for a cleaner "
-                  "timeline. A trick's catch still plays in game as it was set.",
+                  "On: the CATCH flag shows on the timeline. Off: it is hidden, for a cleaner timeline. A trick's catch still "
+                  "plays in game as it was set.",
                   [](bool on) { studio::set_catch_marker(on); });
 }
 Setting how_it_works() {

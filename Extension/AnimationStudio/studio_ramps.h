@@ -8,9 +8,9 @@
 // of the game's inverts) while it is open, the planted hand on its coping as in game (anim_studio.cpp, prop_tick). Only
 // the inverts: nothing else shows it.
 //
-// How they are made (their meshes, read from the game 2026-10-30; every colour of a size has the same one): the item's
-// origin is on the floor at the middle of its footprint, the ramp faces its own +Z (the transition there, the deck at -Z),
-// and its coping runs along X at the deck's front edge. `coping` is that edge's Z, `top` the coping's top above the floor.
+// How they are made (their meshes, from the game; every colour of a size has the same one): the item's origin is on the
+// floor at the middle of its footprint, the ramp faces its own +Z (the transition there, the deck at -Z), and its coping
+// runs along X at the deck's front edge. `coping` is that edge's Z, `top` the coping's top above the floor.
 // The studio always puts up the M, 2.25 m high (the size that fits the game's handplants), its
 // last 25 cm straight up. Played on it (all 36 clips, against its mesh) a plant's board goes 8 cm into it at most (a
 // wheel at the coping as he comes up), a wind-up's (_antic) 14 cm into its transition. (The L, 3.25 m: 7 cm at most;
@@ -36,7 +36,7 @@ inline const StudioQuarterPipe* studio_quarter_pipe(std::string_view key) noexce
 }
 // A clip of the game's inverts (animation/dingo/c_proto_onb_invert_..., the handplants and the plants done on a lip, and
 // their wind-ups, _antic). In every one the Ground joint stays on the coping's top until he drops back in, and a hand
-// plants on it (within 5 cm, the wrist over the palm), checked on all 36 (2026-10-30).
+// plants on it (within 5 cm, the wrist over the palm), checked on all 36.
 inline bool invert_clip(std::string_view asset) noexcept { return asset.find("_invert_") != std::string_view::npos; }
 
 // Where the quarter pipe stands under an invert: `coping` the coping's top in the world (the clip's first frame's Ground
