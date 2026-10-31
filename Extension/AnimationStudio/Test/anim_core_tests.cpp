@@ -11,6 +11,7 @@
 #include "Extension/AnimationStudio/anim_diagnostics.h"
 #include "Extension/AnimationStudio/anim_library.h"
 #include "Extension/AnimationStudio/anim_playback.h"
+#include "Extension/AnimationStudio/temporary_playback.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/native_additive.h"
@@ -2895,6 +2896,85 @@ void bent_joints_match_the_studio() {
 }
 // Joint limits: the game's own range for each joint. The average pose is left alone, limiting twice is the
 // same as once, and a knee is a hinge - it cannot be twisted round or bent the wrong way.
+void transitions_start_from_the_drawn_pose() {
+    std::vector<Joint> old_native(skeleton_joints), drawn = old_native, next_native = old_native;
+    drawn[9].rotation = from_euler({60, 0, 0}); drawn[hips_joint].position[1] = 0.1f;
+    next_native[9].rotation = from_euler({20, 0, 0}); next_native[342].rotation = from_euler({70, 0, 0});
+    next_native[hips_joint].position[1] = 0.5f;
+    std::vector<Offset> next(skeleton_joints);
+    next[9].rotation = from_euler({-10, 0, 0}); next[hips_joint].offset[1] = 0.03f;
+    PoseFade fade;
+    fade.start(1, 0.2f, drawn, old_native, next);
+    const auto at = [&](double now) {
+        auto changes = next; fade.apply(now, next_native, next, changes);
+        auto pose = next_native; apply_pose_deltas(changes, pose); return pose;
+    };
+    const auto first = at(1), half = at(1.1), last = at(1.21);
+    check(same_turn(first[9].rotation, drawn[9].rotation) && near(first[hips_joint].position[1], 0.1f),
+          "A new native move cannot receive the old trick's edits again at the start of a handoff");
+    check(same_turn(half[9].rotation, from_euler({35, 0, 0})) && near(half[hips_joint].position[1], 0.315f),
+          "The last drawn pose blends directly into the next edited pose");
+    check(same_turn(first[342].rotation, next_native[342].rotation) && same_turn(half[342].rotation, next_native[342].rotation),
+          "Native motion in an unedited joint is never mistaken for an outgoing custom edit");
+    check(same_turn(last[9].rotation, from_euler({10, 0, 0})) && near(last[hips_joint].position[1], 0.53f),
+          "An elapsed fade leaves the next animation and its native motion fully in control");
+    const auto interrupted = at(1.08);
+    fade.start(1.08, 0.2f, interrupted, next_native, next);
+    check(same_turn(at(1.08)[9].rotation, interrupted[9].rotation) && near(at(1.08)[hips_joint].position[1], interrupted[hips_joint].position[1]),
+          "An interrupted handoff resumes from what was actually drawn without a discontinuity");
+    fade.reset(); check(!fade.on(1.1), "A reset cannot keep a pose from another episode alive");
+}
+void release_playback_regressions() {
+    check(to_euler({0, 0, 0, 0}) == Vec3{} && to_euler({1e30f, 1e30f, 1e30f, 1e30f}) == Vec3{},
+          "Degenerate inspector rotations retain the identity fallback instead of producing nonfinite angles");
+    PlaybackEpisode episode;
+    episode.observe(10, MotionState::riding); episode.observe(10.1, MotionState::air); episode.select(10.1);
+    episode.sample(10.3, 0.8f, 2, 3, 1, 0.7f, true, true);
+    episode.landed_from = 1.2f;
+    episode.select(10.31);
+    check(episode.last_time < 0 && episode.landed_from < 0, "Selecting another source clears the old clip's playback history");
+    const auto refined = episode.sample(10.31, 0.1f, 0.75f, 1, 1, 0.7f, true, true);
+    check(near(refined.time, 0.31f) && !refined.finished,
+          "Late flip recognition uses its own source offset at the original takeoff, without skipping to the previous clip's time");
+    for (const bool lead : {false, true}) for (const bool fakie : {false, true}) {
+        const LiveStance fallback{lead, fakie};
+        const auto missing = takeoff_stance(fallback, {}, {});
+        check(missing.leads_right == lead && missing.fakie == fakie, "Unreadable native flags retain each stance fallback");
+        for (const bool mirrored : {false, true}) for (const bool riding_fakie : {false, true}) {
+            const auto native = takeoff_stance(fallback, mirrored, riding_fakie);
+            check(native.leads_right == !mirrored && native.fakie == riding_fakie,
+                  "Exact stance uses readable native flags even when a false flag disagrees with the fallback");
+        }
+        check(takeoff_stance(fallback, {}, !fakie).leads_right == lead && takeoff_stance(fallback, !lead, {}).fakie == fakie,
+              "One readable native flag never overwrites the other unavailable flag's fallback");
+    }
+    const float up = 0.18f, down = 0.73f;
+    float before = continued_air_time(0.58f, up, down);
+    for (int frame = 1; frame < 240; ++frame) {
+        const float now = continued_air_time(0.58f + static_cast<float>(frame) / 60, up, down);
+        check(now >= before && now < down && now - before < 0.017f,
+              "A lost high-pop clock advances without a phase-driven landing jump or reaching touchdown in the air");
+        before = now;
+    }
+    for (const bool preference : {false, true}) {
+        bool enabled = preference; TemporaryPlayback temporary;
+        temporary.begin(enabled); temporary.begin(enabled);
+        check(enabled && temporary.saved(enabled) == preference, "Repeated TEST IN GAME never persists its forced playback setting");
+        temporary.finish(enabled);
+        check(enabled == preference && !temporary.previous, "Returning from a test restores the original playback preference");
+        temporary.begin(enabled); temporary.choose(enabled, !preference); temporary.finish(enabled);
+        check(enabled == !preference && temporary.saved(enabled) == !preference, "An explicit playback choice during a test wins over automatic restoration");
+    }
+    for (const float y : {-90.5f, -90.001f, -90.f, -89.999f, -89.9f, -89.5f, -89.2f, 89.2f, 89.9f, 89.999f, 90.f, 90.001f, 90.5f})
+        for (const float x : {-135.f, -20.f, 0.f, 40.f, 150.f}) for (const float z : {-170.f, 0.f, 28.f, 130.f}) {
+            const auto original = from_euler({x, y, z}), rebuilt = from_euler(to_euler(original));
+            for (const Vec3 basis : {Vec3{1, 0, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1}}) {
+                const auto a = rotate(original, basis), b = rotate(rebuilt, basis);
+                for (std::size_t k = 0; k < 3; ++k) check(std::abs(a[k] - b[k]) < 0.00002f,
+                    "Reading inspector angles near either gimbal pole preserves the actual rotation");
+            }
+        }
+}
 void joints_stay_in_their_range() {
     check(has_joint_limit(9) && has_joint_limit(342) && has_joint_limit(48) && !has_joint_limit(7), "Knees and elbows are limited, the hips are not");
     for (const auto& l : joint_limits) {
@@ -2912,6 +2992,20 @@ void joints_stay_in_their_range() {
     const Vec3 axis{knee.axis[0], knee.axis[1], knee.axis[2]};
     const auto twisted = normalised(multiply(ref, axis_angle(axis, 1.2f)));
     check(angle_between(limit_rotation(9, twisted), ref) < 0.2f, "A knee twisted round is turned back");
+    Animation keyed;
+    keyed.tracks.push_back({9, {{0, axis_angle({1, 0, 0}, 0.3f), {}, Ease::linear}}});
+    keyed.tracks.push_back({277, {{0, axis_angle({1, 0, 0}, 0.3f), {}, Ease::linear}}});
+    const auto& elbow = *std::find_if(joint_limits.begin(), joint_limits.end(), [](const JointLimit& l) { return l.joint == 277; });
+    const Quat elbow_ref{elbow.reference[0], elbow.reference[1], elbow.reference[2], elbow.reference[3]};
+    std::vector<Joint> pose(skeleton_joints);
+    pose[9].rotation = twisted;
+    pose[277].rotation = normalised(multiply(elbow_ref, axis_angle({elbow.axis[0], elbow.axis[1], elbow.axis[2]}, 1.4f)));
+    auto in_game = pose, in_studio = pose;
+    limit_keyed_joints(keyed, 0, in_game, false);
+    limit_keyed_joints(keyed, 0, in_studio);
+    check(same_turn(in_game[9].rotation, pose[9].rotation) && !same_turn(in_game[277].rotation, pose[277].rotation),
+          "Gameplay retains authored leg bends while limiting the upper body");
+    check(!same_turn(in_studio[9].rotation, pose[9].rotation), "The Studio still limits the keyed knee");
 }
 // The lead foot comes from the clip: right foot on the skater's +X side is the game's own goofy layout, and
 // mirroring the clip the game's way turns it into the left foot leading.
@@ -3129,6 +3223,8 @@ int main(int argc, char** argv) {
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();
         bent_joints_match_the_studio();
+        transitions_start_from_the_drawn_pose();
+        release_playback_regressions();
         joints_stay_in_their_range();
         lead_foot_is_read_from_the_clip();
         whole_poses_fit_body_size();

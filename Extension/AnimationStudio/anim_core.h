@@ -314,7 +314,9 @@ bool has_joint_limit(std::uint16_t joint) noexcept;
 Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept;
 // Keeps every joint the animation has a real key on inside its limits; joints without keys (the game's own
 // pose, which is always natural) are left alone.
-void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
+// Gameplay leaves the legs as keyed: limiting the additive knee bend can push a tucked foot through the board.
+// The editor keeps full limits. `legs` only changes post-edit gameplay limiting, never stored keys or body size.
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose, bool legs = true) noexcept;
 // Explicit cross-frame transfer experiment; gameplay uses anatomical apply_authored_edit_layer.
 // Transfers authored offsets through placement-relative joint frames onto a native pose.
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.

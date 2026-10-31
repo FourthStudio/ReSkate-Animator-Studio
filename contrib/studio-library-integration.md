@@ -1,6 +1,6 @@
 # Library integration candidate, 2026-10-31
 
-This is a test candidate, `1.0.39-library.4+reskate.2.1.3`, on
+This is a test candidate, `1.0.39-library.5+reskate.2.1.3`, on
 `22sh/release-library-integration`. It combines the Library/modifier workspace with reviewed team
 work and the native normal/switch feature requested separately by Fourth. It is not Studio 1.0.55
 and does not claim that every change in #25 is present or verified in game.
@@ -20,7 +20,8 @@ A refresh at 17:20 UTC found those heads unchanged and a new #27 at `d218dc40`, 
 | #20 / named Studio launcher and optional official channel | Four feature commits cherry-picked with Norms' authorship. Resolved duplicate build-name definitions and kept the existing modified-build notice for DLL-only users. |
 | #21 / earlier 2.1.3 integration branch | Its runtime compatibility is superseded by the #22 base; do not re-merge its older editor snapshot. Recover the missing font provenance metadata from its audit. |
 | #25 / native normal/switch (`9523fec5`, stance portion) | Selectively ported by request. Editing, copying, stance labels and in-game selection reconciled with modifier routes and playlist modes; not a merge of #25. |
-| Remainder of #25, including joint limits and lost-air clock | Held following Fourth's request. No remote merge, partial limit fix or clock rewrite was made. |
+| #25 correctness follow-up (`88a17022`, `8f65e226`, `d77b6f1a`, `b5a14969`) | Library .5 reconciles native takeoff flags, source-time playback, pose handoffs and upper-body gameplay limits. The pose fade uses the previous frame's native baseline to avoid freezing untouched native joints. These are targeted ports, not a merge of #25. |
+| Remaining #25 features and cleanup | Still separate: magazine Market UI, quarter-pipe preview work, bulk SELECT/COPY screen, loop-copy workflow and unrelated cleanup. No upstream PR/main merge was performed. |
 | #27 / Norms' 1.0.55 audit (`d218dc40`) | Fix commit ported and reconciled onto this branch: pack ownership/update protection, invalid clips, failed saves, background reports, installed-pack rename tracking, room reopen, trainer navigation and held-loop stability. The bounded COPY backend and serialization fix are included; its SELECT/COPY screen remains held #25 UI. The unrelated `96db5b74` cleanup was not imported. |
 
 The older held-moves and game-clock prototype branches, old gizmo test branch and switch-playback
@@ -66,15 +67,15 @@ fallback, grind transfers, existing air tricks, online selection, and Library ed
 
 ## Remaining release decision
 
-The full #25 cannot be blindly merged: the preflight reports conflicts in `CMakePresets.json`,
+The full #25 cannot be blindly merged: the earlier preflight already reported conflicts in `CMakePresets.json`,
 `anim_core_tests.cpp`, `anim_studio.cpp` and `animation_studio_overlay.cpp`. When Fourth clears it,
 retain the new Market and editor work, route its playlist actions through the destination APIs, retain
 the modifier/held-grab tests, and reconcile native stance preference in the shared selectors instead
 of adding a second unfiltered scan over all saved pieces. Native Switch is already ported here.
 
-Fourth's #25 description says its latest lost-air clock fix was not yet checked in game. Its joint-limit
-and high-pop fixes are still outside this candidate. Until those held changes are resolved and the
-combined DLL is tested in game, this is not the final public-release go-ahead.
+Fourth's #25 description says its latest lost-air clock fix was not yet checked in game. Library .5
+now includes the targeted correctness ports listed above; remaining feature/UI work stays separate.
+The combined DLL still needs in-game acceptance before a public-release go-ahead.
 
 ## Library .3 and Size 1 report
 
@@ -129,3 +130,39 @@ also pass. These harnesses use controlled data; the combined DLL still needs liv
 The remainder of Fourth's #25 is still held. This is a tested integration candidate, not a merge of
 that branch or a public-release approval. The bulk-copy backend is ready for its future screen, but
 there is no new SELECT/COPY UI in this build. The #27 in-game checklist marks those rows accordingly.
+
+## Release hardening in Library .5 (2026-11-01)
+
+The 22:29 UTC activity refresh found #25 and #27 heads unchanged. The code audit then reproduced
+these remaining correctness issues and reconciled the corresponding Fourth fixes without merging
+the held PR:
+
+- **Lost high-pop clock:** extrapolating the game's phase could jump from 0.58 s to the clip's landing
+  in one frame. Continuation now uses source seconds and eases short of landing until touchdown.
+- **Separate catch slowdown:** gameplay no longer retimes body keys beside the native board's clock
+  on drops. Old catch metadata and hidden drop-preview tools remain readable. Raised-ledge ground
+  prediction stays active; the obsolete airborne source-to-board magnet is removed.
+- **Joint limits:** Studio posing keeps full limits. Gameplay limits the upper body while preserving
+  the legs' keyed bends, including outgoing poses and the gameplay foot-reference path.
+- **Exact stance:** native mirror/fakie flags determine takeoff stance when readable. Each unavailable
+  flag retains its own fallback, including legitimate false values.
+- **Handoffs:** outgoing custom edits no longer get applied to another move's native pose. The last
+  drawn pose blends into the next pose on edited joints. The previous native baseline determines
+  ownership, so untouched native joints keep moving. Interrupted fades remain continuous; native-only
+  rail entry retains its board-relative foot handling. Input intent alone no longer releases the legs.
+- **Late recognition:** selecting another clip clears the previous clip's sampled time and landing
+  history while retaining the real takeoff anchor. Otherwise a late flip could inherit an ollie's
+  playhead and skip straight past its early keys.
+- **Saved data:** metadata and clip replacements now use the existing rollback transaction together,
+  both for SAVE and the bounded COPY backend. Export file replacement keeps the previous file on
+  failure. A Windows regression locks metadata after the old clip is backed up and verifies rollback.
+- **Temporary tests:** TEST IN GAME enables playback without persisting that override, including
+  unrelated settings saves. Returning restores the prior preference; an explicit playback choice wins.
+- **Inspector angles:** near +/-90 degrees the old gimbal threshold changed the reconstructed rotation,
+  and the negative pole used the wrong sign. Double-precision matrix terms and an atan2 decomposition
+  preserve the actual rotation. Regressions cover both sides and both exact poles.
+
+The Library now distinguishes assignment from active playback and reports paused/inactive button
+playlists explicitly. Diagnostics record the gameplay clock, limits and pose-transition policies.
+Automated checks cover these cases, but do not prove physical controller, rail contacts, native
+recognition or remote rendering in a running game. Complete the .5 checklist on the exact source/hash.

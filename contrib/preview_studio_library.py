@@ -175,6 +175,7 @@ int main(int argc,char**argv){
  const auto numeric=[&](int id,const char* button){ImGui::PushID(id);nav().focus=ImGui::GetID(button);ImGui::PopID();nav().keys=true;nav().press=true;};
  const auto expect=[](bool ok,const char* why){if(!ok)throw std::runtime_error(why);};
  frame("playlists-1080",1920,1080);frame("playlists-768",1366,768);
+ fixture.modifier_ready=false;frame("modifier-inactive",1366,768);fixture.modifier_ready=true;
  fixture.play_in_game=false;frame("playback-paused",1366,768);
  frame("action-resume-playback",1920,1080,[&]{press({},"##resumeplayback");});
  expect(fixture.play_in_game,"Paused playback has a direct Resume action without assigning another playlist");
@@ -221,6 +222,7 @@ int main(int argc,char**argv){
  leave_preview();fixture.presets[9].locked=false;
  expect(ui().library.page==1&&std::string(ui().library.collection.query.data())=="Dolphin"&&legacy_pack_opens==0,"Locked preview returns to the same Collection search");
  ui().library.modifier_setup=true;ui().library.settings_scroll=0;frame("modifier-setup",1920,1080);frame("modifier-setup-768",1366,768);
+ fixture.modifier_ready=false;frame("modifier-setup-inactive",1366,768);fixture.modifier_ready=true;
  const auto safe=fixture_lists["Specials"];
  frame("action-help-blocks-browser",1920,1080,[&]{press({"collection","Kickflip","|Animation 9"},"##membership");});
  expect(fixture_lists["Specials"]==safe&&ui().playlist_for.empty(),"Hidden collection controls cannot be activated through setup");

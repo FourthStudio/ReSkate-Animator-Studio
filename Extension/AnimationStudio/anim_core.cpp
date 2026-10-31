@@ -143,17 +143,22 @@ Quat from_euler(const Vec3& degrees) noexcept {
 }
 Vec3 to_euler(const Quat& raw) noexcept {
     const auto q = normalised(raw);
-    const float x = q[0], y = q[1], z = q[2], w = q[3];
-    const float m00 = 1 - 2 * (y * y + z * z), m01 = 2 * (x * y - z * w), m02 = 2 * (x * z + y * w);
-    const float m12 = 2 * (y * z - x * w), m22 = 1 - 2 * (x * x + y * y);
-    const float k = 180 / pi;
-    const float b = std::asin(std::clamp(m02, -1.0f, 1.0f));
-    if (std::abs(m02) > 0.9999f) {
+    // Double precision and atan2 keep the small cosine near +/-90 degrees. asin on the
+    // rounded matrix treated a whole 0.8-degree band as locked and changed the displayed pose.
+    const double x = q[0], y = q[1], z = q[2], w = q[3];
+    const double squared = x*x + y*y + z*z + w*w;
+    if (!(squared > 0) || !std::isfinite(squared)) return {};
+    const double s = 2 / squared;
+    const double m00 = 1 - s * (y*y + z*z), m01 = s * (x*y - z*w), m02 = s * (x*z + y*w);
+    const double m12 = s * (y*z - x*w), m22 = 1 - s * (x*x + y*y);
+    const double cosine = std::hypot(m00, m01), k = 180 / std::acos(-1.0);
+    const double b = std::atan2(m02, cosine);
+    if (cosine < 1e-6) {
         // Gimbal lock: all of the turn about X and Z goes on X.
-        const float m10 = 2 * (x * y + z * w), m11 = 1 - 2 * (x * x + z * z);
-        return {std::atan2(m10, m11) * k, b * k, 0};
+        const double m10 = s * (x*y + z*w), m11 = 1 - s * (x*x + z*z);
+        return {static_cast<float>(std::atan2(m02 < 0 ? -m10 : m10, m11) * k), static_cast<float>(b * k), 0};
     }
-    return {std::atan2(-m12, m22) * k, b * k, std::atan2(-m01, m00) * k};
+    return {static_cast<float>(std::atan2(-m12, m22) * k), static_cast<float>(b * k), static_cast<float>(std::atan2(-m01, m00) * k)};
 }
 bool finite(const Joint& joint) noexcept {
     for (const float v : joint.scale) if (!std::isfinite(v) || std::abs(v) > 1000) return false;
@@ -757,10 +762,11 @@ Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept {
     const auto limited = multiply(axis_angle(dir, angle), axis_angle(axis, twist));
     return normalised(multiply(ref, limited));
 }
-void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept {
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose, bool legs) noexcept {
     if (!std::isfinite(seconds)) return;
     for (const auto& track : animation.tracks) {
         if (track.hidden || track.keys.empty() || track.joint >= pose.size() || !has_joint_limit(track.joint)) continue;
+        if (!legs && limb_group(track.joint) >= 3) continue;
         const auto edit = evaluate(track, seconds);
         if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0) continue; // only holds the pose
         pose[track.joint].rotation = limit_rotation(track.joint, pose[track.joint].rotation);

@@ -190,6 +190,10 @@ struct LiveStance {
     bool leads_right{}; // the game's mirror: clear when the right foot leads
     bool fakie{};       // rolling backwards at takeoff
 };
+// Native clip flags define exact stance when readable; each missing flag keeps its own fallback.
+inline LiveStance takeoff_stance(LiveStance fallback, std::optional<bool> mirrored, std::optional<bool> riding_fakie) noexcept {
+    return {mirrored ? !*mirrored : fallback.leads_right, riding_fakie.value_or(fallback.fakie)};
+}
 // The recordings that may play now, best first: exact stance only takes one made on the foot that leads now
 // and in the same fakie state, and never mirrors it. Front foot takes any, the closest first: the pop the game
 // graded, then the same fakie state (a fakie recording carries the game's fakie upper body). The foot it was made

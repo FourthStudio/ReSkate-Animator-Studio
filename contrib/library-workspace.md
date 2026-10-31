@@ -2,7 +2,7 @@
 
 The Library has three independent concepts: the playlist being edited, the normal playlist, and the
 modifier playlist. Browsing, adding, removing, copying or clearing content never changes either
-playback assignment. Assign playback explicitly with **PLAY BY DEFAULT** or **USE WITH A BUTTON**.
+playback assignment. Assign playback explicitly with **SET AS DEFAULT** or **USE WITH A BUTTON**.
 The trainer's Animator Studio page exposes the same modifier settings and a shortcut to its Library setup.
 
 ## Manage content
@@ -115,3 +115,16 @@ grind entry and transfers; grabs including a style change during one hold; relea
 missing modifier variants; a library edit or binding disable during a hold; native menus, F8, focus loss
 and reconnection. Verify the original normal animations still play with the modifier OFF. Export
 diagnostics after a mismatch so native selection, source clip and route can be compared.
+
+## Release hardening in Library .5
+
+Assigning a playlist and enabling playback remain separate. The Library reports paused/default/button
+roles explicitly and marks a button playlist inactive until playable variants are loaded. An inactive
+modifier keeps the button's native action. RESUME enables playback.
+TEST IN GAME temporarily enables it without writing that override into settings. Returning restores
+the previous preference; an explicit playback change during the test takes priority.
+
+Gameplay keeps keyed leg bends while limiting the upper body; the Studio still limits all joints.
+Lost native matching continues from source seconds, without extrapolating the game phase to landing.
+Crossfades use the last drawn pose for the joints actually changed by custom animations; untouched
+native motion remains live. Native-only grind entry keeps the existing board/foot handover.

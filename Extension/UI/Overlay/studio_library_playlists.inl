@@ -132,9 +132,10 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     }
     const auto binding = studio::modifier_binding();
     const bool normal = v.playlist_open == v.playlist_playing, modifier = v.playlist_open == binding.playlist;
-    const auto status = normal && modifier ? "Used by default and by the button" : normal ? "Playing by default" : modifier ? "Assigned to the button" : "Not assigned to an input yet";
-    text(d, f.bold, 13 * k, {x, a.y + 87 * k}, normal || modifier ? blue_light : IM_COL32(244, 193, 99, 255), status);
-    if (action(d, f, "##librarynormalrole", {x, a.y + 116 * k}, {210 * k, 34 * k}, normal ? "PLAYING BY DEFAULT" : "PLAY BY DEFAULT", normal ? Look::paper : Look::ghost, !normal)) {
+    const std::string role = normal && modifier ? "Assigned to default and button" : normal ? "Assigned as default" : modifier ? "Assigned to the button" : "Not assigned to an input yet";
+    const auto status = role + (!v.play_in_game && (normal || modifier) ? " / playback paused" : "");
+    text(d, f.bold, 13 * k, {x, a.y + 87 * k}, v.play_in_game && (normal || modifier) ? blue_light : IM_COL32(244, 193, 99, 255), status);
+    if (action(d, f, "##librarynormalrole", {x, a.y + 116 * k}, {210 * k, 34 * k}, normal ? "DEFAULT PLAYLIST" : "SET AS DEFAULT", normal ? Look::paper : Look::ghost, !normal)) {
         std::string m; studio::play_playlist(v.playlist_open, m); say(m);
     }
     if (action(d, f, "##librarymodifierrole", {x + 222 * k, a.y + 116 * k}, {216 * k, 34 * k}, modifier ? "EDIT BUTTON ASSIGNMENT" : "USE WITH A BUTTON", Look::ghost)) {

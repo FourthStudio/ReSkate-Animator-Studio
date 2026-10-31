@@ -1,6 +1,6 @@
 # Studio release acceptance
 
-## Library .4 integration candidate (2026-10-31)
+## Library .5 integration candidate (2026-11-01)
 
 This is an experimental candidate, not a public-release approval. See the [integration record](studio-library-integration.md)
 for the reconciled #27 fixes, held #25 work and automated evidence. Record the exact source/hash when checking these in game.
@@ -14,6 +14,12 @@ for the reconciled #27 fixes, held #25 work and automated evidence. Record the e
 - [ ] Compare `tre_low_wip` at Size 1/default, normal/switch, through catch and landing. Check an intentionally raised foot and an additive-only animation.
 - [ ] Repeat modifier manuals, grind entries/transfers and grab style changes; release the button during a hold, edit its list and reconnect the pad. Missing variants fall back correctly.
 - [ ] Compare local/remote playback online. Export a mismatch and confirm the ZIP contains summary, timeline and skeleton.
+- [ ] Kickflip high and high fakie: lose matching near catch/landing without a jump or body/board time drift. Repeat on a long drop.
+- [ ] Exact stance: normal/switch/fakie/nollie inputs select the intended physical leg, including nollie heelflip.
+- [ ] Custom grind/manual into a flip and then native riding: the outgoing pose fades without snapping or applying old bends to the new move.
+- [ ] Start with Custom tricks OFF, TEST IN GAME twice, reopen F8: it stays OFF. An explicit ON choice during the test stays ON.
+- [ ] Inspector near -90 and +90 degrees Y: changing an unrelated channel preserves orientation.
+- [ ] SAVE failure on a locked metadata file preserves the matching old clip and leaves the editor's unsaved changes available.
 
 ## Norms' #27 audit: checks to repeat on the reconciled candidate (2026-10-31)
 

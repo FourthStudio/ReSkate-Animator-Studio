@@ -60,8 +60,9 @@ void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     library_panel_box(d, f, a, b);
     text(d, f.bold, 10 * k, {a.x + 12 * k, a.y + 7 * k}, v.play_in_game ? soft : IM_COL32(244, 193, 99, 255), v.play_in_game ? "IN GAME / DEFAULT" : "PLAYBACK PAUSED / DEFAULT");
     text(d, f.bold, 15 * k, {a.x + 12 * k, a.y + 25 * k}, white, elide(f.bold, 15 * k, v.playlist_playing.empty() ? "Original game animations" : v.playlist_playing, half - 20 * k));
-    text(d, f.bold, 10 * k, {a.x + half + 12 * k, a.y + 7 * k}, enabled ? blue_light : faint,
-        enabled ? std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(bind.button)] : "BUTTON PLAYLIST / OFF");
+    text(d, f.bold, 10 * k, {a.x + half + 12 * k, a.y + 7 * k}, enabled && v.modifier_ready ? blue_light : faint,
+        enabled ? !v.play_in_game ? "BUTTON PLAYLIST / PAUSED" : !v.modifier_ready ? "BUTTON PLAYLIST / INACTIVE"
+            : std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(bind.button)] : "BUTTON PLAYLIST / OFF");
     text(d, f.bold, 15 * k, {a.x + half + 12 * k, a.y + 25 * k}, white, elide(f.bold, 15 * k,
         bind.playlist.empty() ? "No playlist assigned" : bind.playlist, half - 20 * k));
     if (!v.play_in_game && action(d, f, "##resumeplayback", {b.x - setup_w - resume_w, a.y + 9 * k}, {resume_w - 8 * k, 36 * k}, "RESUME", Look::blue))
@@ -118,6 +119,9 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     }
     if (bind.playlist.empty()) y += paragraph(d, f.bold, 13 * k, {x, y}, w, faint, "Create a playlist in Library > Playlists first, then choose it here.");
     y += 52 * k;
+    if (studio::modifier_mask(bind) && !v.modifier_ready)
+        y += paragraph(d, f.bold, 13 * k, {x, y}, w - 8 * k, IM_COL32(244, 193, 99, 255),
+            "No alternate animations are ready. Add playable animations to this playlist and allow it to finish loading. While inactive, the button keeps its game action.") + 20 * k;
     text(d, f.heading, 19 * k, {x, y}, white, "2. CHOOSE A BUTTON TO HOLD"); y += 34 * k;
     const int columns = 3; const float cell = (w - 24 * k) / static_cast<float>(columns);
     for (std::size_t i = 0; i < studio::modifier_button_names.size(); ++i) {
