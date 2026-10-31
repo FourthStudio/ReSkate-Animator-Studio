@@ -15,6 +15,8 @@ The `22sh/release-1.1` integration brings the tested Library .5 work together wi
 | #27 (`d218dc40`) | Pack ownership/update safety, local-edit preservation, validation, failed-write handling, background reports, installed-pack rename and held-loop stability. |
 | Library .5 (`0522ef23`) | Guided Library, exact Preview return, separate default/button assignments, modifiers for tricks/grinds/manuals/grabs, size compensation, timing/stance/handoff fixes and safe saves. |
 
+The original #20 branch is merged for ancestry after its four feature commits were already ported with attribution. Its older base snapshot is superseded by this integration; retain the newer launcher guards, descriptor layout, native timing and manual-only workflow rather than replaying that snapshot.
+
 The earlier prototype clock, gizmo and held-move branches are superseded alternatives. Existing bugfixes-3/open-from-player-tab/release-audit branches are already ancestors. They are not reapplied over their newer replacements.
 
 ## Conflict decisions
