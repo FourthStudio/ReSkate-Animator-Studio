@@ -2968,6 +2968,18 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
         // Nothing moving through a piece: the loop of a move he holds, if one of them is saved.
         if (!match && any_held) match = held_play(l, snap, at, dt, holding, grind);
     } else l.pieces.reset();
+    // A piece saved in more than one stance (THIS TRICK > STANCE): the one made for the foot leading now plays as made, not
+    // another one mirrored onto it - your switch 50-50 when he grinds switch, your normal one when he does not.
+    if (match && match->mirrored && match->piece < l.piece_tricks.size()) {
+        const auto* seen = l.piece_tricks[match->piece];
+        const bool lead_now = seen->leads_right != match->mirrored;
+        for (std::size_t i = 0; i < l.piece_tricks.size(); ++i)
+            if (const auto* t = l.piece_tricks[i]; t->trick == seen->trick && t->leads_right == lead_now) {
+                match->piece = i;
+                match->mirrored = false;
+                break;
+            }
+    }
     // Exact stance: a piece seen playing the other way round to the way it was made is left to the game.
     if (match && !snap.front_foot && match->mirrored) match.reset();
     if (match && match->piece < l.piece_tricks.size()) {
@@ -6153,9 +6165,11 @@ View view() {
     v.stance_choice = s.stance_choice;
     v.own_lead_right = studio_goofy(s.stance_choice);
     // The open trick's stance, as it is saved: the foot it keeps (or its clip leads with) against the skater's own, and fakie.
-    if (s.clip && !s.clip->empty() && !s.edits.trick.starts_with("native:"))
+    // A piece of the game's (a grind, a grab, a manual...) is normal or switch: its fakie way is a piece of its own.
+    if (s.clip && !s.clip->empty())
         if (const auto lead = s.edits.keep_leads_right ? s.edits.keep_leads_right : clip_leads_right(*s.clip))
-            v.trick_stance = (*lead != v.own_lead_right ? 2 : 0) + (s.edits.fakie.value_or(false) ? 1 : 0);
+            v.trick_stance = (*lead != v.own_lead_right ? 2 : 0) +
+                             (!s.edits.trick.starts_with("native:") && s.edits.fakie.value_or(false) ? 1 : 0);
     v.grab_board = s.grab_board;
     v.advanced_bones = s.advanced_bones;
     v.finger_bones = s.finger_bones;
@@ -6704,8 +6718,11 @@ void set_trick_stance(int version) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (s.previewing || !s.clip || s.clip->empty()) return;
-    if (s.edits.trick.starts_with("native:")) {
-        s.status = "A piece of the game's animation plays whichever way round the game plays it.";
+    // A piece of the game's (a grind, a grab, a manual, an invert, a fingerflip) is normal or switch: the game's fakie way of
+    // it is a piece of its own, on the trick's card.
+    const bool piece = s.edits.trick.starts_with("native:");
+    if (piece && version % 2 == 1) {
+        s.status = "A piece is normal or switch: the game's fakie way of it is a piece of its own, on the trick's card.";
         ++s.revision;
         return;
     }
@@ -6717,7 +6734,7 @@ void set_trick_stance(int version) {
     // Into fakie or out of it, the upper body's keys go to the other side with the pose under them (mirror_upper_body), so
     // what was made shows mirrored, the arms too.
     const bool was_mirrored = fakie_mirrored(s.edits);
-    s.edits.fakie = want_fakie;
+    if (!piece) s.edits.fakie = want_fakie;
     if (fakie_mirrored(s.edits) != was_mirrored) mirror_upper_keys(s.edits);
     s.edits.switch_stance = authored_goofy(s.edits) != want_right; // its label (set again from the clip if it is mirrored)
     static constexpr std::array<const char*, 4> said{"your own stance", "fakie", "switch", "switch fakie"};
@@ -7380,8 +7397,11 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         if (version < 0 || version > 3) throw std::runtime_error("There is no such stance.");
         const auto safe = file_safe(animation);
         auto anim = from_json(saved_text(safe));
-        if (anim.trick.empty() || anim.trick.starts_with("native:"))
-            throw std::runtime_error(animation + " is a piece of the game's animation: it plays whichever way round the game plays it.");
+        if (anim.trick.empty()) throw std::runtime_error(animation + " is for none of the game's tricks.");
+        // A piece of the game's is normal or switch: the game's fakie way of it is a piece of its own.
+        const bool piece = anim.trick.starts_with("native:");
+        if (piece && version % 2 == 1)
+            throw std::runtime_error("A piece is normal or switch: the game's fakie way of it is a piece of its own, on the trick's card.");
         if (locked_locked(s, safe)) throw std::runtime_error(animation + " is locked to its maker: it can be played, not copied.");
         std::string bytes;
         {
@@ -7405,7 +7425,7 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         // Made fakie from a trick that is not (or back), its upper body's keys go to the other side with the pose under
         // them (mirror_upper_body): the copy is the trick's mirror from the waist up, the arms too.
         const bool was_mirrored = fakie_mirrored(anim);
-        anim.fakie = want_fakie;
+        if (!piece) anim.fakie = want_fakie;
         if (fakie_mirrored(anim) != was_mirrored) mirror_upper_keys(anim);
         anim.keep_leads_right = want_right;
         // "Kickflip mid" makes "Kickflip mid switch"; a version of a version is named from the trick itself.
@@ -7446,6 +7466,72 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         publish_locked(s, false);
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
+}
+// COPY (MY TRICKS, SELECT): each one a copy of its own, keys, stance and pop and all, named "Kickflip mid 2" (the next
+// number free). Copies are in no pack and no playlist: they are to change, and go in one when they are ready. Locked ones
+// (a maker's) can be played, not copied.
+bool copy_saved(const std::vector<std::string>& animations, std::vector<std::string>& made, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    made.clear();
+    std::vector<std::string> locked, failed;
+    const auto folder = library_folder();
+    // "Kickflip mid 2" is copied as "Kickflip mid 3": a copy of a copy is numbered from the trick, not "Kickflip mid 2 2".
+    const auto unnumbered = [](std::string text) {
+        const auto space = text.find_last_of(' ');
+        if (space != std::string::npos && space > 0 && space + 1 < text.size() &&
+            std::all_of(text.begin() + static_cast<std::ptrdiff_t>(space) + 1, text.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            text.resize(space);
+        return text;
+    };
+    for (const auto& animation : animations) {
+        try {
+            const auto safe = file_safe(animation);
+            if (locked_locked(s, safe)) {
+                locked.push_back(animation);
+                continue;
+            }
+            auto anim = from_json(saved_text(safe));
+            std::string bytes;
+            {
+                std::ifstream in(saved_clip(safe), std::ios::binary);
+                if (!in) throw std::runtime_error("its clip is missing");
+                bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            }
+            const auto stem = unnumbered(safe);
+            unsigned number = 2;
+            std::string name = variation_name(stem, number);
+            while (std::filesystem::exists(folder / name) || std::filesystem::exists(folder / (name + ".json"))) name = variation_name(stem, ++number);
+            anim.name = name;
+            if (!anim.label.empty()) anim.label = variation_name(unnumbered(anim.label), number);
+            std::filesystem::create_directories(folder / name);
+            write_preset_file(folder / name / (name + ".clip"), bytes);
+            write_preset_file(folder / name / (name + ".json"), to_json(anim));
+            made.push_back(name);
+        } catch (const std::exception& e) {
+            failed.push_back(animation);
+            logging::log(Level::warning, Channel::skater, "Animation Studio: {} could not be copied: {}", animation, e.what());
+        }
+    }
+    if (!made.empty()) {
+        read_library_locked(s);
+        s.tricks_read = false;
+    }
+    const auto listed = [](const std::vector<std::string>& names) {
+        std::string out;
+        for (std::size_t i = 0; i < names.size() && i < 3; ++i) out += (i ? ", " : "") + names[i];
+        if (names.size() > 3) out += " and " + std::to_string(names.size() - 3) + " more";
+        return out;
+    };
+    message = made.empty() ? std::string("Nothing copied.")
+                           : "Copied " + std::to_string(made.size()) + (made.size() == 1 ? " trick: " : " tricks: ") + listed(made) +
+                                 ". They are in MY TRICKS, in no pack or playlist: change them as you like.";
+    if (!locked.empty()) message += " Not " + listed(locked) + ": locked to " + (locked.size() == 1 ? "its maker." : "their makers.");
+    if (!failed.empty()) message += " " + listed(failed) + " could not be copied (see the log).";
+    s.status = message;
+    logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
+    publish_locked(s, false);
+    return !made.empty();
 }
 bool set_pack_trick_on(const std::string& pack_name, const std::string& animation, bool on, std::string& message) {
     auto& s = state();

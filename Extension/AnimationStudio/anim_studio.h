@@ -355,6 +355,9 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message);
 // Switch is the other foot leading (the trick and its keys mirrored), fakie rolling backwards (the same trick; in game
 // the one made fakie plays when he rolls fakie). It keeps its foot when it is edited and saved. `made` is its name.
 bool make_stance_version(const std::string& animation, int version, std::string& made, std::string& message);
+// COPY in MY TRICKS (SELECT): a copy of each, keys, stance and pop and all, named with the next number free ("Kickflip mid
+// 2"), in no pack and no playlist. Locked ones are left out and said. `made`: the copies' names.
+bool copy_saved(const std::vector<std::string>& animations, std::vector<std::string>& made, std::string& message);
 bool delete_pack(const std::string& name, std::string& message); // the pack, not the tricks in it
 // What its maker says of a pack (up to 2000 characters), shown wherever it is shared.
 bool set_pack_description(const std::string& pack, const std::string& description, std::string& message);

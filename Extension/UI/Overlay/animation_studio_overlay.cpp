@@ -252,6 +252,8 @@ struct Ui {
     // whose card is open beside the grid.
     std::string trick_group{"*mine"};
     std::string my_group; // MY TRICKS: the group open (its trick), "" the groups
+    bool selecting{};               // MY TRICKS: SELECT is on - a press ticks a trick, COPY copies the ticked ones
+    std::set<std::string> ticked_tricks; // the tricks ticked
     std::string trick_page;
     std::string piece_card; // a card of the game's pieces (a grind, a grab) open beside the grid, by its key
     float groups_scroll{}, cards_scroll{}, drawer_scroll{}, list_scroll{};
@@ -2525,6 +2527,11 @@ void menu_back(const studio::View& v) {
     auto& u = ui();
     if (close_card(v)) return;
     if (u.menu_tab == 0) {
+        if (u.selecting) {
+            u.selecting = false;
+            u.ticked_tricks.clear();
+            return;
+        }
         if (!u.trick_page.empty()) {
             u.trick_page.clear();
             return;
@@ -3421,7 +3428,8 @@ std::array<std::string, 4> stance_versions_of(const studio::View& v, const std::
 float stance_versions(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 at, float w,
                       const std::vector<std::string>& among = {}, const std::string& pack = {}, bool* acted = nullptr) {
     const auto* p = preset_named(v, name);
-    if (!p || p->trick.starts_with("native:")) return 0;
+    if (!p) return 0;
+    const bool piece = p->trick.starts_with("native:"); // normal or switch: its fakie way is a piece of its own
     const float k = f.k;
     const auto have = stance_versions_of(v, name, among);
     const bool nollie = nollie_trick(p->trick);
@@ -3430,6 +3438,7 @@ float stance_versions(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     text(d, f.bold, 11 * k, ImVec2(x, y + 9 * k), faint, "STANCES");
     x += 70 * k;
     for (std::size_t i = 0; i < labels.size(); ++i) {
+        if (piece && i % 2 == 1) continue;
         const float cw = text_size(f.bold, 12 * k, labels[i]).x + 40 * k;
         if (x + cw > at.x + w) x = at.x + 70 * k, y += 34 * k;
         const ImVec2 a(x, y), b(x + cw, y + 30 * k);
@@ -3740,14 +3749,24 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     const auto* p = preset_named(v, name);
     ImGui::PushID(name.c_str());
     bool lit = false;
+    // SELECT on (MY TRICKS): a press ticks it, or takes the tick off.
+    const bool ticking = u.selecting && u.trick_group == "*mine";
+    const bool ticked = ticking && u.ticked_tricks.contains(name);
     if (hit("##mine", a, ImVec2(b.x, b.y - strip), &lit)) {
-        u.trick_page = name;
-        u.piece_card.clear();
-        u.label_for.clear();
-        u.confirm_delete.clear();
+        if (ticking) {
+            if (ticked) u.ticked_tricks.erase(name);
+            else u.ticked_tricks.insert(name);
+        } else {
+            u.trick_page = name;
+            u.piece_card.clear();
+            u.label_for.clear();
+            u.confirm_delete.clear();
+        }
     }
     const bool page = u.trick_page == name;
-    flat_rect(d, a, b, page ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
+    flat_rect(d, a, b, ticked || page ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
+    if (ticking) tick_box(d, ImVec2(a.x + 28 * k, a.y + 27 * k), 9 * k, ticked, ticked ? blue_light : soft, k);
+    const float name_x = a.x + (ticking ? 48.0f : 18.0f) * k;
     if (name == v.name && v.has_clip) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
     float right_edge = b.x - 14 * k;
     if (p && in_playing_list(v, name)) {
@@ -3767,7 +3786,7 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         right_edge -= tag_width(f, label);
         tag(d, f, ImVec2(right_edge, a.y + 14 * k), label, holding.front()->installed ? blue_dim : IM_COL32(255, 255, 255, 36));
     }
-    text(d, f.bold, 21 * k, ImVec2(a.x + 18 * k, a.y + 14 * k), white, elide(f.bold, 21 * k, shown_name(v, name), right_edge - a.x - 26 * k));
+    text(d, f.bold, 21 * k, ImVec2(name_x, a.y + 14 * k), white, elide(f.bold, 21 * k, shown_name(v, name), right_edge - name_x - 8 * k));
     std::string what = p ? upper(trick_label(p->trick)) : std::string("A PIECE OF THE GAME'S ANIMATION");
     // Its stance has a tag of its own below.
     const int version = p ? std::clamp(studio::stance_version(*p, u.own_lead_right), 0, 3) : 0;
@@ -3811,15 +3830,36 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
     const ImVec2 b(a.x + size.x, a.y + size.y);
     ImGui::PushID(("group|" + trick).c_str());
     bool lit = false;
-    if (hit("##group", a, b, &lit)) {
+    // SELECT on (MY TRICKS): the box at its left ticks every save in it (or takes the ticks off); the rest opens it as ever.
+    const bool ticking = u.selecting && open_key.empty() && u.trick_group == "*mine";
+    const std::size_t ticked = ticking ? static_cast<std::size_t>(std::count_if(names.begin(), names.end(), [&](const std::string& n) {
+                                             return u.ticked_tricks.contains(n);
+                                         }))
+                                       : 0;
+    const float box_w = ticking ? 56 * k : 0;
+    bool box_lit = false;
+    if (ticking && hit("##grouptick", a, ImVec2(a.x + box_w, b.y), &box_lit)) {
+        if (ticked == names.size())
+            for (const auto& n : names) u.ticked_tricks.erase(n);
+        else u.ticked_tricks.insert(names.begin(), names.end());
+    }
+    if (hit("##group", ImVec2(a.x + box_w, a.y), b, &lit)) {
         if (open_key.empty()) u.my_group = trick;
         else u.packs_group = open_key;
         u.trick_page.clear();
     }
     // A little stack behind it: more than one in here.
     flat_rect(d, ImVec2(a.x + 10 * k, a.y - 6 * k), ImVec2(b.x - 10 * k, a.y + 10 * k), IM_COL32(40, 42, 48, 220), seed_of(a) + 3, k * 0.6f);
-    flat_rect(d, a, b, lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
+    flat_rect(d, a, b, lit ? IM_COL32(48, 50, 56, 250) : ticked ? IM_COL32(30, 52, 86, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
     d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue_light);
+    if (ticking) {
+        if (box_lit) d->AddRectFilled(ImVec2(a.x + 5 * k, a.y), ImVec2(a.x + box_w, b.y), IM_COL32(255, 255, 255, 20));
+        const ImVec2 c(a.x + 30 * k, a.y + 27 * k);
+        tick_box(d, c, 9 * k, ticked == names.size(), ticked ? blue_light : soft, k);
+        if (ticked && ticked < names.size()) d->AddRectFilled(ImVec2(c.x - 4 * k, c.y - 4 * k), ImVec2(c.x + 4 * k, c.y + 4 * k), blue_light); // some of it
+        if (box_lit && nav().keys) chosen_outline(d, a, ImVec2(a.x + box_w, b.y), k);
+    }
+    const float tx = a.x + (ticking ? 48.0f : 18.0f) * k;
     // Its pops, its stances, how many play, and when it was last changed.
     std::set<std::string> pops, stances;
     std::size_t playing = 0;
@@ -3841,18 +3881,20 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
         right_edge -= tag_width(f, plays);
         tag(d, f, ImVec2(right_edge, a.y + 14 * k), plays, IM_COL32(36, 150, 76, 255));
     }
-    text(d, f.bold, 21 * k, ImVec2(a.x + 18 * k, a.y + 14 * k), white, elide(f.bold, 21 * k, upper(trick_label(trick)), right_edge - a.x - 26 * k));
+    text(d, f.bold, 21 * k, ImVec2(tx, a.y + 14 * k), white, elide(f.bold, 21 * k, upper(trick_label(trick)), right_edge - tx - 8 * k));
     std::string pop_line;
     for (const char* pop : {"LOW", "MID", "HIGH", "ANY"})
         if (pops.contains(pop)) pop_line += (pop_line.empty() ? "" : " / ") + std::string(pop) + " POP";
-    text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 44 * k), soft, elide(f.bold, 12 * k, pop_line, size.x - 36 * k));
+    text(d, f.bold, 12 * k, ImVec2(tx, a.y + 44 * k), soft, elide(f.bold, 12 * k, pop_line, b.x - tx - 18 * k));
     std::string stance_line;
     for (const char* stance : {"OWN STANCE", "FAKIE", "SWITCH (FAKIE NOLLIE)", "SWITCH", "SWITCH FAKIE"})
         if (stances.contains(stance)) stance_line += (stance_line.empty() ? "" : " / ") + std::string(stance);
-    text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 62 * k), soft, elide(f.bold, 12 * k, stance_line, size.x - 36 * k));
+    text(d, f.bold, 12 * k, ImVec2(tx, a.y + 62 * k), soft, elide(f.bold, 12 * k, stance_line, b.x - tx - 18 * k));
     const auto when = edited_words(newest);
-    text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, b.y - 30 * k), lit ? blue_light : faint,
-         std::string("OPEN THE GROUP") + (when.empty() ? "" : "   /   LAST EDITED " + when));
+    const std::string open_line = ticking ? "OPEN THE GROUP" + (ticked ? "   /   " + std::to_string(ticked) + " OF " + std::to_string(names.size()) + " TICKED"
+                                                                          : std::string("   /   THE BOX TICKS ALL ") + std::to_string(names.size()))
+                                          : "OPEN THE GROUP" + (when.empty() ? std::string{} : "   /   LAST EDITED " + when);
+    text(d, f.bold, 12 * k, ImVec2(tx, b.y - 30 * k), lit ? blue_light : faint, elide(f.bold, 12 * k, open_line, b.x - tx - 18 * k));
     if (lit && nav().keys) chosen_outline(d, a, b, k);
     ImGui::PopID();
 }
@@ -3973,13 +4015,16 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         }
         y += 48 * k;
     }
-    if (p && !p->trick.starts_with("native:")) {
+    if (p) {
         heading(d, f, ImVec2(x, y), w, "Its stances");
         y += 32 * k;
         y += stance_versions(d, f, v, name, ImVec2(x, y), w) + 4 * k;
         y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
-                       "A version for each stance, to change on its own: with Trick matching on Exact stance each plays only in its "
-                       "stance, so every way you do the trick can look its own.") + 14 * k;
+                       p->trick.starts_with("native:")
+                           ? "A normal and a switch version, to change on their own: riding switch your switch one plays, else the "
+                             "normal one. The game's fakie way of it is a piece of its own, on the trick's card."
+                           : "A version for each stance, to change on its own: with Trick matching on Exact stance each plays only in its "
+                             "stance, so every way you do the trick can look its own.") + 14 * k;
     }
     if (p && p->locked) {
         y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, skate_theme::warning,
@@ -4457,6 +4502,20 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         const float pw = chip_width(f, label);
         if (chip(d, f, "##hoverpreview", ImVec2(rb.x - pw - 14 * k, ra.y + 8 * k), label, v.hover_preview))
             studio::set_hover_preview(!v.hover_preview);
+        // MY TRICKS: SELECT, to tick tricks and copy them all at once (COPY).
+        if (u.trick_group == "*mine" && !v.library.empty()) {
+            const char* select = u.selecting ? "SELECTING" : "SELECT";
+            const float sw = chip_width(f, select);
+            if (chip(d, f, "##selecttricks", ImVec2(rb.x - pw - sw - 24 * k, ra.y + 8 * k), select, u.selecting)) {
+                u.selecting = !u.selecting;
+                u.ticked_tricks.clear();
+            }
+        } else if (u.selecting) {
+            u.selecting = false;
+            u.ticked_tricks.clear();
+        }
+        // A ticked trick that is gone (deleted, renamed) is not ticked.
+        std::erase_if(u.ticked_tricks, [&](const std::string& name) { return std::find(v.library.begin(), v.library.end(), name) == v.library.end(); });
     }
     ImVec2 area_a(ra.x, ra.y + 84 * k);
     area_a.y += library_panel(d, f, area_a, rb);
@@ -4536,6 +4595,40 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         around_peek(d, ImVec2(grid_a.x, top), ImVec2(grid_a.x + grid_w, top + 26 * k),
                     [&] { heading(d, f, ImVec2(grid_a.x, top), grid_w, "Yours", std::to_string(mine.size())); });
         top += 34 * k;
+    }
+    // SELECT: what to do with the ticked ones. ALL ticks every one shown (a group's every save), COPY copies them.
+    if (u.selecting && u.trick_group == "*mine") {
+        std::vector<std::string> shown_now;
+        for (const auto& [trick, names] : groups_shown) shown_now.insert(shown_now.end(), names.begin(), names.end());
+        shown_now.insert(shown_now.end(), mine.begin(), mine.end());
+        const std::size_t ticked = u.ticked_tricks.size();
+        const float bh = 36 * k, bw = 96 * k, cw = 150 * k;
+        float bx = grid_a.x;
+        if (action(d, f, "##tickall", ImVec2(bx, top), ImVec2(bw, bh), "ALL", Look::dark, !shown_now.empty()))
+            u.ticked_tricks.insert(shown_now.begin(), shown_now.end());
+        bx += bw + 8 * k;
+        if (action(d, f, "##ticknone", ImVec2(bx, top), ImVec2(bw, bh), "NONE", Look::dark, ticked > 0)) u.ticked_tricks.clear();
+        bx += bw + 8 * k;
+        if (action(d, f, "##copyticked", ImVec2(bx, top), ImVec2(cw, bh), ticked ? "COPY " + std::to_string(ticked) : std::string("COPY"), Look::blue,
+                   ticked > 0)) {
+            const std::vector<std::string> names(u.ticked_tricks.begin(), u.ticked_tricks.end());
+            std::vector<std::string> made;
+            std::string m;
+            studio::copy_saved(names, made, m);
+            say(m);
+            u.ticked_tricks.clear();
+            u.selecting = false;
+        }
+        bx += cw + 8 * k;
+        if (action(d, f, "##tickdone", ImVec2(bx, top), ImVec2(bw, bh), "DONE", Look::ghost)) {
+            u.selecting = false;
+            u.ticked_tricks.clear();
+        }
+        bx += bw + 16 * k;
+        const std::string said = ticked ? std::to_string(ticked) + " TICKED. COPY makes a copy of each, to change on its own."
+                                        : std::string("Press tricks to tick them. The box on a group ticks all of it.");
+        text(d, f.bold, 13 * k, ImVec2(bx, top + 11 * k), soft, elide(f.bold, 13 * k, said, std::max(0.0f, grid_a.x + grid_w - bx)));
+        top += bh + 14 * k;
     }
     // A group open: its name, how many, and the way back to the groups.
     if (grouping && !u.my_group.empty()) {
@@ -10699,6 +10792,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     // Its stance: which way round it is done, saved so, and played when riding so.
     {
         const bool can = v.trick_stance >= 0 && !v.previewing;
+        const bool piece = v.trick.starts_with("native:"); // a grind, a grab, a manual...: normal or switch
         static constexpr std::array<const char*, 4> names{"NORMAL", "FAKIE", "SWITCH", "SW FAKIE"};
         text(d, f.bold, 14 * k, ImVec2(x, y), can ? white : faint, "STANCE");
         const float gap = 6 * k, sw = (bw - 3 * gap) / 4;
@@ -10706,14 +10800,15 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
             const bool on = v.trick_stance == i;
             ImGui::PushID(i);
             if (action(d, f, "##trickstance", ImVec2(x + static_cast<float>(i) * (sw + gap), y + 22 * k), ImVec2(sw, 28 * k), names[static_cast<std::size_t>(i)],
-                       on ? Look::blue : Look::ghost, can, on) && !on) {
+                       on ? Look::blue : Look::ghost, can && !(piece && i % 2 == 1), on) && !on) {
                 studio::begin_change(); // into fakie or out of it the upper body's keys go to the other side: undone as one
                 studio::set_trick_stance(i);
             }
             ImGui::PopID();
         }
         // On a nollie trick FAKIE is the switch trick riding fakie (nollie_trick).
-        const char* says = !can ? "A piece of the game's animation: it has no stance of its own."
+        const char* says = !can ? "Open a trick to set its stance."
+                           : piece ? "Normal or switch: riding that way, this one plays. Its fakie way is a piece of its own."
                            : nollie_trick(v.trick) && v.trick_stance == 1
                                ? "Fakie nollie: plays when you pop off the nose riding fakie - the game's switch trick there."
                            : v.trick_stance % 2 == 1 ? "Fakie: mirrored from the waist up, the arms too, as it plays riding fakie."
@@ -10726,6 +10821,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     // waist up, switch onto the other foot). Saved first, so the copy has what is open now. A lit one is yours: it opens.
     {
         const bool can = v.trick_stance >= 0 && !v.previewing;
+        const bool piece = v.trick.starts_with("native:"); // normal or switch only
         const auto have = can ? stance_versions_of(v, v.name) : std::array<std::string, 4>{};
         static constexpr std::array<const char*, 4> names{"NORMAL", "FAKIE", "SWITCH", "SW FAKIE"};
         text(d, f.bold, 14 * k, ImVec2(x, y), can ? white : faint, "COPY TO");
@@ -10736,7 +10832,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
             const ImVec2 ba(x + static_cast<float>(i) * (sw + gap), y + 22 * k);
             ImGui::PushID(i);
             const std::string label = self || done ? std::string(names[at]) : std::string("+ ") + names[at];
-            if (action(d, f, "##stancecopy", ba, ImVec2(sw, 28 * k), label, done ? Look::ghost : Look::dark, can && !self, done)) {
+            if (action(d, f, "##stancecopy", ba, ImVec2(sw, 28 * k), label, done ? Look::ghost : Look::dark, can && !self && !(piece && i % 2 == 1), done)) {
                 std::string m;
                 if (done) open_or_preview(v, have[at], {});
                 else {
@@ -10753,7 +10849,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         }
         text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint,
              elide(f.bold, 11 * k, can ? "+ copies this trick, keys and all, into that stance and opens it. Lit: you have one."
-                                       : "A piece of the game's animation: it has no stance of its own.", bw));
+                                       : "Open a trick to copy it into another stance.", bw));
         y += row;
     }
     // Its own Crossfade, or the main one.
