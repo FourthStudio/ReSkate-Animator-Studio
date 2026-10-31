@@ -48,7 +48,7 @@ previous playback setting when you return. See the [Library guide](contrib/libra
 - **Shuffle:** variants are chosen randomly, avoiding the previous choice when alternatives exist.
 - Packs group animations for distribution; playlists choose which packs and tricks play.
 - **Exact stance** uses the authored leading-foot and fakie combination. **Front foot** can mirror variants when the other foot leads. Make separate normal, fakie, switch and switch-fakie versions when each should have its own style.
-- **ANY pop** can generate low/mid/high versions in memory. A single-pop trick can supply fallback versions where no selected trick covers another height. Use **COPY TO LOW, MID AND HIGH** to edit those versions separately.
+- **ANY pop** can generate low/mid/high versions in memory. An imported pack can supply fallback versions where no selected trick covers another height; your own single-pop saves keep their explicit height. Use **COPY TO LOW, MID AND HIGH** to edit those versions separately.
 
 Editor shortcuts can be changed under **SETTINGS > STUDIO > EDITOR KEYS**. A trick can override the global crossfade through its own settings.
 
@@ -65,9 +65,9 @@ Imported packs retain their maker's ownership settings. A verified publishing te
 ## Scope and current limits
 
 - Native inventory includes clips, graph states, transitions and parameters. An indexed item is not necessarily editable or bound to live gameplay.
-- Editing or saving a grind, setup, loop or transition preview does not automatically replace that phase in game. Live phase replacement remains incomplete.
-- On drops, supported tricks can slow from their catch toward touchdown; **CATCH**, **CATCH HOLD** and **DROP PREVIEW** are available again. The authored pose blends back toward the game's landing near the ground. General airborne foot corrections remain disabled.
-- When a trick fades out into a grind, its feet follow the game's board toward the native grind stance. This contact correction does not implement custom grind-loop replacement.
+- Saved manual, grind and grab loops can play through recognized native movement contexts. Other moving native pieces require successful pose recognition; an indexed transition or graph parameter is not a guaranteed live replacement.
+- Gameplay follows the native animation clock, or continues at source pace when matching is lost. There is no separate catch slowdown or airborne foot magnet; **CATCH HOLD** and **DROP PREVIEW** controls are removed. The optional **CATCH** marker remains on the timeline.
+- Into an unmodified grind, contact protection hands the lower body back to the native board. A compatible saved grind loop is selected separately from that handoff.
 - Older goofy saves with incorrect stance metadata are not automatically repaired in every case; recreate an affected version if its tags or limb behavior are wrong.
 - Windows is the tested build target. Studio operation on Proton, Steam Deck and macOS is not release-validated.
 

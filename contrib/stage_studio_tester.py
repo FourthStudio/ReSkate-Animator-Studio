@@ -117,8 +117,9 @@ CHECK BEFORE CALLING THIS STABLE
 6. Check Fixed priority with an Alternate pack below it, In turns and Shuffle.
    Repeat pop/selection tests online with other skaters present.
 Airborne catch slowing and forced foot contact are disabled in this candidate;
-catch/drop-preview tools are hidden. Indexed grinds/transitions are not all live
-replacement bindings.
+CATCH HOLD and DROP PREVIEW controls are removed; the timeline CATCH marker
+remains. Supported native held loops can play, while indexed transitions are not
+all live replacement bindings.
 
 REPORT A PROBLEM
 SETTINGS > STUDIO > REPORT A BUG creates a local ZIP. Include build-info.json,
