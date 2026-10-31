@@ -12,14 +12,13 @@
 // The game's additive clips: the ones whose ClipControllerAsset has DofMode 1 (their EclipseAnimationAsset BaseFlags 1).
 // Their tracks are not a pose but a change laid over another clip as the game plays - a manual's loop over the manual's
 // pose, a riding lean over the riding pose, a climb's lean over the climb idle. Read as they are, every joint the clip
-// has a track for starts from nothing, so the skater lay flat on the floor in the studio (2026-10-29, "Manual T Loop
-// Medium"). The library builder lays each one over the pose it goes on (add_onto), found by additive_bases.
+// has a track for starts from nothing, and the skater lies flat on the floor in the studio. The library builder lays each
+// one over the pose it goes on (add_onto), found by additive_bases.
 //
-// How they go on, measured on the game's own clips (2026-10-29): each tracked joint's turn after the base's own
-// (base * clip) and its position added to the base's; joints with no track are the base's. So laid, a manual loop
-// keeps both feet within about a centimetre of where they stand on the deck all the way through (the other order
-// moves them 50 cm), and an `X_pose_addi` riding clip over the neutral riding pose is the game's own `X_pose` to 0.3
-// degrees.
+// How they go on, measured on the game's own clips: each tracked joint's turn after the base's own (base * clip) and its
+// position added to the base's; joints with no track are the base's. So laid, a manual loop keeps both feet within about
+// a centimetre of where they stand on the deck all the way through (the other order moves them 50 cm), and an
+// `X_pose_addi` riding clip over the neutral riding pose is the game's own `X_pose` to 0.3 degrees.
 namespace dingosdk::anim_studio::native_library {
 
 // Which clip an additive clip goes on, best first, as "animation/dingo/..." names; the builder takes the first that is

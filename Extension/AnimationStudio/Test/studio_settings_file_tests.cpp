@@ -54,43 +54,30 @@ void every_saved_setting_survives_a_save_and_reload() {
 void the_catch_tools_and_the_guide_survive_a_save_and_reload() {
     SettingsFile saved;
     saved.catch_marker = false;
-    saved.drop_preview = false;
     saved.guide_seen = true;
     const auto read = reloaded(saved);
-    check(!read.catch_marker && !read.drop_preview, "Catch marker or Drop height preview came back on after it was saved off");
+    check(!read.catch_marker, "Catch marker came back on after it was saved off");
     check(read.guide_seen, "The guide opens again after it was read");
 }
 void a_file_from_before_shows_the_catch_tools_and_the_guide() {
     // Settings saved before these keys: the catch tools stay as they were (shown), and the guide opens once.
     SettingsFile read;
     read_settings_file(Json::parse(R"({"front_foot": true})"), read);
-    check(read.catch_marker && read.drop_preview, "A file without the keys hid the catch tools");
+    check(read.catch_marker, "A file without the key hid the catch tools");
     check(!read.guide_seen, "A file without the key does not open the guide");
     // The first guide read (its key from before): the new guide opens once.
     SettingsFile older;
     read_settings_file(Json::parse(R"({"guide_seen": true})"), older);
     check(!older.guide_seen, "The changed guide does not open for someone who read the first one");
+    // A file from when the drop preview was a setting: its key is passed over.
+    SettingsFile with_drop;
+    read_settings_file(Json::parse(R"({"catch_marker": false, "drop_preview": false})"), with_drop);
+    check(!with_drop.catch_marker, "A file with the old drop_preview key did not load");
 }
 void values_out_of_range_are_kept_in_it() {
     SettingsFile read;
     read_settings_file(Json::parse(R"({"stance": 7, "crossfade": 3.0})"), read);
     check(read.stance == 2 && read.crossfade == 0.8f, "A stance or crossfade out of range was kept");
-}
-// The square 4 m rail at 60% is set once over a rail chosen before it was the default; one chosen since stays.
-void the_grind_rail_is_the_square_one_once() {
-    SettingsFile fresh;
-    check(fresh.grind_rail == "own_bkrails_generic_flatrailsquare_00001" && fresh.grind_rail_size == 0.6f, "The default rail is not the square 4 m at 60%");
-    SettingsFile older;
-    read_settings_file(Json::parse(R"({"grind_rail": "own_bkrails_generic_flatrailround_00001", "grind_rail_size": 1.0})"), older);
-    check(older.grind_rail == fresh.grind_rail && older.grind_rail_size == 0.6f,
-          "A rail chosen before was not set to the square 4 m at 60%");
-    SettingsFile chosen;
-    chosen.grind_rail = "own_bkrails_generic_flatrailroundtall_00001";
-    chosen.grind_rail_size = 0.8f;
-    const auto read = reloaded(chosen);
-    check(read.grind_rail == chosen.grind_rail && read.grind_rail_size == 0.8f, "A rail chosen since did not survive a save and reload");
-    chosen.grind_rail.clear();
-    check(reloaded(chosen).grind_rail.empty(), "OFF did not survive a save and reload");
 }
 }
 int main() {
@@ -101,7 +88,6 @@ int main() {
         values_out_of_range_are_kept_in_it();
         the_catch_tools_and_the_guide_survive_a_save_and_reload();
         a_file_from_before_shows_the_catch_tools_and_the_guide();
-        the_grind_rail_is_the_square_one_once();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "studio settings file tests passed\n";
 }

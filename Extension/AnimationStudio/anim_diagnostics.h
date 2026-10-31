@@ -13,13 +13,12 @@
 #include <string>
 
 namespace dingosdk::anim_studio {
-inline std::atomic<bool> diagnostics_capture{true};
 struct DiagnosticSample {
     double at{};
     std::uint64_t generation{}, sequence{}, failures{}, skater_publications{}, board_publications{};
     std::optional<std::uint32_t> physics;
     std::optional<bool> live_switch, takeoff_switch, recorded_switch;
-    bool goofy{}, takeoff_goofy{}, recorded_goofy{}, enabled{}, armed{}, retarget{}, mirror{};
+    bool goofy{}, takeoff_goofy{}, recorded_goofy{}, enabled{}, retarget{}, mirror{};
     bool reverse_facing{};
     bool source_timing{};
     // Where the game is in its own clip (NativeClock): following, looking, let go, or the trick's own clock.
@@ -36,9 +35,6 @@ struct DiagnosticSample {
     // SMOOTH transitions: how far the board and legs leaned over to the game's ahead of a rail, and how far into a handover
     // (seconds since the rail's lock, -1 none).
     float lean{}, handover{-1};
-    // The board's force field: how deep (mm) a shoe was in a deck before it pushed and after (-1: it did not run then).
-    float guard_in_mm{-1}, guard_out_mm{-1};
-    float guard_round_mm{-1}; // how far the force field moved a foot (mm, besides its turn at the ankle)
     // What the game's animation said (trainer::read_studio_states; -1 not read): its trick phase, the trick input, aiming for
     // a grind, its time to land.
     float game_phase{-1}, time_to_land{-1};
@@ -60,8 +56,8 @@ struct DiagnosticSample {
     double feet_at{-1};
 };
 struct DiagnosticBuffer {
-    static constexpr std::size_t capacity = 4096;
-    static constexpr double duration = 15.0, pose_interval = 0.1;
+    static constexpr std::size_t capacity = 8192;
+    static constexpr double duration = 25.0, pose_interval = 0.1;
     std::deque<DiagnosticSample> samples;
     double last_pose{-1};
     bool pose_due(double now) const noexcept { return last_pose < 0 || now - last_pose >= pose_interval; }
@@ -99,7 +95,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     timeline << std::setprecision(12);
     poses << std::setprecision(12);
     board << std::setprecision(12);
-    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land,guard_in_mm,guard_out_mm,guard_round_mm\n";
+    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land\n";
     const std::string columns = "seconds,sequence,stage,joint,sx,sy,sz,qx,qy,qz,qw,px,py,pz\n";
     poses << columns; board << columns;
     rig << columns;
@@ -120,7 +116,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
         if (std::isfinite(gap)) max_gap = std::max(max_gap, gap);
         timeline << s.at - origin << ',' << gap << ',' << s.generation << ',' << s.sequence << ',';
         optional(timeline, s.physics);
-        timeline << diagnostic_csv(s.trick) << ',' << diagnostic_csv(s.preset) << ',' << s.enabled << ',' << s.armed << ',' << s.goofy << ',';
+        timeline << diagnostic_csv(s.trick) << ',' << diagnostic_csv(s.preset) << ',' << s.enabled << ',' << s.goofy << ',';
         optional(timeline, s.live_switch); timeline << s.takeoff_goofy << ','; optional(timeline, s.takeoff_switch);
         timeline << s.recorded_goofy << ','; optional(timeline, s.recorded_switch);
         timeline << s.retarget << ',' << s.mirror << ',' << s.clip_time << ',' << s.weight << ',' << s.board_weight << ',' << s.failures << ','
@@ -130,7 +126,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
                  << ',' << diagnostic_csv(s.clock_state) << ',' << s.clock_clip << ',' << s.clock_error
                  << ',' << diagnostic_csv(s.pop) << ',' << diagnostic_csv(s.pop_source) << ',' << diagnostic_csv(s.decision)
                  << ',' << s.lean << ',' << s.handover << ',' << s.game_phase << ',' << s.trick_intent << ',' << s.targeting_grind << ','
-                 << s.time_to_land << ',' << s.guard_in_mm << ',' << s.guard_out_mm << ',' << s.guard_round_mm << '\n';
+                 << s.time_to_land << '\n';
         if (!s.native.empty()) ++captured;
         for (std::size_t j = 0; j < s.native.size(); ++j) joint_row(poses, s.at, s.sequence, "animation_native", j, s.native[j]);
         for (std::size_t j = 0; j < s.desired.size(); ++j) {
@@ -167,7 +163,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     summary["max_local_position_delta"] = max_position_delta;
     summary["max_local_rotation_delta_degrees"] = max_angle;
     summary["nonfinite_or_invalid_desired_joints"] = invalid;
-    summary["scope"] = "Up to 15 seconds per independent gameplay/preview history; bounded at 4096 callbacks; full poses up to 10 Hz. Animation/body render/board render have separate timestamps. No graph branch or GPU final-pose claim.";
+    summary["scope"] = "Up to 25 seconds per independent gameplay/preview history (gameplay: play only, never the pause menu); bounded at 8192 callbacks; full poses up to 10 Hz. Animation/body render/board render have separate timestamps. No graph branch or GPU final-pose claim.";
     summary["pose_space"] = "parent-local transforms";
     summary["board_space"] = "world-space board mount";
     summary["board_rig_space"] = "parent-local; 0 Reference, 1 placement child of 0, 2 mount child of 1; other hierarchy requires native rig mapping";

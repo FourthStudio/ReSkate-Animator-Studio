@@ -6,17 +6,17 @@
 #include <string_view>
 #include <vector>
 
-// Which grind the game is doing, by its own name for it: Enum.SkateGrindType (animation/dingo/enum.skategrindtype, read
-// from the game's data 2026-10-29), the value Enum.GS.Anim.CurrentSkateGrindType holds while he grinds. The game's grind
-// clips are shared (one body is a FS boardslide one way and a BS lipslide the other, a 50-50 both ways), and a saved grind
-// found only by the pose he holds played on any grind that looked like it - a FS blunt on a 50-50. A saved grind now plays
-// only while the game says it is doing one of the grinds its clip is for (grind_types_of). "BF" is the fakie way into and
-// along the rail (as TRICKS reads a clip's "bf_"); "fakie_" on a pop-out is the same.
+// Which grind the game is doing, by its own name for it: Enum.SkateGrindType (animation/dingo/enum.skategrindtype, in the
+// game's data), the value Enum.GS.Anim.CurrentSkateGrindType holds while he grinds. The game's grind clips are shared (one
+// body is a FS boardslide one way and a BS lipslide the other, a 50-50 both ways), and found only by the pose he holds a
+// saved grind would play on any grind that looks like it - a FS blunt on a 50-50. A saved grind plays only while the game
+// says it is doing one of the grinds its clip is for (grind_types_of). "BF" is the fakie way into and along the rail (as
+// TRICKS reads a clip's "bf_"); "fakie_" on a pop-out is the same.
 //
 // Which clip the game plays for which grind is its own table (cdb_onboard_grind_loop: Enum.GS.SkateGrindType with
-// Bool.Anim.Grind.IsNose and IsTail, a clip each; read 2026-10-29). Normal grinds play the clip of their name. A fakie
-// grind's clip is named by the end of the board on the rail, not the way he rides: a clip of two tricks is the other way
-// round ("bf_fs_feeble_bs_smith" is BF_FS_Smith and BF_BS_Feeble), and a slide on one side swaps its nose and tail
+// Bool.Anim.Grind.IsNose and IsTail, a clip each). Normal grinds play the clip of their name. A fakie grind's clip is
+// named by the end of the board on the rail, not the way he rides: a clip of two tricks is the other way round
+// ("bf_fs_feeble_bs_smith" is BF_FS_Smith and BF_BS_Feeble), and a slide on one side swaps its nose and tail
 // ("bf_fs_tailslide" is BF_FS_NoseSlide, "bf_fs_blunt" BF_FS_NoseBlunt). grind_types_of follows that: the same as the
 // game's table for all 46 of its loop clips and all 76 grinds.
 namespace dingosdk::anim_studio {

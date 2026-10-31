@@ -139,7 +139,7 @@ StateObject grind_objects[]{
 // enumeration, three vectors).
 // The Animator Studio's (read_studio_states): what the game's animation is doing, read every update. The ids are the
 // assets' GUIDs as the game holds them (the first three parts little-endian): the decoded animation graph names them
-// (Team A, 2026-10-29; Float.Anim.TrickFlipSpeed's, 086c7bb0-e742-c7ef-..., gives flip_speed_object's bytes exactly).
+// (read 2026-10-29; Float.Anim.TrickFlipSpeed's, 086c7bb0-e742-c7ef-..., gives flip_speed_object's bytes exactly).
 StateObject studio_objects[]{
     {{0xb7, 0xfb, 0x17, 0x34, 0xe9, 0x38, 0xd6, 0xbd, 0x34, 0x17, 0xfb, 0xb7, 0x38, 0xe9, 0xbd, 0xd6}, "Animation/Dingo/Float.Anim.TrickPhase"},
     {{0x35, 0xc2, 0x8d, 0xe8, 0x37, 0x79, 0x75, 0xb8, 0xe8, 0x8d, 0xc2, 0x35, 0x79, 0x37, 0xb8, 0x75}, "Animation/Dingo/Bool.Intent.Trick"},
@@ -157,6 +157,9 @@ StateObject studio_objects[]{
     {{0x52, 0x5c, 0x44, 0x92, 0x77, 0xd0, 0xe5, 0xa5, 0x92, 0x44, 0x5c, 0x52, 0xd0, 0x77, 0xa5, 0xe5}, "Animation/Dingo/Enum.GS.DetailedGrabType"},
     // Whether he is grabbing now, 1851635a-bdf0-f51a-....
     {{0x5a, 0x63, 0x51, 0x18, 0xf0, 0xbd, 0x1a, 0xf5, 0x18, 0x51, 0x63, 0x5a, 0xbd, 0xf0, 0xf5, 0x1a}, "Animation/Dingo/Bool.Anim.IsGrabbing"},
+    // Whether the game plays its clips mirrored (its clips are authored goofy: mirrored, the left foot leads), the one
+    // condition of all its mirrorable layers; set by physics (AnimMirrored). 7b522e46-36fa-62e7-....
+    {{0x46, 0x2e, 0x52, 0x7b, 0xfa, 0x36, 0xe7, 0x62, 0x7b, 0x52, 0x2e, 0x46, 0x36, 0xfa, 0x62, 0xe7}, "Animation/Dingo/Bool.Anim.Mirrored"},
 };
 StateObject transition_objects[]{
     {{0x7d, 0xbc, 0xc5, 0x80, 0xd7, 0xd9, 0xb2, 0xed, 0x80, 0xc5, 0xbc, 0x7d, 0xd9, 0xd7, 0xed, 0xb2}, "Animation/Dingo/Bool.Physics.FoundLipTrick"},
@@ -391,6 +394,7 @@ StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noex
     value_under(studio_objects[8], 91, out.grab_type);
     value_under(studio_objects[9], 39, out.detailed_grab_type);
     flag(studio_objects[10], out.grabbing);
+    flag(studio_objects[11], out.anim_mirrored);
     return out;
 }
 namespace {

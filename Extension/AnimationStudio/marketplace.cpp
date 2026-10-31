@@ -25,6 +25,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <optional>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -160,6 +161,94 @@ std::string said(const Answer& a) {
     } catch (...) {}
     if (text.size() > 240) text.resize(240);
     return "Thunderstore answered " + std::to_string(a.status) + (text.empty() ? std::string{} : " (" + text + ")");
+}
+
+// ---- downloads ------------------------------------------------------------------------------------
+// Why a download failed, in words. Thunderstore says 200 before the body comes, so a body cut short (the time ran out,
+// the connection dropped) needs its own words, not "the download failed (200)".
+std::string download_failure(const https::Download& got) {
+    if (got.http_status && got.http_status != 200) return "Thunderstore answered " + std::to_string(got.http_status);
+    switch (got.error) {
+    case ERROR_TIMEOUT:
+    case ERROR_WINHTTP_TIMEOUT: return "it took too long (a slow or busy connection)";
+    case ERROR_FILE_TOO_LARGE: return "it is bigger than the studio takes";
+    case ERROR_CANCELLED: return "it was stopped";
+    case ERROR_WRITE_FAULT:
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL: return "it could not be written to the disk (is it full?)";
+    case ERROR_WINHTTP_NAME_NOT_RESOLVED:
+    case ERROR_WINHTTP_CANNOT_CONNECT: return "Thunderstore could not be reached (no connection?)";
+    case ERROR_WINHTTP_CONNECTION_ERROR:
+    case ERROR_WINHTTP_INVALID_SERVER_RESPONSE: return "the connection dropped part way";
+    default: return "Windows error " + std::to_string(got.error);
+    }
+}
+// Slow connections: every step of a request (finding Thunderstore, connecting, each read) may wait a minute instead of
+// the usual 5-10 seconds, and a request that timed out or dropped is tried twice more. Not again after Thunderstore said
+// no, it was too big, it was stopped, or the disk would not take it.
+constexpr std::uint32_t patience_ms = 60000;
+constexpr int tries = 3;
+// Tried again: a step that waited too long, a connection that could not be made or dropped, and Thunderstore busy (429, or
+// a 5xx). Not the whole request's own time running out (a slow line would only start over and run out again), nor a no.
+bool worth_again(const https::Download& got) {
+    if (got.http_status == 429 || (got.http_status >= 500 && got.http_status < 600)) return true;
+    if (got.http_status && got.http_status != 200) return false;
+    switch (got.error) {
+    case ERROR_WINHTTP_TIMEOUT:
+    case ERROR_WINHTTP_NAME_NOT_RESOLVED:
+    case ERROR_WINHTTP_CANNOT_CONNECT:
+    case ERROR_WINHTTP_CONNECTION_ERROR:
+    case ERROR_WINHTTP_INVALID_SERVER_RESPONSE: return true;
+    default: return false;
+    }
+}
+// What a failed listing read says: unreachable, or reached and refused.
+std::string listing_failure(const https::Download& got) {
+    return (got.http_status && got.http_status != 200 ? "Thunderstore's listing could not be read: " : "Thunderstore could not be reached: ") +
+           download_failure(got) + ".";
+}
+// A small answer from Thunderstore (a listing page, a README, a package's details), patiently.
+std::optional<std::string> fetch_text(const std::string& url, std::uint64_t most, std::uint32_t seconds, https::Download* result = nullptr) {
+    https::Download got;
+    for (int attempt = 0; attempt < tries; ++attempt) {
+        https::Watch watch;
+        watch.patience_ms.store(patience_ms);
+        if (auto text = https::get_text(widen(url), most, seconds, agent, &got, &watch)) {
+            if (result) *result = got;
+            return text;
+        }
+        if (!worth_again(got)) break;
+        if (attempt + 1 < tries) std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    if (result) *result = got;
+    return std::nullopt;
+}
+// A file (a pack's zip, an icon) downloaded to `destination` (which must not be there), patiently: a pack's zip has up to
+// 30 minutes (a 127 MB one needs 0.4 MB/s to come in the 5 minutes it once had).
+https::Download download_file(const std::string& url, const std::filesystem::path& destination, std::uint64_t most, std::uint32_t seconds,
+                              https::Watch* watch) {
+    https::Watch own;
+    if (!watch) watch = &own;
+    watch->patience_ms.store(patience_ms);
+    https::Download got;
+    for (int attempt = 0; attempt < tries; ++attempt) {
+        std::error_code error;
+        std::filesystem::remove(destination, error);
+        watch->received.store(0);
+        got = https::get(widen(url), destination, most, seconds, agent, watch);
+        if (got.ok) return got;
+        const bool again = worth_again(got) && attempt + 1 < tries;
+        logging::log(Level::warning, Channel::skater, "Animator Studio market: a download failed ({}, try {} of {}){}", download_failure(got),
+                     attempt + 1, tries, again ? "; trying again" : "");
+        if (!again) break;
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    std::error_code error;
+    std::filesystem::remove(destination, error);
+    return got;
+}
+https::Download download_pack(const std::string& url, const std::filesystem::path& destination, https::Watch* watch) {
+    return download_file(url, destination, 256ull * 1024 * 1024, 1800, watch);
 }
 
 // ---- the token, kept encrypted for this Windows user ---------------------------------------------
@@ -298,8 +387,7 @@ struct Market {
     int account_state{};       // View::account_state
     std::string account_checked; // the team that state is of
     // The last check that said yes (account.json "verified"): the team and a fingerprint of its token (never the token).
-    // While Thunderstore cannot be reached, or is still being asked, that yes stands for the same token: creators were told
-    // their own packs were not theirs whenever the check failed to get through (2026-10-27).
+    // While Thunderstore cannot be reached, or is still being asked, that yes stands for the same token.
     std::string verified_as, verified_token;
     std::string token_print; // the linked token's fingerprint, worked out once
     Job job;
@@ -337,7 +425,7 @@ void read_settings_locked(Market& m) {
     if (m.settings_read) return;
     m.settings_read = true;
     try {
-        // market/settings.json; market/market.json before 1.0.8 (its shape made it look like a saved trick called market).
+        // market/settings.json; market/market.json in older builds (its shape made it look like a saved trick called market).
         auto saved = read_file(folder() / L"settings.json");
         const bool old_name = saved.empty() && !(saved = read_file(folder() / L"market.json")).empty();
         if (!saved.empty()) {
@@ -403,6 +491,9 @@ std::vector<Pack> read_listing(const std::string& text) {
             if (p.created.empty()) p.created = p.updated;
             p.rating = static_cast<int>(package.value("rating_score", 0.0));
             for (const auto& v : package.at("versions")) p.downloads += static_cast<std::uint64_t>(std::max(0.0, v.value("downloads", 0.0)));
+            if (package.contains("categories") && package.at("categories").is_array())
+                for (const auto& c : package.at("categories"))
+                    if (c.is_string() && c.string() == "Animation Packs") p.section = true;
             if (!thunderstore_url(p.icon_url)) p.icon_url.clear();
             if (!thunderstore_url(p.download_url) || p.full_name.empty()) continue;
             out.push_back(std::move(p));
@@ -413,7 +504,7 @@ std::vector<Pack> read_listing(const std::string& text) {
 // A pack's newest version and its download, asked of the package itself. False when it cannot be had.
 bool fill_version(Pack& p) {
     try {
-        const auto text = https::get_text(widen(std::string(site) + "/api/experimental/package/" + p.owner + "/" + p.name + "/"), 4 * 1024 * 1024, 30, agent);
+        const auto text = fetch_text(std::string(site) + "/api/experimental/package/" + p.owner + "/" + p.name + "/", 4 * 1024 * 1024, 90);
         if (!text) return false;
         const auto root = Json::parse(*text);
         const auto& latest = root.at("latest");
@@ -433,7 +524,7 @@ std::string packs_json(const std::vector<Pack>& packs) {
         out.push_back(Json{{"full_name", p.full_name}, {"owner", p.owner}, {"name", p.name}, {"version", p.version},
                            {"description", p.description}, {"icon_url", p.icon_url}, {"download_url", p.download_url},
                            {"package_url", p.package_url}, {"updated", p.updated}, {"created", p.created}, {"downloads", p.downloads},
-                           {"rating", p.rating}});
+                           {"rating", p.rating}, {"section", p.section}});
     return out.dump(2);
 }
 std::vector<Pack> read_packs_json(const std::string& text) {
@@ -458,6 +549,7 @@ std::vector<Pack> read_packs_json(const std::string& text) {
             p.created = j.value("created", p.updated);
             p.downloads = static_cast<std::uint64_t>(std::max(0.0, j.value("downloads", 0.0)));
             p.rating = static_cast<int>(j.value("rating", 0.0));
+            p.section = j.value("section", false);
             if (!thunderstore_url(p.icon_url)) p.icon_url.clear();
             if (!thunderstore_url(p.download_url) || !plain_version(p.version)) continue;
             out.push_back(std::move(p));
@@ -465,23 +557,57 @@ std::vector<Pack> read_packs_json(const std::string& text) {
     }
     return out;
 }
-// The studio's packs from the search, every page of it. False when the search could not be had (the whole listing is
-// read then, as before).
+bool listing_pages(std::string url, std::vector<Pack>& packs, std::string& error);
+// The Animation Packs section's number on Thunderstore (its listing filters by number, not by name), "" when it cannot be
+// found out.
+std::string section_number() {
+    const auto text = fetch_text(std::string(site) + "/api/cyberstorm/community/" + community + "/filters/", 512 * 1024, 60);
+    if (!text) return {};
+    try {
+        const auto root = Json::parse(*text);
+        for (const auto& c : root.at("package_categories"))
+            if (c.value("slug", "") == category) {
+                const auto id = c.value("id", "");
+                if (!id.empty() && std::all_of(id.begin(), id.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) return id;
+            }
+    } catch (...) {}
+    return {};
+}
+// The studio's packs from the search, every page of it, and every pack in the Animation Packs section (found by its
+// section even where the search misses it). False when the search could not be had (the whole listing is read then, as
+// before); the section is only added to it.
 bool search_packs(std::vector<Pack>& packs, std::string& error) {
-    std::string url = std::string(site) + "/api/cyberstorm/listing/" + community + "/?q=Animator%20Studio%20pack&ordering=last-updated";
+    if (!listing_pages(std::string(site) + "/api/cyberstorm/listing/" + community + "/?q=Animator%20Studio%20pack&ordering=last-updated", packs, error))
+        return false;
+    if (const auto section = section_number(); !section.empty()) {
+        std::string ignored;
+        if (!listing_pages(std::string(site) + "/api/cyberstorm/listing/" + community + "/?included_categories=" + section + "&ordering=last-updated",
+                           packs, ignored))
+            logging::log(Level::warning, Channel::skater, "Animator Studio market: the Animation Packs section could not be read ({}).", ignored);
+    }
+    for (auto& p : packs)
+        if (p.version.empty()) fill_version(p);
+    std::erase_if(packs, [](const Pack& p) { return p.version.empty() || p.download_url.empty(); });
+    return true;
+}
+// One listing of Thunderstore's, every page of it, into `packs` (a pack already there only takes its section mark).
+bool listing_pages(std::string url, std::vector<Pack>& packs, std::string& error) {
     const std::string pages = std::string(site) + "/api/cyberstorm/listing/" + community + "/";
     for (int page = 0; page < 50 && !url.empty(); ++page) {
         https::Download result{};
-        const auto text = https::get_text(widen(url), 8 * 1024 * 1024, 30, agent, &result);
+        const auto text = fetch_text(url, 8 * 1024 * 1024, 120, &result);
         if (!text) {
-            error = "Thunderstore could not be reached (" + std::to_string(result.http_status ? result.http_status : result.error) + ").";
+            error = listing_failure(result);
             return false;
         }
         std::string next;
         try {
             auto found = read_search(*text, next);
-            for (auto& p : found)
-                if (std::none_of(packs.begin(), packs.end(), [&](const Pack& q) { return q.full_name == p.full_name; })) packs.push_back(std::move(p));
+            for (auto& p : found) {
+                const auto there = std::find_if(packs.begin(), packs.end(), [&](const Pack& q) { return q.full_name == p.full_name; });
+                if (there == packs.end()) packs.push_back(std::move(p));
+                else there->section = there->section || p.section;
+            }
         } catch (const std::exception& e) {
             error = std::string("Thunderstore's listing could not be read: ") + e.what();
             return false;
@@ -489,9 +615,6 @@ bool search_packs(std::vector<Pack>& packs, std::string& error) {
         // Only further pages of the same listing are followed.
         url = next.starts_with(pages) ? next : std::string{};
     }
-    for (auto& p : packs)
-        if (p.version.empty()) fill_version(p);
-    std::erase_if(packs, [](const Pack& p) { return p.version.empty() || p.download_url.empty(); });
     return true;
 }
 std::filesystem::path icon_path(const Pack& p) { return folder() / L"icons" / widen(p.full_name + "-" + p.version + ".png"); }
@@ -518,7 +641,7 @@ void icon_worker() {
         auto temporary = path;
         temporary += L".part";
         std::filesystem::remove(temporary, error);
-        const auto got = https::get(widen(url), temporary, 2 * 1024 * 1024, 30, agent);
+        const auto got = download_file(url, temporary, 2 * 1024 * 1024, 90, nullptr);
         if (got.ok) std::filesystem::rename(temporary, path, error);
         else std::filesystem::remove(temporary, error);
     }
@@ -548,8 +671,8 @@ void readme_worker() {
         const auto path = readme_path(full_name, version);
         std::string markdown = read_file(path);
         if (markdown.empty()) {
-            const auto text = https::get_text(widen(std::string(site) + "/api/experimental/package/" + owner + "/" + name + "/" + version + "/readme/"),
-                                              1024 * 1024, 30, agent);
+            const auto text = fetch_text(std::string(site) + "/api/experimental/package/" + owner + "/" + name + "/" + version + "/readme/",
+                                         1024 * 1024, 90);
             try {
                 if (text) markdown = Json::parse(*text).value("markdown", "");
                 if (!markdown.empty()) write_file(path, markdown);
@@ -608,10 +731,12 @@ std::vector<PreviewTrick> fetch_preview(const Pack& pack) {
         // How far it is, while it runs (waited for before going on: it reads `watch` and `done`).
         std::thread watcher([&] {
             while (!done.load()) {
-                if (const auto total = watch.total.load()) {
+                {
                     auto& m = market();
                     std::lock_guard lock(m.mutex);
-                    if (m.preview.full_name == pack.full_name)
+                    // Another pack's preview asked for: this one stops, and that one's download starts.
+                    if (m.preview.full_name != pack.full_name) watch.cancel.store(true);
+                    else if (const auto total = watch.total.load())
                         m.preview.fraction = static_cast<float>(watch.received.load()) / static_cast<float>(total);
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -625,12 +750,12 @@ std::vector<PreviewTrick> fetch_preview(const Pack& pack) {
                 if (thread.joinable()) thread.join();
             }
         } join_watcher{done, watcher};
-        const auto got = https::get(widen(pack.download_url), part, 256ull * 1024 * 1024, 300, agent, &watch);
+        const auto got = download_pack(pack.download_url, part, &watch);
         done.store(true);
         watcher.join();
         if (!got.ok) {
             std::filesystem::remove(part, error);
-            throw std::runtime_error("the download failed (" + std::to_string(got.http_status ? got.http_status : got.error) + ")");
+            throw std::runtime_error("the download failed: " + download_failure(got));
         }
         if (!studio_zip(part)) {
             std::filesystem::remove(part, error);
@@ -751,6 +876,7 @@ View view() {
         }
         p.dev = builder_of(p.owner) != nullptr;                // BUILT BY, with a team: DEV
         p.crew = crew_member(p.owner) != nullptr || p.dev; // THE CREW: CREW CERTIFIED (and in the crew's lists, the devs too)
+        p.verified = verified_maker(p.owner);
         if (const auto path = icon_path(p); std::filesystem::is_regular_file(path, error)) p.icon_file = utf8(path);
     }
     return v;
@@ -795,8 +921,8 @@ void refresh(bool force) {
             error.clear();
             https::Download result{};
             const auto url = std::string(site) + "/c/" + community + "/api/v1/package/";
-            const auto text = https::get_text(widen(url), 96ull * 1024 * 1024, 90, agent, &result);
-            if (!text) error = "Thunderstore could not be reached (" + std::to_string(result.http_status ? result.http_status : result.error) + ").";
+            const auto text = fetch_text(url, 96ull * 1024 * 1024, 300, &result);
+            if (!text) error = listing_failure(result);
             else
                 try {
                     packs = read_listing(*text);
@@ -966,11 +1092,10 @@ void install(const std::string& full_name) {
             previewed = std::filesystem::is_regular_file(kept, error) && std::filesystem::copy_file(kept, zip, error) && !error;
             if (!previewed) std::filesystem::remove(zip, error);
         }
-        const auto got = previewed ? https::Download{} : https::get(widen(pack.download_url), zip, 256ull * 1024 * 1024, 300, agent, &watch);
+        const auto got = previewed ? https::Download{} : download_pack(pack.download_url, zip, &watch);
         done.store(true);
         watcher.join();
-        if (!previewed && !got.ok)
-            throw std::runtime_error("the download failed (" + std::to_string(got.http_status ? got.http_status : got.error) + ")");
+        if (!previewed && !got.ok) throw std::runtime_error("the download failed: " + download_failure(got));
         // It has to be one of the studio's: its marker at the top.
         {
             const auto bytes = read_file(zip);
@@ -1100,7 +1225,7 @@ void check_team(bool again) {
     }
     std::thread([team] {
         https::Download result{};
-        const auto text = https::get_text(widen(std::string(site) + "/api/cyberstorm/team/" + team + "/"), 64 * 1024, 20, agent, &result);
+        const auto text = fetch_text(std::string(site) + "/api/cyberstorm/team/" + team + "/", 64 * 1024, 60, &result);
         const int state = text ? 2 : result.http_status == 404 ? 3 : 4;
         logging::log(Level::info, Channel::skater, "Animation Studio: the Thunderstore team {} {}.", team,
                      state == 2 ? "is there" : state == 3 ? "does not exist" : "could not be looked up");
@@ -1224,7 +1349,7 @@ std::string export_package(const std::string& pack_name, std::string& message, c
         if (SUCCEEDED(com)) CoUninitialize();
         const auto path = pack_export_folder() / widen(market().team.empty() ? package.file_name : market().team + "-" + package.file_name);
         write_file(path, package.zip);
-        message = "Made " + utf8(path.filename()) + " for Thunderstore: upload it on thunderstore.io/c/reskate, or publish it from here with a linked team.";
+        message = "Made " + utf8(path.filename()) + " for Thunderstore: upload it on thunderstore.io/c/reskate in the Animation Packs category, or publish it from here with a linked team.";
         if (!pack.left_out.empty()) message += " " + left_out_note(pack.left_out);
         ShellExecuteW(nullptr, L"open", path.parent_path().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return utf8(path);
@@ -1304,7 +1429,7 @@ void publish(const std::string& pack_name, const std::string& wanted_version, co
             throw std::runtime_error("Finishing the upload failed: " + said(finished));
         }
         progress(0.9f);
-        // 4. Published, in the ReSkate community.
+        // 4. Published, in the ReSkate community's Animation Packs section (an update is put in it too).
         Json submit = Json::object();
         submit["author_name"] = team;
         submit["categories"] = Json::array();

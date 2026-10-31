@@ -463,54 +463,6 @@ Animation retimed_with(const Animation& animation, const std::function<float(flo
     if (animation.catch_at) out.catch_at = map(*animation.catch_at);
     return out;
 }
-void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
-                    std::span<Joint> target, bool mirror, bool reverse_facing) {
-    if (!std::isfinite(seconds) || seconds < animation.start || (animation.end >= 0 && seconds > animation.end) ||
-        source.size() < skeleton_joints || target.size() < skeleton_joints) return;
-    // Read every frame from the unmodified poses: editing a parent must not change the
-    // coordinate conversion for its children later in the track list.
-    const std::vector<Joint> native(target.begin(), target.end());
-    const auto source_placement = world(source, placement_joint).rotation;
-    const auto target_placement = world(native, placement_joint).rotation;
-    // Switch changes the body's facing relative to placement independently of
-    // which limbs lead. Transfer deltas through that half turn before converting
-    // to the live joint basis; a reflection alone reverses local X/Z edits.
-    constexpr Quat half_turn{0, 1, 0, 0};
-    for (const auto& track : animation.tracks) {
-        if (track.hidden || track.keys.empty() || !editable(track.joint) || track.joint >= skeleton_joints) continue;
-        const auto to = mirror ? mirror_joint[track.joint] : track.joint;
-        const auto edit = evaluate(track, seconds);
-        if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 &&
-            edit.offset == Vec3{}) continue; // Neutral bracket keys preserve native transforms exactly.
-        auto& joint = target[to];
-        if (edit.rotation[0] != 0 || edit.rotation[1] != 0 || edit.rotation[2] != 0) {
-            const auto src_frame = normalised(multiply(conjugate(source_placement), world(source, track.joint).rotation));
-            const auto dst_frame = normalised(multiply(conjugate(target_placement), world(native, to).rotation));
-            auto delta = normalised(multiply(multiply(src_frame, edit.rotation), conjugate(src_frame)));
-            if (mirror) delta = mirror_rotation(delta);
-            if (reverse_facing) delta = normalised(multiply(multiply(half_turn, delta), conjugate(half_turn)));
-            const auto local_delta = normalised(multiply(multiply(conjugate(dst_frame), delta), dst_frame));
-            joint.rotation = normalised(multiply(native[to].rotation, local_delta));
-        }
-        const auto sp = parent(track.joint), tp = parent(to);
-        if (sp >= 0 && tp >= 0) {
-            const auto source_parent = world(source, static_cast<std::uint16_t>(sp));
-            const auto target_parent = world(native, static_cast<std::uint16_t>(tp));
-            const auto src_parent = normalised(multiply(conjugate(source_placement), source_parent.rotation));
-            const auto dst_parent = normalised(multiply(conjugate(target_placement), target_parent.rotation));
-            auto offset = rotate(src_parent, edit.offset);
-            if (mirror) offset = mirror_vector(offset);
-            if (reverse_facing) offset = rotate(half_turn, offset);
-            offset = rotate(conjugate(dst_parent), offset);
-            const float source_scale = world(source, placement_joint).scale[0];
-            const float target_scale = world(native, placement_joint).scale[0];
-            if (std::abs(source_scale) > 1e-6f && std::abs(target_parent.scale[0]) > 1e-6f) {
-                const float ratio = source_parent.scale[0] / source_scale * target_scale / target_parent.scale[0];
-                for (std::size_t k = 0; k < 3; ++k) joint.position[k] = native[to].position[k] + offset[k] * ratio;
-            }
-        }
-    }
-}
 int limb_group(std::uint16_t joint) noexcept {
     // The arms and legs by their own chains, read off the skeleton: everything hanging under the shoulder
     // or the thigh belongs to that limb, including the hands and the fingers.
@@ -722,27 +674,14 @@ Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept {
     const auto limited = multiply(axis_angle(dir, angle), axis_angle(axis, twist));
     return normalised(multiply(ref, limited));
 }
-void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept {
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose, bool legs) noexcept {
     if (!std::isfinite(seconds)) return;
     for (const auto& track : animation.tracks) {
         if (track.hidden || track.keys.empty() || track.joint >= pose.size() || !has_joint_limit(track.joint)) continue;
+        if (!legs && limb_group(track.joint) >= 3) continue; // 3 the left leg, 4 the right
         const auto edit = evaluate(track, seconds);
         if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0) continue; // only holds the pose
         pose[track.joint].rotation = limit_rotation(track.joint, pose[track.joint].rotation);
-    }
-}
-void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
-                             std::span<Joint> native, bool mirror, float weight, bool reverse_facing) {
-    if (!std::isfinite(weight) || weight <= 0 || native.size() < skeleton_joints) return;
-    weight = std::min(weight, 1.0f);
-    std::vector<Joint> edited(native.begin(), native.end());
-    retarget_edits(animation, seconds, source, edited, mirror, reverse_facing);
-    for (const auto& editable_joint : editable_joints()) {
-        const auto i = editable_joint.index;
-        if (i >= skeleton_joints) continue; // The physical board has its own fresh publication.
-        auto& current = native[i]; const auto& wanted = edited[i];
-        if (current.rotation != wanted.rotation) current.rotation = slerp(current.rotation, wanted.rotation, weight);
-        if (current.position != wanted.position) current.position = lerp(current.position, wanted.position, weight);
     }
 }
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited) {
@@ -798,21 +737,6 @@ float animation_window_weight(const Animation& animation, float seconds) noexcep
     float weight = animation.start > 0 ? ease((seconds - animation.start) / width) : 1.0f;
     if (animation.end >= 0) weight *= ease((animation.end - seconds) / width);
     return weight;
-}
-void shift_keys(Animation& animation, float delta, float duration) noexcept {
-    if (!std::isfinite(delta) || !(duration >= 0)) return;
-    for (auto& track : animation.tracks) {
-        if (track.locked) continue;
-        std::size_t kept = 0;
-        for (auto key : track.keys) {
-            key.time = std::clamp(key.time + delta, 0.0f, duration);
-            if (kept && std::abs(track.keys[kept - 1].time - key.time) < 1e-6f) track.keys[kept - 1] = key;
-            else track.keys[kept++] = key;
-        }
-        track.keys.resize(kept);
-    }
-    animation.start = std::clamp(animation.start + delta, 0.0f, duration);
-    if (animation.end >= 0) animation.end = std::clamp(animation.end, animation.start, duration);
 }
 float on_a_frame(float seconds) noexcept { return std::round(seconds * key_fps) / key_fps; }
 bool move_window_edge(Animation& animation, int which, float to, float duration) noexcept {
@@ -871,11 +795,6 @@ bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float 
     return track->keys.size() != before;
 }
 namespace {
-// How far a key's turn is from the turn the curve would have had there anyway, in radians.
-float turn_apart(const Quat& a, const Quat& b) noexcept {
-    const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
-    return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
-}
 // How far a smoothed key is drawn towards the line between its neighbours.
 constexpr float smooth_pull = 0.35f;
 void pull_towards_neighbours(Key& key, const Key& before, const Key& here, const Key& after) noexcept {
@@ -886,68 +805,6 @@ void pull_towards_neighbours(Key& key, const Key& before, const Key& here, const
 }
 } // namespace
 
-std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcept {
-    auto& keys = track.keys;
-    if (keys.size() < 2) return 0;
-    const auto pinned = [&](const Key& k) {
-        return std::abs(k.time - keep_start) < 1.0f / 60 || std::abs(k.time - keep_end) < 1.0f / 60;
-    };
-    std::size_t changed = 0;
-    // Every key eases smoothly: one step or linear key in the middle breaks the curve either side of it.
-    for (auto& k : keys)
-        if (k.ease != Ease::smooth) {
-            k.ease = Ease::smooth;
-            ++changed;
-        }
-    // A key that sits where the line between its neighbours already goes says nothing: it is dropped, so the
-    // curve through what is left is not pulled about by keys that were only ever noise. A key with a blend in or
-    // out says when the pose takes hold or lets go, so it stays.
-    for (std::size_t i = 1; i + 1 < keys.size();) {
-        const Key &before = keys[i - 1], &here = keys[i], &after = keys[i + 1];
-        const float span = after.time - before.time;
-        const float u = span > 1e-6f ? (here.time - before.time) / span : 0.5f;
-        bool same = !pinned(here) && here.blend_in <= 0 && here.blend_out <= 0;
-        if (same) {
-            const auto guess = lerp(before.offset, after.offset, u);
-            for (std::size_t c = 0; c < 3 && same; ++c) same = std::abs(guess[c] - here.offset[c]) < 0.002f;
-            same = same && turn_apart(slerp(before.rotation, after.rotation, u), here.rotation) < 0.5f * 3.14159265f / 180;
-        }
-        if (same) {
-            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
-            ++changed;
-        } else ++i;
-    }
-    // What is left is drawn a little towards its neighbours, so a key that was placed by hand a frame off
-    // its neighbours no longer shows as a flick.
-    if (keys.size() > 2) {
-        const auto was = keys;
-        for (std::size_t i = 1; i + 1 < keys.size(); ++i) {
-            if (pinned(keys[i])) continue;
-            pull_towards_neighbours(keys[i], was[i - 1], was[i], was[i + 1]);
-            ++changed;
-        }
-    }
-    // On whole frames. Smoothing rebuilds the track, so this is where a key that drifted off a frame -
-    // an older animation whose window was once stretched - is put back on one. The two keys on the
-    // brackets are left exactly where they are, because the brackets are what they answer to.
-    for (std::size_t i = 0; i < keys.size(); ++i) {
-        if (pinned(keys[i])) continue;
-        const float at = on_a_frame(keys[i].time);
-        if (std::abs(at - keys[i].time) > 1e-6f) {
-            keys[i].time = at;
-            ++changed;
-        }
-    }
-    std::stable_sort(keys.begin(), keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });
-    for (std::size_t i = 1; i < keys.size();) {
-        if (std::abs(keys[i].time - keys[i - 1].time) < 0.5f / key_fps) {
-            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
-            ++changed;
-        } else ++i;
-    }
-    for (auto& k : keys) k.smooth = true;
-    return changed;
-}
 std::size_t smooth_keys_at(Track& track, std::span<const float> times, float keep_start, float keep_end) noexcept {
     auto& keys = track.keys;
     const auto chosen = [&](float t) { return std::any_of(times.begin(), times.end(), [&](float c) { return std::abs(c - t) < 1e-3f; }); };
@@ -1031,7 +888,6 @@ std::string to_json(const Animation& animation) {
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     if (animation.catch_at) root["catch"] = *animation.catch_at;
     if (animation.crossfade) root["crossfade"] = *animation.crossfade;
-    if (animation.catch_hold) root["catch_hold"] = *animation.catch_hold;
     root["fakie_upper"] = "mirrored"; // its keys are as a trick set to fakie mirrors its upper body (from_json)
     root["start"] = animation.start;
     root["end"] = animation.end;
@@ -1117,12 +973,8 @@ Animation from_json(std::string_view text) {
         const float seconds = root.at("crossfade").get<float>();
         if (std::isfinite(seconds)) result.crossfade = std::clamp(seconds, 0.1f, 0.8f);
     }
-    if (root.contains("catch_hold") && root.at("catch_hold").is_number()) {
-        const float hold = root.at("catch_hold").get<float>();
-        if (std::isfinite(hold)) result.catch_hold = std::clamp(hold, 0.0f, 1.0f);
-    }
-    // A window up to a frame past the clip's end (a bracket rounded onto a frame past it, by builds before 2026-10-23)
-    // is put back on it rather than refusing the whole trick; anything else wrong is refused.
+    // A window up to a frame past the clip's end (a bracket older builds rounded onto a frame past it) is put back on it
+    // rather than refusing the whole trick; anything else wrong is refused.
     constexpr float frame = 1.0f / key_fps + 0.01f;
     require(result.start >= 0 && result.start <= duration + frame && (result.end == -1 ||
             (result.end >= result.start && result.end <= duration + frame)), "bad animation window");
@@ -1184,9 +1036,9 @@ Animation from_json(std::string_view text) {
     // A piece of the game's own animation (a grind's loop, a grab's hold) is known by the clip it came from: one
     // saved before pieces were given that name gets it here, so it plays in game like one saved since.
     if (result.trick.empty() && result.source.kind == "native_asset" && !result.source.asset.empty()) result.trick = "native:" + result.source.asset;
-    // A trick set to fakie saved before its upper body was mirrored (mirror_upper_body, 2026-10-29): its upper body's keys
-    // were made over the game's fakie layer, which left the arms as they were, or copied from the trick in its own stance.
-    // They go to the other side here, so it shows as the mirror of what it was, the arms too. Saved with the mark since.
+    // A trick set to fakie saved before its upper body was mirrored (mirror_upper_body): its upper body's keys were made over
+    // the game's fakie layer, which left the arms as they were, or copied from the trick in its own stance. They go to the
+    // other side here, so it shows as the mirror of what it was, the arms too. Saved with the mark since.
     if (fakie_mirrored(result) && root.value("fakie_upper", "") != "mirrored") mirror_upper_keys(result);
     return result;
 }
@@ -1334,23 +1186,13 @@ std::string file_safe(std::string_view name) {
 } // namespace dingosdk::anim_studio
 
 namespace dingosdk::anim_studio {
-// The game's mirror, measured 2026-10-22: a heelflip recorded riding normal (mirrored) matches the library's
-// heelflip reflected across the skater's Z = 0 plane exactly (median distance 0.0018), and nothing like it
-// reflected across X = 0 (0.275), which is what this used to do. Z = 0 holds the board's long axis (the
-// AITrajectory's X), so the feet keep their ends of the board, swap left for right, and he faces the other
-// side of it - regular from goofy, as the game draws it. Applied to every joint's own rotation it comes to
-// the same as reflecting the whole skeleton, as the left/right table keeps the hierarchy.
+// The game's mirror: a heelflip recorded riding normal (mirrored) matches the library's heelflip reflected across the
+// skater's Z = 0 plane exactly (median distance 0.0018), and nothing like it reflected across X = 0 (0.275). Z = 0 holds
+// the board's long axis (the AITrajectory's X), so the feet keep their ends of the board, swap left for right, and he
+// faces the other side of it - regular from goofy, as the game draws it. Applied to every joint's own rotation it comes
+// to the same as reflecting the whole skeleton, as the left/right table keeps the hierarchy.
 Quat mirror_rotation(const Quat& q) noexcept { return {-q[0], -q[1], q[2], q[3]}; }
 Vec3 mirror_vector(const Vec3& v) noexcept { return {v[0], v[1], -v[2]}; }
-void apply_fakie_layer(std::span<Joint> pose, std::span<const Quat> layer, bool mirrored) noexcept {
-    for (std::size_t j = 0; j < skeleton_joints && j < layer.size(); ++j) {
-        const auto& turn = layer[j];
-        if (turn == Quat{0, 0, 0, 1}) continue;
-        const std::size_t at = mirrored ? mirror_joint[j] : j;
-        if (at >= pose.size()) continue;
-        pose[at].rotation = normalised(multiply(pose[at].rotation, mirrored ? mirror_rotation(turn) : turn));
-    }
-}
 Joint mirror_pose(const Joint& joint) noexcept {
     Joint out = joint;
     out.rotation = mirror_rotation(joint.rotation);
@@ -1439,16 +1281,6 @@ void mirror_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_o
 }
 } // namespace
 void mirror_pose_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_only) { mirror_frame(pose, out, body_only); }
-Clip mirror_body_clip(const Clip& clip) {
-    if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
-    Clip out = clip;
-    for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
-        mirror_frame({clip.frames.data() + frame * clip.joints, clip.joints},
-                     {out.frames.data() + frame * clip.joints, clip.joints}, true);
-    // The board is one transform under the placement, so it reflects where it stands.
-    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_board_pose(clip.board[frame]);
-    return out;
-}
 // ---- which of the game's own clips is playing -----------------------------------------------------
 namespace {
 constexpr std::uint16_t piece_body_joints = 375; // the body: everything below Ground
@@ -2026,17 +1858,6 @@ std::vector<NativeModels::Model> native_models_of(const Clip& clip, std::size_t 
         model.frames = std::move(frames);
         out.push_back(std::move(model));
     }
-    return out;
-}
-std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own) {
-    auto out = std::make_shared<NativeModels>();
-    if (own < clips.size() && clips[own]) {
-        out->edit_up = clips[own]->takeoff;
-        out->edit_down = clips[own]->landing;
-    }
-    for (std::size_t c = 0; c < clips.size(); ++c)
-        if (clips[c])
-            for (auto& model : native_models_of(*clips[c], c, c == own)) out->models.push_back(std::move(model));
     return out;
 }
 void NativeClock::start(std::shared_ptr<const NativeModels> models) noexcept {

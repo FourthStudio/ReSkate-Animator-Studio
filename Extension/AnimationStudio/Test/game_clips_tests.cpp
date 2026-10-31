@@ -41,8 +41,6 @@ int main(int argc, char** argv) {
         std::cout << "read the game's animations in " << GetTickCount64() - started << " ms\n";
         const auto tricks = library.names("c_proto_onb_trick_o_", 5000);
         std::cout << tricks.size() << " trick animations\n";
-        if (argc == 3 && std::string_view(argv[2]) == "--names")
-            for (std::uint16_t j = 0; j < anim::skeleton_joints; ++j) std::cout << j << " " << library.joint_name(j) << "\n";
         check(tricks.size() > 100, "the trick animations are listed");
         const auto loaded_at = GetTickCount64();
         const auto clip = library.load("Animation/Dingo/c_proto_onb_trick_o_kickflip_high");
@@ -76,8 +74,7 @@ int main(int argc, char** argv) {
                 worst_at = i;
             }
         }
-        std::cout << "worst joint " << worst_at % anim::skeleton_joints << " (" << library.joint_name(static_cast<std::uint16_t>(worst_at % anim::skeleton_joints))
-                  << ") frame " << worst_at / anim::skeleton_joints << "\n";
+        std::cout << "worst joint " << worst_at % anim::skeleton_joints << " frame " << worst_at / anim::skeleton_joints << "\n";
         float twice_board = 0;
         for (std::size_t f = 0; f < clip.board.size(); ++f) twice_board = std::max(twice_board, apart(clip.board[f].position, back.board[f].position));
         std::cout << "mirrored twice: worst turn " << worst_turn << " degrees, worst move " << worst_place * 1000 << " mm, board " << twice_board * 1000

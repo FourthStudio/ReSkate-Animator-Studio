@@ -1,4 +1,4 @@
-"""The MARKET's art, made from scratch (no stock, no generated images): tileable grip tape, concrete, worn white paper and
+"""The MARKET's art, made from scratch (no stock pictures): tileable grip tape, concrete, worn white paper and
 blue paper; blue spray splatters; halftone and grey dots; the grunge "market." on the wall; the blue brush stroke; and
 the skater from the studio's loading picture as a duotone and as newsprint dots. Everything lands in
 assets/animator_studio/market/. Run it again after changing it; it is seeded, so it makes the same pictures."""

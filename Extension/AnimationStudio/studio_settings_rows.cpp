@@ -1,5 +1,4 @@
 #include "studio_settings_rows.h"
-#include "studio_rails.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -69,54 +68,17 @@ Setting studio_room(const studio::Settings& now) {
                   "you are. Takes effect the next time it opens.",
                   [](bool on) { studio::set_room(on); });
 }
-Setting grind_rail(const studio::Settings& now) {
-    std::vector<std::string> options{"OFF"}, keys{""};
-    int selected = 0;
-    for (const auto& key : now.rails)
-        if (const auto* rail = studio::studio_rail(key)) {
-            if (rail->key == now.grind_rail) selected = static_cast<int>(options.size());
-            options.emplace_back(rail->name);
-            keys.emplace_back(rail->key);
-        }
-    return one_of("Grind rail", std::move(options), selected,
-                  "The game's own straight rail a grind stands on in the studio: open one of the game's grinds or slides and the "
-                  "rail is put up under it, the board on its top as in game. Flip tricks and everything else have none. It "
-                  "stands in your park only while the studio is open in the Studio room (out of sight under the floor until a "
-                  "grind is open), and never in an online session.",
-                  [keys](int picked) { studio::set_grind_rail(keys[static_cast<std::size_t>(picked)]); });
-}
 Setting controller_combo(const studio::Settings& now) {
     return one_of("Controller combo", {studio::open_combo_names.begin(), studio::open_combo_names.end()}, std::clamp(now.open_combo, 0, 3),
                   "What you hold on a controller (half a second) to open the studio, and to close it again. Another mod using the "
                   "same buttons: pick another, or OFF and open it with F8 or from the ReSkate menu (ADDONS > ANIMATOR STUDIO).",
                   [](int picked) { studio::set_open_combo(picked); });
 }
-Setting rail_size(const studio::Settings& now) {
-    const auto* rail = studio::studio_rail(now.grind_rail);
-    std::vector<std::string> options;
-    int selected = 0;
-    for (std::size_t i = 0; i < studio::studio_rail_sizes.size(); ++i) {
-        const float size = studio::studio_rail_sizes[i];
-        if (std::abs(size - now.grind_rail_size) < 0.001f) selected = static_cast<int>(i);
-        options.push_back(rail ? std::format("{:.0f}%: {:.0f} cm high, {:.1f} m long", size * 100, rail->top * size * 100, rail->length * size)
-                               : std::format("{:.0f}%", size * 100));
-    }
-    return one_of("Rail size", std::move(options), selected,
-                  "How big the grind rail is put up: lower, thinner and shorter together, as the build kit scales an object. The "
-                  "game's own are big for a skater; 60% is a 30 cm rail. The grind stays on its top at any size.",
-                  [](int picked) { studio::set_grind_rail_size(studio::studio_rail_sizes[static_cast<std::size_t>(picked)]); });
-}
 Setting catch_marker(const studio::Settings& now) {
     return on_off("Catch marker", now.catch_marker,
-                  "On: the CATCH flag shows on the timeline, and CATCH HOLD in THIS TRICK. Off: both are hidden, for a cleaner "
-                  "timeline. A trick's catch still plays in game as it was set.",
+                  "On: the CATCH flag shows on the timeline. Off: it is hidden, for a cleaner timeline. A trick's catch still "
+                  "plays in game as it was set.",
                   [](bool on) { studio::set_catch_marker(on); });
-}
-Setting drop_height_preview(const studio::Settings& now) {
-    return on_off("Drop height preview", now.drop_preview_tool,
-                  "On: DROP PREVIEW shows in THIS TRICK, to play the trick here as off a drop, its catch slowed as in game. Off: "
-                  "it is hidden and the trick plays as it is. Only the studio's view: nothing in game changes.",
-                  [](bool on) { studio::set_drop_preview_tool(on); });
 }
 Setting how_it_works() {
     return button_row("How it works",
@@ -126,9 +88,10 @@ Setting how_it_works() {
 }
 Setting report_a_bug(Tell tell) {
     return button_row("Report a bug",
-                      "Something went wrong? Right after it happens, press this: the last 15 seconds, the game's log, your studio "
-                      "settings and which build this is go into one zip, and Explorer shows it. Send that zip to us with what "
-                      "happened, the trick and your stance. Nothing is sent by itself.",
+                      "Something went wrong? Press this afterwards, from the pause menu or the studio: the last 25 seconds of play "
+                      "before you opened them (kept however long you take), the game's log, your studio settings and which build "
+                      "this is go into one zip, and Explorer shows it. Send that zip to us with what happened, the trick and your "
+                      "stance. Nothing is sent by itself.",
                       [tell = std::move(tell)] {
                           std::string m;
                           studio::report_bug(m);
@@ -164,8 +127,8 @@ Setting finger_bones(const studio::Settings& now) {
 }
 Setting joint_limits(const studio::Settings& now) {
     return on_off("Joint limits", now.limits,
-                  "On: knees and elbows bend one way and every joint stays in the range the game's own animation uses, while you "
-                  "pose and in game. Off: joints go wherever you push them.",
+                  "On: knees and elbows bend one way and every joint stays in the range the game's own animation uses while you "
+                  "pose; in game the arms, back and head stay in it too. Off: joints go wherever you push them.",
                   [](bool on) { studio::set_joint_limits(on); });
 }
 
@@ -198,7 +161,8 @@ Setting trick_matching(const studio::Settings& now) {
 Setting transitions(const studio::Settings& now) {
     return one_of("Transitions", {"SMOOTH", "CLASSIC"}, now.smooth_transitions ? 0 : 1,
                   "Smooth: into a grind your trick hands over the way the game hands over its own - the board and legs first, "
-                  "then the arms, then the back and head, the trick going on meanwhile. Classic: as before, to compare.",
+                  "then the arms, then the back and head, the trick going on meanwhile. Classic: your trick lets go as the "
+                  "board locks onto the rail, and the game takes over from there.",
                   [](int picked) { studio::set_smooth_transitions(picked == 0); });
 }
 Setting made_by(const studio::Settings& now, Tell tell) {

@@ -31,8 +31,6 @@ public:
     std::vector<std::string> names(std::string_view containing, std::size_t most) const;
     // The clip, or std::runtime_error with why (not one, another rig, another codec).
     Clip load(std::string_view name) const;
-    // A joint's name in the skater's skeleton ("LeftFoot"), or empty.
-    std::string_view joint_name(std::uint16_t joint) const;
     // The stance a clip (any of the skater's: a game clip or a recording) stands in at its first frame:
     // goofy when the right foot is nearer the board's front truck than the left. Empty when it cannot
     // be told (no board under the feet).

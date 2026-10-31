@@ -28,8 +28,8 @@ namespace menu_data = multiplayer::menu_data;
 using logging::Channel;
 using logging::Level;
 
-// UI models by schema hash (TypeNameHash of the game's type) and field hash, from UI model dumps on
-// 2026-10-04 and 2026-10-10 (PR #230, Engine/Game/Build/20260929/style.h).
+// UI models by schema hash (TypeNameHash of the game's type) and field hash, from UI model dumps
+// (Engine/Game/Build/20260929/style.h).
 // The menu's button bar: the buttons of the page that shows now. Each 16-byte element holds its button
 // model's handle at +8, and the model's action has a navigation.
 constexpr std::uint32_t button_bar = 0xe6ab1489, button_bar_buttons = 0x5fc6738b;

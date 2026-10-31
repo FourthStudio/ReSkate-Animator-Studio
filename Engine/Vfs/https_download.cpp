@@ -120,7 +120,9 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
     if (parts.dwExtraInfoLength) resource.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
     Internet session{WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, WINHTTP_FLAG_ASYNC)};
     if (!session.value) return fail(GetLastError());
-    if (!WinHttpSetTimeouts(session.value, 5000, 5000, 10000, 10000)) return fail(GetLastError());
+    const int patience = watch ? static_cast<int>(watch->patience_ms.load()) : 0;
+    if (!WinHttpSetTimeouts(session.value, patience ? patience : 5000, patience ? patience : 5000, patience ? patience : 10000,
+                            patience ? patience : 10000)) return fail(GetLastError());
     Internet connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
     if (!connection.value) return fail(GetLastError());
     Internet request{WinHttpOpenRequest(connection.value, L"GET", resource.c_str(), nullptr, nullptr,

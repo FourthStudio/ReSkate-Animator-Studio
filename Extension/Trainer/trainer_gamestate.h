@@ -46,6 +46,7 @@ struct StudioStates {
     std::optional<bool> riding_fakie; // Bool.Physics.RidingFakie
     std::optional<std::uint32_t> grab_type, detailed_grab_type; // EnumGS.GrabType, Enum.GS.DetailedGrabType
     std::optional<bool> grabbing;                               // Bool.Anim.IsGrabbing
+    std::optional<bool> anim_mirrored;                          // Bool.Anim.Mirrored: the game's clips played mirrored (left foot leads)
 };
 StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noexcept;
 // Whether any of them is known (the level's objects), and a search of the game's memory for them (off the game's threads,
