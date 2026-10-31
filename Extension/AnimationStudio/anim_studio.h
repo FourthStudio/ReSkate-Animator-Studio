@@ -250,7 +250,8 @@ void set_crossfade(float seconds);
 // arms, then the back and head, the trick going on meanwhile); CLASSIC, it fades out over the Crossfade.
 void set_smooth_transitions(bool on);
 // Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
-// elbows bend one way, nothing twists round), while you pose and in game. Off, joints go where you push them.
+// elbows bend one way, nothing twists round) while you pose, and in game the arms, back and head stay in it too (the legs
+// play as keyed, against the board). Off, joints go where you push them.
 void set_joint_limits(bool on);
 // How a saved trick is matched to the skater doing it. On, a trick belongs to the front foot and the back
 // foot: it plays for any stance, mirrored when the other foot leads. Off, it plays only for the stance and

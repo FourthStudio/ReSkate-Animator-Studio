@@ -307,8 +307,10 @@ std::string stored_zip(const std::vector<std::pair<std::string, std::string>>& f
 bool has_joint_limit(std::uint16_t joint) noexcept;
 Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept;
 // Keeps every joint the animation has a real key on inside its limits; joints without keys (the game's own
-// pose, which is always natural) are left alone.
-void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
+// pose, which is always natural) are left alone. `legs` false: the legs too (the thighs down) - in game, where a
+// trick's tuck goes on the game's own crouch: limited there, the knee is straightened and the foot pushed through the
+// board, while the legs are keyed against the board as they are.
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose, bool legs = true) noexcept;
 Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
 // The board's key at `seconds` (its turn and move in the board's ground frame); none where the trick has no board key then.
 std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror = false);

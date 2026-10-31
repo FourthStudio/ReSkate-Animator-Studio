@@ -206,10 +206,11 @@ using CustomTricks = std::vector<CustomTrick>;
 // it is (NativeClock, PieceTracker for pieces), and the keys ride on the game's pose at that time - its IK,
 // its height, its board. Forcing the studio's whole pose over it would put the skater at the clip's own height,
 // take his feet off the game's deck and fight the game's next animation.
-// A deck turned round under him is taken from the game's own board-backwards flag. Joint limits (JOINTS) holds in the
-// studio and in game alike: the keys are made inside the game's range (limit_key), and in game every keyed joint is kept
-// in it over the game's own pose too, where a key made on the studio's pose (or by a maker with the limits off) would
-// bend a knee or an elbow past what the body can do.
+// A deck turned round under him is taken from the game's own board-backwards flag. Joint limits (JOINTS): the keys are
+// made inside the game's range (limit_key) and the studio's picture is held to it. In game the upper body is kept in it
+// over the game's own pose too, where a key made on the studio's pose (or by a maker with the limits off) would bend an
+// elbow or the back past what the body can do. The legs are not: a trick's tuck goes on the game's own crouch, and
+// limited there the knee straightens and the foot goes through the board.
 constexpr float match_bent_joints = 0; // a joint with a key: its key on the game's pose
 constexpr float match_whole_body = 0;  // every other joint, and the board: the game's own
 // In the air the keys ride on the game's own pose and clock: a trick plays at the speed of the game's own trick, whatever
@@ -4434,7 +4435,7 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
         std::vector<Joint> leaving(native.begin(), native.end());
         const auto studio = fakie_upper_base(out, t, out.weight, leaving, out.match > 0);
         apply_authored_edit_layer(*out.edits, t, leaving, out.weight, &out.limbs, studio, out.match, out.match_rest);
-        if (out.limits) limit_keyed_joints(*out.edits, t, leaving);
+        if (out.limits) limit_keyed_joints(*out.edits, t, leaving, false); // the upper body: the legs as keyed
         auto left = pose_edit_deltas(native, leaving);
         // The legs and hips leaned over to the game's ahead of the rail stay so.
         float released = std::clamp(out.lower_release, 0.0f, 1.0f);
@@ -4510,7 +4511,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             const auto studio = fakie_upper_base(*packet, packet->time, packet->weight, edited, packet->match > 0);
             apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs, studio, packet->match,
                                       packet->match_rest);
-            if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
+            if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited, false); // the upper body: the legs as keyed
             // Ahead of a rail or a ledge (raised_lead) the hips and legs go to the game's pose, as far as the board does
             // (drawn_board_now, apply_gameplay_board), so the feet stay on the deck as both meet the rail.
             // SMOOTH: and as far as the board leans over to the game's turning it to a rail (rail_lean).
@@ -6229,7 +6230,8 @@ void set_joint_limits(bool on) {
     std::lock_guard lock(s.mutex);
     s.limits = on;
     save_settings_locked(s);
-    s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses, in the studio and in game."
+    s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses while you pose; "
+                    "in game the arms, back and head stay in it too."
                   : "Joint limits off: joints go wherever you push them, in the studio and in game.";
     publish_locked(s);
 }

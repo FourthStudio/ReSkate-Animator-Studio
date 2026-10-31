@@ -674,10 +674,11 @@ Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept {
     const auto limited = multiply(axis_angle(dir, angle), axis_angle(axis, twist));
     return normalised(multiply(ref, limited));
 }
-void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept {
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose, bool legs) noexcept {
     if (!std::isfinite(seconds)) return;
     for (const auto& track : animation.tracks) {
         if (track.hidden || track.keys.empty() || track.joint >= pose.size() || !has_joint_limit(track.joint)) continue;
+        if (!legs && limb_group(track.joint) >= 3) continue; // 3 the left leg, 4 the right
         const auto edit = evaluate(track, seconds);
         if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0) continue; // only holds the pose
         pose[track.joint].rotation = limit_rotation(track.joint, pose[track.joint].rotation);

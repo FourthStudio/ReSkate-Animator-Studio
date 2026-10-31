@@ -2582,6 +2582,22 @@ void joints_stay_in_their_range() {
     const Vec3 axis{knee.axis[0], knee.axis[1], knee.axis[2]};
     const auto twisted = normalised(multiply(ref, axis_angle(axis, 1.2f)));
     check(angle_between(limit_rotation(9, twisted), ref) < 0.2f, "A knee twisted round is turned back");
+    // In game the legs play as keyed (legs false): a knee keyed past its range stays so, an elbow is limited.
+    const auto& elbow = *std::find_if(joint_limits.begin(), joint_limits.end(), [](const JointLimit& l) { return l.joint == 277; });
+    const Quat elbow_ref{elbow.reference[0], elbow.reference[1], elbow.reference[2], elbow.reference[3]};
+    const auto elbow_twisted = normalised(multiply(elbow_ref, axis_angle({elbow.axis[0], elbow.axis[1], elbow.axis[2]}, 1.4f)));
+    Animation keyed;
+    keyed.tracks.push_back({9, {{0, axis_angle({1, 0, 0}, 0.3f), {}, Ease::linear}}});
+    keyed.tracks.push_back({277, {{0, axis_angle({1, 0, 0}, 0.3f), {}, Ease::linear}}});
+    std::vector<Joint> pose(skeleton_joints);
+    pose[9].rotation = twisted;
+    pose[277].rotation = elbow_twisted;
+    auto in_game = pose, in_studio = pose;
+    limit_keyed_joints(keyed, 0, in_game, false);
+    limit_keyed_joints(keyed, 0, in_studio);
+    check(same_turn(in_game[9].rotation, twisted) && !same_turn(in_game[277].rotation, elbow_twisted),
+          "In game a keyed knee plays as keyed and a keyed elbow is limited");
+    check(!same_turn(in_studio[9].rotation, twisted), "In the studio the knee is limited too");
 }
 // The lead foot comes from the clip: right foot on the skater's +X side is the game's own goofy layout, and
 // mirroring the clip the game's way turns it into the left foot leading.
