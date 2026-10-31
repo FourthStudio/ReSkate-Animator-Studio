@@ -28,7 +28,7 @@ namespace {
 namespace ui = addr::ui_textures;
 
 // skate.'s own loading screen (UI/Foundations/Loading/LoadScreen/DingoLoadScreen_Widget) shows this
-// board doing kickflips beside its "Loading..." (found 2026-10-18 in the widget's imports): a
+// board doing kickflips beside its "Loading..." (the widget's imports): a
 // RimeFlipbookTextureAsset, flip_Skateboard_Kickflip_256, of 27 frames at 30 a second, 9 across and 3
 // down its atlas (FrameUvs): a RimeTextureAsset whose texture for a 2160 screen is this one (2304 x 768, read at half: it must fit the 2048-wide atlas).
 // Where it is kept: tried in this order.

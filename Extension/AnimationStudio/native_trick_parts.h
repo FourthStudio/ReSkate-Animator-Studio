@@ -102,9 +102,9 @@ inline constexpr std::array<Named, 17> rail_tricks{{{"5050", "50-50", 0},       
                                                     {"tailslide", "Tailslide", 103}, {"blunt", "Bluntslide", 104},
                                                     {"noseblunt", "Nosebluntslide", 105}}};
 // A fakie grind's clip is named by the end of the board on the rail, its trick by the way he rides (the game's own grind
-// tables, cdb_onboard_grind_loop, 2026-10-29): with `fakie_swaps`, a clip of two tricks ("fs_crook_bs_overcrook") is the
-// fakie FS overcrook and the fakie BS crook, and a slide on one side has its nose and tail the other way round
-// ("bf_fs_tailslide" is the fakie FS noseslide). Kept the same as grind_types.h's grind_types_of.
+// tables, cdb_onboard_grind_loop): with `fakie_swaps`, a clip of two tricks ("fs_crook_bs_overcrook") is the fakie FS
+// overcrook and the fakie BS crook, and a slide on one side has its nose and tail the other way round ("bf_fs_tailslide"
+// is the fakie FS noseslide). Kept the same as grind_types.h's grind_types_of.
 inline std::vector<NativeTrickPart> rail(const Words& w, std::size_t from, std::size_t to, bool fakie, const std::string& piece, int order,
                                          bool fakie_swaps = false) {
     std::vector<NativeTrickPart> out;

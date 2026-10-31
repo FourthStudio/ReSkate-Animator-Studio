@@ -37,7 +37,8 @@ prefix=r'''
 #include <vector>
 namespace studio=dingosdk::anim_studio;
 studio::View fixture;
-bool preview_native_stances{};
+bool preview_native_stances{},preview_loop_offer{};
+std::vector<std::string> copied_loop_assets;
 int copied_stance{-1};
 bool preview_accept=true;int preview_ends{},legacy_pack_opens{};std::string opened_save;
 studio::ModifierBinding binding{"Specials",1,true};
@@ -47,6 +48,9 @@ namespace dingosdk::anim_studio {
 bool make_stance_version(const std::string&,int version,std::string&,std::string&){copied_stance=version;return false;}
 View view(){return fixture;}
 bool preview_saved(const std::string&,std::string&){return preview_accept;}
+bool load(const std::string&,std::string&){return true;}
+void dismiss_loop_offer(){fixture.loop_offer.reset();}
+bool copy_loop_pose(const std::vector<std::string>& assets,std::string&){copied_loop_assets=assets;return true;}
 void end_preview(){++preview_ends;}
 ModifierBinding modifier_binding(){return binding;}
 void set_modifier_binding(ModifierBinding value){binding=std::move(value);}
@@ -85,7 +89,7 @@ struct Ui {
  bool menu{true},pack_page{},menu_after_preview{};int menu_tab{1},preview_return_tab{-1};
  bool preview_return_pack_page{},preview_from_pack{};ImGuiID preview_return_focus{};
  std::string preview_pack,preview_name,preview_market,market_open;
- float library_modal_scroll{};
+ float loop_scroll{},library_modal_scroll{};std::string loop_offer_for;std::set<std::string> loop_left_out;
  std::array<char,64> playlist_name{};std::string playlist_name_for,playlist_for;studio::PlaylistEntry playlist_for_entry;
 } preview_ui;
 Ui& ui(){return preview_ui;}
@@ -110,7 +114,7 @@ navend=surface.index('// ---- the pieces the pages are made of',navstart)
 helpers+=surface[navstart:navend]
 helpers+=function(surface,'std::string elide(')+function(surface,'void chosen_outline(')
 helpers+='enum class Look { dark, blue, paper, key, danger, ghost };\n'
-helpers+=''.join(function(surface,sig) for sig in ['bool action(ImDrawList*','int segmented(', 'bool field(', 'float paragraph(', 'const studio::Preset* preset_named(', 'const studio::View::PackView* pack_named(', 'bool saved_trick(', 'std::string shown_name(', 'std::string listed(', 'void tick_box(', 'void page_heading(', 'void flat_rect('])
+helpers+=''.join(function(surface,sig) for sig in ['bool action(ImDrawList*','int segmented(', 'bool field(', 'float paragraph(', 'const studio::Preset* preset_named(', 'const studio::View::PackView* pack_named(', 'bool saved_trick(', 'std::string shown_name(', 'std::string listed(', 'void tick_box(', 'void page_heading(', 'void flat_rect(', 'float tag(', 'float tag_width('])
 helpers+=function(surface,'void preview_trick(')+function(surface,'void open_or_preview(')+function(surface,'void leave_preview(')
 helpers+=''.join(function(surface,sig) for sig in ['bool nollie_trick(', 'const char* stance_word(', 'std::array<std::string, 4> stance_versions_of(', 'float stance_versions('])
 art=r'''
@@ -163,7 +167,8 @@ int main(int argc,char**argv){
   auto*d=ImGui::GetWindowDrawList();for(int i=0;i<20;++i)d->AddLine({0.f,static_cast<float>(i*90)},{static_cast<float>(width),static_cast<float>(i*90-350)},IM_COL32(32,34,39,255),30);
   text(d,f.bold,18*f.k,{48*f.k,40*f.k},soft,"TRICKS       LIBRARY       MARKET       SETTINGS       ABOUT");
   const auto view=fixture;const auto began=std::chrono::steady_clock::now();
-  if(preview_native_stances){auto [a,b]=card_box(d,f,io.DisplaySize,820*f.k,280*f.k,"NATIVE ANIMATION / STANCES");
+  if(preview_loop_offer){loop_card(d,f,view,io.DisplaySize);}
+  else if(preview_native_stances){auto [a,b]=card_box(d,f,io.DisplaySize,820*f.k,280*f.k,"NATIVE ANIMATION / STANCES");
    text(d,f.bold,18*f.k,{a.x+26*f.k,a.y+86*f.k},white,"Manual / Normal and switch versions");
    stance_versions(d,f,view,"Native manual",{a.x+26*f.k,a.y+134*f.k},760*f.k);
    paragraph(d,f.bold,14*f.k,{a.x+26*f.k,a.y+194*f.k},760*f.k,soft,"Create a normal and a switch version. Fakie uses a separate native animation. Each version can go in your normal or modifier playlist.");
@@ -258,12 +263,19 @@ int main(int argc,char**argv){
  frame("native-stances",1920,1080);
  frame("action-native-switch",1920,1080,[&]{numeric(2,"##stance");});expect(copied_stance==2,"Native switch copies remain accessible");copied_stance=-1;
  frame("action-native-no-fakie",1366,768,[&]{numeric(1,"##stance");});expect(copied_stance==-1,"Native pieces hide invalid whole-trick fakie controls");
+ preview_native_stances=false;preview_loop_offer=true;fixture.loop_offer=studio::View::LoopOffer{};fixture.loop_offer->loop="Switch manual";fixture.loop_offer->manual=true;
+ for(int i=0;i<15;++i)fixture.loop_offer->parts.push_back({"asset-"+std::to_string(i),"Manual transition "+std::to_string(i),"",i%2==0});
+ frame("loop-copy-1080",1920,1080);frame("loop-copy-768",1366,768);
+ frame("action-loop-copy-fifteenth",1366,768,[&]{numeric(14,"##part");});
+ expect(ui().loop_left_out.contains("asset-14"),"Every transition can be deselected, including those beyond the old eight-row cap");
+ frame("action-loop-copy-selected",1366,768,[&]{press({},"##loopcopy");});
+ expect(copied_loop_assets.size()==14&&std::find(copied_loop_assets.begin(),copied_loop_assets.end(),"asset-14")==copied_loop_assets.end(),"Copy respects the complete selection");
  std::cout<<"Library navigation and playlist interaction checks passed\n";
  ImGui::DestroyContext();return 0;
 }
 '''
 cpp=out/'preview.cpp'
-cpp.write_text(prefix+setting_code+ui+helpers+art+'\n#include "Extension/UI/Overlay/studio_library_workspace.inl"\n'+function(surface,'void playlist_card(')+renderer,encoding='utf-8')
+cpp.write_text(prefix+setting_code+ui+helpers+art+'\n#include "Extension/UI/Overlay/studio_library_workspace.inl"\n'+function(surface,'void playlist_card(')+function(surface,'void loop_card(')+renderer,encoding='utf-8')
 build=repo/'build/ci-windows/Release'
 command=['cl','/nologo','/std:c++20','/EHsc','/O2','/W3',f'/DSOURCE_ROOT="{repo.as_posix()}"',f'/I{repo}',f'/I{repo}/External/imgui',f'/I{repo}/External/rapidjson/include',str(cpp),f'/Fe:{out / "preview.exe"}',f'/Fo:{out / "preview.obj"}',str(build/'dingosdk_imgui.lib'),str(build/'dingosdk_json.lib'),'user32.lib','gdi32.lib','imm32.lib','dwmapi.lib','d3d12.lib','dxgi.lib','d3dcompiler.lib']
 r=subprocess.run(command,cwd=out,capture_output=True,text=True)

@@ -60,8 +60,8 @@ struct DiagnosticSample {
     double feet_at{-1};
 };
 struct DiagnosticBuffer {
-    static constexpr std::size_t capacity = 4096;
-    static constexpr double duration = 15.0, pose_interval = 0.1;
+    static constexpr std::size_t capacity = 8192;
+    static constexpr double duration = 25.0, pose_interval = 0.1;
     std::deque<DiagnosticSample> samples;
     double last_pose{-1};
     bool pose_due(double now) const noexcept { return last_pose < 0 || now - last_pose >= pose_interval; }
@@ -167,7 +167,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     summary["max_local_position_delta"] = max_position_delta;
     summary["max_local_rotation_delta_degrees"] = max_angle;
     summary["nonfinite_or_invalid_desired_joints"] = invalid;
-    summary["scope"] = "Up to 15 seconds per independent gameplay/preview history; bounded at 4096 callbacks; full poses up to 10 Hz. Animation/body render/board render have separate timestamps. No graph branch or GPU final-pose claim.";
+    summary["scope"] = "Up to 25 seconds per independent gameplay/preview history; bounded at 8192 callbacks; full poses up to 10 Hz. Animation/body render/board render have separate timestamps. No graph branch or GPU final-pose claim.";
     summary["pose_space"] = "parent-local transforms";
     summary["board_space"] = "world-space board mount";
     summary["board_rig_space"] = "parent-local; 0 Reference, 1 placement child of 0, 2 mount child of 1; other hierarchy requires native rig mapping";

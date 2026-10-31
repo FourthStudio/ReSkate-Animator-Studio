@@ -9,7 +9,7 @@ Reports are local folders under `ReSkate.Tricks/diagnostics/dump-...`:
 - `summary.json`: format/build contract, capture scope, sample counts, largest callback gap,
   native-versus-desired joint deltas, invalid desired joints, current failure and pack name.
 - `timeline.csv`: each observed animation callback, generation/sequence, physics state, trick,
-  selected preset, enabled/recording flags, live/takeoff/recorded stance, retarget/mirror mode,
+  selected preset, enabled/recording flags, live/takeoff/recorded stance, mirror mode,
   source clip time, body/board blend weights, failures and render publication counts/ages.
 - `poses.csv`: sampled parent-local transforms before custom edits, desired output before the
   finite check/publication, and the latest observed render pose before our override. Each stage

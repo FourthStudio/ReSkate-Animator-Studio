@@ -1,10 +1,10 @@
 # Animator Studio implementation
 
-This describes the 1.0.10 candidate. User installation and operation are in [README](../README.md); release acceptance is in the [checklist](studio-release-checklist.md).
+This describes the current release (`DINGOSDK_MOD_VERSION` in `CMakePresets.json`). User installation and operation are in [README](../README.md); release acceptance is in the [checklist](studio-release-checklist.md).
 
 ## Runtime contract
 
-Studio is compiled into ReSkate.dll. ReSkate 2.1.2 and game build 20260929 / Steam 25414733 are the supported integration. Do not infer support for another executable from a successful source build.
+Studio is compiled into ReSkate.dll. ReSkate 2.1.3 and game build 20260929 / Steam 25414733 are the supported integration. Do not infer support for another executable from a successful source build.
 
 Gameplay edits are applied to fresh native body/board poses. The selected trick, pop, stance and takeoff context decide which saved edits are eligible. The native clip matching clock supplies source timing; marked fallback paths are not proof of a decoded native animation-graph state.
 
@@ -12,7 +12,7 @@ Studio and plugin pose/render/board callbacks have separate registrations. Studi
 
 Base stance comes from the profile's `DefaultStanceIsGoofy`. Runtime leading-foot flags live in `Engine/Game/Build/20260929/skater_lead_foot.h`. Exact stance and Front foot are different authoring/playback choices; check both physical limb ownership and fakie state when changing selection.
 
-`AirStretch` can slow a trick from its catch on a drop independently of `air_corrections`. Its authored pose returns toward the native landing as the predicted touchdown approaches; catch tools/drop preview are visible again. General airborne foot corrections remain disabled. At a rail lock, feet captured relative to the last airborne board slide toward the native grind stance only for that lock's fade. A later fade, a playing saved grind, or a different skater generation invalidates that capture. Ground contact protection and other-pop handling remain separate code paths.
+In the air the keys ride on the game's own pose and clock. A trick plays at the speed of the game's own trick, and a longer air does not slow it. At a rail lock, feet captured relative to the last airborne board slide toward the native grind stance only for that lock's fade. A later fade, a playing saved grind, or a different skater generation invalidates that capture. Ground contact protection and other-pop handling remain separate code paths.
 
 The native library is built from the supported game's data, with versioned build metadata. Inventory includes unsupported controllers and graph/document entries. A converted preview or saved native piece is not automatically a verified live grind/transition override.
 
@@ -46,4 +46,4 @@ Standard bug reports collect bounded diagnostics, relevant preset files, log tai
 | UI and key bindings | `Extension/UI/Overlay/animation_studio_overlay.cpp` |
 | Market | `marketplace.*`, `marketplace_listing.h` |
 
-See the [build guide](studio-tester-build.md) for regression and library checks. Legacy recording tools and early prototype notes are historical, not current user workflows.
+See the [build guide](studio-tester-build.md) for regression and library checks. The other `animation-*.md` files in this folder are early research notes. Some of them name tools and code that no longer exist, so do not use them as a guide to the current code.

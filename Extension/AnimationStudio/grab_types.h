@@ -6,11 +6,11 @@
 #include <string_view>
 #include <utility>
 
-// The game's grabs as its grab loop table has them (animation/dingo/cdb_onboard_grab_loop, read from the game's files
-// 2026-10-29): the table is keyed on EnumGS.GrabType, one loop family a value - 1 Frontside, 2 Backside, 3 Tail,
-// 4 Seatbelt, 5 Crail, 6 Nose, 7 Stale, 8 Mute (the weddle loops), 9 Double, 10 Rocket - and the style within a family is
-// Enum.GS.DetailedGrabType (BS_Melon, FS_TuckKnee, Tail_FS_Shifty, ...). A saved grab loop is filed the same way from its
-// clip's name, so the one for the grab the game is doing can start the moment it starts (said_loop).
+// The game's grabs as its grab loop table has them (animation/dingo/cdb_onboard_grab_loop, in the game's files): the table
+// is keyed on EnumGS.GrabType, one loop family a value - 1 Frontside, 2 Backside, 3 Tail, 4 Seatbelt, 5 Crail, 6 Nose,
+// 7 Stale, 8 Mute (the weddle loops), 9 Double, 10 Rocket - and the style within a family is Enum.GS.DetailedGrabType
+// (BS_Melon, FS_TuckKnee, Tail_FS_Shifty, ...). A saved grab loop is filed the same way from its clip's name, so the one
+// for the grab the game is doing can start the moment it starts (named_loop).
 namespace dingosdk::anim_studio {
 struct GrabLoop {
     int family{};      // EnumGS.GrabType 1 to 10; 0 not one of those loops (a one-foot grab, a grab on the ground)

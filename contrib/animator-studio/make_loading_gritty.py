@@ -3,9 +3,11 @@ left and right, halftone, grey flecks, a huge worn word low across it), the resk
 blue paint band with "animator studio" on it and paint running off it, and BUILT BY on torn paper. The wall is made from
 the same pieces as the MARKET (market_art/make_market_art.py), so it is the same look.
 
-    python make_loading_gritty.py
+    python make_loading_gritty.py [OUT_DIR]
 
-Writes "Animator Studio backdrop 6.png" and assets/animator_studio/loading.jpg (what ReSkate.dll is built with).
+Writes "Animator Studio backdrop 6.png" and two previews of it (loading_gritty_169.jpg, as a 16:9 screen shows it, and
+loading_gritty_zoom.jpg, the word up close) to OUT_DIR (when none is given, the folder the repository is in), and
+assets/animator_studio/loading.jpg (what ReSkate.dll is built with).
 """
 import math
 import random
@@ -22,9 +24,9 @@ import make_market_art as art  # noqa: E402  (its pieces: spray, halftone, grey_
 REPO = HERE.parents[1]
 FONTS = REPO / "External" / "fonts"
 MARKET = REPO / "assets" / "animator_studio" / "market"
-OUT_FULL = r"C:\Users\Fourt\Documents\Reskate\Animator Studio backdrop 6.png"
+OUT_DIR = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else REPO.parent  # the full picture and its previews
+OUT_FULL = OUT_DIR / "Animator Studio backdrop 6.png"
 OUT_ASSET = REPO / "assets" / "animator_studio" / "loading.jpg"
-PREVIEW = Path(r"C:\Users\Fourt\AppData\Local\Temp\claude\C--Users-Fourt\2ab0674e-9ffe-4afb-a488-7a96406c2044\scratchpad\thumb")
 
 W, H = 3840, 1620           # 21:9, as the MARKET's wall
 SEEN = round(H * 16 / 9)    # what a 16:9 screen shows of it: the middle (the game fits it to cover the screen)
@@ -142,7 +144,7 @@ canvas = Image.alpha_composite(canvas, shadow.filter(ImageFilter.GaussianBlur(si
 canvas = Image.alpha_composite(canvas, Image.fromarray(word_rgba))
 
 # ---- the paint: one clean band, its edges soft and a little uneven, its ends rounded; drips running off it ------------
-# The same band as make_loading_concrete.py: no dry brush ends, so no lines out at its sides.
+# No dry brush ends, so no lines out at its sides.
 rnd = random.Random(11)
 SCALE = 2  # drawn at half size, blurred and cut at the middle grey: smooth, organic edges
 mask = Image.new("L", (W // SCALE, H // SCALE), 0)
@@ -268,8 +270,9 @@ final = canvas.convert("RGB")
 grain = np.asarray(Image.effect_noise((W, H), 20)).astype(np.float32) - 128
 on_word = np.asarray(letters.filter(ImageFilter.MaxFilter(5)), np.float32) / 255
 final = Image.fromarray(np.clip(np.asarray(final).astype(np.float32) + (grain * 0.14 * (1 - 0.7 * on_word))[..., None], 0, 255).astype(np.uint8))
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 final.save(OUT_FULL)
 final.resize((3072, round(3072 * H / W)), Image.LANCZOS).save(OUT_ASSET, quality=93, subsampling=0, optimize=True)
-final.crop((L0, 0, L0 + SEEN, H)).resize((1280, 720), Image.LANCZOS).save(PREVIEW / "loading_gritty_169.jpg", quality=90)
-final.crop((int(W * 0.30), int(H * 0.22), int(W * 0.62), int(H * 0.78))).save(PREVIEW / "loading_gritty_zoom.jpg", quality=90)
+final.crop((L0, 0, L0 + SEEN, H)).resize((1280, 720), Image.LANCZOS).save(OUT_DIR / "loading_gritty_169.jpg", quality=90)
+final.crop((int(W * 0.30), int(H * 0.22), int(W * 0.62), int(H * 0.78))).save(OUT_DIR / "loading_gritty_zoom.jpg", quality=90)
 print("ok", size, OUT_FULL)

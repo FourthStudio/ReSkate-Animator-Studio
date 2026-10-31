@@ -66,7 +66,8 @@ void tick_local_world_rays() noexcept;
 
 // Invoked through the console's verified game-thread dispatcher. `texts`
 // carries a park mod's name, author, version and description (mod-create:
-// all four; mod-details: the same after the folder in `argument`).
+// all four; mod-details: the same after the folder in `argument`). A place,
+// move or delete with `argument` "no-history" stays out of undo and redo.
 std::string edit_local_park(std::string_view operation, std::string_view map, std::uint64_t generation,
                             std::uint64_t revision, std::string_view argument,
                             const profile::PlacedObject &object = {},

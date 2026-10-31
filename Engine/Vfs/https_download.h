@@ -18,6 +18,9 @@ struct Watch {
     std::atomic<bool> cancel{};
     // Absolute steady_clock epoch microseconds; zero leaves only the GET timeout.
     std::atomic<std::uint64_t> deadline_us{};
+    // How long one step (finding the server, connecting, each read) may wait, in milliseconds,
+    // for slow connections; zero keeps the usual 5 seconds to connect and 10 per read.
+    std::atomic<std::uint32_t> patience_ms{};
 };
 // Streams an HTTPS GET into `destination`, which must not exist yet. Follows
 // redirects that stay on HTTPS; refuses bodies over `max_bytes` or transfers

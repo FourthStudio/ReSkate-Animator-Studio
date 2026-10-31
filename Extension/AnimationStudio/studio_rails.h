@@ -11,6 +11,8 @@
 // The bar's top is about 0.50 m up (0.75 m on the tall ones); the studio measures it once the rail stands there and
 // uses these only until then.
 namespace dingosdk::anim_studio {
+inline constexpr std::string_view studio_rail_item = "own_bkrails_generic_flatrailsquare_00001";
+inline constexpr float studio_rail_scale = 0.6f;
 struct StudioRail {
     std::string_view key;   // the build-kit item
     std::string_view name;  // as SETTINGS lists it

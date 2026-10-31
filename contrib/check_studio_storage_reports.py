@@ -26,11 +26,14 @@ fixture = r'''
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 #include "Extension/AnimationStudio/playlist_management.h"
+#include "Extension/AnimationStudio/anim_runtime_rules.h"
 using namespace dingosdk::anim_studio;
 namespace logging { enum class Level {info, warning}; enum class Channel {skater}; template<class... T> void log(T&&...) {} }
 using logging::Level; using logging::Channel;
@@ -42,6 +45,7 @@ struct State {
     PlaylistEditHistory playlist_history;
     std::string playlist_open, status;
     std::vector<PresetPack> packs;
+    std::vector<std::string> library;
     bool tricks_read{true};
 };
 State shared_state;
@@ -54,13 +58,18 @@ void read_library_locked(State& s) {
     if (!s.playlists.named(s.playlist_open)) s.playlist_open = s.playlists.lists.empty() ? "" : s.playlists.lists.front().name;
 }
 void publish_locked(State&, bool) { if (fail_publish) throw std::runtime_error("notification failure"); }
+std::filesystem::path name_fixture;
+std::filesystem::path saved_json(const std::string& n) { return name_fixture / (n + ".json"); }
+std::filesystem::path saved_clip(const std::string& n) { return name_fixture / (n + ".clip"); }
+std::string file_safe(const std::string& n) { return n; }
+bool reserved_name(const std::string& n) { return n == "presets"; }
 void check(bool ok, const char* why) { if (!ok) throw std::runtime_error(why); }
 '''
 production = ''
 for signature in ['bool playlists_changed_locked(State& s, const Playlists& playlists, std::string& message)',
                   'void say_locked(', 'std::string put_in_playing_list(', 'bool edit_playlist_locked(',
                   'bool undo_playlist_entries(', 'bool duplicate_playlist(', 'bool set_pack_in_list_locked(',
-                  'bool set_pack_in_playlist_on(']:
+                  'bool set_pack_in_playlist_on(', 'std::string free_trick_name_locked(']:
     production += function(source, signature)
 production += '\nstd::atomic<bool> report_being_written{false};\n' + function(source, 'bool write_off_the_game_threads(')
 tests = r'''
@@ -81,6 +90,15 @@ void wait_for(const std::function<bool()>& ready) {
 }
 int main() { try {
     auto& s = state();
+    name_fixture = std::filesystem::current_path() / ("name-fixture-" + std::to_string(GetCurrentProcessId()));
+    std::filesystem::create_directory(name_fixture);
+    struct NameCleanup { ~NameCleanup() { std::error_code ignored; std::filesystem::remove_all(name_fixture, ignored); } } cleanup;
+    s.library = {"Transition"};
+    std::ofstream(saved_json("Transition 2")) << "{}";
+    std::ofstream(saved_clip("Transition 3")) << "clip";
+    check(free_trick_name_locked(s, "Transition") == "Transition 4",
+          "Bulk loop-copy names must skip disk files created since the last library refresh, including clip-only files");
+    check(free_trick_name_locked(s, "presets") == "presets 2", "New loop copies must avoid reserved library folders");
     disk.on = "Everyday";
     disk.lists = {{"Everyday", PlaylistMode::shuffle, {}}, {"Editing", PlaylistMode::shuffle, {{"", "Kickflip"}}}};
     s.playlist_open = "Editing"; read_library_locked(s);

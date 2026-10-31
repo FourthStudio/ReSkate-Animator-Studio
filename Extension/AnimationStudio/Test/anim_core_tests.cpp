@@ -21,6 +21,8 @@
 #include "Extension/AnimationStudio/grab_types.h"
 #include "Extension/AnimationStudio/held_loop_selection.h"
 #include "Extension/AnimationStudio/stance_copy.h"
+#include "Extension/AnimationStudio/loop_copy.h"
+#include "Extension/AnimationStudio/studio_ramps.h"
 #include "Extension/AnimationStudio/pack_update_rules.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
@@ -1582,7 +1584,7 @@ void switch_edits_follow_the_native_body_facing() {
 }
 void diagnostic_history_is_bounded() {
     DiagnosticBuffer history;
-    for (int i = 0; i < 5000; ++i) {
+    for (int i = 0; i < 9000; ++i) {
         DiagnosticSample sample; sample.at = i / 240.0; sample.sequence = i;
         // Deliberately submit poses at callback frequency: the history enforces its own cap.
         sample.native.resize(1); sample.desired.resize(1); sample.render_native.resize(1); sample.render_edited.resize(1);
@@ -1596,7 +1598,7 @@ void diagnostic_history_is_bounded() {
         if (!sample.native.empty()) ++poses;
         else check(sample.render_edited.empty(), "Post-edit diagnostic poses obey the same sampling/memory bound as native poses");
     }
-    check(poses <= 151, "Diagnostic poses cannot grow past the 10 Hz time window even at 240 callbacks per second");
+    check(poses <= static_cast<std::size_t>(std::ceil(DiagnosticBuffer::duration / DiagnosticBuffer::pose_interval)) + 1, "Diagnostic poses cannot grow past the 10 Hz time window even at 240 callbacks per second");
     const auto size = history.samples.size();
     DiagnosticSample bad; bad.at = std::numeric_limits<double>::quiet_NaN(); history.append(std::move(bad));
     check(history.samples.size() == size, "Invalid diagnostic timestamps cannot corrupt the ring");
@@ -3190,8 +3192,91 @@ void fakie_recordings_have_their_own_slot() {
     check(presets[1].active, "The fakie recording plays beside the normal one");
     check(presets[0].active != presets[2].active, "and two normal ones still share a slot");
 }
+void quarter_pipe_goes_under_the_handplant() {
+    check(invert_clip("animation/dingo/c_proto_onb_invert_fs_handplant") && invert_clip("animation/dingo/c_proto_onb_invert_bs_handplant_antic") &&
+              !invert_clip("animation/dingo/c_proto_onb_grind_5050_rail_loop") && !invert_clip("animation/dingo/c_proto_onb_flip_kickflip"),
+          "Only the game's inverts get the quarter pipe");
+    const auto* ramp = studio_quarter_pipe(studio_quarter_pipe_item);
+    check(ramp && near(ramp->top, 2.25f) && near(ramp->coping, -0.75f) && studio_quarter_pipes.size() == 1,
+          "The quarter pipe is the M, 2.25 m high, its coping 75 cm back");
+    // The hand on the coping at (10, -69.99, 5) with him riding up a wall that faces +X.
+    const std::array<float, 3> coping{10.0f, -69.99f, 5.0f};
+    const auto spot = quarter_pipe_spot(*ramp, coping, {1, 0, 0}, -69.99f);
+    check(spot.valid && near(spot.at[1], -69.99f), "The quarter pipe stands on the floor");
+    const Quat turn{spot.rotation[0], spot.rotation[1], spot.rotation[2], spot.rotation[3]};
+    const auto faces = rotate(turn, Vec3{0, 0, 1});
+    check(near(faces[0], 1) && near(faces[2], 0), "Its transition faces the way he rides up");
+    const auto top = rotate(turn, Vec3{0, ramp->top, ramp->coping - studio_coping_radius});
+    check(near(spot.at[0] + top[0], coping[0]) && near(spot.at[2] + top[2], coping[2]), "Its coping's top is under the hand");
+    check(spot.at[0] > coping[0], "It stands out on the open side, the deck behind the coping");
+    // The same spot within 2 cm; turned half round it faces the other way, so it is not.
+    const std::array<float, 4> half_turn{0, spot.rotation[3], 0, -spot.rotation[1]};
+    check(same_ramp_spot(spot.at, spot.rotation, {spot.at[0] + 0.01f, spot.at[1], spot.at[2]}, spot.rotation) &&
+              !same_ramp_spot(spot.at, spot.rotation, spot.at, half_turn),
+          "A quarter pipe turned half round is not the same");
+    check(!quarter_pipe_spot(*ramp, coping, {0, 1, 0}, -69.99f).valid, "No way up the wall, no quarter pipe");
+}
+
+void a_loop_hands_its_pose_to_its_line() {
+    Preset target;
+    const std::string asset = "animation/dingo/c_proto_onb_manual_t_exit";
+    target.trick = "native:" + asset; target.leads_right = false;
+    check(loop_copy_target(target, asset, false) && !loop_copy_target(target, asset, true),
+          "Loop copy updates only an existing version on the loop's foot");
+    target.foreign = true;
+    check(!loop_copy_target(target, asset, false), "Loop copy never overwrites an imported save");
+    target.foreign = false; target.available = false;
+    check(!loop_copy_target(target, asset, false), "A missing target is not selected for an overwrite");
+    const auto loop = line_place("animation/dingo/c_proto_onb_manual_t_loop_med");
+    check(loop.role == LineRole::loop && loop.line && manual_line(*loop.line), "A manual's loop is the loop of its line");
+    check(line_place("animation/dingo/c_proto_onb_manual_t_exit").role == LineRole::out &&
+              line_place("animation/dingo/c_proto_onb_manual_t_land_addi").role == LineRole::in,
+          "Its landing goes into it, its exit comes out of it");
+    check(line_place("animation/dingo/c_proto_onb_manual_t_revert_fs").role == LineRole::none,
+          "A revert changes stance: on no line");
+    const auto fakie = line_place("animation/dingo/c_proto_onb_manual_t_fakie_brake_rolling_slow");
+    check(fakie.role == LineRole::out && fakie.line && fakie.line->loop == "c_proto_onb_manual_t_fakie_loop_med",
+          "The fakie manual's brake is on the fakie line, not the normal one");
+    const auto grind = line_place("animation/dingo/c_proto_onb_grind_fs_noseslide_rail_popout_bs");
+    check(grind.role == LineRole::out && grind.line && grind.line->loop == "c_proto_onb_grind_fs_noseslide_rail_loop" && !manual_line(*grind.line),
+          "A grind's popout comes out of its own loop");
+    check(line_place("animation/dingo/c_proto_onb_flip_kickflip_mid").role == LineRole::none, "A flip is on no line");
+    check(free_ends(LineRole::loop).start && free_ends(LineRole::loop).end && !free_ends(LineRole::in).start && free_ends(LineRole::in).end &&
+              free_ends(LineRole::out).start && !free_ends(LineRole::out).end && !free_ends(LineRole::none).start,
+          "The frames that meet the next clip are free, the rest stay at the game's pose");
+    // A loop keyed in its middle: the brackets' keys (nothing) at 0 and 1, a knee bent at 0.5.
+    Animation looped;
+    const float end = 1.0f;
+    for (const float at : {0.0f, end}) set_key(looped, 342, at, Offset{});
+    const Offset bent{normalised(Quat{0.2f, 0, 0, 1}), {0, 0, 0}};
+    set_key(looped, 342, 0.5f, bent);
+    set_key(looped, board_joint, 0.5f, bent);
+    const auto pose = loop_pose(looped);
+    check(pose.size() == 1 && pose.front().first == 342, "The loop's pose is its knee's key, and never the board's");
+    close_loop(looped, pose, end);
+    const auto start = loop_start_pose(looped), finish = loop_end_pose(looped, end);
+    check(start.size() == 1 && finish.size() == 1 && edit_shows(start.front().second) &&
+              same_turn(start.front().second.rotation, bent.rotation) && same_turn(finish.front().second.rotation, bent.rotation),
+          "Closed, the loop starts and ends on its pose: it goes round without a jump");
+    // An in of 0.6 s with a key of its own at 0.3: the pose on its last frame, its own key kept.
+    Animation in;
+    for (const float at : {0.0f, 0.6f}) set_key(in, 342, at, Offset{});
+    set_key(in, 8, 0.3f, bent);
+    put_pose(in, start, 0.6f);
+    const auto* knee = in.track(342);
+    check(knee && knee->keys.size() == 2 && same_turn(knee->keys.back().rotation, bent.rotation) && !edit_shows(evaluate(*knee, 0)),
+          "The in ends on the loop's pose and still starts on the game's");
+    check(in.track(8) && in.track(8)->keys.size() == 1, "Its own keys stay");
+    check(line_names("a|b|c").size() == 3 && line_names("").empty(), "A line's list splits on |");
+}
+
 int main(int argc, char** argv) {
     try {
+        check(fill_pop_rank(0, 1) > playback_pop_rank("high", "") && fill_pop_rank(0, 2) > fill_pop_rank(0, 1) &&
+              fill_pop_rank(-1, 1) == -1 && fill_pop_rank(0, 0) == 0,
+              "Imported pop fallbacks rank after explicit and ANY choices, retain rejection and prefer the nearest height");
+        a_loop_hands_its_pose_to_its_line();
+        quarter_pipe_goes_under_the_handplant();
         timing_and_stance_edge_cases();
         merged_library_and_timing();
         preview_trajectory_uses_the_whole_clip();

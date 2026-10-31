@@ -4,7 +4,7 @@ Edit skate animations in game, build your own trick packs, and choose how they p
 
 Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
 
-> **Current candidate:** Animator Studio 1.0.39-library.5 on ReSkate 2.1.3. Automated checks cover animation logic and pack files; final in-game release acceptance is tracked in the [release checklist](contrib/studio-release-checklist.md).
+> **Version 1.1:** Animator Studio on ReSkate 2.1.3. See the [1.1 release notes](contrib/release-1.1.md) and [integration record](contrib/studio-library-integration.md).
 >
 > This is a fan project, unaffiliated with Electronic Arts or Full Circle. You need your own copy of skate. on Steam. The game is not included.
 
@@ -32,10 +32,10 @@ On the first start the studio builds its trick library from your own game: about
 1. Open **TRICKS**, search for an animation, and choose a native trick/pop to edit.
 2. Scrub or play the timeline, move or rotate body/board joints, and add keys. Use key blend-in/out to ease edits into the game's pose. Undo/redo and save are available in the editor.
 3. Save with a name of your own. Preview speed affects watching the timeline; gameplay uses normal timing.
-4. In **MY TRICKS**, tick **ACTIVE**. Choose a playlist if asked, and make sure that playlist is switched on.
+4. In **LIBRARY > PLAYLISTS**, create or select a playlist and choose **+ ADD ANIMATIONS**. Add your save, choose **SET AS DEFAULT**, and **RESUME** if playback is paused.
 5. Close the studio and perform the trick in game.
 
-**Saving alone does not activate a trick.** Only one playlist is on at a time; with none on, custom tricks do not play. Also check **Custom tricks in game** in settings. **TEST IN GAME** is a temporary override until you reopen the studio or restart; ACTIVE/playlists keep the selection for later sessions.
+**Saving alone does not activate a trick.** One default playlist plays normally; an optional button playlist supplies alternate animations while its modifier is held. Also check **Custom tricks in game** in settings. **TEST IN GAME** is a temporary override until you reopen the studio or restart; Library playlists keep the selection for later sessions.
 
 The Library shows which playlist you are editing separately from the default and button playlists.
 **SET AS DEFAULT** assigns a list; **RESUME** enables paused playback. **TEST IN GAME** restores your
@@ -104,7 +104,7 @@ cmake --preset ci-windows
 cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher --parallel 4
 ```
 
-Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 1.0.39-library.5 / ReSkate 2.1.3 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
+Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 1.1.0 / ReSkate 2.1.3 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
 
 See the [Studio implementation notes](contrib/animator-studio.md), [repository structure](STRUCTURE.md), and [release checklist](contrib/studio-release-checklist.md). Keep gameplay changes, tests and UI descriptions together; use focused PRs and wait for review before merging.
 

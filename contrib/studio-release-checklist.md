@@ -1,9 +1,8 @@
 # Studio release acceptance
 
-## Library .5 integration candidate (2026-11-01)
+## Version 1.1 combined release (2026-11-01)
 
-This is an experimental candidate, not a public-release approval. See the [integration record](studio-library-integration.md)
-for the reconciled #27 fixes, held #25 work and automated evidence. Record the exact source/hash when checking these in game.
+The user reported successful in-game testing of Library .5 (`0522ef23`) and authorized the full team integration and merge. The exact 1.1 DLL additionally includes Fourth's Market, handplant preview, bulk-copy and loop-copy workflow. Record the source/hash when checking those additions. Automated results belong in the release PR/build-info; unchecked visual scenarios below remain checks to repeat, not failures observed.
 
 - [ ] Edit a playlist different from the default and button playlists. Its contents change without changing either playback assignment.
 - [ ] Add one pack variation, remove it, restore it and Undo/Redo. Other playlists and the source pack remain intact.
@@ -20,6 +19,10 @@ for the reconciled #27 fixes, held #25 work and automated evidence. Record the e
 - [ ] Start with Custom tricks OFF, TEST IN GAME twice, reopen F8: it stays OFF. An explicit ON choice during the test stays ON.
 - [ ] Inspector near -90 and +90 degrees Y: changing an unrelated channel preserves orientation.
 - [ ] SAVE failure on a locked metadata file preserves the matching old clip and leaves the editor's unsaved changes available.
+
+- [ ] Market magazine: search, category/verified filters, install/update and Preview/Back.
+- [ ] Open a handplant/invert and a grind in the Studio room: the quarter pipe or rail appears under the correct move and is removed on close; neither is inserted online.
+- [ ] Save a manual/grind loop, copy its pose to selected ins/outs, then reopen them. Existing normal/switch versions, edits and playlist membership remain correct.
 
 ## Norms' #27 audit: checks to repeat on the reconciled candidate (2026-10-31)
 
@@ -38,8 +41,8 @@ or prove visual gameplay. Repeat these checks in a temporary test installation.
 - [ ] REPORT A BUG after using the editor: the game stays in the level, and the zip holds `ReSkate.log`, the settings and the timelines. A freeze of about 7 s or more on the game or render thread drops the player out of the level.
 - [ ] Shuv-it board: play smonk's Pop Shuv-it low 2 with SMOOTH on. The board does not turn over in the fades.
 - [ ] Grab style: with melon and japan loops saved, change the style during a grab. The loop follows after 0.1 s.
-- Deferred until #25's screen is integrated: COPY in MY TRICKS > SELECT > ALL > COPY. Copies retain duration, stance and metadata. The backend fix is present here.
-- Deferred until that screen is integrated: bulk COPY stops after about 3 s and leaves unprocessed items selected; a second press continues without duplicating completed items.
+- [ ] COPY in MY TRICKS > SELECT > ALL > COPY. Copies retain duration, stance and metadata. The backend fix is present here.
+- [ ] bulk COPY stops after about 3 s and leaves unprocessed items selected; a second press continues without duplicating completed items.
 - [ ] Controller: reach OPEN ANIMATION STUDIO with the D-pad, then try to reach HOW IT WORKS, REPORT A BUG and the rows below it.
 
 ## 1.0.10 review (2026-10-27)

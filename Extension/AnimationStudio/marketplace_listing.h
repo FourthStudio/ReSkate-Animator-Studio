@@ -54,6 +54,9 @@ inline std::vector<Pack> read_search(const std::string& text, std::string& next)
             if (p.created.empty()) p.created = p.updated;
             p.downloads = static_cast<std::uint64_t>(std::max(0.0, num("download_count")));
             p.rating = static_cast<int>(std::max(0.0, num("rating_count")));
+            if (r.contains("categories") && r.at("categories").is_array())
+                for (const auto& c : r.at("categories"))
+                    if (c.is_object() && c.contains("slug") && c.at("slug").is_string() && c.at("slug").string() == category) p.section = true;
             out.push_back(std::move(p));
         } catch (...) {}
     }
@@ -89,6 +92,9 @@ inline std::vector<Pack> read_listing(const std::string& text) {
             if (p.created.empty()) p.created = p.updated;
             p.rating = static_cast<int>(package.value("rating_score", 0.0));
             for (const auto& v : package.at("versions")) p.downloads += static_cast<std::uint64_t>(std::max(0.0, v.value("downloads", 0.0)));
+            if (package.contains("categories") && package.at("categories").is_array())
+                for (const auto& c : package.at("categories"))
+                    if (c.is_string() && c.string() == "Animation Packs") p.section = true;
             if (!thunderstore_url(p.icon_url)) p.icon_url.clear();
             if (!thunderstore_url(p.download_url)) continue;
             out.push_back(std::move(p));

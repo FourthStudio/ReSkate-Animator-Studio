@@ -8,8 +8,8 @@
 // Where the game's own clips stand on the studio's floor (the editor and its previews). A clip is put down with its
 // Ground joint at its first frame on the floor, which is right for a whole trick (its board on the ground before the pop
 // and after the landing). It is not for the rest: a dark catch lands on its upside-down board 9.5 cm up, a fingerflip's
-// way in dives 46 cm into the floor (and was pushed back up frame by frame, so he bobbed), a handplant hangs 2 m under it
-// (checked on the whole trick library, 2026-10-29). This works out, per frame, how far to lift a clip so that:
+// way in dives 46 cm into the floor, a handplant hangs 2 m under it (checked on the whole trick library). This works out,
+// per frame, how far to lift a clip so that:
 // - where its board rests (still for a moment, near the floor, lying flat or upside down) at its start or its end, it
 //   rests on the floor; between a resting start and a resting end the lift goes smoothly from one to the other;
 // - a clip with no resting board (a piece in the air) is lifted once, as little as keeps its board off the floor,
