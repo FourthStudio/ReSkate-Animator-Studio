@@ -38,4 +38,4 @@ Compare with `ReSkate.dll.sha256`. When rolling back, restore your backed-up DLL
 
 If something looks wrong, reproduce it, then use **REPORT A BUG** and include the animation name, stance, body size and what happened. The ZIP stays local until you share it.
 
-[installation and usage](https://github.com/FourthStudio/ReSkate-Animator-Studio#readme) · [heatz's tutorial](https://www.youtube.com/watch?v=cOBGvT7y45I) · [discord](https://discord.gg/zjg262qvw6)
+[installation and usage](https://github.com/FourthStudio/ReSkate-Animator-Studio#readme) Â· [heatz's tutorial](https://www.youtube.com/watch?v=cOBGvT7y45I) Â· [discord](https://discord.gg/zjg262qvw6)
