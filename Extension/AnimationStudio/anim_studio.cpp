@@ -547,12 +547,6 @@ struct Live {
     std::uint64_t states_generation{~std::uint64_t{0}};
     double states_search_at{-1};
     int states_searches{};
-    // The game's own trick phase (Float.Anim.TrickPhase) against the trick's time while the clock follows the game's clip:
-    // a straight line through them, which carries the trick's time on when the clock loses the clip in the air.
-    std::vector<std::pair<float, float>> phase_fit;
-    std::uint64_t phase_episode{~std::uint64_t{0}};
-    float phase_a{}, phase_b{};
-    bool phase_ok{}, phase_told{};
     // A trick's keys the other way round, kept so the mirror is made once rather than every frame.
     std::map<const Animation*, std::shared_ptr<const Animation>> mirrored_edits;
     bool playback_front_foot{true};
@@ -3805,33 +3799,6 @@ void on_animation(std::uintptr_t component) noexcept {
                             hand_back = std::max(trick->caught > up && trick->caught < down ? trick->caught : up, up + 0.85f * (down - up));
                     }
                     if (reading.locked && touch && l.clock_touch_at < 0) { l.clock_touch_at = *touch; l.clock_touch_from = time; }
-                    // The game's own trick phase against the trick's time while the clock follows the game's clip: a line
-                    // through them, taken once it is straight (each within 1/60 s) over a tenth of the phase or more.
-                    if (l.phase_episode != l.episode.id) {
-                        l.phase_episode = l.episode.id;
-                        l.phase_fit.clear();
-                        l.phase_ok = l.phase_told = false;
-                    }
-                    if (reading.locked && !reading.lost && time >= 0 && l.game.trick_phase && *l.game.trick_phase > 0 && *l.game.trick_phase < 1 &&
-                        l.phase_fit.size() < 240) {
-                        l.phase_fit.emplace_back(*l.game.trick_phase, time);
-                        if (l.phase_fit.size() >= 6) {
-                            double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, lo = 1, hi = 0;
-                            for (const auto& [x, y] : l.phase_fit) {
-                                n += 1; sx += x; sy += y; sxx += double(x) * x; sxy += double(x) * y;
-                                lo = std::min<double>(lo, x); hi = std::max<double>(hi, x);
-                            }
-                            const double d = n * sxx - sx * sx;
-                            if (d > 1e-9 && hi - lo >= 0.1) {
-                                const double a = (n * sxy - sx * sy) / d, b = (sy - a * sx) / n;
-                                double worst = 0;
-                                for (const auto& [x, y] : l.phase_fit) worst = std::max(worst, std::abs(a * x + b - y));
-                                l.phase_ok = a > 0.1 && worst < 1.0 / 60;
-                                l.phase_a = static_cast<float>(a);
-                                l.phase_b = static_cast<float>(b);
-                            }
-                        }
-                    }
                     if (reading.locked && reading.lost) {
                         // Off the game's clip: the game's own landing animation, or a recording drifting off it near the
                         // landing. The trick goes on at its own pace - your landing too, on the game's touchdown - until
@@ -3842,16 +3809,11 @@ void on_animation(std::uintptr_t component) noexcept {
                                          trick->name, time, touch ? ", after the touchdown" : ", in the air", reading.error);
                         }
                         if (up >= 0 && down > up && hand_back < 0) { // (on a higher pop it keeps its own pace to its catch)
-                            // In the air with the game's own trick phase lined up with the trick (above): the game's phase says
-                            // where it is, so it goes on with the game rather than on its own guess of the air.
-                            if (!touch && l.phase_ok && l.game.trick_phase && *l.game.trick_phase > 0) {
-                                time = std::clamp(l.phase_a * *l.game.trick_phase + l.phase_b, up, down);
-                                if (!l.phase_told) {
-                                    l.phase_told = true;
-                                    logging::log(Level::info, Channel::skater, "Animation Studio: {} goes on with the game's own trick phase from {:.2f} s.",
-                                                 trick->name, time);
-                                }
-                            } else if (!touch) time = up + fitted_air_time(time - up, down - up, 0); // eases in to just before its landing
+                            // In the air: on from where it was at its own pace (the clock goes on at the clip's pace once lost),
+                            // easing in to just before its landing. Not by the game's own trick phase: a line through it
+                            // overshot on high pops and put the trick at its landing in the air, its legs down at the
+                            // landing's height while the game's board still flipped through them.
+                            if (!touch) time = up + fitted_air_time(time - up, down - up, 0);
                             else if (l.clock_touch_from >= 0 && l.clock_touch_from < down)
                                 time = std::max(time, landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from));
                         }
