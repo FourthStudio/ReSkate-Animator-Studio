@@ -207,6 +207,7 @@ struct Animation {
     std::string maker_key; // the key of the PC it was made on: on any other it plays, but is not opened to edit or copied
     std::string maker_team; // the Thunderstore team its maker was signed in as when it went out: theirs on any PC signed in so
     bool editable{};       // its maker let others edit and copy it (the pack it was shared in said so)
+    bool changed_here{};   // another maker's trick that was edited and saved on this PC: an update of its pack does not replace it
     std::string label;  // the name it is shown by in MY TRICKS and the packs (PACKS); empty: its name
     Clip clip;
     std::vector<Track> tracks;
@@ -438,8 +439,18 @@ Animation mirror_animation(const Animation& animation);
 // small binary file. Both throw std::runtime_error on bad input; nothing half-read is returned.
 std::string to_json(const Animation& animation);
 Animation from_json(std::string_view text); // without the clip
+// A saved trick's file under another name. Edits the file's text: to_json(from_json(text)) has no clip, so it writes a
+// duration of 0, and the file then fails to load.
+std::string renamed_trick_json(std::string_view text, const std::string& name, const std::string& label);
 std::vector<std::uint8_t> clip_bytes(const Clip& clip);
 Clip clip_from_bytes(std::span<const std::uint8_t> bytes);
+// A saved trick's clip: as clip_from_bytes, and no longer than a trick can be. The studio steps through a clip's air frame by
+// frame. A downloaded clip with times of 1e30 seconds holds that loop for ever: at 524288 s, a step of 1/60 does not move a float.
+inline constexpr float longest_trick_seconds = 120;
+// How large a saved trick's clip may go. Of the 8307 clips on a test PC (2026-10-31), every scale is 1 and the largest position
+// is 20002, because the root is in world space. A preview at position 1e6 lost the skater and stopped a plugin for the session.
+inline constexpr float largest_trick_scale = 10, farthest_trick_position = 50000;
+Clip trick_clip_from_bytes(std::span<const std::uint8_t> bytes);
 // ---- which of the game's own clips is playing -----------------------------------------------------
 // The game says which trick it is doing, never which of its clips it plays - and most of what it plays is
 // not a trick at all (setups, loops, exits, the pieces a trick is blended from). Nothing in its memory was

@@ -1,6 +1,6 @@
 # Library integration candidate, 2026-10-31
 
-This is a test candidate, `1.0.39-library.3+reskate.2.1.3`, on
+This is a test candidate, `1.0.39-library.4+reskate.2.1.3`, on
 `22sh/release-library-integration`. It combines the Library/modifier workspace with reviewed team
 work and the native normal/switch feature requested separately by Fourth. It is not Studio 1.0.55
 and does not claim that every change in #25 is present or verified in game.
@@ -21,7 +21,7 @@ A refresh at 17:20 UTC found those heads unchanged and a new #27 at `d218dc40`, 
 | #21 / earlier 2.1.3 integration branch | Its runtime compatibility is superseded by the #22 base; do not re-merge its older editor snapshot. Recover the missing font provenance metadata from its audit. |
 | #25 / native normal/switch (`9523fec5`, stance portion) | Selectively ported by request. Editing, copying, stance labels and in-game selection reconciled with modifier routes and playlist modes; not a merge of #25. |
 | Remainder of #25, including joint limits and lost-air clock | Held following Fourth's request. No remote merge, partial limit fix or clock rewrite was made. |
-| #27 / Norms' 1.0.55 audit (`d218dc40`) | Reviewed as new stacked work, not merged over the held #25 base. Includes pack ownership/update protection, invalid-clip checks, failed-save handling, background reports and bounded copies; these still need reconciliation before a public release. Existing #24 fixes are retained here. |
+| #27 / Norms' 1.0.55 audit (`d218dc40`) | Fix commit ported and reconciled onto this branch: pack ownership/update protection, invalid clips, failed saves, background reports, installed-pack rename tracking, room reopen, trainer navigation and held-loop stability. The bounded COPY backend and serialization fix are included; its SELECT/COPY screen remains held #25 UI. The unrelated `96db5b74` cleanup was not imported. |
 
 The older held-moves and game-clock prototype branches, old gizmo test branch and switch-playback
 merge branch are historical alternatives, not newly released work. Their changes must be assessed
@@ -87,8 +87,8 @@ use an explicit destination and block underlying input. Paused playback has a di
 The Size 1 report reproduced a body-scale error in whole-source fallback playback: live scale 0.92
 versus source 1, adding roughly 6 cm at landing. The shared core now fits hip placement to live body
 dimensions while retaining bone scales, keys and asymmetrical foot poses. See [body-size notes](studio-body-size.md).
-Report ZIPs reserve their summary, timeline and skeleton before large pose files exhaust the budget;
-this is separate from #27's asynchronous reporting work.
+Report ZIPs preserve their summary, timeline and skeleton before large pose files exhaust the budget.
+The .4 reconciliation also includes #27's asynchronous reporting and log/settings priority.
 
 Validation for .3: 64/64 CTest suites, 21 native Python tests, 13 packaging tests (one optional skip),
 production Steam/native selection checks and the new Library interaction harness pass. The latter
@@ -97,3 +97,35 @@ creation, search/folding, setup/confirmation input blocking and paused-playback 
 screens were inspected at 1080p and 768p. The 3,200-save fixture remained responsive in the harness.
 Core tests cover five body scales and both live scale representations; the actual core also replays
 the private captured poses. These checks do not replace in-game acceptance of this exact DLL.
+
+## Norms reconciliation in Library .4
+
+GitHub was refreshed at 17:33 UTC: #27 remained `d218dc40`, #25 `b5a14969`, and #22/main were
+unchanged. The fix commit was applied independently of #25 and its preceding dead-code cleanup.
+Conflicts were resolved against this branch's actual runtime rather than importing missing editor,
+Market-category or loop-copy screens. This keeps native stance conversion, body-size placement,
+modifier routing, playlist-local exclusions and the new Library/Preview flow intact.
+
+- Failed playlist writes return failure without disabling the overlay. Library edits, Undo/Redo,
+  duplicates and legacy additions respect that result before advancing history or opening a copy.
+- Pack updates keep locally edited saves and put the maker's update beside them, off. A repeated
+  SAVE also keeps the in-memory local-edit marker. Older edits not marked by a supporting build
+  cannot be identified retroactively; keep backups when testing updates to existing packs.
+- Reports run off the game/render threads, allow one job at a time, and include logs/settings before
+  size-sorted diagnostic files. A failed callback, launch or completion notification releases the gate.
+- Held grabs keep unnamed pose-selected loops. A compatible better style must persist for 0.1 s;
+  filtering for modifier route and stance happens first. An incompatible mirrored candidate leaves
+  exact-stance fallback running. Normal and modifier counters and clocks remain independent.
+- The trainer explicitly changes the playing/default playlist while preserving the playlist being
+  edited. This branch's existing pack PLAY action retains its default-playlist semantics.
+
+64/64 CTest suites pass, including Norms' pack/clip/listing/serialization tests and our size tests.
+The production native harness additionally covers style flicker/debounce, exact-stance fallback,
+unnamed grabs and modifier handoffs. A new production storage/report harness injects failed writes,
+checks Undo/Redo and destination isolation, and runs real background jobs through completion and
+exceptions. It is included in the manual tester workflow. Existing Steam, Python and Library checks
+also pass. These harnesses use controlled data; the combined DLL still needs live-game acceptance.
+
+The remainder of Fourth's #25 is still held. This is a tested integration candidate, not a merge of
+that branch or a public-release approval. The bulk-copy backend is ready for its future screen, but
+there is no new SELECT/COPY UI in this build. The #27 in-game checklist marks those rows accordingly.

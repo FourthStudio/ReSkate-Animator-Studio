@@ -20,6 +20,7 @@
 #include "Extension/AnimationStudio/grab_types.h"
 #include "Extension/AnimationStudio/held_loop_selection.h"
 #include "Extension/AnimationStudio/stance_copy.h"
+#include "Extension/AnimationStudio/pack_update_rules.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -114,6 +115,29 @@ void market_package_words() {
 }
 
 // Packs: tricks switched off, a maker's lock, the playlist, and a trick's stance versions.
+// COPY in MY TRICKS: 1.0.50 wrote to_json(from_json(file)), which has no clip. Every copy had a duration of 0 and failed to load.
+void a_copied_trick_still_loads() {
+    Animation made;
+    made.name = "Kickflip mid";
+    made.label = "Kickflip";
+    made.trick = "kickflip";
+    made.clip.times = {0, 2};
+    made.clip.takeoff = 0.5f;
+    made.clip.landing = 1.5f;
+    made.end = 1.8f;
+    made.tracks.push_back({7, {{1.5f, {0, 0, 0, 1}, {}, Ease::linear}}});
+    const auto file = to_json(made);
+    bool round_trip_loads = true;
+    try { (void)from_json(to_json(from_json(file))); } catch (const std::runtime_error&) { round_trip_loads = false; }
+    check(!round_trip_loads, "A trick read and written again has no clip, so its keys lie past the end");
+    const auto copy_file = renamed_trick_json(file, "Kickflip mid 2", "Kickflip 2");
+    const auto copy = from_json(copy_file);
+    const auto root = dingosdk::Json::parse(copy_file);
+    check(copy.name == "Kickflip mid 2" && copy.label == "Kickflip 2", "The copy has its new name and label");
+    check(root.at("duration") == dingosdk::Json::parse(file).at("duration") && copy.tracks.size() == 1, "The copy keeps its duration and its keys");
+    check(root.at("takeoff") == dingosdk::Json::parse(file).at("takeoff") && root.at("landing") == dingosdk::Json::parse(file).at("landing"), "and its takeoff and landing");
+    check(from_json(renamed_trick_json(file, "No label", "")).label.empty(), "A copy can have no label");
+}
 void packs_and_playlist() {
     PresetPack pack;
     pack.name = "Street";
@@ -273,6 +297,7 @@ void native_trick_cards() {
     const auto melon = parts("c_proto_onb_inair_bs_grab_melon_mid_loop");
     check(melon.size() == 1 && melon[0].trick == "Melon" && melon[0].side == "BS GRAB" && melon[0].part == "HOLD MID" && melon[0].kind == "Grabs",
           "A grab's tweak is a card of its own, on the grab it is done from");
+    check(parts("c_proto_onb_inair_fs_grab_fingerflip_to").empty(), "A name that ends on \"to\" is no part, and is not read past its end");
     const auto flip = parts("c_proto_inair_grab_stale_kick_fingerflip_to_inair");
     check(flip.size() == 1 && flip[0].trick == "Kick fingerflip" && flip[0].side == "STALEFISH" && flip[0].part == "TO AIR", "Fingerflips by style and grab");
     const auto manual = parts("c_proto_onb_manual_n_fakie_med_turn_bs");
@@ -2412,6 +2437,126 @@ void fakie_mirrors_the_upper_body() {
     text.replace(text.find("\"fakie_upper\""), 13, "\"fakie_upperx\"");
     check(from_json(text).track(right_hand_joint) != nullptr, "A recording made riding fakie is left as it is");
 }
+void held_loop_handoffs_keep_valid_fallbacks() {
+    const std::array<GrabLoop, 4> saved{
+        grab_loop_of("c_proto_onb_inair_bs_grab_melon_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_fakie_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop")};
+    std::vector<std::pair<std::size_t, int>> loops{{0, 1}, {1, 1}, {2, 1}, {3, 1}};
+    int family = 2, detail = 4, playing = -1;
+    bool fakie = false;
+    const auto rank = [&](std::size_t index) { return grab_loop_rank(saved[index], family, detail, &fakie); };
+    const auto choose = [&] { return held_loop_ranks<int>(loops, 1, playing, rank); };
+    check(choose().best == 0 && !choose().keep, "A new melon selects an eligible loop");
+    playing = 0;
+    check(choose().keep, "Holding the same style retains its playback clock");
+    detail = 3;
+    check(!choose().keep && choose().best == 0 && rank(playing) == 2,
+          "Melon gives way to saved Japan even though melon is still a valid same-family fallback");
+    playing = 1;
+    check(choose().keep, "Japan does not restart each frame or switch to an equal-ranked variant");
+    playing = 3;
+    check(choose().keep, "An equally ranked playing variant keeps priority over an earlier index");
+    fakie = true;
+    check(!choose().keep && choose().best == 0, "A held loop yields to a better matching fakie version");
+    playing = 2;
+    check(choose().keep, "The matching fakie loop continues");
+    family = 1;
+    check(!choose().keep && choose().best < 0, "Changing grab family releases all incompatible saved loops");
+    family = 2;
+    playing = 0;
+    loops = {{0, 1}};
+    check(choose().keep && choose().best >= 0, "An available fallback continues when no better loop exists");
+    loops = {{0, 2}};
+    check(!choose().keep && choose().best < 0, "Another held-move kind cannot retain the grab");
+    loops.clear();
+    check(!choose().keep && choose().best < 0, "Removing the saved loops releases the current selection");
+    check(held_loop_better_for > 0 && held_loop_better_for < 0.25f, "A better loop takes over soon, but not on one frame's flicker");
+    // What the running loop does with those ranks.
+    check(held_loop_step(-1, false, -1, {}) == HeldLoopStep::pick_best, "Nothing is playing: the best loop is picked");
+    check(held_loop_step(5, false, -1, {0, false}) == HeldLoopStep::play_on, "A one-foot grab's loop, which the game does not name, is not let go of");
+    check(held_loop_step(5, true, 2, {0, false}) == HeldLoopStep::pick_best, "A named fallback gives way to a better loop");
+    check(held_loop_step(5, true, 0, {0, true}) == HeldLoopStep::play_on, "The best loop plays on, its clock running");
+    check(held_loop_step(5, true, -1, {0, false}) == HeldLoopStep::let_go, "A loop the game has left is let go of");
+    check(held_loop_step(5, true, 1, {-1, false}) == HeldLoopStep::let_go, "A loop that is no longer among the saved loops is let go of");
+}
+// What a downloaded pack can do.
+void downloaded_packs_are_held_to_their_own_files() {
+    Clip clip;
+    clip.joints = 1;
+    clip.times = {0, 1e30f};
+    clip.frames.resize(2);
+    const auto huge = clip_bytes(clip);
+    bool refused = false;
+    try { (void)trick_clip_from_bytes(huge); } catch (const std::runtime_error&) { refused = true; }
+    check(refused, "A clip of 1e30 seconds is no trick: stepping through it would never end");
+    check(clip_from_bytes(huge).duration() > 1e29f, "The plugin API's clips keep their own length");
+    clip.times = {0, longest_trick_seconds - 1};
+    check(trick_clip_from_bytes(clip_bytes(clip)).duration() == longest_trick_seconds - 1, "A long trick still loads");
+    clip.times = {0, longest_trick_seconds};
+    refused = false;
+    try { (void)trick_clip_from_bytes(clip_bytes(clip)); } catch (const std::runtime_error&) { refused = true; }
+    check(refused, "The limit is the one a trick's file is held to");
+    const auto refused_with = [&](const Joint& joint) {
+        clip.times = {0, 1};
+        clip.frames.assign(2, joint);
+        try { (void)trick_clip_from_bytes(clip_bytes(clip)); } catch (const std::runtime_error&) { return true; }
+        return false;
+    };
+    Joint joint;
+    joint.position = {1e6f, 0, 0};
+    check(refused_with(joint), "A joint a thousand km away is no trick: a preview lost the skater to it");
+    joint.position = {0, 0, 0};
+    joint.scale = {1000, 1000, 1000};
+    check(refused_with(joint), "Nor one a thousand times its size");
+    joint.scale = {1, 1, 1};
+    joint.position = {20002, -20002, 20002};
+    check(!refused_with(joint), "The game's own clips reach 20 km: the root is in world space");
+    clip.frames.resize(2);
+
+    check(file_safe("Kickfli/../p") == "Kickflip" && !pack_member_names_its_files("Kickfli/../p"),
+          "A member that reads as one trick and files as another is not taken");
+    check(!pack_member_names_its_files(std::string(48, 'a') + "bcdef"), "Nor one that is cut to another trick's name");
+    check(!pack_member_names_its_files("Kickflip.") && !pack_member_names_its_files("..\\x"), "Nor one with what a file name cannot have");
+    check(pack_member_names_its_files("FS Pop Shuv-it low_2"), "A trick's own name is taken");
+
+    Animation saved;
+    saved.maker_key = "someone";
+    check(update_may_replace(saved, true), "An update replaces its maker's trick");
+    check(!update_may_replace(saved, false), "An update does not replace a trick made here");
+    saved.changed_here = true;
+    check(!update_may_replace(saved, true), "An update does not replace an edit saved here");
+    check(from_json(to_json(saved)).changed_here, "An edit stays marked as one when it is read back");
+    saved.changed_here = false;
+    check(!from_json(to_json(saved)).changed_here && to_json(saved).find("changed_here") == std::string::npos, "A trick not edited here has no mark in its file");
+    check(marked_as_made_here(saved, false) && !marked_as_made_here(saved, true), "This PC's mark is the player's, another's is not");
+    PresetPack updated;
+    updated.slots["kickflip|"] = {"Other", "E 2"};
+    keep_edit_ahead_of_update(updated, "E", "E 2");
+    check(updated.slots["kickflip|"] == std::vector<std::string>{"Other", "E", "E 2"} && updated.off.contains("E 2") && !updated.off.contains("E"),
+          "A kept edit goes ahead of the update's copy, which is switched off");
+    saved.maker_key.clear();
+    check(!marked_as_made_here(saved, false), "A trick with no mark counts as its pack's");
+}
+void the_listing_is_held_to_what_the_search_is() {
+    const auto listing = [](const std::string& full_name, const std::string& owner, const std::string& name) {
+        return R"([{"full_name":")" + full_name + R"(","owner":")" + owner + R"(","name":")" + name +
+               R"(","versions":[{"version_number":"1.0.0","website_url":"https://github.com/FourthStudio/ReSkate-Animator-Studio","download_url":"https://thunderstore.io/x"}]}])";
+    };
+    check(market::read_listing(listing("Fourth_Studio-Tricks", "Fourth_Studio", "Tricks")).size() == 1, "A studio package of the listing is read");
+    check(market::read_listing(listing("../../../../x", "Worthless", "x")).empty(), "A full name that climbs out of the market's folder is not");
+    check(market::read_listing(listing("Worthless-x", "Worthless", "../x")).empty(), "Nor a name that does");
+    check(market::read_listing(listing("Someone-x", "Worthless", "x")).empty(), "Nor an owner that is not the one in its full name: that is what a badge goes by");
+    auto bad_version = listing("Fourth_Studio-Tricks", "Fourth_Studio", "Tricks");
+    bad_version.replace(bad_version.find("1.0.0"), 5, "1/../../../../x");
+    check(market::read_listing(bad_version).empty(), "Nor a version that climbs out: a version goes in file names too");
+
+    std::map<std::string, std::string> installed{{"A-Street", "Street"}, {"A-Other", "Other"}};
+    check(market::rename_installed_pack(installed, "Street", "Mine") && installed["A-Street"] == "Mine" && installed["A-Other"] == "Other",
+          "The market's record follows a renamed pack, so UPDATE replaces it");
+    check(!market::rename_installed_pack(installed, "Gone", "Mine"), "A pack no package became changes nothing");
+}
 void smooth_transitions_contracts() {
     const auto about_x = [](float degrees) {
         const float h = degrees * 3.14159265f / 360;
@@ -2977,6 +3122,7 @@ int main(int argc, char** argv) {
         native_names_and_search();
         native_trick_cards();
         trick_names_match();
+        a_copied_trick_still_loads();
         packs_and_playlist();
         market_package_words();
         pop_grades_read_back();
@@ -3005,12 +3151,15 @@ int main(int argc, char** argv) {
         keys_can_be_dragged_in_time();
         smooth_transitions_contracts();
         fakie_layer_goes_on_as_the_game_plays_it();
+        held_loops_follow_style_changes();
+        downloaded_packs_are_held_to_their_own_files();
+        the_listing_is_held_to_what_the_search_is();
         fakie_mirrors_the_upper_body();
         additive_clips_go_on_their_pose();
         grind_rail_goes_under_the_grind();
         game_clips_stand_on_the_floor_where_their_board_rests();
         a_grab_loop_is_known_by_the_games_grab();
-        held_loops_follow_style_changes();
+        held_loop_handoffs_keep_valid_fallbacks();
         a_grind_is_known_by_the_games_name();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();

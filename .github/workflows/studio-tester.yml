@@ -109,6 +109,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python contrib/check_studio_native_modifiers.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python contrib/check_studio_storage_reports.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python contrib/preview_studio_library.py build/library-preview
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload standalone studio DLL for ReSkate 2.1.3

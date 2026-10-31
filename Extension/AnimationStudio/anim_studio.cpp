@@ -5,6 +5,7 @@
 #include "Extension/UI/Overlay/overlay.h"
 #include "held_loop_selection.h"
 #include "native_asset_names.h"
+#include "pack_update_rules.h"
 #include "pop_grades.h"
 #include "Extension/Trainer/trainer_gamestate.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
@@ -657,6 +658,7 @@ struct Live {
         bool mirrored{};
         float time{};
         double off_since{-1};       // its pose has been off since
+        float better_for{};         // how long a better loop than the one playing has been there
         double since{-1};
         bool told{};                // what was nearest has been logged this hold
     } held;
@@ -705,7 +707,7 @@ struct GameplayPacket {
     LimbWeights limbs; // a limb the game has taken is given back to it
     bool mirrored{};   // the keys were mirrored for this stance, so the studio's pose is too
     bool board_backwards{}; // the game had the deck turned round under him at takeoff
-    bool fakie{};           // he took off rolling fakie (for the playback verification's report)
+    bool fakie{}; // retained by this branch's upper-body stance conversion
     float match{};     // how far a keyed joint goes to the pose it has in the studio (match_bent_joints)
     float match_rest{}; // and how far every other joint and the board do (match_whole_body)
     float feet_match{}; // how far a foot on the deck goes where the studio has it on the board (off the game's clip)
@@ -947,6 +949,32 @@ SettingsFile settings_file_of(const State& s) {
     return f;
 }
 std::atomic<int> open_combo_now{0}; // s.open_combo, for the overlay's every frame
+// A path as UTF-8 (path::string() is the ANSI code page, which throws on a name it cannot spell).
+std::string utf8_path(const std::filesystem::path& path) {
+    const auto text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+// Whether the studio can use this file or folder name: its names are narrow strings in the code page.
+bool name_can_be_spelled(const std::filesystem::path& path) {
+    try {
+        (void)path.filename().string();
+        return true;
+    } catch (...) {
+        logging::log(Level::warning, Channel::skater, "Animation Studio: {} is passed over: Windows cannot spell its name here.", utf8_path(path.filename()));
+        return false;
+    }
+}
+// The next change writes over a saved file that cannot be read. A copy stays beside it, so a slip in a hand edit does not
+// cost the player what the file held.
+void keep_unreadable_copy(const std::filesystem::path& path) {
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error || size == 0) return;
+    auto copy = path;
+    copy += L".unreadable";
+    std::filesystem::copy_file(path, copy, std::filesystem::copy_options::overwrite_existing, error);
+    logging::log(Level::warning, Channel::skater, "Animation Studio: {} could not be read. A copy is kept as {}.", utf8_path(path.filename()), utf8_path(copy.filename()));
+}
 void load_settings(State& s) {
     try {
         std::ifstream in(library_folder() / settings_file, std::ios::binary);
@@ -984,7 +1012,9 @@ void load_settings(State& s) {
             r.chosen = s.grind_rail;
             r.size = s.grind_rail_size;
         }
-    } catch (...) {}
+    } catch (...) {
+        keep_unreadable_copy(library_folder() / settings_file);
+    }
 }
 void write_preset_file(const std::filesystem::path& path, const std::string& text); // below
 // Caller holds the mutex.
@@ -1119,7 +1149,10 @@ Playlists read_playlists() {
     try {
         std::ifstream in(playlists_file(), std::ios::binary);
         const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}));
-        if (!root.is_object()) return out;
+        if (!root.is_object()) {
+            keep_unreadable_copy(playlists_file());
+            return out;
+        }
         if (root.contains("playlists") && root.at("playlists").is_array())
             for (const auto& l : root.at("playlists")) {
                 if (!l.is_object() || out.lists.size() >= 200) continue;
@@ -1131,6 +1164,7 @@ Playlists read_playlists() {
         if (!out.named(out.on)) out.on.clear();
         out.packs_moved = root.contains("packs_moved") && root.at("packs_moved").is_boolean() && root.at("packs_moved").get<bool>();
     } catch (...) {
+        keep_unreadable_copy(playlists_file());
         return out;
     }
     move_packs_into_playlist(out);
@@ -1151,11 +1185,6 @@ std::atomic<int> playlist_turns_mode{0};
 // TEST IN GAME is on (read_custom_tricks found the tested trick): a stance version plays in its own stance only.
 std::atomic<bool> testing_tricks{false};
 std::filesystem::path pack_thumbnail_file(const std::string& name) { return library_folder() / L"presets" / (name + ".png"); }
-// A path as UTF-8 (path::string() is the ANSI code page, which throws on a name it cannot spell).
-std::string utf8_path(const std::filesystem::path& path) {
-    const auto text = path.u8string();
-    return std::string(text.begin(), text.end());
-}
 // Where packs are exported to and imported from: as set in SETTINGS, or ReSkate.Tricks\exports and \import.
 std::filesystem::path pack_export_folder(const State& s) {
     if (!s.export_folder.empty()) return std::filesystem::path(std::u8string(s.export_folder.begin(), s.export_folder.end()));
@@ -1234,7 +1263,7 @@ void write_preset_file(const std::filesystem::path& path, const std::string& tex
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out.write(text.data(), static_cast<std::streamsize>(text.size()));
         out.close();
-        if (!out) throw std::runtime_error("Could not write " + path.filename().string());
+        if (!out) throw std::runtime_error("Could not write " + utf8_path(path.filename()));
     }
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("Could not replace preset selection");
@@ -1311,7 +1340,7 @@ bool upgrade_saved(const std::filesystem::path& json_path) {
         std::ifstream clip_in(clip_path, std::ios::binary);
         if (!clip_in) return false;
         const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
-        const auto clip = clip_from_bytes(bytes);
+        const auto clip = trick_clip_from_bytes(bytes);
         animation.clip.times = {0, clip.duration()};
         animation.clip.takeoff = clip.takeoff;
         animation.clip.landing = clip.landing;
@@ -1346,6 +1375,7 @@ std::vector<std::filesystem::path> saved_jsons(const std::filesystem::path& fold
     std::vector<std::filesystem::path> out, loose;
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (!name_can_be_spelled(entry.path())) continue;
         if (entry.is_regular_file(error) && entry.path().extension() == L".json" && entry.path().filename() != settings_file &&
             entry.path().filename() != rail_records_file)
             loose.push_back(entry.path());
@@ -1492,6 +1522,16 @@ bool claim_account_keys(const std::vector<PresetPack>& packs, const std::vector<
 }
 // Whether the saved animation `name` is locked to another PC's maker (read with the library).
 void read_library_locked(State& s);
+// A trick saved here with this PC's mark, whichever pack names it.
+bool made_here_locked(const std::string& name) {
+    try {
+        std::ifstream in(saved_json(name), std::ios::binary);
+        const auto saved = from_json(std::string((std::istreambuf_iterator<char>(in)), {}));
+        return marked_as_made_here(saved, locked_key(saved.maker_key));
+    } catch (...) {
+        return false;
+    }
+}
 bool locked_locked(State& s, const std::string& name) {
     if (!s.library_read) read_library_locked(s);
     const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return _stricmp(p.name.c_str(), name.c_str()) == 0; });
@@ -1562,7 +1602,7 @@ void read_library_locked(State& s) {
         if (std::filesystem::is_directory(packs, error))
             for (const auto& entry : std::filesystem::directory_iterator(packs, error))
                 if (entry.is_regular_file(error) && entry.path().extension() == L".json" && entry.path().stem() != L"playlist" &&
-                    entry.path().stem() != L"playlists" && entry.path().stem() != L"conflicts" && entry.path().stem() != L"locked") {
+                    entry.path().stem() != L"playlists" && entry.path().stem() != L"conflicts" && entry.path().stem() != L"locked" && name_can_be_spelled(entry.path())) {
                     try {
                         s.packs.push_back(read_pack_file(entry.path().stem().string()));
                         s.pack_times[s.packs.back().name] = saved_time(entry.path());
@@ -1685,7 +1725,7 @@ std::shared_ptr<const Clip> shared_clip(TrickCache& cache, const std::filesystem
     key = content_key(bytes, native, file);
     auto& kept = cache.clips[key];
     if (!kept) {
-        auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
+        auto clip = std::make_shared<Clip>(trick_clip_from_bytes(bytes));
         if (native && place_native_marks(*clip))
             logging::log(Level::info, Channel::skater, "Animation Studio: a trick's clip pops at {:.2f} s, where the game has it.", clip->takeoff);
         kept = std::move(clip);
@@ -3132,18 +3172,25 @@ std::optional<PieceMatch> native_piece_version(Live& l, const Snapshot& snap, Pi
 // Native compatibility is evaluated before modifier priority. A missing family/style/stance falls back to normal.
 // Equal-ranked compatible loops keep their clock; native style changes still select the new best group.
 std::optional<PieceMatch> said_loop(Live& l, const Snapshot& snap, float dt, Live::HeldKind kind,
-                                    const std::function<int(std::size_t)>& rank, const std::string& doing, const char* left) {
+                                    const std::function<int(std::size_t)>& rank, const std::string& doing, const char* left,
+                                    const std::function<bool(std::size_t)>& named = {}) {
     auto& g = l.held;
+    const auto play_on = [&](bool reset) {
+        if (reset) g.better_for = 0;
+        const auto* current = l.piece_tricks[static_cast<std::size_t>(g.playing)];
+        g.time += dt;
+        if (current->clip->duration() > 0) g.time = std::fmod(g.time, current->clip->duration());
+        return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, 0};
+    };
+    // Pose-recognised one-foot grabs have no native name/rank. Do not drop their loop every frame.
+    if (g.playing >= 0 && named && !named(static_cast<std::size_t>(g.playing))) return play_on(true);
     for (const bool modified : {true, false}) {
         if (modified && !l.native_modifier.held) continue;
         const auto routed_rank = [&](std::size_t i) { return l.piece_tricks[i]->modifier_route == modified ? rank(i) : -1; };
         const auto choice = held_loop_ranks<Live::HeldKind>(l.held_loops, kind, g.playing, routed_rank);
         if (choice.best < 0) continue;
         if (choice.keep && (snap.front_foot || !g.mirrored)) {
-            const auto* current = l.piece_tricks[static_cast<std::size_t>(g.playing)];
-            g.time += dt;
-            if (current->clip->duration() > 0) g.time = std::fmod(g.time, current->clip->duration());
-            return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, 0};
+            return play_on(true);
         }
         std::vector<std::size_t> pieces;
         std::vector<const Clip*> clips;
@@ -3165,13 +3212,15 @@ std::optional<PieceMatch> said_loop(Live& l, const Snapshot& snap, float dt, Liv
         if (options.empty()) continue;
         for (const auto& option : options)
             if (g.playing >= 0 && option.piece == static_cast<std::size_t>(g.playing) && option.mirrored == g.mirrored) {
-                const auto* current = l.piece_tricks[option.piece];
-                g.time += dt;
-                if (current->clip->duration() > 0) g.time = std::fmod(g.time, current->clip->duration());
-                return PieceMatch{option.piece, g.mirrored, g.time, option.score};
+                return play_on(true);
             }
+        // Apply Norms' style debounce after compatibility/route filtering. An incompatible better
+        // loop must not restart the fallback, nor steal a variant from the other playlist.
+        if (g.playing >= 0 && rank(static_cast<std::size_t>(g.playing)) >= 0 &&
+            (g.better_for += dt) < held_loop_better_for) return play_on(false);
         const auto pick = native_variant(l, std::move(options));
         g.playing = static_cast<int>(pick.piece); g.mirrored = pick.mirrored; g.time = 0; g.off_since = -1;
+        g.better_for = 0;
         logging::log(Level::info, Channel::skater, "Animation Studio: {}; {}{} starts{}.", doing,
             l.piece_tricks[pick.piece]->name, pick.mirrored ? ", mirrored" : "", modified ? " [modifier playlist]" : "");
         return pick;
@@ -3179,6 +3228,7 @@ std::optional<PieceMatch> said_loop(Live& l, const Snapshot& snap, float dt, Liv
     if (g.playing >= 0)
         logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go: {}.", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, left);
     g.playing = g.candidate = -1;
+    g.better_for = 0;
     return std::nullopt;
 }
 std::optional<PieceMatch> manual_play(Live& l, const Snapshot& snap, float dt) {
@@ -3233,7 +3283,8 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
         const std::string said = l.grab_now >= 1 && l.grab_now <= 10
                                      ? std::string("in a ") + family_names[static_cast<std::size_t>(l.grab_now)] + (style.empty() ? std::string{} : " (" + style + ")")
                                      : std::string("in a grab");
-        if (auto played = said_loop(l, snap, dt, kind, [&](std::size_t index) { return grab_rank(l, index); }, said, "the game has left that grab"))
+        if (auto played = said_loop(l, snap, dt, kind, [&](std::size_t index) { return grab_rank(l, index); }, said, "the game has left that grab",
+                                   [&](std::size_t index) { return index < l.piece_grabs.size() && l.piece_grabs[index].family != 0; }))
             return played;
     }
     std::vector<std::size_t> pieces;
@@ -8593,7 +8644,7 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
         // clip's pop and landing: a Kickflip mid made from the low one played the low one's motion in the studio while the
         // game played its mid. A recording keeps its own clip in every copy.
         const auto anim = from_json(text);
-        Clip source_clip = clip_from_bytes(std::vector<std::uint8_t>(clip.begin(), clip.end()));
+        Clip source_clip = trick_clip_from_bytes(std::vector<std::uint8_t>(clip.begin(), clip.end()));
         if (anim.source.kind == "native_asset") place_native_marks(source_clip);
         std::vector<std::string> copies, skipped;
         int on_game_clips = 0;
@@ -8676,7 +8727,7 @@ bool make_stance_version(const std::string& animation, int version, std::string&
             if (!in) throw std::runtime_error(animation + "'s clip is missing.");
             bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         }
-        Clip clip = clip_from_bytes(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+        Clip clip = trick_clip_from_bytes(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
         if (anim.source.kind == "native_asset") place_native_marks(clip);
         const bool own_right = studio_goofy(s.stance_choice);
         auto copied = stance_copy(std::move(anim), std::move(clip), own_right, version);
@@ -8720,6 +8771,83 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         publish_locked(s, false);
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
+}
+// COPY (MY TRICKS, SELECT): each one a copy of its own, keys, stance and pop and all, named "Kickflip mid 2" (the next
+// number free). Copies are in no pack and no playlist: they are to change, and go in one when they are ready. Locked ones
+// (a maker's) can be played, not copied.
+// This runs on the overlay's thread. In game, 404 tricks froze the game for about 10 s and it left the level (about 7 s is
+// the limit). Those tricks were 0.3 MB each and a real clip reaches 5 MB, so the limit is on the time and not the count.
+constexpr auto longest_copy = std::chrono::seconds(3);
+bool copy_saved(const std::vector<std::string>& animations, std::vector<std::string>& made, std::vector<std::string>& not_reached, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    made.clear();
+    not_reached.clear();
+    std::vector<std::string> locked, failed;
+    const auto folder = library_folder();
+    // "Kickflip mid 2" is copied as "Kickflip mid 3": a copy of a copy is numbered from the trick, not "Kickflip mid 2 2".
+    const auto unnumbered = [](std::string text) {
+        const auto space = text.find_last_of(' ');
+        if (space != std::string::npos && space > 0 && space + 1 < text.size() &&
+            std::all_of(text.begin() + static_cast<std::ptrdiff_t>(space) + 1, text.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            text.resize(space);
+        return text;
+    };
+    const auto started = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < animations.size(); ++i) {
+        if (std::chrono::steady_clock::now() - started >= longest_copy) {
+            not_reached.assign(animations.begin() + static_cast<std::ptrdiff_t>(i), animations.end());
+            break;
+        }
+        const auto& animation = animations[i];
+        try {
+            const auto safe = file_safe(animation);
+            if (locked_locked(s, safe)) {
+                locked.push_back(animation);
+                continue;
+            }
+            const auto text = saved_text(safe);
+            const auto anim = from_json(text);
+            std::string bytes;
+            {
+                std::ifstream in(saved_clip(safe), std::ios::binary);
+                if (!in) throw std::runtime_error("its clip is missing");
+                bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            }
+            const auto stem = unnumbered(safe);
+            unsigned number = 2;
+            std::string name = variation_name(stem, number);
+            while (std::filesystem::exists(folder / name) || std::filesystem::exists(folder / (name + ".json"))) name = variation_name(stem, ++number);
+            const auto label = anim.label.empty() ? std::string{} : variation_name(unnumbered(anim.label), number);
+            std::filesystem::create_directories(folder / name);
+            write_preset_file(folder / name / (name + ".clip"), bytes);
+            write_preset_file(folder / name / (name + ".json"), renamed_trick_json(text, name, label));
+            made.push_back(name);
+        } catch (const std::exception& e) {
+            failed.push_back(animation);
+            logging::log(Level::warning, Channel::skater, "Animation Studio: {} could not be copied: {}", animation, e.what());
+        }
+    }
+    if (!made.empty()) {
+        read_library_locked(s);
+        s.tricks_read = false;
+    }
+    const auto listed = [](const std::vector<std::string>& names) {
+        std::string out;
+        for (std::size_t i = 0; i < names.size() && i < 3; ++i) out += (i ? ", " : "") + names[i];
+        if (names.size() > 3) out += " and " + std::to_string(names.size() - 3) + " more";
+        return out;
+    };
+    message = made.empty() ? std::string("Nothing copied.")
+                           : "Copied " + std::to_string(made.size()) + (made.size() == 1 ? " trick: " : " tricks: ") + listed(made) +
+                                 ". They are in MY TRICKS, in no pack or playlist: change them as you like.";
+    if (!locked.empty()) message += " Not " + listed(locked) + ": locked to " + (locked.size() == 1 ? "its maker." : "their makers.");
+    if (!failed.empty()) message += " " + listed(failed) + " could not be copied (see the log).";
+    if (!not_reached.empty()) message += " " + std::to_string(not_reached.size()) + " still ticked: press COPY again for them.";
+    s.status = message;
+    logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
+    publish_locked(s, false);
+    return !made.empty();
 }
 bool set_pack_trick_on(const std::string& pack_name, const std::string& animation, bool on, std::string& message) {
     auto& s = state();
@@ -8807,13 +8935,24 @@ void set_pack_favorite(const std::string& pack_name, bool favorite) {
     publish_locked(s, false);
 }
 namespace {
-void playlists_changed_locked(State& s, const Playlists& playlists, const std::string& message) {
-    write_playlists(playlists);
-    s.tricks_read = false; // the game's side takes it up
-    read_library_locked(s);
+// A playlist that cannot be saved (a read-only file, a full disk) says so. Nothing may be thrown from here: this runs in the
+// overlay's frame, and an exception there turns off all of ReSkate's overlay until the game restarts. False: not saved.
+bool playlists_changed_locked(State& s, const Playlists& playlists, std::string& message) {
+    bool saved = true;
+    try {
+        write_playlists(playlists);
+        s.tricks_read = false; // the game's side takes it up
+    } catch (const std::exception& e) {
+        message = std::string("The playlist was not saved: ") + e.what();
+        saved = false;
+    }
+    // Saved or not, the state now holds what the file holds. An open playlist that was not saved is not left open.
+    try { read_library_locked(s); } catch (...) {}
     s.status = message;
     publish_locked(s, false);
+    return saved;
 }
+bool playlists_changed_locked(State& s, const Playlists& playlists, std::string&& said) { return playlists_changed_locked(s, playlists, said); }
 void say_locked(State& s, std::string& message, std::string said) {
     message = std::move(said);
     s.status = message;
@@ -8841,7 +8980,8 @@ void play_playlist_locked(State& s, const std::string& name, std::string& messag
     if (name.empty()) {
         lists.on.clear();
         message = (before.empty() ? std::string("No playlist is on") : before + " is off: no playlist is on") + ", so nothing of yours plays.";
-        return playlists_changed_locked(s, lists, message);
+        (void)playlists_changed_locked(s, lists, message);
+        return;
     }
     const auto* list = lists.named(name);
     if (!list) return say_locked(s, message, "There is no playlist called " + name + ".");
@@ -9056,7 +9196,7 @@ bool edit_playlist_locked(State& s, const std::string& target, std::string& mess
     if (list->entries.size() > 2000) { say_locked(s, message, "This playlist has reached its 2000-entry limit."); return false; }
     const auto after = list->entries;
     try {
-        playlists_changed_locked(s, lists, message);
+        if (!playlists_changed_locked(s, lists, message)) return false;
         s.playlist_history = {target, before, after, false};
     } catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     return true;
@@ -9100,7 +9240,7 @@ bool undo_playlist_entries(const std::string& target, std::string& message) {
         say_locked(s, message, "That edit can no longer be undone: this playlist has changed."); return false;
     }
     message = (history.undone ? "Undid the last content edit in " : "Redid the content edit in ") + target + ".";
-    try { playlists_changed_locked(s, lists, message); }
+    try { if (!playlists_changed_locked(s, lists, message)) return false; }
     catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     s.playlist_history = std::move(history);
     return true;
@@ -9127,7 +9267,7 @@ bool duplicate_playlist(const std::string& target, std::string& message) {
     const auto name = copy.name;
     lists.lists.push_back(std::move(copy));
     message = "Made " + name + ". Your normal and modifier assignments are unchanged.";
-    try { playlists_changed_locked(s, lists, message); }
+    try { if (!playlists_changed_locked(s, lists, message)) return false; }
     catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     s.playlist_open = name;
     return true;
@@ -9147,8 +9287,7 @@ bool playlist_add(const PlaylistEntry& entry, std::string& message) {
     }
     open->entries.push_back(entry);
     message = (entry.animation.empty() ? "Added the pack " + entry.pack : "Added " + shown_name(s, entry.animation)) + " to " + open->name + ".";
-    playlists_changed_locked(s, lists, message);
-    return true;
+    return playlists_changed_locked(s, lists, message);
 }
 void playlist_remove(std::size_t index) {
     auto& s = state();
@@ -9265,9 +9404,8 @@ bool delete_playlist(const std::string& wanted, std::string& message) {
     if (s.playlist_history.name == name) s.playlist_history = {};
     return true;
 }
-bool set_pack_playing(const std::string& pack, bool on, std::string& message) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
+namespace {
+bool set_pack_in_list_locked(State& s, const std::string& pack, bool on, std::string& message) {
     if (std::none_of(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name == pack; })) {
         say_locked(s, message, "There is no pack called " + pack + ".");
         return false;
@@ -9283,8 +9421,19 @@ bool set_pack_playing(const std::string& pack, bool on, std::string& message) {
         std::erase_if(list->entries, [&](const auto& e) { return e.pack == pack && e.animation.empty(); });
         message = pack + " is out of " + list->name + " and does not play now.";
     }
-    playlists_changed_locked(s, lists, message);
-    return true;
+    return playlists_changed_locked(s, lists, message);
+}
+} // namespace
+bool set_pack_playing(const std::string& pack, bool on, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    // Keep this branch's PLAY action: add to the default playback list, independently of editing.
+    return set_pack_in_list_locked(s, pack, on, message);
+}
+bool set_pack_in_playlist_on(const std::string& pack, bool on, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return set_pack_in_list_locked(s, pack, on, message);
 }
 std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message) {
     auto& s = state();
@@ -9315,8 +9464,7 @@ std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& en
     message = "Added " + what + " to " + name +
               (lists.on == name ? ": it plays in game now." : ". Playback assignments are unchanged; choose its role in the LIBRARY.");
     s.playlist_open = name;
-    playlists_changed_locked(s, lists, message);
-    return name;
+    return playlists_changed_locked(s, lists, message) ? name : std::string{};
 }
 void set_hover_preview(bool on) {
     auto& s = state();
@@ -9443,7 +9591,7 @@ bool delete_pack(const std::string& name, std::string& message) {
             for (const auto& m : draft->second.members()) members.insert(m);
         std::vector<std::string> tricks, kept;
         for (const auto& member : members) {
-            if (std::find(s.library.begin(), s.library.end(), member) == s.library.end()) continue;
+            if (std::find(s.library.begin(), s.library.end(), member) == s.library.end() || made_here_locked(member)) continue;
             const bool elsewhere = std::any_of(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name != name && p.has(member); }) ||
                                    std::any_of(s.pack_drafts.begin(), s.pack_drafts.end(), [&](const auto& d) { return d.first != name && d.second.has(member); });
             (elsewhere ? kept : tricks).push_back(member);
@@ -9521,6 +9669,7 @@ bool rename_pack(const std::string& from, const std::string& to_in, std::string&
         pack.name = to;
         write_preset_file(pack_file(to), pack_json(pack).dump(2));
         if (_stricmp(to.c_str(), from.c_str()) != 0) std::filesystem::remove(pack_file(from));
+        market::installed_pack_renamed(from, to); // the pack has its new name now, whatever fails below
         std::error_code error;
         if (std::filesystem::exists(pack_thumbnail_file(from), error)) std::filesystem::rename(pack_thumbnail_file(from), pack_thumbnail_file(to), error);
         auto names = pack_names_on();
@@ -9639,7 +9788,7 @@ void clear_test_returned() {
 namespace {
 std::string read_whole(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
-    if (!in) throw std::runtime_error("could not read " + path.filename().string());
+    if (!in) throw std::runtime_error("could not read " + utf8_path(path.filename()));
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 void write_whole(const std::filesystem::path& path, const std::string& data) {
@@ -9650,7 +9799,7 @@ void write_whole(const std::filesystem::path& path, const std::string& data) {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out.write(data.data(), static_cast<std::streamsize>(data.size()));
         out.close();
-        if (!out) throw std::runtime_error("could not write " + path.filename().string());
+        if (!out) throw std::runtime_error("could not write " + utf8_path(path.filename()));
     }
     std::error_code error;
     std::filesystem::remove(path, error);
@@ -10025,10 +10174,10 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                 if (pair.first.empty() || pair.second.empty()) throw std::runtime_error(name + " is missing its .json or .clip");
                 (void)from_json(pair.first);
                 const std::vector<std::uint8_t> clip(pair.second.begin(), pair.second.end());
-                if (clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
+                if (trick_clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
             }
             PackFileTransaction transaction(folder);
-            std::set<std::string> removed_members;
+            std::set<std::string> removed_members, kept_edits;
             std::vector<std::string> new_packs;
             std::size_t imported = 0, renamed_now = 0;
             // Queue obsolete imported members for removal. Their names are reusable, but their files stay installed
@@ -10041,9 +10190,14 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     if (other.name != replace)
                         for (const auto& name : other.members()) elsewhere.insert(name);
                 for (const auto& name : replaced->members()) {
-                    if (elsewhere.contains(name)) continue;
+                    if (elsewhere.contains(name) || !pack_member_names_its_files(name)) continue;
                     try {
-                        if (!locked_key(from_json(read_whole(saved_json(name))).maker_key)) continue; // made here: yours
+                        const auto saved = from_json(read_whole(saved_json(name)));
+                        const bool made_elsewhere = locked_key(saved.maker_key);
+                        if (!update_may_replace(saved, made_elsewhere)) {
+                            if (made_elsewhere) kept_edits.insert(name);
+                            continue; // made here, or edited here: yours
+                        }
                     } catch (...) { continue; }
                     const auto safe = file_safe(name);
                     for (const auto& file : {folder / safe / (safe + ".json"), folder / safe / (safe + ".clip"),
@@ -10085,9 +10239,11 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                 auto animation = from_json(json);
                 const bool keyless = animation.maker_key.empty() && !zip_key.empty();
                 if (keyless) animation.maker_key = zip_key;
-                if (target != name || keyless) {
+                const bool marked_changed = animation.changed_here; // true only on the PC it was edited on
+                animation.changed_here = false;
+                if (target != name || keyless || marked_changed) {
                     animation.name = target;
-                    animation.clip.times = {0, clip_from_bytes(std::vector<std::uint8_t>(pair.second.begin(), pair.second.end())).duration()};
+                    animation.clip.times = {0, trick_clip_from_bytes(std::vector<std::uint8_t>(pair.second.begin(), pair.second.end())).duration()};
                     json = to_json(animation);
                 }
                 if (locked_key(animation.maker_key) && !animation.editable) made_elsewhere[sha256_hex(pair.second)] = animation.maker_key;
@@ -10107,6 +10263,14 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                 };
                 for (auto& [slot, list] : pack.slots)
                     for (auto& name : list) name = new_name(name);
+                // Someone else's pack does not get a trick of yours by naming it: not to lock it from sharing, and not to
+                // take it to the Recycle Bin when the pack is deleted.
+                if (locked_key(pack.maker_key)) {
+                    std::set<std::string> carried;
+                    for (const auto& [original, target_name] : rename) carried.insert(target_name);
+                    for (auto& [slot, list] : pack.slots)
+                        std::erase_if(list, [&](const std::string& name) { return !carried.contains(name) && pack_member_names_its_files(name) && made_here_locked(name); });
+                }
                 std::set<std::string> unlinked;
                 for (const auto& name : pack.unlinked) unlinked.insert(new_name(name));
                 pack.unlinked = std::move(unlinked);
@@ -10118,6 +10282,8 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     // In place of the old version, under its name: on or off as it was, what was switched off here
                     // still off, and the tricks you put in it yourself still in it.
                     target = replace;
+                    for (const auto& edit : kept_edits)
+                        if (const auto update = rename.find(edit); update != rename.end() && update->second != edit) keep_edit_ahead_of_update(pack, edit, update->second);
                     for (const auto& name : replaced->off)
                         if (pack.has(name)) pack.off.insert(name);
                     // And how its slots go round as set here: FIXED or CYCLE, the tricks left out of a cycle, and EVERY
@@ -10152,8 +10318,9 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     std::error_code missing;
                     for (auto& [slot, names] : pack.slots)
                         std::erase_if(names, [&](const std::string& name) {
-                            const bool there = written.contains(name) ||
-                                               (!transaction.removing(saved_json(name)) && std::filesystem::is_regular_file(saved_json(name), missing));
+                            const bool there = pack_member_names_its_files(name) &&
+                                               (written.contains(name) ||
+                                                (!transaction.removing(saved_json(name)) && std::filesystem::is_regular_file(saved_json(name), missing)));
                             return !there || !seen.insert(name).second;
                         });
                     std::erase_if(pack.slots, [](const auto& slot) { return slot.second.empty(); });
@@ -10183,7 +10350,7 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                 if (error) std::filesystem::remove(path, error);
             }
         } catch (const std::exception& e) {
-            problems.push_back(path.filename().string() + ": " + e.what());
+            problems.push_back(utf8_path(path.filename()) + ": " + e.what());
         }
     }
     const auto played = fresh_packs.empty() ? std::string{} : " " + play_new_packs_locked(s, fresh_packs);
@@ -10214,7 +10381,7 @@ bool unpack_preview(const std::filesystem::path& zip, const std::filesystem::pat
             if (pair.first.empty() || pair.second.empty()) throw std::runtime_error(name + " is missing its .json or .clip");
             auto animation = from_json(pair.first);
             const std::vector<std::uint8_t> clip(pair.second.begin(), pair.second.end());
-            if (clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
+            if (trick_clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
             checked.emplace_back(name, std::move(animation));
         }
         if (checked.empty()) throw std::runtime_error("there are no tricks in it");
@@ -10321,6 +10488,7 @@ bool save(std::string& message) {
             full.clip = timing;
             full.name = name;
         }
+        full.changed_here = locked_key(full.maker_key) && (s.dirty || s.edits.changed_here);
         // Its stance label is the foot its clip leads with, so packs and "the one saved last plays" treat two
         // recordings on the same foot as the same stance.
         if (const auto lead = clip_leads_right(*written)) {
@@ -10350,6 +10518,7 @@ bool save(std::string& message) {
         std::filesystem::rename(staged(clip_path), clip_path);
         std::filesystem::rename(staged(json_path), json_path);
         s.edits.name = name;
+        s.edits.changed_here = full.changed_here; // repeated SAVE must keep the local-edit protection
         s.saved_as = name;
         s.dirty = false;
         s.tricks_read = false; // the next tick reads the custom tricks again
@@ -10358,7 +10527,7 @@ bool save(std::string& message) {
         // A first save says how it gets to play: + PLAYLIST puts it in the playlist that is on (the card asks which, with none on).
         if (first_save) message += " + PLAYLIST puts it in a playlist, and it plays in game.";
         s.status = message;
-        logging::log(Level::info, Channel::skater, "Animation Studio: saved {} ({} keys) to {}.", name, s.edits.key_count(), folder.string());
+        logging::log(Level::info, Channel::skater, "Animation Studio: saved {} ({} keys) to {}.", name, s.edits.key_count(), utf8_path(folder));
         publish_locked(s);
         return true;
     } catch (const std::exception& e) {
@@ -10822,7 +10991,7 @@ std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     std::ifstream in(library_folder() / L"library" / std::filesystem::path(trick.file), std::ios::binary);
     if (!in) throw std::runtime_error("its file is missing");
     const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
+    auto clip = std::make_shared<Clip>(trick_clip_from_bytes(bytes));
     if (clip->joints != skeleton_joints) throw std::runtime_error("it is for another skeleton");
     place_native_marks(*clip);
     return clip;
@@ -10980,7 +11149,7 @@ bool peek_saved(const std::string& animation, bool play) {
             std::ifstream json_in(saved_json(safe), std::ios::binary), clip_in(saved_clip(safe), std::ios::binary);
             if (!json_in || !clip_in) throw std::runtime_error("its files are missing");
             auto edits = from_json(std::string((std::istreambuf_iterator<char>(json_in)), {}));
-            auto clip = std::make_shared<Clip>(clip_from_bytes(std::vector<std::uint8_t>((std::istreambuf_iterator<char>(clip_in)), {})));
+            auto clip = std::make_shared<Clip>(trick_clip_from_bytes(std::vector<std::uint8_t>((std::istreambuf_iterator<char>(clip_in)), {})));
             if (edits.source.kind == "native_asset") place_native_marks(*clip);
             return turned(key, std::move(clip), std::move(edits), goofy, false);
         });
@@ -11114,7 +11283,7 @@ bool open_trick_files(const std::string& safe, const std::filesystem::path& json
         std::ifstream clip_in(clip_path, std::ios::binary);
         if (!clip_in) throw std::runtime_error("its recorded trick is missing");
         const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
-        auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
+        auto clip = std::make_shared<Clip>(trick_clip_from_bytes(bytes));
         if (clip->joints != skeleton_joints) throw std::runtime_error("it was recorded on another skeleton");
         if (animation.source.kind == "native_asset") place_native_marks(*clip);
         // A key a frame past the end (rounded onto a frame past it by builds before 2026-10-23) is put on the end.
@@ -11255,7 +11424,8 @@ bool remove(const std::string& name, std::string& message, std::vector<std::stri
     if (packs_gone) *packs_gone = gone;
     return true;
 }
-bool export_diagnostics(std::string& message) {
+namespace {
+bool write_diagnostics_now(std::string& message) {
     try {
         DiagnosticBuffer copy, preview;
         { auto& history = diagnostic_history(); std::lock_guard lock(history.mutex); copy = history.buffer; }
@@ -11373,11 +11543,12 @@ bool export_diagnostics(std::string& message) {
           if (std::filesystem::is_regular_file(info, error) && std::filesystem::file_size(info, error) < 1024 * 1024)
               std::filesystem::copy_file(info, folder / L"client-build-info.json"); }
         write_preset_file(folder / L"summary.json", summary.dump(2));
-        message = "Diagnostics saved: " + folder.string() + (copy.samples.empty() && preview.samples.empty() ? " (no poses captured yet)." : ".");
+        message = "Diagnostics saved: " + utf8_path(folder) + (copy.samples.empty() && preview.samples.empty() ? " (no poses captured yet)." : ".");
         auto& s = state(); std::lock_guard lock(s.mutex); s.status = message;
         return true;
     } catch (const std::exception& e) { message = std::string("Diagnostic export failed: ") + e.what(); return false; }
 }
+} // namespace
 namespace {
 // The last `limit` bytes of a file another process may still be writing (the game's log): read shared, never locked.
 std::optional<std::string> read_tail(const std::filesystem::path& path, std::uint64_t limit) {
@@ -11402,10 +11573,11 @@ std::optional<std::string> read_tail(const std::filesystem::path& path, std::uin
 // REPORT A BUG (SETTINGS > STUDIO): everything the crew needs about a problem in one zip - the last 15 seconds
 // (export_diagnostics), the end of the game's log, the studio's settings and which build this is - saved in
 // ReSkate.Tricks\bug reports and shown in Explorer, to send with what happened. Nothing is sent from here.
-bool report_bug(std::string& message) {
+namespace {
+bool write_bug_report_now(std::string& message) {
     try {
         std::string diagnostics;
-        export_diagnostics(diagnostics);
+        const bool dumped = write_diagnostics_now(diagnostics);
         const auto library = library_folder();
         std::vector<std::pair<std::string, std::string>> files;
         std::uint64_t total = 0;
@@ -11417,33 +11589,32 @@ bool report_bug(std::string& message) {
             total += text->size();
             files.emplace_back(name, std::move(*text));
         };
-        // The newest diagnostics dump: the one export_diagnostics just made.
-        std::error_code error;
-        std::filesystem::path newest;
-        std::filesystem::file_time_type newest_time{};
-        for (const auto& entry : std::filesystem::directory_iterator(library / L"diagnostics", error)) {
-            if (!entry.is_directory(error) || !entry.path().filename().string().starts_with("dump-")) continue;
-            const auto when = entry.last_write_time(error);
-            if (newest.empty() || when > newest_time) newest = entry.path(), newest_time = when;
-        }
-        if (!newest.empty()) {
-            // Reserve the context before large pose CSVs can exhaust the report budget.
-            // Without these, a remote report cannot identify which clip/phase produced the poses.
-            static constexpr std::array<const char*, 3> context{"summary.json", "timeline.csv", "skeleton.csv"};
-            for (const auto* name : context) add(newest / name, std::string("diagnostics/") + name, 8ull * 1024 * 1024);
-            for (const auto& entry : std::filesystem::recursive_directory_iterator(newest, error))
-                if (entry.is_regular_file(error)) {
-                    const auto relative = std::filesystem::relative(entry.path(), newest, error).generic_string();
-                    if (std::find(context.begin(), context.end(), relative) == context.end())
-                        add(entry.path(), "diagnostics/" + relative, 64ull * 1024 * 1024);
-                }
-        }
+        // The log and the settings go in first, then the dump's files, smallest first. A dump after the editor holds two
+        // poses.csv of 34 and 52 MB: in folder order they used all of the 96 MB, and the report had no log, no settings and
+        // no timeline (2026-10-31). The end of a poses.csv is what gets cut now.
         // The game's log (its end, where the problem is) and a note of a silent exit, if there was one.
         if (const auto logs = logging::status().directory; !logs.empty()) {
             add(logs / L"ReSkate.log", "ReSkate.log", 8ull * 1024 * 1024);
             add(logs / L"crash_note.txt", "crash_note.txt", 256 * 1024);
         }
         add(library / settings_file, "studio-settings.json", 1024 * 1024);
+        // The newest diagnostics dump: the one write_diagnostics_now just made.
+        std::error_code error;
+        std::filesystem::path newest;
+        std::filesystem::file_time_type newest_time{};
+        for (const auto& entry : std::filesystem::directory_iterator(library / L"diagnostics", error)) {
+            if (!entry.is_directory(error) || !utf8_path(entry.path().filename()).starts_with("dump-")) continue;
+            const auto when = entry.last_write_time(error);
+            if (newest.empty() || when > newest_time) newest = entry.path(), newest_time = when;
+        }
+        if (dumped && !newest.empty()) {
+            std::vector<std::pair<std::uintmax_t, std::filesystem::path>> dump_files;
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(newest, error))
+                if (entry.is_regular_file(error)) dump_files.emplace_back(entry.file_size(error), entry.path());
+            std::sort(dump_files.begin(), dump_files.end());
+            for (const auto& [size, file] : dump_files)
+                add(file, "diagnostics/" + std::filesystem::relative(file, newest, error).generic_string(), 64ull * 1024 * 1024);
+        }
         // Which build, and the studio as it is now.
         SYSTEMTIME now{};
         GetLocalTime(&now);
@@ -11487,7 +11658,6 @@ bool report_bug(std::string& message) {
         const auto zip = library / L"bug reports" / std::filesystem::path("ReSkate bug report " + stamp + ".zip");
         write_whole(zip, stored_zip(files));
         message = "Bug report saved: " + utf8_path(zip.filename()) + ". Send it to us with what happened and which trick.";
-        logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
         {
             auto& s = state();
             std::lock_guard lock(s.mutex);
@@ -11502,6 +11672,46 @@ bool report_bug(std::string& message) {
         message = std::string("The bug report was not saved: ") + e.what();
         return false;
     }
+}
+// A report takes seconds to write. While the game's thread or the render thread is held that long, the game leaves the level.
+// A 7.4 s dump and a 10 s REPORT A BUG each put the player back on the splash screen. The exit came 0.3 s after each ended (2026-10-31).
+// So a report is written on a thread of its own, and says when it is done.
+std::atomic<bool> report_being_written{false};
+bool write_off_the_game_threads(std::string& message, const char* saying, bool (*write)(std::string&)) {
+    if (report_being_written.exchange(true, std::memory_order_acq_rel)) {
+        message = "A report is being saved: wait for it to finish.";
+        return false;
+    }
+    message = saying;
+    try { std::thread([write] {
+        struct Completion {
+            ~Completion() { report_being_written.store(false, std::memory_order_release); }
+        } completion;
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        std::string said = "The report was not saved.";
+        bool written = false;
+        try { written = write(said); } catch (...) {}
+        try {
+            logging::log(written ? Level::info : Level::warning, Channel::skater, "Animation Studio: {}", said);
+            auto& s = state();
+            std::lock_guard lock(s.mutex);
+            s.status = said;
+            publish_locked(s, false);
+        } catch (...) {} // a failed completion notification must not terminate the worker or keep the gate busy
+    }).detach(); }
+    catch (const std::exception& e) {
+        report_being_written.store(false, std::memory_order_release);
+        message = std::string("The report could not start: ") + e.what();
+        return false;
+    }
+    return true;
+}
+} // namespace
+bool export_diagnostics(std::string& message) {
+    return write_off_the_game_threads(message, "Saving the diagnostics. The studio says when they are saved.", write_diagnostics_now);
+}
+bool report_bug(std::string& message) {
+    return write_off_the_game_threads(message, "Saving the bug report. Explorer shows it when it is saved.", write_bug_report_now);
 }
 void rename(const std::string& name) {
     auto& s = state();

@@ -26,4 +26,5 @@ pure additive animation. Do not claim a live-game fix from the offline replay al
 
 Large bug reports now reserve space for `summary.json`, `timeline.csv` and `skeleton.csv` before
 pose CSVs exhaust the existing ZIP budget. The received ZIP omitted these; diagnosis required
-reading the complete local dump. Background report generation is separate work in Norms' #27.
+reading the complete local dump. Library .4 integrates Norms' #27 background report generation:
+logs and settings are included first, followed by diagnostic files ordered from smallest to largest.

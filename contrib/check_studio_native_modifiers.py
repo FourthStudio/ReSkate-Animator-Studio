@@ -44,7 +44,7 @@ struct CustomTrick{std::string trick,name;std::shared_ptr<const Clip> clip;bool 
 struct Snapshot{bool front_foot{true};};
 struct Live{
  enum class HeldKind{none,ground,grind,grab};
- struct Held{int playing{-1},candidate{-1};bool mirrored{};float time{};double off_since{-1};} held;
+ struct Held{int playing{-1},candidate{-1};bool mirrored{};float time{},better_for{};double off_since{-1};} held;
  struct PiecePlay{const CustomTrick*trick{};bool mirrored{};float time{},weight{};} piece_play;
  struct Manual{int manual{};bool fakie{};};
  std::vector<Manual>piece_manuals;int manual_now{1};std::optional<bool>fakie_now{false};
@@ -83,8 +83,26 @@ int main(){try{
  const GrabLoop loops[]={grab_loop_of("c_proto_onb_inair_bs_grab_melon_mid_loop"),grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop")};
  int style=4;const auto rank=[&](std::size_t i){return grab_loop_rank(loops[i],2,style,nullptr);};
  auto old_style=said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"melon","left");style=3;
- auto new_style=said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"japan","left");
- check(old_style&&old_style->piece==0&&new_style&&new_style->piece==1,"The native grab style can change during one hold");
+ auto flicker=said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"japan","left");
+ check(old_style&&old_style->piece==0&&flicker&&flicker->piece==0&&flicker->time>0,"A single better-style frame keeps the running fallback and its clock");
+ style=4;said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"melon","left");
+ check(grab.held.better_for==0,"Returning to the current style resets the better-style debounce");style=3;
+ for(int i=0;i<8;++i)said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"japan","left");
+ check(grab.held.playing==1,"A stable native grab style changes within the same hold after the debounce");
+ grab.held={};japan.clip=mirror;snap.front_foot=false;style=4;
+ said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"melon","left");style=3;
+ for(int i=0;i<16;++i)said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"japan","left");
+ check(grab.held.playing==0&&grab.held.time>.24f,"A better loop that fits only mirrored cannot interrupt an exact-stance fallback");
+ const auto not_named=[](std::size_t){return false;};
+ const auto unknown_rank=[](std::size_t){return -1;};
+ auto unnamed=said_loop(grab,snap,.2f,Live::HeldKind::grab,unknown_rank,"one foot","left",not_named);
+ check(unnamed&&unnamed->piece==0&&unnamed->time>.4f,"A pose-selected unnamed grab keeps its loop despite having no native rank");
+ snap.front_foot=true;japan.clip=plain;
+ melon.modifier_route=japan.modifier_route=true;grab.held={};grab.native_modifier.observe(1,5,true,true,false);style=4;
+ said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"melon","left");style=3;
+ for(int i=0;i<8;++i)said_loop(grab,snap,.016f,Live::HeldKind::grab,rank,"japan","left");
+ check(grab.held.playing==1,"The same stable-style handoff works inside the modifier playlist");
+ melon.modifier_route=japan.modifier_route=false;
  // Choosing a moving source only once cannot lock its first variant forever across later attempts.
  special.clip=plain;alternate.clip=plain;l.piece_play={};l.variant_counts.clear();snap.front_foot=true;
  auto moving=native_piece_version(l,snap,{0,false,1,0},true);check(moving&&moving->piece==1,"A recognised native piece selects its modifier version");

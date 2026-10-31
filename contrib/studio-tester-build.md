@@ -1,6 +1,6 @@
 # Build and validate Animator Studio
 
-The current integration candidate is Studio 1.0.39-library.3 on ReSkate 2.1.3, including Fourth's native normal/switch options, guided Library navigation and the body-size placement correction. See the [integration record](studio-library-integration.md) for included and held changes, [README](../README.md) for installation, and [release acceptance](studio-release-checklist.md) before publishing a binary.
+The current integration candidate is Studio 1.0.39-library.4 on ReSkate 2.1.3, including Fourth's native normal/switch options, guided Library navigation the body-size placement correction and Norms' #27 fixes. See the [integration record](studio-library-integration.md) for included and held changes, [README](../README.md) for installation, and [release acceptance](studio-release-checklist.md) before publishing a binary.
 
 ## Local Windows build
 
@@ -20,7 +20,16 @@ python -m unittest discover -s contrib/animator-studio -p 'test_native*.py'
 python -m unittest discover -s contrib/Test -p '*tests.py'
 ```
 
-The preset stamps ReSkate 2.1.3 / AnimatorStudio 1.0.39-library.3 and turns binary auto-update off. Its release source is the Studio repository and crash uploads are disabled for this modified build. Outputs are under `build/ci-windows/Release`. Warnings are errors. `dingosdk_regression_tests` builds all enabled `dingosdk_*_tests` executables and the graph-probe self-test: 64 CTest suites with the Studio, plugin and launcher options enabled. Optional plugin fixture folders absent from a checkout are reported as skipped by the plugin suite.
+The preset stamps ReSkate 2.1.3 / AnimatorStudio 1.0.39-library.4 and turns binary auto-update off. Its release source is the Studio repository and crash uploads are disabled for this modified build. Outputs are under `build/ci-windows/Release`. Warnings are errors. `dingosdk_regression_tests` builds all enabled `dingosdk_*_tests` executables and the graph-probe self-test: 64 CTest suites with the Studio, plugin and launcher options enabled. Optional plugin fixture folders absent from a checkout are reported as skipped by the plugin suite.
+
+Also run the production interaction checks from a VS developer shell:
+
+```powershell
+python contrib/check_studio_modifier_steam.py
+python contrib/check_studio_native_modifiers.py
+python contrib/check_studio_storage_reports.py
+python contrib/preview_studio_library.py build/library-preview
+```
 
 ## CI and downloads
 

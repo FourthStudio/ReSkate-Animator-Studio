@@ -1066,6 +1066,7 @@ std::string to_json(const Animation& animation) {
     if (!animation.maker_key.empty()) root["maker_key"] = animation.maker_key;
     if (!animation.maker_team.empty()) root["maker_team"] = animation.maker_team;
     if (animation.editable) root["editable"] = true;
+    if (animation.changed_here) root["changed_here"] = true;
     if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     if (animation.catch_at) root["catch"] = *animation.catch_at;
@@ -1103,6 +1104,13 @@ std::string to_json(const Animation& animation) {
     root["tracks"] = std::move(tracks);
     return root.dump(2);
 }
+std::string renamed_trick_json(std::string_view text, const std::string& name, const std::string& label) {
+    auto root = Json::parse(text);
+    root["name"] = name;
+    if (label.empty()) root.erase("label");
+    else root["label"] = label;
+    return root.dump(2);
+}
 Animation from_json(std::string_view text) {
     const auto root = Json::parse(text);
     require(root.is_object() && root.value("format", "") == "fourth-animation-studio", "not an Animation Studio profile");
@@ -1115,6 +1123,7 @@ Animation from_json(std::string_view text) {
     result.maker_key = root.value("maker_key", "").substr(0, 64);
     result.maker_team = root.value("maker_team", "").substr(0, 64);
     result.editable = root.value("editable", false);
+    result.changed_here = root.value("changed_here", false);
     result.label = utf8_prefix(root.value("label", ""), 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
@@ -1147,7 +1156,7 @@ Animation from_json(std::string_view text) {
     result.end = root.contains("end") ? number(root.at("end"), "bad end bracket") : -1.0f;
     if (result.pop != "low" && result.pop != "mid" && result.pop != "high") result.pop.clear();
     const float duration = root.contains("duration") ? number(root.at("duration"), "bad duration") : 0.0f;
-    require(duration >= 0 && duration < 120, "bad duration");
+    require(duration >= 0 && duration < longest_trick_seconds, "bad duration");
     // The maker's catch, kept when it is a time on the clip; anything else is dropped (the studio then finds the catch).
     if (root.contains("catch") && root.at("catch").is_number()) {
         const float at = root.at("catch").get<float>();
@@ -1359,6 +1368,17 @@ Clip clip_from_bytes(std::span<const std::uint8_t> bytes) {
     require((clip.takeoff == -1 || (clip.takeoff >= 0 && clip.takeoff <= clip.duration())) &&
             (clip.landing == -1 || (clip.landing >= 0 && clip.landing <= clip.duration())) &&
             (clip.takeoff < 0 || clip.landing < 0 || clip.landing >= clip.takeoff), "takeoff or landing outside the clip");
+    return clip;
+}
+Clip trick_clip_from_bytes(std::span<const std::uint8_t> bytes) {
+    auto clip = clip_from_bytes(bytes);
+    require(clip.duration() < longest_trick_seconds, "the clip is too long for a trick");
+    const auto in_reach = [](const Joint& joint) {
+        const auto within = [](const auto& values, float limit) { return std::all_of(values.begin(), values.end(), [limit](float v) { return std::abs(v) <= limit; }); };
+        return within(joint.scale, largest_trick_scale) && within(joint.position, farthest_trick_position);
+    };
+    require(std::all_of(clip.frames.begin(), clip.frames.end(), in_reach) && std::all_of(clip.board.begin(), clip.board.end(), in_reach),
+            "the clip moves a joint too far for a trick");
     return clip;
 }
 std::string file_safe(std::string_view name) {
