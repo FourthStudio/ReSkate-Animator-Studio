@@ -65,8 +65,8 @@ Check every exit code when running these manually; CI does so. These validate de
 
 ## Tester behavior
 
-Preview speed changes watching speed only. Persistent gameplay selection uses ACTIVE and one enabled playlist. Fixed priority is resolved before a winning pack's Alternate variants; exact stance and Front foot matching must be tested separately. Different pop heights may use generated fallback versions, so compare the actual pop and source timing rather than assuming a saved low-pop tag excludes all other heights.
+Preview speed changes watching speed only. Persistent gameplay selection uses the Library's default playlist and optional held-button playlist. The edited playlist is independent of both assignments. Fixed priority is resolved before a winning pack's Alternate variants; exact stance and Front foot matching must be tested separately. ANY-pop saves and imported packs may use generated fallback versions; your own explicitly single-pop saves retain that binding. Compare the actual pop and source timing.
 
-Airborne catch correction and forced foot contact remain disabled; catch/drop-preview tools are hidden. Native grind/transition inventory does not imply live replacement support.
+Gameplay uses native/source timing without catch slowdown or an airborne foot magnet. CATCH HOLD and DROP PREVIEW controls are removed; the optional timeline CATCH marker remains. Supported held native loops can play, while an indexed transition alone does not imply live replacement support.
 
 An old experimental `ReSkate-NativeKickflipLab` mod can still override resources independently of Studio selections. Keep research mods out of release/test installations. Complete the [acceptance checklist](studio-release-checklist.md) on the exact DLL to be distributed.
