@@ -255,7 +255,7 @@ void set_smooth_transitions(bool on);
 void set_joint_limits(bool on);
 // How a saved trick is matched to the skater doing it. On, a trick belongs to the front foot and the back
 // foot: it plays for any stance, mirrored when the other foot leads. Off, it plays only for the stance and
-// switch it was recorded in, which is what it did before.
+// switch it was made in.
 void set_front_foot(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is
 // Keyframes. `begin_change` saves the state for undo once per gesture (a drag is one change).
@@ -328,7 +328,7 @@ bool set_pack_pop_rule(const std::string& pack, const std::string& rule, std::st
 // A trick more than one pack that is on has (its slot): "*" play them at random, the name of the pack whose plays it, or
 // "" not decided (they play at random, and the studio asks).
 bool set_conflict_choice(const std::string& slot, const std::string& pack, std::string& message);
-// Where packs are exported to and imported from ("" the defaults); open_folder shows it in Explorer.
+// Where packs are exported to and imported from ("" the defaults). open_pack_folder shows it in Explorer.
 void set_pack_folder(bool exporting, const std::string& path);
 void open_pack_folder(bool exporting);
 // Test in game: the studio closes and this saved trick plays in game, on any pop and over any pack, until the

@@ -35,13 +35,12 @@ void find_state_objects(std::uintptr_t start, std::size_t size) noexcept;
 bool flip_states_found() noexcept;
 // For the Animator Studio: what the game's animation is doing now, each empty where the level has not got it or the skater
 // has none: the trick's phase (Float.Anim.TrickPhase), the trick input (Bool.Intent.Trick), aiming for a grind
-// (Bool.Physics.IsTargetingGrind), the time to land (Float.Physics.TimeToLand), the graph's trick-in-air and
-// grind-into states, and which grind it is doing (Enum.GS.Anim.CurrentGrindType, CurrentSkateGrindType and
+// (Bool.Physics.IsTargetingGrind), the time to land (Float.Physics.TimeToLand), and which grind it is doing (Enum.GS.Anim.CurrentGrindType, CurrentSkateGrindType and
 // Enum.GS.SkateGrindType - the one the game picks its grind clips by - all Enum.SkateGrindType values:
 // Extension/AnimationStudio/grind_types.h).
 struct StudioStates {
     std::optional<float> trick_phase, time_to_land;
-    std::optional<bool> trick_intent, targeting_grind, trick_in_air, grind_into;
+    std::optional<bool> trick_intent, targeting_grind;
     std::optional<std::uint32_t> grind_type, skate_grind_type, anim_grind_type;
     std::optional<bool> riding_fakie; // Bool.Physics.RidingFakie
     std::optional<std::uint32_t> grab_type, detailed_grab_type; // EnumGS.GrabType, Enum.GS.DetailedGrabType

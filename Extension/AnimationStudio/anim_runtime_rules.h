@@ -112,39 +112,6 @@ struct ContactWindow {
         return now - *since >= 1.0 / 30.0;
     }
 };
-struct GameplayClipClock {
-    float time{-1}, air_rate{1}, landing_time{};
-    double at{-1};
-    std::optional<double> landing_started;
-    void reset() noexcept { *this = {}; }
-    float advance_air(double now, float start, float rate, float limit) noexcept {
-        if (!std::isfinite(now) || !std::isfinite(start) || !std::isfinite(rate) || rate < 0 || !std::isfinite(limit)) return time;
-        if (at >= 0 && now < at) return time;
-        const double next = at < 0 || time < 0 ? start : time + (now - at) * rate;
-        const float shown = static_cast<float>(std::min(static_cast<double>(limit), next));
-        observe_air(now, shown, shown >= limit ? 0.0f : rate);
-        return shown;
-    }
-    void observe_air(double now, float source_time, float rate) noexcept {
-        if (!std::isfinite(now) || !std::isfinite(source_time) || !std::isfinite(rate)) return;
-        at = now; time = source_time; air_rate = std::max(0.0f, rate); landing_started.reset();
-    }
-    float land(double now, float speed, float duration, float fallback) noexcept {
-        if (!std::isfinite(now) || !std::isfinite(speed) || speed <= 0 || !std::isfinite(duration) || duration < 0) return time;
-        if (at < 0 || time < 0) { at = now; time = std::clamp(fallback, 0.0f, duration); air_rate = speed; return time; }
-        if (now < at) return time;
-        if (!landing_started) { landing_started = at; landing_time = time; }
-        // Continue from the last airborne sample, not clip.landing + contact age.
-        // Integrate a smooth rate ramp exactly, including callbacks spanning the whole ramp.
-        constexpr double ramp = 0.08;
-        const double elapsed = std::max(0.0, now - *landing_started), u = std::clamp(elapsed / ramp, 0.0, 1.0);
-        const double head = ramp * (air_rate * u + (speed - air_rate) * (u*u*u - 0.5*u*u*u*u));
-        const double advance = head + speed * std::max(0.0, elapsed - ramp);
-        time = static_cast<float>(std::min(static_cast<double>(duration), landing_time + advance));
-        at = now;
-        return time;
-    }
-};
 // The pop a saved trick is for, against the pop the game graded: 0 the same, 1 any pop (made so, or a pack's ANY). With
 // `nearest` - a trick on its own pop (a pack's OWN, or no pack) - then the other pops, the nearest first, so a trick made at
 // one pop plays on every pop there is no version of it for. The game's clock follows the clip of whichever pop it plays and
@@ -171,25 +138,25 @@ inline bool riding_switch(bool left_foot_leads, bool goofy) noexcept { return le
 // skater riding switch leads with his right too. A trick belongs to the front foot and the back foot, not
 // to the left and the right: a kickflip is flicked with the front foot whoever is standing on the board.
 inline bool leads_right(bool goofy, bool switch_stance) noexcept { return goofy != switch_stance; }
-// ---- which recording plays, from everything the game tells us at takeoff ---------------------------
+// ---- which saved trick plays, from everything the game tells us at takeoff -------------------------
 // What the game does (contrib/animator-studio/GAME_STANCE_NOTES.md): one mirror for the foot that leads
 // (regular is its goofy clips mirrored, switch flips it), fakie is the same clips with an upper-body layer
 // on top (never a mirror), nollie is its own clips and its own trick names, and board backwards (a shuvit,
-// or a push out of fakie into switch) only turns the deck under him. So a recording is described by the
+// or a push out of fakie into switch) only turns the deck under him. So a saved trick is described by the
 // foot it leads with and whether it was made rolling fakie; nollie is told apart by the trick's name before
 // this, and board backwards is taken care of by the board's frame when it plays.
 struct StanceCandidate {
     bool leads_right{};        // the foot it was made leading with, read from its clip
-    std::optional<bool> fakie; // made rolling fakie; empty for a recording from before that was kept (taken as not)
+    std::optional<bool> fakie; // made rolling fakie. Empty in an older file (taken as not)
     int pop_rank{};            // playback_pop_rank against the pop the game graded; below 0 cannot play
 };
 struct LiveStance {
     bool leads_right{}; // the game's mirror: clear when the right foot leads
     bool fakie{};       // rolling backwards at takeoff
 };
-// The recordings that may play now, best first: exact stance only takes one made on the foot that leads now
+// The saved tricks that may play now, best first: exact stance only takes one made on the foot that leads now
 // and in the same fakie state, and never mirrors it. Front foot takes any, the closest first: the pop the game
-// graded, then the same fakie state (a fakie recording carries the game's fakie upper body). The foot it was made
+// graded, then the same fakie state (a fakie clip carries the game's fakie upper body). The foot it was made
 // leading with does not part them: one made on the other foot plays mirrored, which is exact, and shuffle and In
 // turns go round all of them. Only the best group is returned, so cycling variants alternates between equally good
 // recordings.

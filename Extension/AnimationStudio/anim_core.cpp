@@ -701,13 +701,12 @@ void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native) 
         for (std::size_t k = 0; k < 3; ++k) native[i].position[k] += deltas[i].offset[k];
     }
 }
-std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror) {
+std::optional<Offset> board_key(const Animation& edits, float seconds) {
     if (!std::isfinite(seconds) || seconds < edits.start || (edits.end >= 0 && seconds > edits.end)) return std::nullopt;
     const auto* track = edits.track(board_joint);
     if (!track || track->hidden || track->keys.empty()) return std::nullopt;
     auto edit = evaluate(*track, seconds);
     if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 && edit.offset == Vec3{}) return std::nullopt;
-    if (mirror) { edit.rotation = mirror_board_rotation(edit.rotation); edit.offset = mirror_board_vector(edit.offset); }
     return edit;
 }
 Quat scaled_turn(const Quat& q, float k) noexcept {
@@ -717,8 +716,8 @@ Quat scaled_turn(const Quat& q, float k) noexcept {
     const float half = std::acos(w) * k, f = std::sin(half) / sine;
     return {q[0] * f, q[1] * f, q[2] * f, std::cos(half)};
 }
-Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& ground, bool mirror) {
-    const auto edit = board_key(edits, seconds, mirror);
+Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& ground) {
+    const auto edit = board_key(edits, seconds);
     return edit ? board_edited_by(board, *edit, ground) : board;
 }
 Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& ground) noexcept {
@@ -770,14 +769,15 @@ bool move_window_edge(Animation& animation, int which, float to, float duration)
     }
     return true;
 }
-Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge) {
+Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value) {
+    constexpr float same_key_within = 1.0f / 120;
     auto* track = animation.track(joint);
     if (!track) {
         animation.tracks.push_back({joint, {}, false, false});
         track = &animation.tracks.back();
     }
     for (auto& key : track->keys)
-        if (std::abs(key.time - seconds) <= merge) {
+        if (std::abs(key.time - seconds) <= same_key_within) {
             key.rotation = normalised(value.rotation);
             key.offset = value.offset;
             return key;
@@ -1868,7 +1868,6 @@ void NativeClock::reset() noexcept {
     models_.reset();
     locked_ = -1;
     time_ = error_ = baseline_ = -1;
-    confidence_ = 0;
     bad_ = updates_ = 0;
     candidate_ = -1;
     streak_ = 0;
@@ -1919,7 +1918,6 @@ NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step
         locked_ = best_model;
         time_ = refine(models[static_cast<std::size_t>(locked_)], best_frame, best);
         error_ = baseline_ = best;
-        confidence_ = 0;
         updates_ = 0;
     } else if (!lost_) {
         // Following it: where the game should be now, and where its pose says it is, near that.
@@ -2003,9 +2001,6 @@ NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step
         }
     }
     const auto& m = models[static_cast<std::size_t>(locked_)];
-    // On the clip in full; less as the game blends away from it, smoothed so a single odd pose does not flicker.
-    const float on = lost_ ? 0.0f : std::clamp((lose_degrees - error_) / (lose_degrees - good_degrees), 0.0f, 1.0f);
-    confidence_ += (on - confidence_) * (confidence_ <= 0 ? 1.0f : 0.35f);
     out.locked = true;
     out.lost = lost_;
     // Past its clip's end only once lost (a clip the trick's own is read across onto can be shorter).
@@ -2014,7 +2009,6 @@ NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step
     out.baseline = baseline_;
     out.clip = static_cast<int>(m.clip);
     out.mirrored = m.mirrored;
-    out.confidence = confidence_;
     return out;
 }
 } // namespace dingosdk::anim_studio

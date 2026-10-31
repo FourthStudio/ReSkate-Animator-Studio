@@ -145,8 +145,6 @@ StateObject studio_objects[]{
     {{0x35, 0xc2, 0x8d, 0xe8, 0x37, 0x79, 0x75, 0xb8, 0xe8, 0x8d, 0xc2, 0x35, 0x79, 0x37, 0xb8, 0x75}, "Animation/Dingo/Bool.Intent.Trick"},
     {{0xb5, 0x81, 0x42, 0x7d, 0x06, 0x80, 0x60, 0xd3, 0x7d, 0x42, 0x81, 0xb5, 0x80, 0x06, 0xd3, 0x60}, "Animation/Dingo/Bool.Physics.IsTargetingGrind"},
     {{0x6e, 0x5e, 0x96, 0x1e, 0x7b, 0xf0, 0x7f, 0x61, 0x1e, 0x96, 0x5e, 0x6e, 0xf0, 0x7b, 0x61, 0x7f}, "Animation/Dingo/Float.Physics.TimeToLand"},
-    {{0xcc, 0x07, 0x71, 0xc5, 0xbd, 0xf9, 0x0b, 0xea, 0xc5, 0x71, 0x07, 0xcc, 0xf9, 0xbd, 0xea, 0x0b}, "Animation/Dingo/Bool.State.Is.TrickInAir"},
-    {{0x79, 0x18, 0xb4, 0x97, 0x34, 0x2f, 0x2f, 0xa8, 0x97, 0xb4, 0x18, 0x79, 0x2f, 0x34, 0xa8, 0x2f}, "Animation/Dingo/Bool.State.Is.GrindInto"},
     // The grind the game picks its grind clips by (cdb_onboard_grind_loop / _into key on it), 0844b155-be0e-9228-....
     {{0x55, 0xb1, 0x44, 0x08, 0x0e, 0xbe, 0x28, 0x92, 0x08, 0x44, 0xb1, 0x55, 0xbe, 0x0e, 0x92, 0x28}, "Animation/Dingo/Enum.GS.SkateGrindType"},
     // Which way he rides, as the game's manual table reads it (cdb_onboard_manualloop), f9a95db4-e022-f765-....
@@ -373,8 +371,6 @@ StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noex
     flag(studio_objects[1], out.trick_intent);
     flag(studio_objects[2], out.targeting_grind);
     number(studio_objects[3], out.time_to_land);
-    flag(studio_objects[4], out.trick_in_air);
-    flag(studio_objects[5], out.grind_into);
     // The grind's type, found by the same search (grind_control_objects): an Enum.SkateGrindType value, 0 to 77.
     const auto word = [&](StateObject &object, std::optional<std::uint32_t> &into) {
         const auto at = value_address(object, block);
@@ -383,18 +379,18 @@ StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noex
     };
     word(grind_control_objects[8], out.grind_type);
     word(grind_control_objects[9], out.skate_grind_type);
-    word(studio_objects[6], out.anim_grind_type);
-    flag(studio_objects[7], out.riding_fakie);
+    word(studio_objects[4], out.anim_grind_type);
+    flag(studio_objects[5], out.riding_fakie);
     // The grab's type and style: Enum.GrabType (0 to 90) and Enum.DetailedGrabType (0 to 38) values.
     const auto value_under = [&](StateObject &object, std::uint32_t count, std::optional<std::uint32_t> &into) {
         const auto at = value_address(object, block);
         std::uint32_t value{};
         if (at && peek(at, value) && value < count) into = value;
     };
-    value_under(studio_objects[8], 91, out.grab_type);
-    value_under(studio_objects[9], 39, out.detailed_grab_type);
-    flag(studio_objects[10], out.grabbing);
-    flag(studio_objects[11], out.anim_mirrored);
+    value_under(studio_objects[6], 91, out.grab_type);
+    value_under(studio_objects[7], 39, out.detailed_grab_type);
+    flag(studio_objects[8], out.grabbing);
+    flag(studio_objects[9], out.anim_mirrored);
     return out;
 }
 namespace {

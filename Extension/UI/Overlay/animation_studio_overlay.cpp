@@ -596,12 +596,6 @@ float text_spaced(ImDrawList* d, ImFont* font, float size, ImVec2 at, ImU32 colo
 }
 
 unsigned seed_of(ImVec2 a) { return static_cast<unsigned>(a.x * 7 + a.y * 13); }
-// A tile with skate.'s rough, hand-cut edge and a little screen-print in its corner.
-void tile(ImDrawList* d, ImVec2 a, ImVec2 b, ImU32 colour, float k, bool print = true) {
-    skate_theme::rough_rect(d, a, b, colour, seed_of(a), k);
-    if (print && b.x - a.x > 120 * k && b.y - a.y > 60 * k)
-        theme::halftone(d, ImVec2(b.x - 58 * k, a.y + 8 * k), 8, 3, IM_COL32(255, 255, 255, 16));
-}
 // A flat button: rough tile, white type, blue when on. Returns whether it was clicked.
 bool button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, const std::string& label, bool on = false,
             bool enabled = true) {
@@ -780,48 +774,6 @@ float prompt_width(const Fonts& f, std::optional<Glyph> g, const char* key, cons
     return w + 7 * f.k + text_size(f.bold, 13 * f.k, what).x + 20 * f.k;
 }
 
-// A labelled number that drags left and right and takes typing on double click.
-bool number(const Fonts& f, const char* id, const char* label, float& value, float speed, const char* format, float width) {
-    ImGui::BeginGroup();
-    ImGui::PushID(id);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(34, 35, 38, 240));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(56, 58, 64, 240));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(0, 84, 170, 240));
-    ImGui::PushStyleColor(ImGuiCol_Text, white);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2 * f.k);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6 * f.k, 4 * f.k));
-    ImGui::TextColored(ImColor(soft), "%s", label);
-    ImGui::SameLine(26 * f.k);
-    ImGui::SetNextItemWidth(width);
-    const bool changed = ImGui::DragFloat("##v", &value, speed, 0, 0, format);
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(4);
-    ImGui::PopID();
-    ImGui::EndGroup();
-    return changed;
-}
-// A typed field in the studio's hand: its own type, the rough edge the buttons and rows have, and the
-// same height as the button beside it, instead of the stock box in the stock font.
-bool text_field(const Fonts& f, const char* id, std::array<char, 64>& buffer, float width, const char* hint = "Type a trick name") {
-    const float k = f.k;
-    const float h = 30 * k;
-    // The field's own box stays, painted the shade the rows and buttons use: the studio draws on the
-    // foreground list, so a frame drawn there would land on top of what is being typed.
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(28, 29, 32, 240));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(40, 42, 46, 240));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 48, 54, 245));
-    ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, blue_dim);
-    ImGui::PushStyleColor(ImGuiCol_Text, white);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, (h - 14 * k) * 0.5f));
-    ImGui::PushFont(sharp(f.bold, 15 * f.k));
-    ImGui::SetNextItemWidth(width);
-    const bool done = ImGui::InputTextWithHint(id, hint, buffer.data(), buffer.size());
-    ImGui::PopFont();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(5);
-    return done;
-}
 
 // The stick's response: a dead zone, then a curve that starts gently and reaches full speed at the rim (so a
 // small push is fine control and a full push is fast, with no step at the dead zone's edge).
@@ -1850,18 +1802,17 @@ float tag_width(const Fonts& f, const std::string& label) { return text_size(f.b
 // A chip that can be pressed: the pops on a trick's card, a pack a trick can go in. Returns whether it was pressed;
 // `width` is how wide it came out.
 bool chip(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, const std::string& label, bool on, float* width = nullptr,
-          float height = 0, bool enabled = true) {
+          float height = 0) {
     const float k = f.k, fs = 13 * k, h = height > 0 ? height : 28 * k;
     const auto t = text_size(f.bold, fs, label.c_str());
     const ImVec2 b(at.x + t.x + 24 * k, at.y + h);
     bool lit = false;
-    const bool clicked = hit(id, at, b, &lit, enabled);
-    const ImU32 fill = !enabled ? IM_COL32(30, 31, 34, 200) : on ? (lit ? IM_COL32(40, 152, 255, 255) : blue)
-                                                             : lit ? IM_COL32(255, 255, 255, 26) : IM_COL32(5, 6, 8, 110);
+    const bool clicked = hit(id, at, b, &lit);
+    const ImU32 fill = on ? (lit ? IM_COL32(40, 152, 255, 255) : blue) : lit ? IM_COL32(255, 255, 255, 26) : IM_COL32(5, 6, 8, 110);
     d->AddRectFilled(at, b, fill);
     if (!on) d->AddRect(at, b, IM_COL32(255, 255, 255, lit ? 200 : 110), 0, 0, 1.4f * k);
     if (lit && nav().keys) chosen_outline(d, at, b, k);
-    text(d, f.bold, fs, ImVec2(at.x + 12 * k, at.y + (h - t.y) * 0.5f), enabled ? white : faint, label);
+    text(d, f.bold, fs, ImVec2(at.x + 12 * k, at.y + (h - t.y) * 0.5f), white, label);
     if (width) *width = b.x - at.x;
     return clicked;
 }
@@ -1892,8 +1843,8 @@ int segmented(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, float wi
     return pressed;
 }
 // An ON / OFF switch. Returns whether it was pressed.
-bool toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, bool on, float scale = 1) {
-    const float k = f.k * scale, w = 64 * k, h = 30 * k;
+bool toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, bool on) {
+    const float k = f.k, w = 64 * k, h = 30 * k;
     const ImVec2 b(at.x + w, at.y + h);
     bool lit = false;
     const bool clicked = hit(id, at, b, &lit);
@@ -5293,7 +5244,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             x -= 10 * k;
             return pressed;
         };
-        // Packs come and go through Thunderstore (the MARKET, SHARE): no IMPORT or EXPORT ALL TRICKS here any more.
+        // Packs come and go through Thunderstore (the MARKET, SHARE).
         if (button("##newpack", 170 * k, "+ NEW PACK", Look::blue)) {
             make_pack(v);
             u.pack_page = true;
@@ -5705,11 +5656,6 @@ using MarketPack = studio::market::Pack;
 using PackList = std::vector<const MarketPack*>;
 constexpr float shop_pi = 3.14159265f;
 constexpr ImU32 shop_white = IM_COL32(243, 243, 239, 255);
-std::string thousands(std::uint64_t n) {
-    auto text = std::to_string(n);
-    for (int i = static_cast<int>(text.size()) - 3; i > 0; i -= 3) text.insert(static_cast<std::size_t>(i), ",");
-    return text;
-}
 // A count as shops write it: 999, 1.2K, 12K, 1.2M.
 std::string short_count(std::uint64_t n) {
     char buffer[32]{};
@@ -5926,7 +5872,7 @@ void duct_tape(ImDrawList* d, const Fonts& f, ImVec2 centre, float w, float h, f
 }
 // A picture filling a box with its shape kept, cut round `focus` (0..1 across and down it); `rounding` as ImGui's (a box
 // rounded by half its side is a circle).
-void picture_cover(ImDrawList* d, const ArtPlace& art, ImVec2 a, ImVec2 b, ImVec2 focus, float rounding = 0, ImU32 tint = IM_COL32_WHITE) {
+void picture_cover(ImDrawList* d, const ArtPlace& art, ImVec2 a, ImVec2 b, ImVec2 focus, float rounding = 0) {
     if (b.x <= a.x || b.y <= a.y || art.width <= 0 || art.height <= 0) return;
     const float box = (b.x - a.x) / (b.y - a.y), shape = art.width / art.height;
     float uw = 1, vh = 1;
@@ -5935,7 +5881,7 @@ void picture_cover(ImDrawList* d, const ArtPlace& art, ImVec2 a, ImVec2 b, ImVec
     const float u0 = std::clamp(focus.x - uw * 0.5f, 0.0f, 1 - uw), v0 = std::clamp(focus.y - vh * 0.5f, 0.0f, 1 - vh);
     const ImVec2 span(art.uv1.x - art.uv0.x, art.uv1.y - art.uv0.y);
     d->AddImageRounded(art.texture, a, b, ImVec2(art.uv0.x + span.x * u0, art.uv0.y + span.y * v0),
-                       ImVec2(art.uv0.x + span.x * (u0 + uw), art.uv0.y + span.y * (v0 + vh)), tint, rounding);
+                       ImVec2(art.uv0.x + span.x * (u0 + uw), art.uv0.y + span.y * (v0 + vh)), IM_COL32_WHITE, rounding);
 }
 // A stand-in picture for one of THE CREW until they send their own: the outline of a head and shoulders on the studio's
 // blue, round, with a white ring.
@@ -6147,9 +6093,9 @@ float hover_amount(ImGuiID id, bool lit) {
     return h;
 }
 // A band of torn paper right across the screen, `top` to `top + h`.
-void paper_band(ImDrawList* d, const Fonts& f, float width, float top, float h, PaperKind kind, std::uint32_t seed, float shadow = 0.5f, float edge = 14) {
-    const float k = f.k;
-    const auto shape = torn::band(width, h, seed, edge * k);
+void paper_band(ImDrawList* d, const Fonts& f, float width, float top, float h, PaperKind kind, std::uint32_t seed) {
+    constexpr float shadow = 0.5f, torn_edge = 14;
+    const auto shape = torn::band(width, h, seed, torn_edge * f.k);
     draw_paper(d, f, shape, ImVec2(0, top), 0, ImVec2(0, 0), kind, seed, shadow, ImVec2(0, 10), 3.2f);
 }
 
@@ -10663,8 +10609,6 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
     d->PopClipRect();
 }
 
-// A clip has arrived - a trick opened, an animation loaded, a take recorded - so nothing is carried over from the
-// last one, and the editor comes up to work on it.
 // The game's frame again, through FILMER's fisheye: a grid over the screen whose corners take the picture from where the
 // lens says, darkening to black where that is off the frame.
 void draw_fisheye(ImDrawList* d, ImVec2 display) {
@@ -10701,6 +10645,8 @@ void draw_fisheye(ImDrawList* d, ImVec2 display) {
     d->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(display.x, display.y * 0.12f), dark, dark, clear, clear);
     d->AddRectFilledMultiColor(ImVec2(0, display.y * 0.88f), display, clear, clear, dark, dark);
 }
+// A clip has arrived - a trick opened, an animation loaded - so nothing is carried over from the
+// last one, and the editor comes up to work on it.
 void on_new_clip(const studio::View& v) {
     auto& u = ui();
     if (u.clip_seen == v.clip_serial) return;

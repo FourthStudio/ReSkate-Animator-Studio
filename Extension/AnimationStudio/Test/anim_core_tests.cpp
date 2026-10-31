@@ -432,6 +432,7 @@ void animation_targets_keep_their_motion_and_hierarchy() {
     check(near(ground.position[1], 6.3f) && near(deck.position[1], 7.4f) && near(deck.position[2], 2),
           "Ground and deck effectors follow their actual parents and deck targets rotate with the board");
     clip.board.clear();
+    constexpr std::uint16_t skateboard_root_joint = 380;
     for (std::size_t f = 0; f < clip.times.size(); ++f) {
         auto& mount = clip.frames[f * skeleton_joints + skateboard_root_joint];
         mount.position = {0.4f * f, 0.1f * f, 0};
@@ -1247,16 +1248,9 @@ void merged_library_and_timing() {
     // The bit is not a switch flag: read as one, a goofy skater comes out right by luck and a regular one the wrong way
     // round.
     check(leads_right(true, false) == !false && leads_right(false, true) != !true, "The bit read as a switch flag is wrong for regular skaters");
-    GameplayClipClock clock;
-    check(near(clock.advance_air(10, 0.3f, 1, 2), 0.3f), "Newly selected presets begin at takeoff");
-    check(near(clock.advance_air(10.1, 0.3f, 1, 2), 0.4f), "Air source time advances incrementally");
-    check(near(clock.advance_air(10.1, 0.3f, 2, 2), 0.4f), "Changing pop rate cannot move the playhead on the same callback");
-    check(near(clock.advance_air(10.35, 0.3f, 2, 2), 0.9f), "A long callback integrates its elapsed time at the updated rate");
-    check(near(clock.advance_air(10, 0.3f, 2, 2), 0.9f), "Backwards callbacks cannot rewind air playback");
-    check(near(clock.advance_air(12, 0.3f, 2, 2), 2) && near(clock.air_rate, 0), "The landing marker holds until contact");
     // Moving a bracket carries that bracket's own key and nothing else: the keys between the brackets are
     // left exactly where they are, so the track keeps its whole frames instead of being stretched onto
-    // fractions of one. (This replaces the window retiming, which stretched every key.)
+    // fractions of one.
     Animation animation; animation.start = 1; animation.end = 3;
     Track track{7, {}, false, false};
     track.keys = {{0, {}, {}, Ease::smooth}, {1, {}, {}, Ease::smooth}, {2, {}, {}, Ease::smooth}, {3, {}, {}, Ease::smooth}};
@@ -1295,19 +1289,6 @@ void timing_and_stance_edge_cases() {
         if (joint.index != board_joint) check(gameplay_body_joint(joint.index), "Every editable body joint retains gameplay ownership");
     for (std::uint16_t j = 0; j < skeleton_joints; ++j)
         check(gameplay_body_joint(j) == gameplay_body_joint(mirror_joint[j]), "Gameplay ownership is symmetric across left and right");
-    GameplayClipClock clock;
-    clock.observe_air(10, 0.94f, 0.46f);
-    const auto first_landing = clock.land(10.0163584, 1, 1.6675f, 1.01725f);
-    check(first_landing > 0.94f && first_landing < 0.95f,
-          "Landing continues the previous source time instead of the measured 77 ms contact-marker jump");
-    const auto later = clock.land(10.1, 1, 1.6675f, 1.1f);
-    check(near(later, 0.94f + 0.08f * (0.46f + 1) / 2 + 0.02f),
-          "Landing integrates its smooth rate ramp exactly even across a long callback interval");
-    check(near(clock.land(10.1, 1, 1.6675f, 1.1f), later), "A duplicate callback cannot advance the landing clock");
-    check(near(clock.land(9, 1, 1.6675f, 1.1f), later), "A backwards timestamp cannot rewind landing playback");
-    check(near(clock.land(12, 1, 1.6675f, 1.1f), 1.6675f), "Landing clock stays inside its clip");
-    clock.reset(); clock.observe_air(20, 0.98f, 0);
-    check(clock.land(20.016, 1, 2, 1.1f) < 0.981f, "Held airborne pose starts landing without a source-time snap");
     Track uneven{7, {}, false, false};
     for (const float t : {0.0f, 0.25f, 2.0f, 3.0f})
         uneven.keys.push_back({t, from_euler({t * 60, 0, 0}), {t, 0, 0}, Ease::smooth});
@@ -1421,7 +1402,7 @@ void diagnostic_history_is_bounded() {
     check(history.samples.size() == 1, "Clock reset starts a fresh diagnostic window");
     check(diagnostic_csv("a,\"b\"") == "\"a,\"\"b\"\"\"", "Diagnostic CSV quotes names correctly");
 }
-void authored_gameplay_matches_f8_limbs_and_source_key_times() {
+void authored_gameplay_matches_f8_limbs() {
     Animation animation;
     animation.stance = "regular"; animation.switch_stance = false;
     const auto edit = from_euler({23, -11, 8});
@@ -1446,24 +1427,6 @@ void authored_gameplay_matches_f8_limbs_and_source_key_times() {
         for (int k = 0; k < 3; ++k)
             check(near(actual[341].position[k], native[341].position[k] + offset[k] * 0.5f), "Authored offsets blend without changing local signs");
     }
-    PlaybackEpisode episode;
-    episode.observe(10, motion_state(100)); episode.observe(10.1, motion_state(200)); episode.select(10.2);
-    const auto first = episode.sample(10.2, 0.2f, 0.75f, 2, 1, 0.3f, true);
-    check(near(first.time, 0.3f), "Late trick recognition catches up from takeoff instead of restarting the edit timeline");
-    const auto short_air = episode.sample(10.3, 0.2f, 0.75f, 2, 1, 0.3f, true);
-    const auto long_air = episode.sample(10.3, 0.2f, 0.75f, 2, 1, 1.8f, true);
-    check(near(short_air.time, 0.4f) && near(short_air.time, long_air.time), "Source key seconds are independent of ballistic airtime estimates");
-    check(near(episode.sample(10.3, 0.2f, 0.75f, 2, 0.25f, 0.3f, true).time, 0.4f) &&
-          near(episode.sample(10.3, 0.2f, 0.75f, 2, 4, 0.3f, true).time, 0.4f),
-          "Quarter-speed and accelerated studio previews cannot retime gameplay edit keys");
-    episode.select(10.31);
-    check(near(episode.sample(10.32, 0.2f, 0.75f, 2, 1, 1, true).time, 0.42f), "Refining the named trick cannot reset source key time");
-    episode.observe(10.6, motion_state(100)); episode.observe(10.64, motion_state(100));
-    const auto reception = episode.sample(11.4, 0.2f, 0.75f, 2, 1, 1, true);
-    check(near(reception.time, 1.5f) && reception.weight == 1 && !reception.finished,
-          "Keys past one second remain active through source reception instead of fading at landing plus 600 ms");
-    const auto finished = episode.sample(12, 0.2f, 0.75f, 2, 1, 1, true);
-    check(finished.time == 2 && finished.weight == 0 && finished.finished, "Source playback ends and releases at clip duration without looping");
 }
 // How long until the board is down: at the board's own gravity, and along its path (the look ahead at a rail or a ledge).
 void time_to_the_ground() {
@@ -1595,13 +1558,13 @@ void fitting_the_air_keeps_the_flip() {
     episode.observe(10, MotionState::riding);
     episode.observe(10.1, MotionState::air);
     episode.select(10.15);
-    const auto early = episode.sample(10.3, 0.7f, 1.33f, 2, 1, 1.0f, true, true);
+    const auto early = episode.sample(10.3, 0.7f, 1.33f, 2, 1.0f);
     check(near(early.time, 0.9f), "In game the flip plays at its own pace in a long air");
-    const auto before = episode.sample(10.55, 0.7f, 1.33f, 2, 1, 1.0f, true, true);
+    const auto before = episode.sample(10.55, 0.7f, 1.33f, 2, 1.0f);
     check(near(before.time, 1.15f), "An air expected long is not slowed down");
     // The board touches at 10.56; the game is sure two frames later. The landing starts at the touch.
     episode.observe(10.56, MotionState::riding);
-    const auto touch = episode.sample(10.57, 0.7f, 1.33f, 2, 1, 1.0f, true, true);
+    const auto touch = episode.sample(10.57, 0.7f, 1.33f, 2, 1.0f);
     check(episode.phase == PlaybackPhase::air && touch.time > before.time && touch.time < 1.33f,
           "At the touch the landing starts, before the game is sure of it");
     float last = touch.time;
@@ -1609,7 +1572,7 @@ void fitting_the_air_keeps_the_flip() {
     for (int i = 1; i <= 12; ++i) {
         const double at = 10.57 + i / 60.0;
         episode.observe(at, MotionState::riding);
-        const auto s = episode.sample(at, 0.7f, 1.33f, 2, 1, 1.0f, true, true);
+        const auto s = episode.sample(at, 0.7f, 1.33f, 2, 1.0f);
         steady = steady && s.time >= last && s.time - last < 0.06f; // no frame jumps more than about 3 frames' worth
         last = s.time;
     }
@@ -1673,7 +1636,7 @@ void native_clock_follows_the_game() {
         for (std::size_t j = 2; j < 375; ++j) other[j].rotation = turn(j + 7, 3.0f);
         NativeClock::Reading r;
         for (int i = 0; i < 4; ++i) r = clock.update(other, 1.0f / 60);
-        check(r.lost && r.confidence < 0.5f, "and lets go when the game's pose leaves it, fading");
+        check(r.lost, "and lets go when the game's pose leaves it");
     }
     {
         // The game plays the higher pop, mirrored (the other stance): read across onto the edit's own clip.
@@ -2328,28 +2291,28 @@ void native_playback_contracts() {
     check(!episode.observe(0, MotionState::riding) && episode.observe(0.1, MotionState::air), "Riding to air starts a new observed episode");
     check(episode.entry == EntryKind::ground, "Ground takeoff carries a ground binding");
     episode.select(0.1);
-    (void)episode.sample(0.1, 0.2f, 1, 2, 1, 1);
-    const auto air = episode.sample(0.2, 0.2f, 1, 2, 1, 1);
+    (void)episode.sample(0.1, 0.2f, 1, 2, 1);
+    const auto air = episode.sample(0.2, 0.2f, 1, 2, 1);
     const auto original_id = episode.id;
     episode.observe(0.21, MotionState::rail);
-    const auto release = episode.sample(0.25, 0.2f, 1, 2, 1, 1);
+    const auto release = episode.sample(0.25, 0.2f, 1, 2, 1);
     check(episode.phase == PlaybackPhase::rail_release && near(release.time, air.time) && release.weight < air.weight,
           "Rail entry releases to native constraints instead of advancing/holding a fake airborne grind");
-    check(episode.sample(0.3, 0.2f, 1, 2, 1, 1).finished, "Rail release is bounded");
+    check(episode.sample(0.3, 0.2f, 1, 2, 1).finished, "Rail release is bounded");
     episode.observe(0.31, MotionState::rail);
     check(episode.observe(0.4, MotionState::air) && episode.entry == EntryKind::rail && episode.id > original_id,
           "A grind pop-out is a fresh rail-entry episode");
-    check(episode.sample(0.4, 0.2f, 1, 2, 1, 1).time < 0, "A new pop-out cannot inherit the entry preset or source clock");
+    check(episode.sample(0.4, 0.2f, 1, 2, 1).time < 0, "A new pop-out cannot inherit the entry preset or source clock");
     episode.observe(0.5, MotionState::unknown);
     check(episode.phase == PlaybackPhase::idle, "Unavailable native state cancels pending edits");
     episode.observe(1, MotionState::riding); episode.observe(1.1, MotionState::air); episode.select(1.1);
-    (void)episode.sample(1.15, 0.2f, 1, 2, 1, 1);
+    (void)episode.sample(1.15, 0.2f, 1, 2, 1);
     episode.observe(1.2, MotionState::riding); episode.observe(1.21, MotionState::air);
     check(episode.phase == PlaybackPhase::air, "A brief contact does not become a landing");
     episode.observe(1.3, MotionState::riding); episode.observe(1.334, MotionState::riding);
     check(episode.phase == PlaybackPhase::landing && episode.landing == 1.3, "Landing confirms elapsed contact while retaining first-contact time");
     episode.observe(1.35, MotionState::offboard);
-    check(episode.phase == PlaybackPhase::idle && episode.clock.time < 0, "Bails and off-board states release the episode");
+    check(episode.phase == PlaybackPhase::idle && episode.clip_time < 0, "Bails and off-board states release the episode");
 
     PresentationLatch<int> cohort;
     auto first = std::make_shared<const int>(1), second = std::make_shared<const int>(2);
@@ -2623,15 +2586,15 @@ void lead_foot_is_read_from_the_clip() {
     clip.frames[343].position = {0.1f, -0.8f, 0.07f};
     check(!clip_leads_right(clip).has_value(), "Feet together cannot tell");
 }
-// Every trigger the game gives at takeoff, through the one rule that picks the recording: regular, goofy,
+// Every trigger the game gives at takeoff, through the one rule that picks the saved trick: regular, goofy,
 // switch, fakie and switch fakie, in front-foot and exact-stance modes.
 void every_stance_finds_its_recording() {
     const auto pick = [](std::vector<StanceCandidate> c, LiveStance live, bool front_foot) { return choose_stance_variants(c, live, front_foot); };
-    // A recording made on the other foot is played mirrored, the game's way.
+    // A trick made on the other foot is played mirrored, the game's way.
     const auto plays_mirrored = [](const StanceCandidate& c, LiveStance live) { return c.leads_right != live.leads_right; };
     const StanceCandidate normal_left{false, false, 0}, normal_right{true, false, 0}, fakie_left{false, true, 0}, fakie_right{true, true, 0};
     const std::vector<StanceCandidate> all{normal_left, normal_right, fakie_left, fakie_right};
-    // With a recording for every case, exact stance gives each live stance its own one, unmirrored. Front foot takes
+    // With a saved trick for every case, exact stance gives each live stance its own one, unmirrored. Front foot takes
     // both of the same fakie state, its own and the other foot's (mirrored), so shuffle goes round them.
     struct Case { LiveStance live; std::size_t expected; const char* what; };
     for (const auto& c : {Case{{false, false}, 0, "regular normal"}, Case{{true, false}, 1, "regular switch / goofy normal"},
@@ -2643,14 +2606,14 @@ void every_stance_finds_its_recording() {
                   all[front[0]].fakie == all[front[1]].fakie,
               "Front foot: both of its fakie state, mirrored or not, shuffle together");
     }
-    // Only a regular normal recording: front foot plays it everywhere (mirrored when the right foot leads),
+    // Only a regular normal trick: front foot plays it everywhere (mirrored when the right foot leads),
     // exact stance only riding the way it was made.
     const std::vector<StanceCandidate> one{normal_left};
     check(pick(one, {true, false}, true).size() == 1 && plays_mirrored(one[0], {true, false}), "Front foot: switch plays it mirrored");
     check(pick(one, {false, true}, true).size() == 1 && !plays_mirrored(one[0], {false, true}), "Front foot: fakie plays it, never mirrored");
     check(pick(one, {true, false}, false).empty(), "Exact stance: not for the other foot");
     check(pick(one, {false, true}, false).empty(), "Exact stance: not for fakie when it was made rolling forward");
-    // Fakie matters more than the foot: the game's fakie upper body is in a fakie recording, a mirror is exact.
+    // Fakie matters more than the foot: the game's fakie upper body is in a fakie clip, a mirror is exact.
     const std::vector<StanceCandidate> mixed{normal_left, fakie_right};
     const auto fakie_pick = pick(mixed, {false, true}, true);
     check(fakie_pick.size() == 1 && fakie_pick[0] == 1 && plays_mirrored(mixed[1], {false, true}), "Rolling fakie takes the fakie recording, mirrored");
@@ -2659,7 +2622,7 @@ void every_stance_finds_its_recording() {
     const auto pop_pick = pick(pops, {false, false}, true);
     check(pop_pick.size() == 1 && pop_pick[0] == 1, "The graded pop wins over the closer stance");
     check(pick({{false, false, -1}}, {false, false}, true).empty(), "A recording for another pop never plays");
-    // A recording from before fakie was kept counts as rolling forward.
+    // An older file with no fakie value counts as rolling forward.
     const std::vector<StanceCandidate> old{{false, std::nullopt, 0}};
     check(pick(old, {false, false}, false).size() == 1 && pick(old, {false, true}, false).empty(), "Old recordings count as rolling forward");
     // Equally good recordings all come back, so variants cycle between them.
@@ -2667,7 +2630,7 @@ void every_stance_finds_its_recording() {
           "Front foot: all of them cycle, the other foot's too (mirrored)");
     check(pick({normal_left, normal_left, normal_right}, {false, false}, false).size() == 2, "Exact stance: those on the leading foot cycle");
 }
-// A fixed pack keeps one recording per trick, pop and stance - and a fakie one is its own, so both play.
+// A fixed pack keeps one clip per trick, pop and stance - and a fakie one is its own, so both play.
 void fakie_recordings_have_their_own_slot() {
     std::vector<Preset> presets{{"Kick", "kickflip", "mid", false, false, "regular", false, "ground"},
                                 {"Kick fakie", "kickflip", "mid", false, false, "regular", false, "ground"},
@@ -2689,7 +2652,7 @@ int main(int argc, char** argv) {
         native_clips_pop_where_the_game_does();
         native_clock_follows_the_game();
         diagnostic_history_is_bounded();
-        authored_gameplay_matches_f8_limbs_and_source_key_times();
+        authored_gameplay_matches_f8_limbs();
         packs_select_variants_without_filesystem_order();
         foot_placed_on_the_deck();
         review_fixes_hold();
@@ -2742,7 +2705,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 3; ++i) {
                 DiagnosticSample sample; sample.at = 100 + i * 0.1; sample.sequence = i; sample.physics = 200;
                 sample.trick = "test,\"trick\""; sample.preset = "synthetic fixture";
-                sample.live_switch = true; sample.recorded_switch = false; sample.retarget = sample.mirror = true;
+                sample.live_switch = true; sample.recorded_switch = false; sample.mirror = true;
                 sample.native.resize(skeleton_joints); sample.desired = sample.native;
                 sample.desired[7].position[0] = 0.1f;
                 sample.desired[7].rotation = from_euler({30, 0, 0});

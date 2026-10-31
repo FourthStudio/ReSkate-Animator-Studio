@@ -41,7 +41,7 @@ struct Preset {
     std::optional<bool> leads_right;
 };
 // The foot a saved trick leads with: what decides which takeoffs it plays on, as the game mirrors by it. A goofy normal
-// and a regular switch recording both lead with the right foot.
+// and a regular switch trick both lead with the right foot.
 inline bool preset_leads_right(const Preset& p) {
     return p.leads_right ? *p.leads_right : (p.stance == "goofy") != p.switch_stance.value_or(false);
 }

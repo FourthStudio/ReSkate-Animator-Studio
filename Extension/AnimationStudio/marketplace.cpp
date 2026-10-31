@@ -931,7 +931,7 @@ void refresh(bool force) {
         if (error.empty()) {
             try {
                 write_file(folder() / L"packs.json", packs_json(packs));
-                // The whole listing the studio kept before (several MB) is not read any more.
+                // Older versions kept the whole listing here (several MB). Nothing reads it.
                 std::error_code gone;
                 std::filesystem::remove(folder() / L"listing.json", gone);
             } catch (...) {}

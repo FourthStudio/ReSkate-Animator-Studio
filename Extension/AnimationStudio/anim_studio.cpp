@@ -793,7 +793,7 @@ struct GroundProbe {
 };
 GroundProbe& ground_probe() { static GroundProbe probe; return probe; }
 // The local skater's pose and its board as they are drawn (after the body physics and the feet's placement on the
-// board), taken at their render publication, for diagnostics and research.
+// board), taken at their render publication, for diagnostics.
 struct RenderShot {
     std::mutex mutex;
     std::vector<NativeBone> skater;
@@ -862,7 +862,7 @@ std::filesystem::path library_folder() {
 // The studio's settings, kept beside the animations in ReSkate.Tricks so they survive a restart. It is not an
 // animation: the library listings pass over it.
 constexpr const wchar_t* settings_file = L"studio-settings.json";
-// The grind rail's note of where it stands (rail_tick), beside the settings: like them, never read as a trick.
+// The grind rail's note of where it stands (prop_tick), beside the settings: like them, never read as a trick.
 constexpr const wchar_t* rail_records_file = L"studio-rail.json";
 // The quarter pipe's, the same way.
 constexpr const wchar_t* ramp_records_file = L"studio-quarter-pipe.json";
@@ -2212,7 +2212,7 @@ void key_all_at(Animation& animation, float seconds) {
         // trick already has it (board_edited) and the brackets anchor the board like any limb.
         const auto* track = animation.track(joint.index);
         if (track && track->locked) continue;
-        // A finger only once it has keys (bracket_keyed_fingers): thirty empty tracks on every trick otherwise.
+        // A finger only once it has keys (bracket_keyed_fingers_locked): thirty empty tracks on every trick otherwise.
         if (joint.group == JointGroup::fingers && (!track || track->keys.empty())) continue;
         bool has = false;
         if (track)
@@ -3042,7 +3042,7 @@ void remember_trick_done(const std::string& trick, const std::string& pop, const
 // ---- the animation thread ------------------------------------------------------------------------
 // The grind rail, on the animation thread: whether the open studio is in its room, whether the trick shown is one of the
 // game's grinds, and where its rail goes (rail_spot: its Ground joint, where the board meets the rail, along the clip's Z),
-// for rail_tick. Returns how far to lift the grind so that joint is on the bar's top: 0 until the rail stands there.
+// for prop_tick. Returns how far to lift the grind so that joint is on the bar's top: 0 until the rail stands there.
 constexpr float rail_park_depth = 3.0f; // the rail waits this far under the room's floor while no grind is shown
 constexpr float ramp_park_depth = 6.0f; // the quarter pipe (2.25 m high, the M) this far
 // One prop's part of it: where the room is, and with `spot` (made from the chosen one, see rail_frame) where it goes. The
@@ -3280,10 +3280,10 @@ void on_animation(std::uintptr_t component) noexcept {
         const bool fit_preview_contact = shown_edits.source.kind != "render_capture" &&
                                          shown_edits.source.position_codec != "native-piec-v1-extent";
         if (snap->open && shown) {
-            // The studio: the recorded trick, played in place where the skater stands now. The placement
+            // The studio: the trick's clip, played in place where the skater stands now. The placement
             // joint (1) carries the trick's rise and turn (it rides with the body), and the game places
-            // the skater from it, so it is never written: the recording's rise and turn since its first
-            // frame go onto the joints hanging from it instead; the rest of the body is the recording's.
+            // the skater from it, so it is never written: the clip's rise and turn since its first
+            // frame go onto the joints hanging from it instead. The rest of the body is the clip's.
             l.sampled.resize(layout.count);
             shown->sample(shown_time, l.sampled);
             const auto& start = shown->frame(0)[placement_joint];
@@ -3378,7 +3378,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
                 rise_y += ait_now - live_placement.position[1];
             } else rise_y = now_rec.position[1] - start.position[1];
-            // One of the game's grinds stands on the studio's rail (rail_frame, rail_tick): lifted by the rail's top, its
+            // One of the game's grinds stands on the studio's rail (rail_frame, prop_tick): lifted by the rail's top, its
             // Ground joint - where the board meets the rail - on the bar. Anything else (a flip trick) has no rail.
             {
                 // Only in the studio room: where he stopped, the rail would go up through his own board and push him.
@@ -3867,8 +3867,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     sampled.weight = ease(l.clock_weight) * before_end;
                     sampled.finished = reading.locked && !why.empty() && l.clock_weight <= 0;
                 } else {
-                    // Always at x1 in game: the speed is the studio's, for watching a trick.
-                    sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), 1.0f, l.predicted_air, true, true);
+                    sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), l.predicted_air);
                     if (sampled.time >= 0) sampled.time = std::min(clip.duration(), sampled.time);
                 }
                 // A trick made on one pop, on the game's clip of another (its pack says any pop): the keys laid on that clip's
@@ -3946,7 +3945,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
                 diagnostic.recorded_goofy = trick->goofy; diagnostic.recorded_switch = played.switch_stance;
-                diagnostic.retarget = false; diagnostic.mirror = l.played_mirrored;
+                diagnostic.mirror = l.played_mirrored;
                 diagnostic.reverse_facing = false;
                 diagnostic.source_timing = !l.clock_fallback;
                 diagnostic.clip_time = sampled.time; diagnostic.weight = weight;
@@ -4513,7 +4512,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
         if (handing) applied_deltas = pose_edit_deltas(native, edited);
         else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
             // Into a grind the board is the game's at once (the board's pass leaves it alone on a rail), so the body goes
-            // with it: the trick's last keys fade out in grind_hand_back, not over the Crossfade. Faded over up to 0.4 s,
+            // with it: the trick's last keys fade out in grind_ease_min to grind_ease_max seconds, not over the Crossfade. Faded over up to 0.4 s,
             // a trick still mid-flip off a low pop drew its legs on a board already flat on the rail, through it.
             const float blend = trick_blend.load(std::memory_order_relaxed);
             const bool grinding = motion == MotionState::rail;
@@ -4584,7 +4583,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             shot.edited_skater = edited; shot.edited_at = now_seconds();
             shot.edited_generation = generation; shot.edited_sequence = packet ? packet->sequence : 0;
             shot.edited_presentation = presentation;
-            // Strip our exact previous writes from the diagnostic/recording baseline too.
+            // Strip our exact previous writes from the diagnostic baseline too.
             shot.skater = current;
             for (std::size_t i = 0; i < native.size(); ++i) {
                 shot.skater[i].rotation = native[i].rotation;
@@ -4899,7 +4898,7 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
             if (body_layout.buffer && body_layout.count == skeleton_joints && peek(body_layout.buffer, placement_bones.data(), sizeof(placement_bones))) {
                 const auto placement = compose(joint_of(placement_bones[0]), joint_of(placement_bones[1]));
                 Joint frame; frame.rotation = normalised(multiply(placement.rotation, packet->board_frame_local));
-                // Whole body: the board is the recording's too - nose-forward as the game draws it, mirrored with him
+                // Whole body: the board is the clip's too - nose-forward as the game draws it, mirrored with him
                 // when he is - so his feet and the deck flip together as they do in the studio. Then the board keys.
                 Joint base = native_mount;
                 if (packet->match_rest > 0 && packet->clip && !packet->clip->board.empty()) {
@@ -4907,7 +4906,7 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
                     if (packet->clip->sample_board(std::clamp(packet->time, 0.0f, packet->clip->duration()), rel)) {
                         rel = nose_forward(*packet->clip, rel);
                         if (packet->mirrored) rel = mirror_board_pose(rel);
-                        // With the deck turned round under him the game turns its trick board too: the recording's
+                        // With the deck turned round under him the game turns its trick board too: the clip's
                         // board is turned the same way, so the real deck keeps its nose where it is and nothing spins
                         // when the trick hands back to the game at the landing.
                         if (packet->board_backwards) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
@@ -9319,9 +9318,8 @@ bool peek_game_trick(const GameTrick& trick, bool play) {
     if (!safe_library_clip(trick.file)) return false;
     const bool goofy = studio_goofy_now();
     const auto key = "library|" + trick.file + (goofy ? "|goofy" : "|regular");
-    // Known by its source as when it is opened (game_trick_edits): put down on the floor the way the editor puts it, not
-    // the way a recording is (that pinned its board to the floor frame by frame and guessed a jump: the preview did not
-    // match the editor, and its board went through his feet).
+    // Known by its source as when it is opened (game_trick_edits): put down on the floor the way the editor puts it,
+    // so that the preview matches the editor.
     return ask_peek(key, play, [trick, key, goofy] { return turned(key, read_game_clip(trick), game_trick_edits(trick), goofy, true); });
 }
 bool peek_saved(const std::string& animation, bool play) {

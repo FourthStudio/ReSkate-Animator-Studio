@@ -3583,7 +3583,7 @@ void plugins_edit_clips() {
         assert(reskate.animation.edit(rec, {}, {name = "work"}) == "edit:work", "the same name again")
         assert(reskate.animation.sample("edit:work", 7, 0.5).rotation[4] == 1, "replaces it")
         local list = reskate.animation.joints()
-        assert(#list == 25 and list[1].joint == "board" and list[2].joint == 7 and list[2].label == "Hips" and list[2].moves, "the editable joints")
+        assert(#list == 55 and list[1].joint == "board" and list[2].joint == 7 and list[2].label == "Hips" and list[2].moves, "the editable joints")
         assert(reskate.animation.save(work, "anims/work.fas"))
         local keyed = reskate.animation.edit(rec, {{joint = 7, keys = {{time = 0.5, offset = vector.create(0, 0.5, 0)}}}})
         assert(reskate.animation.save(keyed, "anims/keyed.fas"))
