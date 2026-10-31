@@ -18,6 +18,8 @@
 #include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/editor_floor.h"
 #include "Extension/AnimationStudio/grab_types.h"
+#include "Extension/AnimationStudio/held_loop_selection.h"
+#include "Extension/AnimationStudio/stance_copy.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -585,6 +587,16 @@ void profiles_read_back_and_bad_ones_are_refused() {
     set_key(animation, 7, 0.4f, {from_euler({0, 10, 0}), {0, 0.1f, 0}});
     set_key(animation, 278, 1.0f, {from_euler({20, 0, 5}), {}}).ease = Ease::linear;
     const auto back = from_json(to_json(animation));
+    check(!back.modifier_hint, "Old animations have no modifier recommendation by default");
+    animation.modifier_hint = true;
+    const auto hinted = from_json(to_json(animation));
+    check(hinted.modifier_hint && hinted.trick == animation.trick && hinted.pop == animation.pop,
+          "The author recommendation survives save/share without changing the native trick or its pop");
+    animation.modifier_hint = false;
+    auto malformed_hint = dingosdk::Json::parse(to_json(animation));
+    malformed_hint["modifier_hint"] = "recommended";
+    const auto ignored_hint = from_json(malformed_hint.dump());
+    check(!ignored_hint.modifier_hint && ignored_hint.key_count() == animation.key_count(), "Malformed advisory metadata does not invalidate an animation");
     check(back.name == "Kickflip 2" && back.trick == "Kickflip" && near(back.speed, 0.5f), "Name, trick and speed read back");
     check(back.key_count() == 2 && back.track(278) && back.track(278)->keys[0].ease == Ease::linear, "Keys read back");
     check(same_turn(back.track(7)->keys[0].rotation, from_euler({0, 10, 0})) && near(back.track(7)->keys[0].offset[1], 0.1f),
@@ -2138,6 +2150,42 @@ void a_grab_loop_is_known_by_the_games_grab() {
     check(grab_loop_rank(plain, 2, 1, &fakie) == 3 && grab_loop_rank(grab_loop_of("c_proto_onb_inair_fakie_bs_grab_loop"), 2, 1, &fakie) == 0,
           "Riding fakie, the fakie loop first");
 }
+void held_loops_follow_style_changes() {
+    const std::array<GrabLoop, 4> saved{
+        grab_loop_of("c_proto_onb_inair_bs_grab_melon_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_fakie_bs_grab_japan_mid_loop"),
+        grab_loop_of("c_proto_onb_inair_bs_grab_japan_mid_loop")};
+    std::vector<std::pair<std::size_t, int>> loops{{0, 1}, {1, 1}, {2, 1}, {3, 1}};
+    int family = 2, detail = 4, playing = -1;
+    bool fakie = false;
+    const auto rank = [&](std::size_t index) { return grab_loop_rank(saved[index], family, detail, &fakie); };
+    const auto choose = [&] { return held_loop_ranks<int>(loops, 1, playing, rank); };
+    check(choose().best == 0 && !choose().keep, "A new melon selects an eligible loop");
+    playing = 0;
+    check(choose().keep, "Holding the same style retains its playback clock");
+    detail = 3;
+    check(!choose().keep && choose().best == 0 && rank(playing) == 2,
+          "Melon gives way to saved Japan even though melon is still a valid same-family fallback");
+    playing = 1;
+    check(choose().keep, "Japan does not restart each frame or switch to an equal-ranked variant");
+    playing = 3;
+    check(choose().keep, "An equally ranked playing variant keeps priority over an earlier index");
+    fakie = true;
+    check(!choose().keep && choose().best == 0, "A held loop yields to a better matching fakie version");
+    playing = 2;
+    check(choose().keep, "The matching fakie loop continues");
+    family = 1;
+    check(!choose().keep && choose().best < 0, "Changing grab family releases all incompatible saved loops");
+    family = 2;
+    playing = 0;
+    loops = {{0, 1}};
+    check(choose().keep && choose().best >= 0, "An available fallback continues when no better loop exists");
+    loops = {{0, 2}};
+    check(!choose().keep && choose().best < 0, "Another held-move kind cannot retain the grab");
+    loops.clear();
+    check(!choose().keep && choose().best < 0, "Removing the saved loops releases the current selection");
+}
 void grind_rail_goes_under_the_grind() {
     check(grind_clip("animation/dingo/c_proto_onb_grind_fs_bs_5_0_rail_loop") && grind_clip("animation/dingo/c_proto_ofb_grind_5050_feet_rail_loop") &&
               !grind_clip("animation/dingo/c_proto_onb_trick_o_kickflip_mid") && !grind_clip("animation/dingo/c_proto_onb_manual_t_loop_med") &&
@@ -2373,6 +2421,11 @@ void smooth_transitions_contracts() {
     check(near(angle_x(scaled_turn(about_x(200), 0.5f)), 100, 0.05f), "Half of a 200 degree flip is 100 degrees on, not 80 back");
     check(near(angle_x(scaled_turn(about_x(90), 0.5f)), 45, 0.05f), "Half of a quarter turn is an eighth");
     check(scaled_turn(about_x(300), 0) == (Quat{0, 0, 0, 1}), "None of a turn is no turn");
+    const auto stored_other_sign = [](Quat q) { return Quat{-q[0], -q[1], -q[2], -q[3]}; };
+    check(near(angle_x(scaled_turn(key_way_round(stored_other_sign(about_x(40)), std::nullopt), 0.5f)), 20, 0.05f),
+          "A small board key saved with w below 0 is half turned the short way at a trick's start, not 160 degrees round");
+    check(near(angle_x(scaled_turn(key_way_round(stored_other_sign(about_x(200)), about_x(170)), 0.5f)), 100, 0.05f),
+          "A flip that went past half a turn the frame before keeps going on round");
     EditTransition t;
     std::array<Offset, 1> flat{}, turned{};
     turned[0].rotation = about_x(90);
@@ -2738,6 +2791,114 @@ void lead_foot_is_read_from_the_clip() {
     clip.frames[343].position = {0.1f, -0.8f, 0.07f};
     check(!clip_leads_right(clip).has_value(), "Feet together cannot tell");
 }
+// Whole-pose playback retains the authored placement when the game's body size differs from the clip.
+void whole_poses_fit_body_size() {
+    std::vector<Joint> source(skeleton_joints);
+    source[placement_joint].scale = {1.7f, 1.7f, 1.7f};
+    source[placement_joint].rotation = from_euler({0, 53, 0});
+    source[hips_joint].position = {0, 1, 0};
+    source[8].position = {0.1f, 0, 0}; source[341].position = {-0.1f, 0, 0};
+    for (const std::uint16_t j : {std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{342}, std::uint16_t{343}})
+        source[j].position = {0, -0.4f, 0};
+    Animation animation;
+    set_key(animation, hips_joint, 0, {{0, 0, 0, 1}, {0.03f, 0.02f, 0.01f}});
+    set_key(animation, 9, 0, {from_euler({18, 0, 0}), {}});
+    const auto midpoint = [](std::span<const Joint> pose) {
+        const auto a = world(pose, 10).position, b = world(pose, 343).position;
+        return Vec3{(a[0] + b[0]) * 0.5f, (a[1] + b[1]) * 0.5f, (a[2] + b[2]) * 0.5f};
+    };
+    for (const float size : {0.85f, 0.92f, 1.0f, 1.08f, 1.15f}) {
+        auto expected = source;
+        apply_authored_edit_layer(animation, 0, expected, 1, nullptr, source, 1, 1);
+        auto native = source;
+        native[hips_joint].scale = {size, size, size};
+        auto actual = native;
+        apply_authored_edit_layer(animation, 0, actual, 1, nullptr, source, 1, 1);
+        const auto wanted = midpoint(expected), got = midpoint(actual);
+        for (std::size_t k = 0; k < 3; ++k) check(near(got[k], wanted[k], 0.00001f),
+            "A whole authored pose keeps its foot frame across body sizes without a smaller skater floating");
+        check(actual[hips_joint].scale == native[hips_joint].scale && actual[9].position == native[9].position &&
+              actual[342].position == native[342].position && same_turn(actual[9].rotation, expected[9].rotation),
+              "Fitting body size retains the live scales, leg lengths and authored bend");
+        const auto right = world(actual, 10).position, left = world(actual, 343).position;
+        const auto reference_right = world(expected, 10).position, reference_left = world(expected, 343).position;
+        for (std::size_t k = 0; k < 3; ++k) check(near(right[k] - left[k], (reference_right[k] - reference_left[k]) * size, 0.00001f),
+            "Different keyed foot heights remain different; size fitting does not plant both feet on a deck");
+        auto partial = native, raw = native, reference = source;
+        apply_authored_edit_layer(animation, 0, partial, 0.5f, nullptr, source, 1, 1);
+        apply_authored_edit_layer(animation, 0, raw, 0.5f);
+        apply_authored_edit_layer(animation, 0, reference, 0.5f, nullptr, source, 1, 1);
+        const auto halfway = midpoint(partial), from = midpoint(raw), to = midpoint(reference);
+        for (std::size_t k = 0; k < 3; ++k) check(near(halfway[k], (from[k] + to[k]) * 0.5f, 0.00001f),
+            "The body-size placement correction fades with playback weight rather than snapping");
+        auto off = native;
+        apply_authored_edit_layer(animation, 0, off, 0, nullptr, source, 1, 1);
+        check(off == native, "No custom weight means no body-size placement change");
+        LimbWeights released; released.limb[0] = 0;
+        auto hands_only = native;
+        apply_authored_edit_layer(animation, 0, hands_only, 1, &released, source, 1, 1);
+        check(hands_only[hips_joint].position == native[hips_joint].position,
+              "Returning the hips to the game also disables the body-size placement correction");
+        auto thigh_scaled = source;
+        thigh_scaled[8].scale = thigh_scaled[341].scale = {size, size, size};
+        apply_authored_edit_layer(animation, 0, thigh_scaled, 1, nullptr, source, 1, 1);
+        const auto thigh_feet = midpoint(thigh_scaled);
+        for (std::size_t k = 0; k < 3; ++k) check(near(thigh_feet[k], wanted[k], 0.00001f),
+            "Body-size fitting also works before the renderer rebases the live thigh scales onto the hips");
+    }
+}
+void native_stance_copies_keep_their_source_and_edits() {
+    Clip clip;
+    clip.joints = skeleton_joints;
+    clip.times = {0.0f};
+    clip.frames.assign(skeleton_joints, Joint{});
+    clip.frames[10].position = {0.15f, -0.8f, 0.05f};
+    clip.frames[343].position = {-0.2f, -0.8f, 0.07f};
+    clip.turned_only.resize(skeleton_joints);
+    clip.turned_only[341] = 1;
+    clip.board.resize(1);
+    clip.board[0].position = {0.12f, 0.2f, -0.08f};
+    for (const char* asset : {"manual", "grab", "grind", "invert", "fingerflip", "other-piece"}) {
+        Animation a;
+        a.trick = std::string("native:") + asset;
+        a.source.kind = "native_asset"; a.source.asset = asset; a.stance = "regular";
+        a.modifier_hint = true; a.fakie = true; a.crossfade = 0.27f; a.clip.times = {0, 1};
+        a.tracks.push_back({341, {{0, axis_angle({0, 1, 0}, 0.3f), {0.06f, 0.02f, -0.03f}, Ease::linear}}});
+        a.tracks.push_back({board_joint, {{0, axis_angle({1, 0, 0}, 0.4f), {0.04f, 0.03f, 0.02f}, Ease::linear}}});
+        for (const bool own_right : {false, true}) {
+            const auto normal = stance_copy(a, clip, own_right, 0);
+            const auto switched = stance_copy(a, clip, own_right, 2);
+            check(clip_leads_right(normal.second) == own_right && clip_leads_right(switched.second) == !own_right,
+                  "Every native family has its own normal and switch clip for regular and goofy riders");
+            check(switched.first.keep_leads_right == !own_right && switched.first.fakie == a.fakie &&
+                  switched.first.trick == a.trick && switched.first.source.asset == a.source.asset &&
+                  switched.first.modifier_hint && switched.first.crossfade == a.crossfade && switched.first.clip.times == a.clip.times,
+                  "A native stance copy keeps its source, existing fakie asset semantics, timing, crossfade and modifier hint");
+            const auto returned = stance_copy(switched.first, switched.second, own_right, 0);
+            check(returned.first.tracks[0].joint == normal.first.tracks[0].joint &&
+                  same_turn(returned.first.tracks[0].keys[0].rotation, normal.first.tracks[0].keys[0].rotation) &&
+                  near(returned.first.tracks[0].keys[0].offset[0], normal.first.tracks[0].keys[0].offset[0]) &&
+                  same_turn(returned.first.tracks[1].keys[0].rotation, normal.first.tracks[1].keys[0].rotation) &&
+                  returned.second.turned_only == normal.second.turned_only &&
+                  near(returned.second.board[0].position[0], normal.second.board[0].position[0]),
+                  "Copying a native animation to switch and back preserves the limb, board keys and rotation-only mask");
+        }
+        for (const int invalid : {-1, 1, 3, 4}) {
+            bool refused = false;
+            try { (void)stance_copy(a, clip, false, invalid); } catch (const std::invalid_argument&) { refused = true; }
+            check(refused, "Native pieces cannot accidentally acquire a whole-trick fakie layer through unsupported stance choices");
+        }
+    }
+    Animation recorded;
+    recorded.trick = "kickflip"; recorded.stance = "goofy";
+    const auto switched_recording = stance_copy(recorded, clip, true, 2);
+    check(switched_recording.first.stance == "regular" && switched_recording.first.switch_stance == false,
+          "A mirrored recording's stance label is computed after mirroring its authored stance");
+    for (int version = 0; version < 4; ++version) {
+        const auto ordinary = stance_copy(recorded, clip, false, version);
+        check(ordinary.first.fakie == (version % 2 == 1), "Whole tricks retain all four existing stance options");
+    }
+}
 // Every trigger the game gives at takeoff, through the one rule that picks the recording: regular, goofy,
 // switch, fakie and switch fakie, in front-foot and exact-stance modes.
 void every_stance_finds_its_recording() {
@@ -2824,6 +2985,8 @@ int main(int argc, char** argv) {
         bent_joints_match_the_studio();
         joints_stay_in_their_range();
         lead_foot_is_read_from_the_clip();
+        whole_poses_fit_body_size();
+        native_stance_copies_keep_their_source_and_edits();
         every_stance_finds_its_recording();
         fakie_recordings_have_their_own_slot();
         mirroring_puts_each_joint_where_its_reflection_belongs();
@@ -2847,6 +3010,7 @@ int main(int argc, char** argv) {
         grind_rail_goes_under_the_grind();
         game_clips_stand_on_the_floor_where_their_board_rests();
         a_grab_loop_is_known_by_the_games_grab();
+        held_loops_follow_style_changes();
         a_grind_is_known_by_the_games_name();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();

@@ -212,6 +212,7 @@ struct Animation {
     std::vector<Track> tracks;
     float speed{1}; // Studio preview speed; gameplay source seconds stay at 1x.
     bool loop{true};
+    bool modifier_hint{}; // author recommendation only; never gates normal playback
     // Which pop it is for: "" any, or "low", "mid", "high" (a trick can have one of each).
     std::string pop;
     // The stance the trick was recorded in: "regular" or "goofy" ("" for a file from before stances: regular).
@@ -329,6 +330,11 @@ Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& frame)
 // `k` of a turn, its own way round: a quaternion past half a turn (w below 0) goes on round to it, where slerp from no turn
 // takes the short way back (a flip drawn in part seemed to flip back - Team B, 2026-10-29).
 Quat scaled_turn(const Quat& q, float k) noexcept;
+// The direction a board key turns for scaled_turn: the direction it had on the frame before (`before`), or on the first
+// frame a trick draws it the short way from no edit. The sign of a saved key gives no direction: smonk's Pop Shuv-it low 2
+// has keys of 6 and 12 degrees saved with w below 0. scaled_turn read them as turns of about 350 degrees, and at part weight
+// the board went upside down (2026-10-30).
+Quat key_way_round(const Quat& key, const std::optional<Quat>& before) noexcept;
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
 // Native/custom blend at explicitly edited bracket boundaries. Legacy full-clip windows stay at 1.

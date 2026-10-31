@@ -63,4 +63,7 @@ Setting pack_folder(const anim_studio::Settings&, bool exporting);
 // PLAYLIST: the one that plays, and which version of a trick in it plays.
 Setting playing_playlist(const anim_studio::PlaylistsNow&, Tell tell);
 Setting which_version_plays(const anim_studio::PlaylistsNow&, Tell tell);
+Setting modifier_button(const ModifierBinding&);
+Setting modifier_playlist(const anim_studio::PlaylistsNow&, const ModifierBinding&);
+Setting modifier_native_button(const ModifierBinding&);
 }

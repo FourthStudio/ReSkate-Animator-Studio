@@ -1,5 +1,6 @@
 #pragma once
 #include "anim_core.h"
+#include "trick_modifier.h"
 #include "anim_library.h"
 #include "anim_presets.h"
 #include <array>
@@ -45,7 +46,14 @@ struct Orbit {
     float yaw{0.6f}, pitch{0.18f}, distance{3.4f};
     Vec3 pan{}; // added to the skater's centre
 };
+ModifierBinding modifier_binding();
+void set_modifier_binding(ModifierBinding binding);
+void modifier_tick(bool gameplay);
+void set_modifier_hint(bool on);
+void playlist_from_modifier_tags(std::string& message);
+
 struct View {
+    bool modifier_hint{};
     bool open{};       // the studio has the screen
     bool pose_seen{};  // a pose of the local skater was read lately
     std::string status, failure;
@@ -134,6 +142,10 @@ struct View {
     bool playlist_on{};
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
+    bool playlist_can_undo{}, playlist_redo{};
+    std::uint64_t library_request{};
+    bool library_modifier_help{};
+    bool modifier_ready{};
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
     // SETTINGS > STUDIO: the CATCH flag on the timeline with CATCH HOLD, and DROP PREVIEW, shown or not; and whether the
     // first-start guide has been read (it opens by itself until it has).
@@ -451,17 +463,27 @@ struct MenuSummary {
         std::string trick, label, pop, played;
         int choices{};
         double ago{-1}; // seconds since
+        bool modifier{};
     };
     std::vector<Done> recent;
 };
 MenuSummary menu_summary();
 bool playlist_add(const PlaylistEntry& entry, std::string& message); // makes Playlist 1 when there is none
+bool edit_playlist_member(const std::string& target, const PlaylistEntry& source, bool included, std::string& message);
+bool edit_playlist_pack(const std::string& target, const std::string& pack, bool included, std::string& message);
+bool clear_playlist_entries(const std::string& target, std::string& message);
+bool undo_playlist_entries(const std::string& target, std::string& message);
+bool duplicate_playlist(const std::string& target, std::string& message);
+std::vector<std::string> playlists_containing(const std::string& animation);
+void request_library(bool modifier_help = false);
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
 void open_playlist(const std::string& name);   // the one PACKS > PLAYLIST shows
 bool new_playlist(std::string& message);        // "Playlist N", empty and off, and opened
+bool new_playlist(const std::string& name, std::string& message);
 bool rename_playlist(const std::string& to, std::string& message); // the open one
 bool delete_playlist(std::string& message);     // the open one
+bool delete_playlist(const std::string& name, std::string& message);
 // Puts a whole pack or one trick in a playlist ("" a new one) and opens it. The playlist goes on when none is (one that is
 // on stays on). Returns the playlist's name ("" when it failed).
 std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message);

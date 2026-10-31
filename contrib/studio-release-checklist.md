@@ -1,5 +1,20 @@
 # Studio release acceptance
 
+## Library .3 integration candidate (2026-10-31)
+
+This is an experimental candidate, not a public-release approval. See the [integration record](studio-library-integration.md)
+for the held #25/#27 work and automated evidence. Record the exact source/hash when checking these in game.
+
+- [ ] Edit a playlist different from the default and button playlists. Its contents change without changing either playback assignment.
+- [ ] Add one pack variation, remove it, restore it and Undo/Redo. Other playlists and the source pack remain intact.
+- [ ] Preview from the picker and from Collection, including a locked save. Back returns to the same filters, groups, scroll and destination.
+- [ ] Create a named playlist from Collection's chooser, cancel another creation, rename/duplicate, and confirm clear/delete. No unrelated list or animation file changes.
+- [ ] Use a controller through playlist contents, picker, settings and button setup at 1366x768. No hidden controls activate under setup or confirmation.
+- [ ] Resume paused playback, choose distinct default/button playlists and compare the same trick input with/without the bind.
+- [ ] Compare `tre_low_wip` at Size 1/default, normal/switch, through catch and landing. Check an intentionally raised foot and an additive-only animation.
+- [ ] Repeat modifier manuals, grind entries/transfers and grab style changes; release the button during a hold, edit its list and reconnect the pad. Missing variants fall back correctly.
+- [ ] Compare local/remote playback online. Export a mismatch and confirm the ZIP contains summary, timeline and skeleton.
+
 ## 1.0.10 review (2026-10-27)
 
 Candidate integrates #14 (`2912763`, grind entry and drop timing) and #15 (`6d5aea8`, menu entry buttons), plus rail capture lifetime fixes. A rail lock capture belongs to one fade and one skater generation: starting a saved grind or another fade invalidates it, even if both fades start at full weight. Ground prediction smoothing resets when the selected trick changes.

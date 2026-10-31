@@ -19,7 +19,10 @@ struct Given {
     std::optional<PlaylistMode> mode;
 };
 Given given;
+ModifierBinding current_modifier;
 }
+ModifierBinding modifier_binding() { return current_modifier; }
+void set_modifier_binding(ModifierBinding binding) { current_modifier = std::move(binding); }
 void set_room(bool on) { given.room = on; }
 void set_grab(bool on) { given.grab = on; }
 void set_advanced_bones(bool on) { given.advanced = on; }
@@ -227,6 +230,15 @@ void the_mode_is_the_playing_playlists_and_set_by_its_name() {
 }
 int main() {
     try {
+        anim_studio::current_modifier = {"Specials", 1, true};
+        const auto button_row = modifier_button(anim_studio::current_modifier);
+        const auto native_row = modifier_native_button(anim_studio::current_modifier);
+        button_row.pick(2);
+        native_row.pick(0);
+        check(anim_studio::current_modifier.button == 2 && !anim_studio::current_modifier.block_native && anim_studio::current_modifier.playlist == "Specials",
+              "Trainer and Studio modifier controls preserve changes made by another row");
+        modifier_playlist(two_playlists("Park"), anim_studio::current_modifier).pick(0);
+        check(anim_studio::current_modifier.playlist.empty() && anim_studio::current_modifier.button == 2, "Clearing the modifier playlist keeps the local button preference");
         an_on_off_row_is_off_and_on_and_sets_its_setting();
         each_on_off_row_sets_its_own_setting();
         editing_stance_names_the_games_stance_and_goes_round();

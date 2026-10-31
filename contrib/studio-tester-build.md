@@ -1,6 +1,6 @@
 # Build and validate Animator Studio
 
-The current release candidate is Studio 1.0.9 on ReSkate 2.1.2. See [README](../README.md) for installation and [release acceptance](studio-release-checklist.md) before publishing a binary.
+The current integration candidate is Studio 1.0.39-library.3 on ReSkate 2.1.3, including Fourth's native normal/switch options, guided Library navigation and the body-size placement correction. See the [integration record](studio-library-integration.md) for included and held changes, [README](../README.md) for installation, and [release acceptance](studio-release-checklist.md) before publishing a binary.
 
 ## Local Windows build
 
@@ -14,17 +14,17 @@ python -m pip install -r contrib/animator-studio/requirements-test.txt
 # Optional, when building the Spotify helper:
 # cargo fetch --locked --manifest-path SpotifyHelper/Cargo.toml
 cmake --preset ci-windows
-cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_studio_pack_file_tests dingosdk_arm_reach_tests dingosdk_carry_tests dingosdk_anim_graph_probe dingosdk_plugin_tests dingosdk_trick_watch_tests dingosdk_board_material_tests --parallel 4
+cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_regression_tests --parallel 4
 ctest --test-dir build/ci-windows -C Release --output-on-failure
 python -m unittest discover -s contrib/animator-studio -p 'test_native*.py'
 python -m unittest discover -s contrib/Test -p '*tests.py'
 ```
 
-The preset stamps ReSkate 2.1.2 / AnimatorStudio 1.0.9 and turns binary auto-update off. Outputs are under `build/ci-windows/Release`. Warnings are errors. The eight CTest suites cover animation math/selection/serialization, pack file rollback, arm reach, graph-probe self-tests, carry, plugins, trick watch and board materials. Optional plugin fixture folders absent from a checkout are reported as skipped by the plugin suite.
+The preset stamps ReSkate 2.1.3 / AnimatorStudio 1.0.39-library.3 and turns binary auto-update off. Its release source is the Studio repository and crash uploads are disabled for this modified build. Outputs are under `build/ci-windows/Release`. Warnings are errors. `dingosdk_regression_tests` builds all enabled `dingosdk_*_tests` executables and the graph-probe self-test: 64 CTest suites with the Studio, plugin and launcher options enabled. Optional plugin fixture folders absent from a checkout are reported as skipped by the plugin suite.
 
 ## CI and downloads
 
-[Studio tester build](../.github/workflows/studio-tester.yml) runs on PRs and pushes to main. It builds runtime/launcher/test targets, runs C++ and Python regressions, then uploads ReSkate.dll directly. Artifacts expire after one day and repository access may be required to download them. They are temporary review builds, not permanent public releases.
+[Studio tester build](../.github/workflows/studio-tester.yml) runs only when started manually. It builds runtime/launcher/test targets, runs C++ and Python regressions, then uploads ReSkate.dll directly. Artifacts expire after one day and repository access may be required to download them. They are temporary review builds, not permanent public releases.
 
 The complete native-library ZIP is **manual opt-in**: start the workflow with `full_library` enabled. This adds the pinned library download, SHA256 and per-file validation, preview/index/document/name checks, isolated launcher staging and ZIP packaging. Ordinary PR builds do not run those complete-library steps.
 
