@@ -19,6 +19,7 @@
 #include "Extension/AnimationStudio/editor_floor.h"
 #include "Extension/AnimationStudio/grab_types.h"
 #include "Extension/AnimationStudio/held_loop_selection.h"
+#include "Extension/AnimationStudio/stance_copy.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
 #include <algorithm>
@@ -2790,6 +2791,59 @@ void lead_foot_is_read_from_the_clip() {
     clip.frames[343].position = {0.1f, -0.8f, 0.07f};
     check(!clip_leads_right(clip).has_value(), "Feet together cannot tell");
 }
+// Native copies keep the clip, keyed limb and board in the same stance while preserving the source identity.
+void native_stance_copies_keep_their_source_and_edits() {
+    Clip clip;
+    clip.joints = skeleton_joints;
+    clip.times = {0.0f};
+    clip.frames.assign(skeleton_joints, Joint{});
+    clip.frames[10].position = {0.15f, -0.8f, 0.05f};
+    clip.frames[343].position = {-0.2f, -0.8f, 0.07f};
+    clip.turned_only.resize(skeleton_joints);
+    clip.turned_only[341] = 1;
+    clip.board.resize(1);
+    clip.board[0].position = {0.12f, 0.2f, -0.08f};
+    for (const char* asset : {"manual", "grab", "grind", "invert", "fingerflip", "other-piece"}) {
+        Animation a;
+        a.trick = std::string("native:") + asset;
+        a.source.kind = "native_asset"; a.source.asset = asset; a.stance = "regular";
+        a.modifier_hint = true; a.fakie = true; a.crossfade = 0.27f; a.clip.times = {0, 1};
+        a.tracks.push_back({341, {{0, axis_angle({0, 1, 0}, 0.3f), {0.06f, 0.02f, -0.03f}, Ease::linear}}});
+        a.tracks.push_back({board_joint, {{0, axis_angle({1, 0, 0}, 0.4f), {0.04f, 0.03f, 0.02f}, Ease::linear}}});
+        for (const bool own_right : {false, true}) {
+            const auto normal = stance_copy(a, clip, own_right, 0);
+            const auto switched = stance_copy(a, clip, own_right, 2);
+            check(clip_leads_right(normal.second) == own_right && clip_leads_right(switched.second) == !own_right,
+                  "Every native family has its own normal and switch clip for regular and goofy riders");
+            check(switched.first.keep_leads_right == !own_right && switched.first.fakie == a.fakie &&
+                  switched.first.trick == a.trick && switched.first.source.asset == a.source.asset &&
+                  switched.first.modifier_hint && switched.first.crossfade == a.crossfade && switched.first.clip.times == a.clip.times,
+                  "A native stance copy keeps its source, existing fakie asset semantics, timing, crossfade and modifier hint");
+            const auto returned = stance_copy(switched.first, switched.second, own_right, 0);
+            check(returned.first.tracks[0].joint == normal.first.tracks[0].joint &&
+                  same_turn(returned.first.tracks[0].keys[0].rotation, normal.first.tracks[0].keys[0].rotation) &&
+                  near(returned.first.tracks[0].keys[0].offset[0], normal.first.tracks[0].keys[0].offset[0]) &&
+                  same_turn(returned.first.tracks[1].keys[0].rotation, normal.first.tracks[1].keys[0].rotation) &&
+                  returned.second.turned_only == normal.second.turned_only &&
+                  near(returned.second.board[0].position[0], normal.second.board[0].position[0]),
+                  "Copying a native animation to switch and back preserves the limb, board keys and rotation-only mask");
+        }
+        for (const int invalid : {-1, 1, 3, 4}) {
+            bool refused = false;
+            try { (void)stance_copy(a, clip, false, invalid); } catch (const std::invalid_argument&) { refused = true; }
+            check(refused, "Native pieces cannot accidentally acquire a whole-trick fakie layer through unsupported stance choices");
+        }
+    }
+    Animation recorded;
+    recorded.trick = "kickflip"; recorded.stance = "goofy";
+    const auto switched_recording = stance_copy(recorded, clip, true, 2);
+    check(switched_recording.first.stance == "regular" && switched_recording.first.switch_stance == false,
+          "A mirrored recording's stance label is computed after mirroring its authored stance");
+    for (int version = 0; version < 4; ++version) {
+        const auto ordinary = stance_copy(recorded, clip, false, version);
+        check(ordinary.first.fakie == (version % 2 == 1), "Whole tricks retain all four existing stance options");
+    }
+}
 // Every trigger the game gives at takeoff, through the one rule that picks the recording: regular, goofy,
 // switch, fakie and switch fakie, in front-foot and exact-stance modes.
 void every_stance_finds_its_recording() {
@@ -2876,6 +2930,7 @@ int main(int argc, char** argv) {
         bent_joints_match_the_studio();
         joints_stay_in_their_range();
         lead_foot_is_read_from_the_clip();
+        native_stance_copies_keep_their_source_and_edits();
         every_stance_finds_its_recording();
         fakie_recordings_have_their_own_slot();
         mirroring_puts_each_joint_where_its_reflection_belongs();

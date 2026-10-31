@@ -47,6 +47,11 @@ int main() {
         loops[1].rank = 0; loops[1].mirrored = true;
         check(native_loop_candidates(loops, true, false) == std::vector<std::size_t>{0}, "An ineligible modifier stance falls back to the normal loop");
         check(native_loop_candidates(loops, true, true) == std::vector<std::size_t>{1}, "Front-foot mode permits a mirrored modifier loop");
+        loops[2].rank = 0; loops[2].mirrored = false;
+        check(native_loop_candidates(loops, true, true) == std::vector<std::size_t>{2},
+              "A native switch version authored on the current foot wins over mirroring another modifier save");
+        check(native_loop_candidates(loops, false, true) == std::vector<std::size_t>{0},
+              "An exact native modifier stance never enters normal playback without the button");
 
         // Exercise the same route selector and pop/stance matcher as gameplay, with different eligible groups.
         std::vector<StanceCandidate> normal{{false, false, 0}}, special{{false, false, 0}, {false, false, 0}};

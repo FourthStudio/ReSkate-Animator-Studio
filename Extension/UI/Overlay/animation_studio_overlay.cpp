@@ -3471,15 +3471,17 @@ std::array<std::string, 4> stance_versions_of(const studio::View& v, const std::
 float stance_versions(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 at, float w,
                       const std::vector<std::string>& among = {}, const std::string& pack = {}, bool* acted = nullptr) {
     const auto* p = preset_named(v, name);
-    if (!p || p->trick.starts_with("native:")) return 0;
+    if (!p) return 0;
+    const bool piece = p->trick.starts_with("native:");
     const float k = f.k;
     const auto have = stance_versions_of(v, name, among);
     const bool nollie = nollie_trick(p->trick);
-    const std::array<const char*, 4> labels{stance_word(0, nollie), stance_word(1, nollie), stance_word(2, nollie), stance_word(3, nollie)};
+    const std::array<const char*, 4> labels{piece ? "NORMAL" : stance_word(0, nollie), stance_word(1, nollie), stance_word(2, nollie), stance_word(3, nollie)};
     float x = at.x, y = at.y;
     text(d, f.bold, 11 * k, ImVec2(x, y + 9 * k), faint, "STANCES");
     x += 70 * k;
     for (std::size_t i = 0; i < labels.size(); ++i) {
+        if (piece && i % 2 == 1) continue;
         const float cw = text_size(f.bold, 12 * k, labels[i]).x + 40 * k;
         if (x + cw > at.x + w) x = at.x + 70 * k, y += 34 * k;
         const ImVec2 a(x, y), b(x + cw, y + 30 * k);
@@ -3986,13 +3988,15 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         }
         y += 48 * k;
     }
-    if (p && !p->trick.starts_with("native:")) {
+    if (p) {
         heading(d, f, ImVec2(x, y), w, "Its stances");
         y += 32 * k;
         y += stance_versions(d, f, v, name, ImVec2(x, y), w) + 4 * k;
         y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
-                       "A version for each stance, to change on its own: with Trick matching on Exact stance each plays only in its "
-                       "stance, so every way you do the trick can look its own.") + 14 * k;
+                       p->trick.starts_with("native:")
+                           ? "Create a normal and a switch version. Riding that way, its own version plays. Fakie uses a separate native animation."
+                           : "A version for each stance, to change on its own: with Trick matching on Exact stance each plays only in its "
+                             "stance, so every way you do the trick can look its own.") + 14 * k;
     }
     if (p && p->locked) {
         y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, skate_theme::warning,
@@ -9700,21 +9704,25 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     // Its stance: which way round it is done, saved so, and played when riding so.
     {
         const bool can = v.trick_stance >= 0 && !v.previewing;
+        const bool piece = v.trick.starts_with("native:");
         static constexpr std::array<const char*, 4> names{"NORMAL", "FAKIE", "SWITCH", "SW FAKIE"};
         text(d, f.bold, 14 * k, ImVec2(x, y), can ? white : faint, "STANCE");
-        const float gap = 6 * k, sw = (bw - 3 * gap) / 4;
+        const int columns = piece ? 2 : 4;
+        const float gap = 6 * k, sw = (bw - static_cast<float>(columns - 1) * gap) / static_cast<float>(columns);
         for (int i = 0; i < 4; ++i) {
+            if (piece && i % 2 == 1) continue;
             const bool on = v.trick_stance == i;
             ImGui::PushID(i);
-            if (action(d, f, "##trickstance", ImVec2(x + static_cast<float>(i) * (sw + gap), y + 22 * k), ImVec2(sw, 28 * k), names[static_cast<std::size_t>(i)],
-                       on ? Look::blue : Look::ghost, can, on) && !on) {
+            if (action(d, f, "##trickstance", ImVec2(x + static_cast<float>(piece ? i / 2 : i) * (sw + gap), y + 22 * k), ImVec2(sw, 28 * k), names[static_cast<std::size_t>(i)],
+                       on ? Look::blue : Look::ghost, can && !(piece && i % 2 == 1), on) && !on) {
                 studio::begin_change(); // into fakie or out of it the upper body's keys go to the other side: undone as one
                 studio::set_trick_stance(i);
             }
             ImGui::PopID();
         }
         // On a nollie trick FAKIE is the switch trick riding fakie (nollie_trick).
-        const char* says = !can ? "A piece of the game's animation: it has no stance of its own."
+        const char* says = !can ? "Open a trick to set its stance."
+                           : piece ? "Normal or switch. Its fakie way is a separate animation on the trick's card."
                            : nollie_trick(v.trick) && v.trick_stance == 1
                                ? "Fakie nollie: plays when you pop off the nose riding fakie - the game's switch trick there."
                            : v.trick_stance % 2 == 1 ? "Fakie: mirrored from the waist up, the arms too, as it plays riding fakie."
@@ -9727,17 +9735,20 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     // waist up, switch onto the other foot). Saved first, so the copy has what is open now. A lit one is yours: it opens.
     {
         const bool can = v.trick_stance >= 0 && !v.previewing;
+        const bool piece = v.trick.starts_with("native:");
         const auto have = can ? stance_versions_of(v, v.name) : std::array<std::string, 4>{};
         static constexpr std::array<const char*, 4> names{"NORMAL", "FAKIE", "SWITCH", "SW FAKIE"};
         text(d, f.bold, 14 * k, ImVec2(x, y), can ? white : faint, "COPY TO");
-        const float gap = 6 * k, sw = (bw - 3 * gap) / 4;
+        const int columns = piece ? 2 : 4;
+        const float gap = 6 * k, sw = (bw - static_cast<float>(columns - 1) * gap) / static_cast<float>(columns);
         for (int i = 0; i < 4; ++i) {
+            if (piece && i % 2 == 1) continue;
             const auto at = static_cast<std::size_t>(i);
             const bool self = v.trick_stance == i, done = !self && !have[at].empty();
-            const ImVec2 ba(x + static_cast<float>(i) * (sw + gap), y + 22 * k);
+            const ImVec2 ba(x + static_cast<float>(piece ? i / 2 : i) * (sw + gap), y + 22 * k);
             ImGui::PushID(i);
             const std::string label = self || done ? std::string(names[at]) : std::string("+ ") + names[at];
-            if (action(d, f, "##stancecopy", ba, ImVec2(sw, 28 * k), label, done ? Look::ghost : Look::dark, can && !self, done)) {
+            if (action(d, f, "##stancecopy", ba, ImVec2(sw, 28 * k), label, done ? Look::ghost : Look::dark, can && !self && !(piece && i % 2 == 1), done)) {
                 std::string m;
                 if (done) open_or_preview(v, have[at], {});
                 else {
@@ -9754,7 +9765,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         }
         text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint,
              elide(f.bold, 11 * k, can ? "+ copies this trick, keys and all, into that stance and opens it. Lit: you have one."
-                                       : "A piece of the game's animation: it has no stance of its own.", bw));
+                                       : "Open a trick to copy it into another stance.", bw));
         y += row;
     }
     // Its own Crossfade, or the main one.

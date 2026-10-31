@@ -1,5 +1,6 @@
 #pragma once
 #include "trick_modifier.h"
+#include <algorithm>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -27,8 +28,11 @@ inline std::vector<std::size_t> native_loop_candidates(std::span<const NativeLoo
             }
         }
         std::vector<std::size_t> out;
+        const bool exact = std::any_of(candidates.begin(), candidates.end(), [&](const auto& c) {
+            return found && c.modifier == modified && c.rank == rank && c.asset == asset && !c.mirrored;
+        });
         for (const auto& c : candidates)
-            if (found && c.modifier == modified && c.rank == rank && c.asset == asset && (front_foot || !c.mirrored)) out.push_back(c.piece);
+            if (found && c.modifier == modified && c.rank == rank && c.asset == asset && ((!exact && front_foot) || !c.mirrored)) out.push_back(c.piece);
         return out;
     });
 }

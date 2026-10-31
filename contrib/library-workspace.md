@@ -71,6 +71,22 @@ priority. Normal and modifier variants cycle independently. The trainer feed and
 which route supplied a selected animation. This extends the existing native recognisers; it does not
 turn every animation-tree asset into a guaranteed live gameplay replacement.
 
+## Native normal and switch versions
+
+Fourth's native stance feature is integrated from the stance changes in `9523fec5` (#25).
+Open a saved grind, manual, grab, invert, fingerflip or other native piece, then use **THIS TRICK >
+STANCE > NORMAL / SWITCH** to change it, or **COPY TO** to keep both versions. The saved trick's
+stance controls also create/open these versions. Native fakie uses a separate source animation,
+so these controls offer two stances; whole tricks retain Normal, Fakie, Switch and Switch Fakie.
+
+Copies mirror their source clip and keyed limb/board edits together, keep their modifier hint and
+crossfade, and preserve the source asset and timing. Locked saves remain protected. Playback
+prefers a version authored for the current foot within the selected route; it does not choose a
+normal-playlist version over a modifier merely because the former has an exact-foot version.
+Exact stance falls back to normal/native when no compatible modifier exists. Front foot may mirror
+the modifier when its own-foot variant is missing. Native variant cycles are independent per route
+and live lead foot. The rest of #25 remains held; see the [integration record](studio-library-integration.md).
+
 ## Verification
 
 Run the preset build and CTest aggregate, then from a VS developer shell:

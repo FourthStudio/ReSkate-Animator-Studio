@@ -91,7 +91,33 @@ int main(){try{
  l.piece_play={l.piece_tricks[moving->piece],false,1,1};
  auto same=native_piece_version(l,snap,{0,false,1.1f,0},true);check(same&&same->piece==moving->piece,"The moving piece keeps its running variant");
  auto restart=native_piece_version(l,snap,{0,false,.1f,0},true);check(restart&&restart->piece==2,"A new occurrence can advance to the next native variant");
- std::cout<<"Production native modifiers: manual/grab matching, fallback, clocks, style changes and independent variants passed\n";
+ for(const char* asset:{"native:manual","native:grind","native:grab","native:invert","native:fingerflip","native:transition"}){
+  CustomTrick own{asset,"own",mirror,false,false,0},sw{asset,"switch",plain,false,true,1},
+      mod{asset,"modifier-own",mirror,true,false,2},modsw{asset,"modifier-switch",plain,true,true,3},modsw2{asset,"modifier-switch-2",plain,true,true,4};
+  Live native;native.piece_tricks={&own,&sw,&mod,&modsw,&modsw2};
+  auto right=native_piece_version(native,snap,{0,true,.3f,0},false);
+  check(right&&right->piece==1&&!right->mirrored,"A native normal route uses its authored switch save before a mirrored normal save");
+  auto special_right=native_piece_version(native,snap,{0,true,.3f,0},true);
+  check(special_right&&special_right->piece==3&&!special_right->mirrored,"Switch chooses an exact modifier save within the modifier route");
+  auto special_left=native_piece_version(native,snap,{0,false,.3f,0},true);
+  check(special_left&&special_left->piece==2&&!special_left->mirrored,"The next opposite-foot move uses its own normal-foot save");
+  auto next_right=native_piece_version(native,snap,{0,true,.3f,0},true);
+  check(next_right&&next_right->piece==4,"Normal-foot and switch modifier variants have independent In-turns counters");
+  native.piece_play={&modsw2,false,.3f,1};
+  auto running=native_piece_version(native,snap,{0,true,.5f,0},true);
+  check(running&&running->piece==4&&running->time==.5f,"The chosen switch variant keeps its time through the move");
+  native.piece_play={};native.piece_tricks={&own,&sw,&mod};snap.front_foot=false;
+  auto missing=native_piece_version(native,snap,{0,true,.3f,0},true);
+  check(missing&&missing->piece==1,"Exact stance falls back to the normal switch save when the modifier only has the other foot");
+  snap.front_foot=true;
+  auto mirrored_special=native_piece_version(native,snap,{0,true,.3f,0},true);
+  check(mirrored_special&&mirrored_special->piece==2&&mirrored_special->mirrored,"Front-foot mode may mirror the modifier when no authored switch modifier exists");
+  native.piece_tricks={&own,&sw,&mod,&modsw,&modsw2};native.held_loops={{0,Live::HeldKind::grind},{1,Live::HeldKind::grind},{2,Live::HeldKind::grind},{3,Live::HeldKind::grind},{4,Live::HeldKind::grind}};
+  native.native_modifier.observe(1,12,true,true,false);
+  auto loop=said_loop(native,snap,.016f,Live::HeldKind::grind,[](std::size_t){return 0;},"grind","left");
+  check(loop&&loop->piece>=3&&!loop->mirrored,"A held native loop also prefers the authored switch version within its modifier route");
+ }
+ std::cout<<"Production native modifiers: manual/grab matching, fallback, clocks, switch routes, style changes and independent variants passed\n";
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}return 0;}
 '''
 out = repo / 'build' / 'native-modifier-check'

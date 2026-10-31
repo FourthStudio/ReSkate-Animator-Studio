@@ -8,7 +8,10 @@ surface=(repo/'Extension/UI/Overlay/animation_studio_overlay.cpp').read_text(enc
 rows=(repo/'Extension/AnimationStudio/studio_settings_rows.cpp').read_text(encoding='utf-8-sig')
 def function(source,signature):
     start=source.index(signature)
-    opening=source.index('{',start)
+    params=source.index('(',start); depth=1; at=params+1
+    while depth:
+        depth+=(source[at]=='(')-(source[at]==')'); at+=1
+    opening=source.index('{',at)
     depth=1; at=opening+1
     while depth:
         depth+=(source[at]=='{')-(source[at]=='}'); at+=1
@@ -33,10 +36,13 @@ prefix=r'''
 #include <vector>
 namespace studio=dingosdk::anim_studio;
 studio::View fixture;
+bool preview_native_stances{};
+int copied_stance{-1};
 studio::ModifierBinding binding{"Specials",1,true};
 std::map<std::string,std::vector<studio::PlaylistEntry>> fixture_lists;
 void sync_lists(){fixture.playlists.clear();for(const auto& [name,entries]:fixture_lists) fixture.playlists.push_back({name,entries.size()});fixture.playlist=fixture_lists[fixture.playlist_open];}
 namespace dingosdk::anim_studio {
+bool make_stance_version(const std::string&,int version,std::string&,std::string&){copied_stance=version;return false;}
 ModifierBinding modifier_binding(){return binding;}
 void set_modifier_binding(ModifierBinding value){binding=std::move(value);}
 void set_play_in_game(bool on){fixture.play_in_game=on;}
@@ -83,6 +89,7 @@ void say(const std::string&){}
 void make_pack(const studio::View&){}
 void preview_trick(const std::string&,const std::string&,bool){}
 void open_or_preview(const studio::View&,const std::string&,const std::string& = {}){}
+void open_saved(const std::string&){}
 void open_pack_page(const std::string&){}
 std::string trick_label(const std::string& trick){return trick=="kickflip"?"Kickflip":trick=="360flip"?"360 Flip":trick=="ollie"?"Ollie":trick=="manual"?"Manual":trick;}
 '''
@@ -93,6 +100,7 @@ helpers+=surface[navstart:navend]
 helpers+=function(surface,'std::string elide(')+function(surface,'void chosen_outline(')
 helpers+='enum class Look { dark, blue, paper, key, danger, ghost };\n'
 helpers+=''.join(function(surface,sig) for sig in ['bool action(ImDrawList*','int segmented(', 'bool field(', 'float paragraph(', 'const studio::Preset* preset_named(', 'const studio::View::PackView* pack_named(', 'bool saved_trick(', 'std::string shown_name(', 'std::string listed(', 'void tick_box(', 'void page_heading(', 'void flat_rect('])
+helpers+=''.join(function(surface,sig) for sig in ['bool nollie_trick(', 'const char* stance_word(', 'std::array<std::string, 4> stance_versions_of(', 'float stance_versions('])
 art=r'''
 void pack_cover(ImDrawList*d,const Fonts&f,const studio::View::PackView&p,ImVec2 a,ImVec2 b){
  unsigned seed=0;for(char c:p.name)seed=seed*33+static_cast<unsigned char>(c);
@@ -142,7 +150,13 @@ int main(int argc,char**argv){
  const auto frame=[&](std::string name,int width,int height,std::function<void()> before=[]{}){io.DisplaySize={static_cast<float>(width),static_cast<float>(height)};f.k=std::min(height/1080.f,width/1700.f);ImGui::NewFrame();ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize(io.DisplaySize);ImGui::Begin("fixture",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoSavedSettings);nav_frame();before();
   auto*d=ImGui::GetWindowDrawList();for(int i=0;i<20;++i)d->AddLine({0.f,static_cast<float>(i*90)},{static_cast<float>(width),static_cast<float>(i*90-350)},IM_COL32(32,34,39,255),30);
   text(d,f.bold,18*f.k,{48*f.k,40*f.k},soft,"TRICKS       LIBRARY       MARKET       SETTINGS       ABOUT");
-  const auto view=fixture;const auto began=std::chrono::steady_clock::now();library_workspace(d,f,view,{48*f.k,124*f.k},{width-48*f.k,height-76*f.k});if(!ui().playlist_for.empty())playlist_card(d,f,view,io.DisplaySize);const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-began).count();nav_end_frame();ImGui::End();ImGui::Render();render_image(root/(name+".ppm"),width,height,atlas,aw,ah);std::cout<<name<<" rendered (UI "<<elapsed<<"ms, "<<ImGui::GetDrawData()->TotalVtxCount<<" vertices)\n";
+  const auto view=fixture;const auto began=std::chrono::steady_clock::now();
+  if(preview_native_stances){auto [a,b]=card_box(d,f,io.DisplaySize,820*f.k,280*f.k,"NATIVE ANIMATION / STANCES");
+   text(d,f.bold,18*f.k,{a.x+26*f.k,a.y+86*f.k},white,"Manual / Normal and switch versions");
+   stance_versions(d,f,view,"Native manual",{a.x+26*f.k,a.y+134*f.k},760*f.k);
+   paragraph(d,f.bold,14*f.k,{a.x+26*f.k,a.y+194*f.k},760*f.k,soft,"Create a normal and a switch version. Fakie uses a separate native animation. Each version can go in your normal or modifier playlist.");
+  }else{library_workspace(d,f,view,{48*f.k,124*f.k},{width-48*f.k,height-76*f.k});if(!ui().playlist_for.empty())playlist_card(d,f,view,io.DisplaySize);}
+  const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-began).count();nav_end_frame();ImGui::End();ImGui::Render();render_image(root/(name+".ppm"),width,height,atlas,aw,ah);std::cout<<name<<" rendered (UI "<<elapsed<<"ms, "<<ImGui::GetDrawData()->TotalVtxCount<<" vertices)\n";
  };
  frame("packs-1080",1920,1080);frame("packs-768",1366,768);
  ui().library_source=1;ui().library_expanded={"Kickflip","Ollie"};frame("personal-tricks",1920,1080);
@@ -195,6 +209,14 @@ int main(int argc,char**argv){
  frame("large-collection-3200",1920,1080);
  fixture_lists.clear();fixture.packs.clear();fixture.presets.clear();fixture.library.clear();fixture.playlist_open.clear();fixture.playlist_playing.clear();binding={};sync_lists();fixture_lists.clear();fixture.playlists.clear();fixture.playlist.clear();
  frame("empty-library",1920,1080);frame("empty-library-768",1366,768);
+ studio::Preset native;native.name="Native manual";native.trick="native:manual";native.stance="regular";
+ fixture.presets.push_back(native);fixture.library.push_back(native.name);fixture.own_lead_right=false;preview_native_stances=true;
+ frame("native-stances",1920,1080);
+ frame("action-native-switch",1920,1080,[&]{ImGui::PushID(2);nav().focus=ImGui::GetID("##stance");ImGui::PopID();nav().keys=true;nav().press=true;});
+ expect(copied_stance==2,"A native saved animation exposes its switch copy control");
+ copied_stance=-1;
+ frame("action-native-no-fakie",1366,768,[&]{ImGui::PushID(1);nav().focus=ImGui::GetID("##stance");ImGui::PopID();nav().keys=true;nav().press=true;});
+ expect(copied_stance==-1,"Native saved animations do not expose invalid whole-trick fakie controls");
  std::cout<<"Library navigation and playlist interaction checks passed\n";
  ImGui::DestroyContext();return 0;
 }

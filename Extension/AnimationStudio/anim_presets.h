@@ -118,7 +118,7 @@ inline int stance_version(const std::string& stance, std::optional<bool> switch_
 // own clips is labelled regular but stands goofy, and read from its labels alone it was filed under the wrong stance
 // for a goofy rider (OWN STANCE then made another copy each press).
 inline int stance_version(const Preset& p, bool own_lead_right) {
-    return (preset_leads_right(p) == own_lead_right ? 0 : 2) + (p.fakie.value_or(false) ? 1 : 0);
+    return (preset_leads_right(p) == own_lead_right ? 0 : 2) + (!p.trick.starts_with("native:") && p.fakie.value_or(false) ? 1 : 0);
 }
 inline std::string preset_slot(std::string trick, const std::string& pop) {
     for (char& c : trick) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');

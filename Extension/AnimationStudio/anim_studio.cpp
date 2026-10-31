@@ -1,6 +1,7 @@
 #include "anim_studio.h"
 #include "playlist_management.h"
 #include "native_modifier_selection.h"
+#include "stance_copy.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include "held_loop_selection.h"
 #include "native_asset_names.h"
@@ -3094,7 +3095,8 @@ PieceMatch native_variant(Live& l, std::vector<PieceMatch> options) {
     const auto mode = first->route_mode;
     if (mode == PlaylistMode::turns)
         std::stable_sort(options.begin(), options.end(), [&](const auto& a, const auto& b) { return l.piece_tricks[a.piece]->order < l.piece_tricks[b.piece]->order; });
-    const std::string key = first->trick + (first->modifier_route ? "|native-modifier" : "|native-normal");
+    const bool live_right = first->leads_right != options.front().mirrored;
+    const std::string key = first->trick + (first->modifier_route ? "|native-modifier" : "|native-normal") + (live_right ? "|right" : "|left");
     auto& previous = l.variant_counts[key];
     static thread_local std::mt19937 random{static_cast<std::uint32_t>(GetTickCount64())};
     // Fixed priority was resolved when loading. Remaining same-slot variants may be a pack's Alternate group.
@@ -3114,6 +3116,10 @@ std::optional<PieceMatch> native_piece_version(Live& l, const Snapshot& snap, Pi
             if (!snap.front_foot && mirror) continue;
             out.push_back({i, mirror, reference.time, reference.score});
         }
+        // Fourth's native stance option: use an authored version on this foot before mirroring its other-foot version.
+        // Stay inside the chosen route so a normal save cannot replace the requested modifier animation.
+        if (std::any_of(out.begin(), out.end(), [](const auto& p) { return !p.mirrored; }))
+            std::erase_if(out, [](const auto& p) { return p.mirrored; });
         return out;
     });
     if (options.empty()) return std::nullopt;
@@ -7361,9 +7367,10 @@ View view() {
     v.stance_choice = s.stance_choice;
     v.own_lead_right = studio_goofy(s.stance_choice);
     // The open trick's stance, as it is saved: the foot it keeps (or its clip leads with) against the skater's own, and fakie.
-    if (s.clip && !s.clip->empty() && !s.edits.trick.starts_with("native:"))
+    if (s.clip && !s.clip->empty())
         if (const auto lead = s.edits.keep_leads_right ? s.edits.keep_leads_right : clip_leads_right(*s.clip))
-            v.trick_stance = (*lead != v.own_lead_right ? 2 : 0) + (s.edits.fakie.value_or(false) ? 1 : 0);
+            v.trick_stance = (*lead != v.own_lead_right ? 2 : 0) +
+                             (!s.edits.trick.starts_with("native:") && s.edits.fakie.value_or(false) ? 1 : 0);
     v.showing_goofy = s.showing_goofy;
     v.grab_board = s.grab_board;
     v.advanced_bones = s.advanced_bones;
@@ -7945,20 +7952,21 @@ void set_trick_stance(int version) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (s.previewing || !s.clip || s.clip->empty()) return;
-    if (s.edits.trick.starts_with("native:")) {
-        s.status = "A piece of the game's animation plays whichever way round the game plays it.";
+    const bool piece = s.edits.trick.starts_with("native:");
+    if (!valid_stance_version(s.edits.trick, version)) {
+        s.status = "A native piece is normal or switch: its fakie way is a separate animation on the trick's card.";
         ++s.revision;
         return;
     }
     const bool own_right = studio_goofy(s.stance_choice);
     const bool want_right = version >= 2 ? !own_right : own_right, want_fakie = version % 2 == 1;
     const auto lead = s.edits.keep_leads_right ? s.edits.keep_leads_right : clip_leads_right(*s.clip);
-    if (s.edits.keep_leads_right && lead && *lead == want_right && s.edits.fakie.value_or(false) == want_fakie) return;
+    if (s.edits.keep_leads_right && lead && *lead == want_right && (piece || s.edits.fakie.value_or(false) == want_fakie)) return;
     s.edits.keep_leads_right = want_right;
     // Into fakie or out of it, the upper body's keys go to the other side with the pose under them (mirror_upper_body), so
     // what was made shows mirrored, the arms too.
     const bool was_mirrored = fakie_mirrored(s.edits);
-    s.edits.fakie = want_fakie;
+    if (!piece) s.edits.fakie = want_fakie;
     if (fakie_mirrored(s.edits) != was_mirrored) mirror_upper_keys(s.edits);
     s.edits.switch_stance = authored_goofy(s.edits) != want_right; // its label (set again from the clip if it is mirrored)
     static constexpr std::array<const char*, 4> said{"your own stance", "fakie", "switch", "switch fakie"};
@@ -8658,8 +8666,9 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         if (version < 0 || version > 3) throw std::runtime_error("There is no such stance.");
         const auto safe = file_safe(animation);
         auto anim = from_json(saved_text(safe));
-        if (anim.trick.empty() || anim.trick.starts_with("native:"))
-            throw std::runtime_error(animation + " is a piece of the game's animation: it plays whichever way round the game plays it.");
+        if (anim.trick.empty()) throw std::runtime_error(animation + " is for none of the game's tricks.");
+        if (!valid_stance_version(anim.trick, version))
+            throw std::runtime_error("A native piece is normal or switch: its fakie way is a separate animation on the trick's card.");
         if (locked_locked(s, safe)) throw std::runtime_error(animation + " is locked to its maker: it can be played, not copied.");
         std::string bytes;
         {
@@ -8670,22 +8679,9 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         Clip clip = clip_from_bytes(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
         if (anim.source.kind == "native_asset") place_native_marks(clip);
         const bool own_right = studio_goofy(s.stance_choice);
-        const bool want_right = version >= 2 ? !own_right : own_right, want_fakie = version % 2 == 1;
-        const bool lead = clip_leads_right(clip).value_or(leads_right(authored_goofy(anim), anim.switch_stance.value_or(false)));
-        if (lead != want_right) {
-            clip = mirror_clip(clip);
-            const auto timing = anim.clip;
-            anim.clip = {};
-            anim = mirror_animation(anim);
-            anim.clip = timing;
-        }
-        anim.switch_stance = authored_goofy(anim) != want_right;
-        // Made fakie from a trick that is not (or back), its upper body's keys go to the other side with the pose under
-        // them (mirror_upper_body): the copy is the trick's mirror from the waist up, the arms too.
-        const bool was_mirrored = fakie_mirrored(anim);
-        anim.fakie = want_fakie;
-        if (fakie_mirrored(anim) != was_mirrored) mirror_upper_keys(anim);
-        anim.keep_leads_right = want_right;
+        auto copied = stance_copy(std::move(anim), std::move(clip), own_right, version);
+        anim = std::move(copied.first);
+        clip = std::move(copied.second);
         // "Kickflip mid" makes "Kickflip mid switch"; a version of a version is named from the trick itself.
         static constexpr std::array<const char*, 4> suffix{" normal", " fakie", " switch", " switch fakie"};
         std::string base = safe;
