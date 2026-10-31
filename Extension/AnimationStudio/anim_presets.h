@@ -39,6 +39,8 @@ struct Preset {
     // The foot it leads with, as the studio reads its file (authored_goofy and its switch label, which a save and the
     // upgrade keep true to its clip). Empty: from its stance and switch labels.
     std::optional<bool> leads_right;
+    bool modifier_hint{};
+    bool available{true}; // local clip file exists; never exported as author metadata
 };
 // The foot a saved trick leads with: what decides which takeoffs it plays on, as the game mirrors by it. A goofy normal
 // and a regular switch recording both lead with the right foot.
@@ -284,6 +286,7 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
 struct PlaylistEntry {
     std::string pack;      // the pack it is, or the pack the trick is from ("" a trick of your own)
     std::string animation; // "" the whole pack
+    std::set<std::string> omitted; // whole pack only: exclusions in this playlist, never the source pack
     bool operator==(const PlaylistEntry&) const = default;
 };
 enum class PlaylistMode { fixed, turns, shuffle };
@@ -317,7 +320,7 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
     };
     const auto take = [&](const std::string& name, const PresetPack* pack) {
         for (auto& p : presets) {
-            if (p.name != name || p.included) continue;
+            if (p.name != name || p.included || !p.available) continue;
             p.included = true;
             p.order = order++;
             source_of[p.name] = source;
@@ -328,15 +331,17 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
     for (const auto& entry : playlist) {
         ++source;
         const auto* pack = entry.pack.empty() ? nullptr : find_pack(entry.pack);
+        if (!entry.pack.empty() && !pack) continue; // a missing pack must not silently lose its playback rules
         if (!entry.animation.empty()) {
-            if (pack && pack->off.contains(entry.animation)) continue;
+            if (pack && !pack->has(entry.animation)) continue;
+            // Choosing a single trick explicitly opts into it even when it is disabled in the whole pack.
             take(entry.animation, pack);
             continue;
         }
         if (!pack) continue;
         for (const auto& [slot, names] : pack->slots)
             for (const auto& name : names)
-                if (!pack->off.contains(name)) take(name, pack);
+                if (!pack->off.contains(name) && !entry.omitted.contains(name)) take(name, pack);
     }
     // One trick and pop, in one stance, off one kind of takeoff: Fixed plays its first; the others take turns.
     std::map<std::string, Preset*> first;

@@ -142,6 +142,10 @@ struct View {
     bool playlist_on{};
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
+    bool playlist_can_undo{}, playlist_redo{};
+    std::uint64_t library_request{};
+    bool library_modifier_help{};
+    bool modifier_ready{};
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
     // SETTINGS > STUDIO: the CATCH flag on the timeline with CATCH HOLD, and DROP PREVIEW, shown or not; and whether the
     // first-start guide has been read (it opens by itself until it has).
@@ -459,11 +463,19 @@ struct MenuSummary {
         std::string trick, label, pop, played;
         int choices{};
         double ago{-1}; // seconds since
+        bool modifier{};
     };
     std::vector<Done> recent;
 };
 MenuSummary menu_summary();
 bool playlist_add(const PlaylistEntry& entry, std::string& message); // makes Playlist 1 when there is none
+bool edit_playlist_member(const std::string& target, const PlaylistEntry& source, bool included, std::string& message);
+bool edit_playlist_pack(const std::string& target, const std::string& pack, bool included, std::string& message);
+bool clear_playlist_entries(const std::string& target, std::string& message);
+bool undo_playlist_entries(const std::string& target, std::string& message);
+bool duplicate_playlist(const std::string& target, std::string& message);
+std::vector<std::string> playlists_containing(const std::string& animation);
+void request_library(bool modifier_help = false);
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
 void open_playlist(const std::string& name);   // the one PACKS > PLAYLIST shows

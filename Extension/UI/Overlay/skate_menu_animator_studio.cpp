@@ -247,7 +247,7 @@ void last_tricks(SkateMenu& menu, const anim_studio::MenuSummary& now) {
         d->AddText(menu.bold, px(15), ImVec2(x, a.y + px(8)), paper, title.c_str());
         // Who played it, at the right.
         const std::string who = r.played.empty() ? std::string("THE GAME'S OWN")
-                                                 : "YOURS, FOR " + r.label + (r.choices > 1 ? std::format("  ({} TO CHOOSE FROM)", r.choices) : std::string{});
+                                                 : std::string(r.modifier ? "MODIFIER, FOR " : "NORMAL, FOR ") + r.label + (r.choices > 1 ? std::format("  ({} TO CHOOSE FROM)", r.choices) : std::string{});
         const std::string ago = r.ago < 60 ? std::format("{:.0f}s", r.ago) : std::format("{:.0f}m", r.ago / 60);
         const auto aw = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, ago.c_str());
         d->AddText(menu.bold, px(12), ImVec2(b.x - aw.x - px(12), a.y + px(10)), muted, ago.c_str());
@@ -289,9 +289,8 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
 
     // Nothing of yours plays: said, and put right in one press.
     if (settings.play_in_game && (now.playing.empty() || now.entries == 0) && !now.packs.empty()) {
-        const auto c = studio_card_begin(menu, "nothing", "NOTHING OF YOURS PLAYS");
-        note(now.playing.empty() ? "No playlist is on. Your packs play from a playlist: put them all in one now, or pick them below."
-                                 : "The playlist that is on is empty. Put all your packs in it now, or pick them below.");
+        const auto c = studio_card_begin(menu, "nothing", "NORMAL PLAYLIST IS EMPTY");
+        note("Normal input uses the game's own animations. An assigned modifier playlist can still play while its button is held. Choose a normal playlist below, or add packs to one.");
         if (button_row(menu, "##allpacks", {{"PLAY ALL MY PACKS", true, true, "Every pack goes in the playlist that is on (or a new one)."}}) == 0) {
             for (const auto& pack : now.packs)
                 if (!pack.in) {
@@ -318,11 +317,24 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     }
     {
         const auto playlists = anim_studio::playlists_now();
-        const auto c = studio_card_begin(menu, "playlist", "PLAYLIST",
+        const auto c = studio_card_begin(menu, "playlist", "NORMAL PLAYLIST",
                                          now.playing.empty() ? std::string("none on") : std::format("{}: {} in it", now.playing, now.entries));
         setting_row(menu, anim_studio::settings_rows::playing_playlist(playlists, tell));
         setting_row(menu, anim_studio::settings_rows::which_version_plays(playlists, tell));
         if (playlists.lists.empty()) note("No playlists yet: + ADD a pack below, or make one in the studio's LIBRARY.");
+        studio_card_end(c);
+    }
+    {
+        const auto binding = anim_studio::modifier_binding();
+        const auto c = studio_card_begin(menu, "modifier", "TRICK MODIFIER", "same input, another animation when you hold a button");
+        note("Kickflip input: your regular animation. Kickflip input + modifier: a variation from your modifier playlist. The same principle applies to grinds, manuals and grabs.");
+        setting_row(menu, anim_studio::settings_rows::modifier_button(binding));
+        setting_row(menu, anim_studio::settings_rows::modifier_playlist(anim_studio::playlists_now(), binding));
+        setting_row(menu, anim_studio::settings_rows::modifier_native_button(binding));
+        if (button_row(menu, "##modifierlibrary", {{"SET UP IN LIBRARY", animator_studio_openable(model), true, "Choose animations, edit either playlist, and see how modifiers work."}}) == 0) {
+            anim_studio::request_library(true);
+            menu.close_requested = true;
+        }
         studio_card_end(c);
     }
     if (!now.packs.empty()) {

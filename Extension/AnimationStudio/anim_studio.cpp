@@ -1,4 +1,6 @@
 #include "anim_studio.h"
+#include "playlist_management.h"
+#include "native_modifier_selection.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include "held_loop_selection.h"
 #include "native_asset_names.h"
@@ -64,6 +66,7 @@
 #include <vector>
 
 namespace dingosdk::anim_studio {
+void remember_trick_done(const std::string& trick, const std::string& pop, const std::string& played, int choices, double at, bool again, bool modifier = false);
 namespace {
 using logging::Channel;
 using logging::Level;
@@ -275,6 +278,9 @@ struct Playlists {
     NamedPlaylist* named(const std::string& name) { return const_cast<NamedPlaylist*>(std::as_const(*this).named(name)); }
 };
 struct State {
+    PlaylistEditHistory playlist_history;
+    std::uint64_t library_request{};
+    bool library_modifier_help{};
     ModifierBinding modifier, loaded_modifier;
     PlaylistMode normal_mode{PlaylistMode::fixed};
     bool modifier_read{};
@@ -600,6 +606,8 @@ struct Live {
     double probe_riding_since{-1}; // the live probe takes riding once he has been riding a while
     // Edited pieces of the game's own animation, played when the game is seen playing them (PieceTracker).
     PieceTracker pieces;
+    NativeModifierHold native_modifier;
+    bool piece_modifier_tracking{};
     std::shared_ptr<const CustomTricks> pieces_for; // the saved tricks the tracker was set up from
     std::vector<const CustomTrick*> piece_tricks;   // the tracker's piece index -> the saved piece
     struct PiecePlay {
@@ -1027,29 +1035,15 @@ Playlist read_playlist_file() {
 // order; with none on, nothing of yours does. Your own tricks go in one as themselves, no pack needed: + ADD under MY
 // TRICKS in PACKS > PLAYLIST, or + PLAYLIST on the trick (into the playlist that is on).
 std::filesystem::path playlists_file() { return library_folder() / L"presets" / L"playlists.json"; }
-Json playlist_entries_json(const std::vector<PlaylistEntry>& entries) {
-    Json out = Json::array();
-    for (const auto& e : entries) out.push_back({{"pack", e.pack}, {"animation", e.animation}});
-    return out;
-}
-std::vector<PlaylistEntry> playlist_entries_of(const Json& root) {
-    std::vector<PlaylistEntry> out;
-    if (root.contains("entries") && root.at("entries").is_array())
-        for (const auto& e : root.at("entries"))
-            if (e.is_object() && out.size() < 2000) {
-                PlaylistEntry entry{e.value("pack", ""), e.value("animation", "")};
-                if (!entry.pack.empty() || !entry.animation.empty()) out.push_back(std::move(entry));
-            }
-    return out;
-}
-void write_playlists(const Playlists& playlists) {
+Json playlists_json(const Playlists& playlists) {
     Json lists = Json::array();
     for (const auto& l : playlists.lists)
         lists.push_back(Json{{"name", l.name}, {"mode", playlist_mode_name(l.mode)}, {"entries", playlist_entries_json(l.entries)}});
     Json root{{"format", "animator-playlists"}, {"on", playlists.on}, {"playlists", std::move(lists)}};
     if (playlists.packs_moved) root["packs_moved"] = true;
-    write_preset_file(playlists_file(), root.dump(2));
+    return root;
 }
+void write_playlists(const Playlists& playlists) { write_preset_file(playlists_file(), playlists_json(playlists).dump(2)); }
 // Once, from before there were many: the old playlist is "Playlist 1" (on if it was), and when it was not on, the tricks
 // ticked to play on their own (presets/playing.txt), which played beside the packs that were on, are "My tricks" - those
 // packs first, then them - and that one is on: what played before plays on.
@@ -1537,6 +1531,8 @@ void read_library_locked(State& s) {
                 if (!animation.trick.empty()) {
                     s.presets.push_back({name, trick_key(animation.trick), animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
                     s.presets.back().fakie = animation.fakie;
+                    s.presets.back().modifier_hint = animation.modifier_hint;
+                    s.presets.back().available = std::filesystem::is_regular_file(saved_clip(name), error);
                     s.presets.back().leads_right = leads_right(authored_goofy(animation), animation.switch_stance.value_or(false));
                     s.presets.back().made_by = animation.author;
                     if (!animation.maker_team.empty() && !animation.maker_key.empty())
@@ -1973,6 +1969,7 @@ LoadedTricks read_custom_tricks(const std::string& test_trick, const std::string
                 if (!animation.trick.empty() && std::filesystem::is_regular_file(clip_path, error)) {
                     Preset p{entry.stem().string(), trick_key(animation.trick), animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry};
                     p.fakie = animation.fakie;
+                    p.modifier_hint = animation.modifier_hint;
                     p.leads_right = leads_right(authored_goofy(animation), animation.switch_stance.value_or(false));
                     p.saved_at = saved_time(entry);
                     p.made_by = animation.author;
@@ -2042,7 +2039,6 @@ LoadedTricks read_custom_tricks(const std::string& test_trick, const std::string
     std::size_t read_now = 0;
     for (const auto& p : requested) {
         if (!p.active) continue;
-        if (!override_playlist.empty() && p.trick.starts_with("native:")) continue;
         const auto file = file_of.find(p.name);
         if (file == file_of.end()) continue;
         const auto& entry = file->second;
@@ -2065,9 +2061,11 @@ LoadedTricks read_custom_tricks(const std::string& test_trick, const std::string
         }
         auto trick = loaded.trick;
         trick.order = p.order;
+        trick.route_mode = result.mode;
         tricks->push_back(std::move(trick));
         for (auto version : loaded.heights) {
             version.order = p.order;
+            version.route_mode = result.mode;
             tricks->push_back(std::move(version));
         }
     }
@@ -3089,87 +3087,102 @@ Live::PieceManual manual_of(const std::string& trick) {
 // stops the moment it leaves it - no waiting for him to hold still in it first (2026-10-29: "I need to wait and manual a
 // bit before the loop starts"). Of more than one saved for it, the nearest to his pose. Nothing when the game's manual
 // cannot be read: then the manuals are found by the pose held, as before.
-std::optional<PieceMatch> manual_play(Live& l, float dt) {
+// Pick once when a native piece begins. Equivalent saves of the same native asset obey the playlist's mode.
+PieceMatch native_variant(Live& l, std::vector<PieceMatch> options) {
+    if (options.empty()) return {};
+    const auto* first = l.piece_tricks[options.front().piece];
+    const auto mode = first->route_mode;
+    if (mode == PlaylistMode::turns)
+        std::stable_sort(options.begin(), options.end(), [&](const auto& a, const auto& b) { return l.piece_tricks[a.piece]->order < l.piece_tricks[b.piece]->order; });
+    const std::string key = first->trick + (first->modifier_route ? "|native-modifier" : "|native-normal");
+    auto& previous = l.variant_counts[key];
+    static thread_local std::mt19937 random{static_cast<std::uint32_t>(GetTickCount64())};
+    // Fixed priority was resolved when loading. Remaining same-slot variants may be a pack's Alternate group.
+    const std::size_t pick = next_variant(previous, options.size(), mode == PlaylistMode::turns, random);
+    previous = pick + 1;
+    return options[pick];
+}
+std::optional<PieceMatch> native_piece_version(Live& l, const Snapshot& snap, PieceMatch reference, bool wanted) {
+    if (reference.piece >= l.piece_tricks.size()) return std::nullopt;
+    const auto* base = l.piece_tricks[reference.piece];
+    auto options = choose_trick_route(wanted, [&](bool modified) {
+        std::vector<PieceMatch> out;
+        for (std::size_t i = 0; i < l.piece_tricks.size(); ++i) {
+            const auto* t = l.piece_tricks[i];
+            if (t->modifier_route != modified || t->trick != base->trick) continue;
+            const bool mirror = reference.mirrored != (base->leads_right != t->leads_right);
+            if (!snap.front_foot && mirror) continue;
+            out.push_back({i, mirror, reference.time, reference.score});
+        }
+        return out;
+    });
+    if (options.empty()) return std::nullopt;
+    // A physical release, an unrelated library edit or another frame of the same clip does not repick a running variant.
+    if (l.piece_play.trick && l.piece_play.weight > 0 && reference.time >= l.piece_play.time - 0.05f)
+        for (const auto& option : options)
+            if (l.piece_tricks[option.piece] == l.piece_play.trick && option.mirrored == l.piece_play.mirrored) return option;
+    return native_variant(l, std::move(options));
+}
+// Native compatibility is evaluated before modifier priority. A missing family/style/stance falls back to normal.
+// Equal-ranked compatible loops keep their clock; native style changes still select the new best group.
+std::optional<PieceMatch> said_loop(Live& l, const Snapshot& snap, float dt, Live::HeldKind kind,
+                                    const std::function<int(std::size_t)>& rank, const std::string& doing, const char* left) {
     auto& g = l.held;
+    for (const bool modified : {true, false}) {
+        if (modified && !l.native_modifier.held) continue;
+        const auto routed_rank = [&](std::size_t i) { return l.piece_tricks[i]->modifier_route == modified ? rank(i) : -1; };
+        const auto choice = held_loop_ranks<Live::HeldKind>(l.held_loops, kind, g.playing, routed_rank);
+        if (choice.best < 0) continue;
+        if (choice.keep && (snap.front_foot || !g.mirrored)) {
+            const auto* current = l.piece_tricks[static_cast<std::size_t>(g.playing)];
+            g.time += dt;
+            if (current->clip->duration() > 0) g.time = std::fmod(g.time, current->clip->duration());
+            return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, 0};
+        }
+        std::vector<std::size_t> pieces;
+        std::vector<const Clip*> clips;
+        for (const auto& [index, k] : l.held_loops)
+            if (k == kind && routed_rank(index) >= 0) { pieces.push_back(index); clips.push_back(l.piece_tricks[index]->clip.get()); }
+        const auto fits = held_pose_fits(clips, l.pose, kind == Live::HeldKind::grab);
+        std::vector<NativeLoopCandidate> described;
+        for (std::size_t i = 0; i < fits.size(); ++i) {
+            const auto index = pieces[fits[i].piece];
+            described.push_back({i, l.piece_tricks[index]->trick, modified, fits[i].mirrored, routed_rank(index), fits[i].score});
+        }
+        const auto selected = native_loop_candidates(described, modified, snap.front_foot);
+        std::vector<PieceMatch> options;
+        for (const auto i : selected) {
+            const auto& fit = fits[i];
+            const auto index = pieces[fit.piece];
+            options.push_back({index, fit.mirrored, 0, fit.score});
+        }
+        if (options.empty()) continue;
+        for (const auto& option : options)
+            if (g.playing >= 0 && option.piece == static_cast<std::size_t>(g.playing) && option.mirrored == g.mirrored) {
+                const auto* current = l.piece_tricks[option.piece];
+                g.time += dt;
+                if (current->clip->duration() > 0) g.time = std::fmod(g.time, current->clip->duration());
+                return PieceMatch{option.piece, g.mirrored, g.time, option.score};
+            }
+        const auto pick = native_variant(l, std::move(options));
+        g.playing = static_cast<int>(pick.piece); g.mirrored = pick.mirrored; g.time = 0; g.off_since = -1;
+        logging::log(Level::info, Channel::skater, "Animation Studio: {}; {}{} starts{}.", doing,
+            l.piece_tricks[pick.piece]->name, pick.mirrored ? ", mirrored" : "", modified ? " [modifier playlist]" : "");
+        return pick;
+    }
+    if (g.playing >= 0)
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go: {}.", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, left);
+    g.playing = g.candidate = -1;
+    return std::nullopt;
+}
+std::optional<PieceMatch> manual_play(Live& l, const Snapshot& snap, float dt) {
     if (l.manual_now < 0) return std::nullopt;
     const int manual = l.manual_now == 1 || l.manual_now == 2 ? l.manual_now : 0;
-    const auto fits_now = [&](std::size_t index) {
-        if (index >= l.piece_manuals.size()) return false;
+    return said_loop(l, snap, dt, Live::HeldKind::ground, [&](std::size_t index) {
+        if (index >= l.piece_manuals.size()) return -1;
         const auto& m = l.piece_manuals[index];
-        return manual && m.manual == manual && (!l.fakie_now || m.fakie == *l.fakie_now);
-    };
-    if (g.playing >= 0 && static_cast<std::size_t>(g.playing) < l.piece_manuals.size() && l.piece_manuals[static_cast<std::size_t>(g.playing)].manual &&
-        !fits_now(static_cast<std::size_t>(g.playing))) {
-        logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go: the game has left that manual.",
-                     l.piece_tricks[static_cast<std::size_t>(g.playing)]->name);
-        g.playing = g.candidate = -1;
-    }
-    if (g.playing >= 0) {
-        const auto* playing = l.piece_tricks[static_cast<std::size_t>(g.playing)];
-        const float length = playing->clip->duration();
-        g.time += dt;
-        if (length > 0) g.time = std::fmod(g.time, length);
-        return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, 0};
-    }
-    if (!manual) return std::nullopt;
-    std::vector<std::size_t> pieces;
-    std::vector<const Clip*> clips;
-    for (const auto& [index, k] : l.held_loops)
-        if (k == Live::HeldKind::ground && fits_now(index)) {
-            pieces.push_back(index);
-            clips.push_back(l.piece_tricks[index]->clip.get());
-        }
-    if (clips.empty()) return std::nullopt;
-    const auto fits = held_pose_fits(clips, l.pose, false);
-    if (fits.empty()) return std::nullopt;
-    const auto& best = fits.front();
-    g.playing = static_cast<int>(pieces[best.piece]);
-    g.mirrored = best.mirrored;
-    g.time = 0; // the game's loop starts as the manual does
-    g.off_since = -1;
-    logging::log(Level::info, Channel::skater, "Animation Studio: the game is in a {}{}: {}{} plays from its start.", manual == 1 ? "manual" : "nose manual",
-                 l.fakie_now && *l.fakie_now ? ", fakie" : "", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, best.mirrored ? ", mirrored" : "");
-    return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, best.score};
-}
-// A held move the game names (its grind, its grab): the saved loop for it starts the moment the game is in it, from its
-// start, and lets go the moment the game leaves it - no waiting for him to hold its pose first, as a manual does
-// (manual_play; 2026-10-29: "the manuals are instant, can you do the same with grinds and grabs"). `rank` says how well a
-// saved loop is for what the game says now (-1 not for it, 0 best); of the best, the nearest to his pose plays.
-std::optional<PieceMatch> said_loop(Live& l, float dt, Live::HeldKind kind, const std::function<int(std::size_t)>& rank, const std::string& doing,
-                                    const char* left) {
-    auto& g = l.held;
-    const auto choice = held_loop_ranks<Live::HeldKind>(l.held_loops, kind, g.playing, rank);
-    if (g.playing >= 0 && !choice.keep) {
-        logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go: {}.", l.piece_tricks[static_cast<std::size_t>(g.playing)]->name,
-                     choice.best < 0 ? left : "a better matching saved loop is available");
-        g.playing = g.candidate = -1;
-    }
-    if (g.playing >= 0) {
-        const auto* playing = l.piece_tricks[static_cast<std::size_t>(g.playing)];
-        const float length = playing->clip->duration();
-        g.time += dt;
-        if (length > 0) g.time = std::fmod(g.time, length);
-        return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, 0};
-    }
-    const int best = choice.best;
-    if (best < 0) return std::nullopt;
-    std::vector<std::size_t> pieces;
-    std::vector<const Clip*> clips;
-    for (const auto& [index, k] : l.held_loops)
-        if (k == kind && rank(index) == best) {
-            pieces.push_back(index);
-            clips.push_back(l.piece_tricks[index]->clip.get());
-        }
-    const auto fits = held_pose_fits(clips, l.pose, kind == Live::HeldKind::grab);
-    if (fits.empty()) return std::nullopt;
-    const auto& pick = fits.front();
-    g.playing = static_cast<int>(pieces[pick.piece]);
-    g.mirrored = pick.mirrored;
-    g.time = 0; // the game's loop starts as the move does
-    g.off_since = -1;
-    logging::log(Level::info, Channel::skater, "Animation Studio: the game is {}: {}{} plays from its start.", doing,
-                 l.piece_tricks[static_cast<std::size_t>(g.playing)]->name, pick.mirrored ? ", mirrored" : "");
-    return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, pick.score};
+        return manual && m.manual == manual && (!l.fakie_now || m.fakie == *l.fakie_now) ? 0 : -1;
+    }, manual == 2 ? "in a nose manual" : "in a manual", "the game has left that manual");
 }
 // A grab of the game's (EnumGS.GrabType 1 to 10, its style by Enum.GS.DetailedGrabType): the saved loops of that family, its
 // own style first, then the plain one, then any other style; the fakie ones when he rides fakie.
@@ -3198,11 +3211,11 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
     // On the ground, a manual of yours is played by the game's manual (manual_play), when it can be read.
     const bool manuals_by_game = kind == Live::HeldKind::ground && l.manual_now >= 0;
     if (manuals_by_game) {
-        if (auto played = manual_play(l, dt)) return played;
+        if (auto played = manual_play(l, snap, dt)) return played;
     }
     // On a rail, the saved loop of the grind the game names starts at once (its grind is known: only that one may play).
     if (grinding && grind) {
-        return said_loop(l, dt, kind, [&](std::size_t index) { return grind_allows(l, index, grind) ? 0 : -1; }, "doing a " + grind_type_label(grind),
+        return said_loop(l, snap, dt, kind, [&](std::size_t index) { return grind_allows(l, index, grind) ? 0 : -1; }, "doing a " + grind_type_label(grind),
                          "the game is doing another grind now");
     }
     // In the air, a grab loop of yours is played by the game's grab, when it can be read.
@@ -3214,13 +3227,14 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
         const std::string said = l.grab_now >= 1 && l.grab_now <= 10
                                      ? std::string("in a ") + family_names[static_cast<std::size_t>(l.grab_now)] + (style.empty() ? std::string{} : " (" + style + ")")
                                      : std::string("in a grab");
-        if (auto played = said_loop(l, dt, kind, [&](std::size_t index) { return grab_rank(l, index); }, said, "the game has left that grab"))
+        if (auto played = said_loop(l, snap, dt, kind, [&](std::size_t index) { return grab_rank(l, index); }, said, "the game has left that grab"))
             return played;
     }
     std::vector<std::size_t> pieces;
     std::vector<const Clip*> clips;
+    std::set<std::string> seen_poses;
     for (const auto& [index, k] : l.held_loops)
-        if (k == kind && (!grinding || grind_allows(l, index, grind)) &&
+        if ((!l.piece_tricks[index]->modifier_route || l.piece_modifier_tracking) && seen_poses.insert(l.piece_tricks[index]->trick).second && k == kind && (!grinding || grind_allows(l, index, grind)) &&
             !(manuals_by_game && index < l.piece_manuals.size() && l.piece_manuals[index].manual) &&
             !(grabs_by_game && index < l.piece_grabs.size() && l.piece_grabs[index].family)) {
             pieces.push_back(index);
@@ -3268,7 +3282,7 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
         const auto* playing = l.piece_tricks[static_cast<std::size_t>(g.playing)];
         float score = 1;
         for (const auto& f : fits)
-            if (f.piece != riding && static_cast<int>(pieces[f.piece]) == g.playing) score = f.score;
+            if (f.piece != riding && l.piece_tricks[pieces[f.piece]]->trick == playing->trick) score = f.score;
         if (score > rule.leave || (ground && riding_score < score)) {
             if (g.off_since < 0) g.off_since = at;
         } else g.off_since = -1;
@@ -3295,32 +3309,43 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
         return std::nullopt;
     }
     if (at - g.candidate_since < 0.2) return std::nullopt; // held a moment, not passed through
-    g.playing = nearest;
-    g.mirrored = loop->mirrored;
-    g.time = loop->time;
+    const auto chosen = native_piece_version(l, snap, {static_cast<std::size_t>(nearest), loop->mirrored, loop->time, loop->score}, l.piece_modifier_tracking);
+    if (!chosen) return std::nullopt;
+    g.playing = static_cast<int>(chosen->piece);
+    g.mirrored = chosen->mirrored;
+    g.time = chosen->time;
     g.off_since = -1;
     logging::log(Level::info, Channel::skater, "Animation Studio: {}; he holds {}{} ({:.4f}, the next {:.4f}): it plays, looped.", rule.doing,
                  l.piece_tricks[static_cast<std::size_t>(nearest)]->name, loop->mirrored ? ", mirrored" : "", loop->score, next);
-    return PieceMatch{static_cast<std::size_t>(nearest), loop->mirrored, g.time, loop->score};
+    return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, loop->score};
 }
 void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generation, std::uintptr_t component,
                  const Joint& live_placement, std::shared_ptr<const GameplayPacket>& scheduled, Joint& board_target,
                  float& board_weight, MotionState motion, std::optional<std::uint32_t> state) {
-    if (l.pieces_for != snap.tricks) {
+    const std::uint32_t grind = l.grind_now_at >= 0 && at - l.grind_now_at < 0.5 ? l.grind_now : 0;
+    const auto modifier = modifier_mask(snap.modifier);
+    const bool ready = modifier != 0 && !testing_tricks.load();
+    const bool down = ready && overlay::trick_modifier_held(modifier);
+    int native_kind = 0, native_identity = 0;
+    if (motion == MotionState::rail) { native_kind = 1; native_identity = static_cast<int>(grind); }
+    else if ((motion == MotionState::riding || (motion == MotionState::unknown && state && *state < 300)) && (l.manual_now == 1 || l.manual_now == 2)) {
+        native_kind = 2; native_identity = l.manual_now + (l.fakie_now.value_or(false) ? 4 : 0);
+    } else if (motion == MotionState::air && l.grab_now > 0) { native_kind = 3; native_identity = l.grab_now; }
+    const bool old_route = l.native_modifier.held;
+    const bool began_hold = l.native_modifier.observe(native_kind, native_identity, down, ready, testing_tricks.load());
+    if (began_hold && old_route != l.native_modifier.held) l.held = {};
+    const bool wanted = native_kind ? l.native_modifier.held : !began_hold && l.piece_play.trick ? l.piece_play.trick->modifier_route : down;
+    // A library reload applies at the next move boundary; keep the current clips alive through a held move.
+    const bool pinned_hold = !began_hold && (native_kind ? static_cast<bool>(l.pieces_for) : l.piece_play.trick && l.piece_play.weight > 0);
+    const bool sources_changed = l.pieces_for != snap.tricks && !pinned_hold;
+    if (sources_changed) {
         l.pieces_for = snap.tricks;
-        l.mirrored_edits.clear(); // an address can be reused by a new animation
-        l.piece_tricks.clear();
-        l.held_loops.clear();
-        l.piece_grinds.clear();
-        l.piece_manuals.clear();
-        l.piece_grabs.clear();
-        l.tracked.clear();
-        l.held = {};
-        std::vector<const Clip*> clips;
-        if (snap.tricks)
-            for (const auto& t : *snap.tricks)
-                if (!t.modifier_route && t.trick.starts_with("native:") && t.clip) {
-                    // A held move's loop is found by the pose he holds (held_play); the rest by moving through them.
+        l.mirrored_edits.clear();
+        l.piece_tricks.clear(); l.held_loops.clear(); l.piece_grinds.clear(); l.piece_manuals.clear(); l.piece_grabs.clear();
+        l.held = {}; l.piece_play = {};
+        if (l.pieces_for)
+            for (const auto& t : *l.pieces_for)
+                if (t.trick.starts_with("native:") && t.clip) {
                     const auto kind = held_kind_of(t.trick);
                     const auto index = l.piece_tricks.size();
                     l.piece_tricks.push_back(&t);
@@ -3328,19 +3353,24 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                     l.piece_manuals.push_back(manual_of(t.trick));
                     l.piece_grabs.push_back(grab_loop_of(t.trick));
                     if (kind != Live::HeldKind::none) l.held_loops.push_back({index, kind});
-                    else {
-                        l.tracked.push_back(index);
-                        clips.push_back(t.clip.get());
-                    }
                 }
+    }
+    if (sources_changed || (wanted != l.piece_modifier_tracking && !l.piece_play.trick)) {
+        l.piece_modifier_tracking = wanted;
+        l.tracked.clear();
+        std::vector<const Clip*> clips;
+        std::set<std::string> overridden, seen;
+        if (wanted) for (const auto* t : l.piece_tricks) if (t->modifier_route) overridden.insert(t->trick);
+        for (std::size_t i = 0; i < l.piece_tricks.size(); ++i) {
+            const auto* t = l.piece_tricks[i];
+            if (held_kind_of(t->trick) != Live::HeldKind::none) continue;
+            if (t->modifier_route != (wanted && overridden.contains(t->trick)) || !seen.insert(t->trick).second) continue;
+            l.tracked.push_back(i); clips.push_back(t->clip.get());
+        }
+        // Recognise a source only once: duplicate saves of its same native clip must not make recognition ambiguous.
         l.pieces.set_pieces(clips);
-        l.piece_play = {};
-        if (!l.piece_tricks.empty())
-            logging::log(Level::info, Channel::skater,
-                         "Animation Studio: watching for {} edited piece{} of the game's animation: {} by how they move ({} move enough to be recognised), "
-                         "{} held loop{} by the pose held.",
-                         l.piece_tricks.size(), l.piece_tricks.size() == 1 ? "" : "s", clips.size(), l.pieces.looking_for() / 2, l.held_loops.size(),
-                         l.held_loops.size() == 1 ? "" : "s");
+        logging::log(Level::info, Channel::skater, "Animation Studio: watching {} native pieces and {} held loops{}.",
+            clips.size(), l.held_loops.size(), wanted ? " with modifier priority" : " on the normal route");
     }
     auto& play = l.piece_play;
     if (l.piece_tricks.empty()) return;
@@ -3364,7 +3394,6 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     const bool any_held = std::any_of(l.held_loops.begin(), l.held_loops.end(), [&](const auto& h) { return h.second == holding; });
     if (holding == K::none || !any_held) l.held = {};
     // The grind the game says he is doing now (said within the last half second), told once each.
-    const std::uint32_t grind = l.grind_now_at >= 0 && at - l.grind_now_at < 0.5 ? l.grind_now : 0;
     if (motion == MotionState::rail && grind && grind != l.grind_told) {
         l.grind_told = grind;
         const auto said = [](const std::optional<std::uint32_t>& v) {
@@ -3382,6 +3411,13 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
         // A piece of one of the game's grinds (its way in, its lean, its pop-out) only on that grind.
         if (match && match->piece < l.piece_grinds.size() && !l.piece_grinds[match->piece].empty() && !grind_allows(l, match->piece, grind))
             match.reset();
+        if (match) {
+            bool version_wanted = wanted;
+            if (!native_kind && l.piece_play.trick && match->piece < l.piece_tricks.size() &&
+                (l.piece_tricks[match->piece]->trick != l.piece_play.trick->trick || match->time < l.piece_play.time - 0.05f))
+                version_wanted = down; // a genuinely new moving piece samples a new choice, without resetting its tracker
+            match = native_piece_version(l, snap, *match, version_wanted);
+        }
         // Nothing moving through a piece: the loop of a move he holds, if one of them is saved.
         if (!match && any_held) match = held_play(l, snap, at, dt, holding, grind);
     } else l.pieces.reset();
@@ -3405,6 +3441,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
             }
             logging::log(Level::info, Channel::skater, "Animation Studio: the game is playing {}{} ({:.2f} s in); playing your {}.",
                          trick->trick.substr(7), match->mirrored ? ", mirrored" : "", match->time, trick->name);
+            remember_trick_done(trick->trick, trick->edits->pop, trick->edits->label.empty() ? trick->name : trick->edits->label, 1, at, false, trick->modifier_route);
         }
         play.trick = trick;
         play.mirrored = match->mirrored;
@@ -3727,7 +3764,6 @@ void late_read(std::uintptr_t base, std::uintptr_t component, const Joint& board
 }
 } // namespace studio_snapshot
 
-void remember_trick_done(const std::string& trick, const std::string& pop, const std::string& played, int choices, double at, bool again); // the menu's feed, below
 
 // ---- the animation thread ------------------------------------------------------------------------
 // The grind rail, on the animation thread: whether the open studio is in its room, whether the trick shown is one of the
@@ -3887,6 +3923,7 @@ void on_animation(std::uintptr_t component) noexcept {
         }
         const bool bailing = current_state && (*current_state == addr::no_bail::wipeout_physics_state ||
                                               *current_state == addr::no_bail::offboard_physics_state);
+        if (snap->open || !snap->play_in_game || bailing) { l.native_modifier = {}; l.held = {}; l.piece_play = {}; }
         if (!current_state && !snap->open) {
             l.episode.reset();
             l.game_trick = nullptr;
@@ -4326,7 +4363,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     const bool again = l.recent_episode == l.episode.id;
                     l.recent_episode = l.episode.id;
                     const std::string played_as = !found ? std::string{} : found->edits && !found->edits->label.empty() ? found->edits->label : found->name;
-                    remember_trick_done(name, pop, played_as, static_cast<int>(variants.size()), at, again);
+                    remember_trick_done(name, pop, played_as, static_cast<int>(variants.size()), at, again, found && found->modifier_route);
                 }
                 if (found) {
                     if (found->modifier_route) l.decision += " [modifier playlist]";
@@ -4796,6 +4833,18 @@ void on_animation(std::uintptr_t component) noexcept {
             }
             diagnostic.entry = entry_name(l.episode.entry); diagnostic.episode = l.episode.id;
             diagnostic.pop = l.used_pop; diagnostic.pop_source = l.used_pop_source; diagnostic.decision = l.decision;
+            if (!snap->open && l.piece_play.trick && l.piece_play.weight > 0 && !l.game_trick) {
+                const auto* native = l.piece_play.trick;
+                diagnostic.preset = native->name; diagnostic.trick = native->trick;
+                diagnostic.source_kind = native->edits->source.kind;
+                diagnostic.clip_time = l.piece_play.time; diagnostic.weight = l.piece_play.weight;
+                diagnostic.mirror = l.piece_play.mirrored; diagnostic.recorded_goofy = native->goofy;
+                diagnostic.recorded_switch = native->edits->switch_stance; diagnostic.episode = l.piece_play.episode;
+                diagnostic.observed_phase = "native_piece";
+                diagnostic.decision = native->name + (native->modifier_route ? " [modifier playlist]" : " [normal playlist]");
+                diagnostic.clock_state = "native piece"; diagnostic.clock_clip = -1;
+                if (diagnostic_pose) { diagnostic.source.resize(native->clip->joints); native->clip->sample(l.piece_play.time, diagnostic.source); }
+            }
             diagnostic.lean = rail_lean_episode.load(std::memory_order_acquire) == l.episode.id ? rail_lean.load(std::memory_order_acquire) : 0.0f;
             if (const double started = handover_at.load(std::memory_order_relaxed); started >= 0)
                 diagnostic.handover = static_cast<float>(now_seconds() - started);
@@ -6548,8 +6597,6 @@ void run_trick_loader() {
                 if (extra.tricks && loaded.tricks) {
                     auto combined = std::make_shared<CustomTricks>(*loaded.tricks);
                     for (auto trick : *extra.tricks) {
-                        // First prototype: input tricks only. Native held-loop routing remains on the normal playlist.
-                        if (trick.trick.starts_with("native:")) continue;
                         trick.modifier_route = true;
                         trick.route_mode = extra.mode;
                         combined->push_back(std::move(trick));
@@ -7361,8 +7408,7 @@ View view() {
         v.packs.push_back({saved.name, pack.made_by, on, pack.alternate, std::move(members), pack});
         v.packs.back().favorite = std::find(s.favorite_packs.begin(), s.favorite_packs.end(), saved.name) != s.favorite_packs.end();
         v.packs.back().installed = locked_key(pack.maker_key);
-        v.packs.back().playing = playing_list && std::find(playing_list->entries.begin(), playing_list->entries.end(), PlaylistEntry{saved.name, ""}) !=
-                                                    playing_list->entries.end();
+        v.packs.back().playing = playing_list && playlist_has_pack(playing_list->entries, saved.name);
         if (const auto at = s.pack_times.find(saved.name); at != s.pack_times.end()) v.packs.back().modified = at->second;
         if (const auto picture = s.pack_pictures.find(saved.name); picture != s.pack_pictures.end()) {
             v.packs.back().thumbnail = utf8_path(pack_thumbnail_file(saved.name));
@@ -7380,11 +7426,16 @@ View view() {
     if (const auto* open = s.playlists.named(s.playlist_open)) {
         v.playlist_mode = open->mode;
         v.playlist = open->entries;
+        v.playlist_can_undo = s.playlist_history.available(open->name, open->entries);
+        v.playlist_redo = s.playlist_history.undone;
     } else {
         v.playlist_mode = PlaylistMode::fixed;
         v.playlist.clear();
     }
     v.hover_preview = s.hover_preview;
+    v.library_request = s.library_request;
+    v.library_modifier_help = s.library_modifier_help;
+    v.modifier_ready = modifier_mask(s.loaded_modifier) != 0;
     v.catch_marker = s.catch_marker;
     v.drop_preview_tool = s.drop_preview_tool;
     v.guide_seen = s.guide_seen;
@@ -7469,6 +7520,14 @@ void request_open(bool open) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.open_requested = open;
+    s.open_request_pending = true;
+}
+void request_library(bool modifier_help) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    ++s.library_request;
+    s.library_modifier_help = modifier_help;
+    s.open_requested = true;
     s.open_request_pending = true;
 }
 void advance(float seconds) {
@@ -8775,7 +8834,7 @@ std::string put_in_playing_list(Playlists& lists, const std::vector<std::string>
     }
     auto* list = lists.named(name);
     for (const auto& pack : packs)
-        if (const PlaylistEntry entry{pack, ""}; std::find(list->entries.begin(), list->entries.end(), entry) == list->entries.end())
+        if (const PlaylistEntry entry{pack, ""}; !playlist_has_pack(list->entries, pack))
             list->entries.push_back(entry);
     return name;
 }
@@ -8821,6 +8880,8 @@ void set_playlist_mode(PlaylistMode mode, std::string& message) {
 }
 namespace {
 std::filesystem::path modifier_file() { return library_folder() / L"presets" / L"modifier-input.local"; }
+void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBinding& binding,
+                                      const std::string& opened, const std::string& message);
 // Keep local input preferences out of pack JSON discovery and pack imports/exports.
 void save_modifier_locked(State& s, const ModifierBinding& binding) {
     write_preset_file(modifier_file(),
@@ -8858,7 +8919,7 @@ void set_modifier_binding(ModifierBinding binding) {
         try {
             save_modifier_locked(s, binding);
         } catch (const std::exception& e) { s.status = e.what(); return; }
-        s.status = "Loading the modifier playlist. Native held loops still use the normal playlist in this prototype.";
+        s.status = "Loading the modifier playlist. Its animations will be available for the next trick or held move.";
     }
     load_custom_tricks();
 }
@@ -8877,25 +8938,25 @@ void set_modifier_hint(bool on) {
 void playlist_from_modifier_tags(std::string& message) {
     auto& s = state(); std::lock_guard lock(s.mutex);
     if (!s.library_read) read_library_locked(s);
-    NamedPlaylist list{free_playlist_name(s.playlists), PlaylistMode::shuffle, {}};
-    for (const auto& name : s.library) {
-        try {
-            std::ifstream in(saved_json(name));
-            const auto a = from_json(std::string(std::istreambuf_iterator<char>(in), {}));
-            if (a.modifier_hint) list.entries.push_back({{}, name});
-        } catch (...) {}
+    if (s.playlists.lists.size() >= 200) { message = "The library has reached its 200-playlist limit."; return; }
+    NamedPlaylist list{"Modifier picks", PlaylistMode::shuffle, {}};
+    for (unsigned n = 2; s.playlists.named(list.name); ++n) list.name = "Modifier picks " + std::to_string(n);
+    for (const auto& p : s.presets) {
+        if (!p.modifier_hint || !p.available) continue;
+        std::string source;
+        if (p.foreign)
+            for (const auto& pack : s.packs) if (pack.has(p.name)) { source = pack.name; break; }
+        list.entries.push_back({source, p.name});
     }
+    if (list.entries.size() > 2000) { message = "More than 2000 tagged animations: narrow your modifier hints before collecting them."; return; }
     if (list.entries.empty()) { message = "No saved animations have the modifier hint yet."; return; }
-    s.playlists.lists.push_back(list);
-    try { write_playlists(s.playlists); } catch (const std::exception& e) { s.playlists.lists.pop_back(); message = e.what(); return; }
-    s.playlist_open = list.name;
+    auto lists = s.playlists;
+    lists.lists.push_back(list);
     auto binding = s.modifier;
     binding.playlist = list.name;
-    try { save_modifier_locked(s, binding); }
-    catch (const std::exception& e) { message = "Created " + list.name + ", but could not assign it: " + e.what(); return; }
-    s.tricks_read = false;
     message = "Created " + list.name + " from tagged tricks and assigned it as the modifier playlist. Choose a bind to use it.";
-    publish_locked(s);
+    try { commit_playlist_structure_locked(s, lists, binding, list.name, message); }
+    catch (const std::exception& e) { message = e.what(); return; }
 }
 void play_playlist(const std::string& name, std::string& message) {
     auto& s = state();
@@ -8917,7 +8978,7 @@ RecentTricks& recent_tricks() {
     return *value;
 }
 // A trick's choice, the newest first; the same trick chosen again (its pop graded later) takes the place of its first.
-void remember_trick_done(const std::string& trick, const std::string& pop, const std::string& played, int choices, double at, bool again) {
+void remember_trick_done(const std::string& trick, const std::string& pop, const std::string& played, int choices, double at, bool again, bool modifier) {
     auto& r = recent_tricks();
     std::lock_guard lock(r.mutex);
     MenuSummary::Done d;
@@ -8925,6 +8986,7 @@ void remember_trick_done(const std::string& trick, const std::string& pop, const
     d.pop = pop;
     d.played = played;
     d.choices = choices;
+    d.modifier = modifier;
     if (again && !r.done.empty()) r.done.front() = {d, at};
     else r.done.emplace_front(d, at);
     while (r.done.size() > 5) r.done.pop_back();
@@ -8941,7 +9003,7 @@ MenuSummary menu_summary() {
             out.mode = list->mode;
         }
         for (const auto& pack : s.packs) {
-            const bool in = list && std::find(list->entries.begin(), list->entries.end(), PlaylistEntry{pack.name, ""}) != list->entries.end();
+            const bool in = list && playlist_has_pack(list->entries, pack.name);
             out.packs.push_back({pack.name, in, pack.members().size()});
         }
         for (const auto& p : s.presets) {
@@ -8987,6 +9049,93 @@ PlaylistsNow playlists_now() {
     for (const auto& list : s.playlists.lists) now.lists.push_back({list.name, list.entries.size(), list.mode});
     return now;
 }
+namespace {
+bool edit_playlist_locked(State& s, const std::string& target, std::string& message,
+                          const std::function<bool(std::vector<PlaylistEntry>&)>& edit) {
+    auto lists = s.playlists;
+    auto* list = lists.named(target);
+    if (!list) { say_locked(s, message, "Choose a destination playlist first."); return false; }
+    const auto before = list->entries;
+    if (!edit(list->entries)) { say_locked(s, message, "No change needed in " + target + "."); return false; }
+    if (list->entries.size() > 2000) { say_locked(s, message, "This playlist has reached its 2000-entry limit."); return false; }
+    const auto after = list->entries;
+    try {
+        playlists_changed_locked(s, lists, message);
+        s.playlist_history = {target, before, after, false};
+    } catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
+    return true;
+}
+}
+bool edit_playlist_member(const std::string& target, const PlaylistEntry& source, bool included, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.library_read) read_library_locked(s);
+    if (source.animation.empty() || std::none_of(s.presets.begin(), s.presets.end(), [&](const auto& p) { return p.name == source.animation; })) {
+        say_locked(s, message, "This animation is no longer available. Refresh the library."); return false;
+    }
+    if (included && std::any_of(s.presets.begin(), s.presets.end(), [&](const auto& p) { return p.name == source.animation && !p.available; })) {
+        say_locked(s, message, "This animation's clip is missing. Restore or reinstall it before adding it."); return false;
+    }
+    message = (included ? "Added " : "Removed ") + shown_name(s, source.animation) + (included ? " to " : " from ") + target + ".";
+    return edit_playlist_locked(s, target, message, [&](auto& entries) { return set_playlist_member(entries, s.packs, source, included); });
+}
+bool edit_playlist_pack(const std::string& target, const std::string& pack, bool included, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.library_read) read_library_locked(s);
+    if (!playlist_pack(s.packs, pack)) { say_locked(s, message, "This pack is no longer available."); return false; }
+    message = included ? "Added the whole " + pack + " pack to " + target + ". You can untick individual tricks here."
+                       : "Removed " + pack + " entries from " + target + ". The pack and its animations are kept.";
+    return edit_playlist_locked(s, target, message, [&](auto& entries) { return set_playlist_pack(entries, pack, included); });
+}
+bool clear_playlist_entries(const std::string& target, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    message = "Cleared " + target + ". Its packs and animations are kept. UNDO restores the entries.";
+    return edit_playlist_locked(s, target, message, [](auto& entries) { if (entries.empty()) return false; entries.clear(); return true; });
+}
+bool undo_playlist_entries(const std::string& target, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    auto lists = s.playlists;
+    auto* list = lists.named(target);
+    auto history = s.playlist_history;
+    if (!list || !history.apply(target, list->entries)) {
+        say_locked(s, message, "That edit can no longer be undone: this playlist has changed."); return false;
+    }
+    message = (history.undone ? "Undid the last content edit in " : "Redid the content edit in ") + target + ".";
+    try { playlists_changed_locked(s, lists, message); }
+    catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
+    s.playlist_history = std::move(history);
+    return true;
+}
+std::vector<std::string> playlists_containing(const std::string& animation) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.library_read) read_library_locked(s);
+    std::vector<std::string> out;
+    for (const auto& list : s.playlists.lists)
+        if (playlist_membership(list.entries, s.packs, animation).included()) out.push_back(list.name);
+    return out;
+}
+bool duplicate_playlist(const std::string& target, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    auto lists = s.playlists;
+    const auto* list = lists.named(target);
+    if (!list || lists.lists.size() >= 200) { say_locked(s, message, "Choose a playlist to copy (at most 200 playlists)."); return false; }
+    auto copy = *list;
+    const auto base = utf8_prefix(target, 35) + " copy";
+    copy.name = base;
+    for (unsigned n = 2; lists.named(copy.name); ++n) copy.name = base + " " + std::to_string(n);
+    const auto name = copy.name;
+    lists.lists.push_back(std::move(copy));
+    message = "Made " + name + ". Your normal and modifier assignments are unchanged.";
+    try { playlists_changed_locked(s, lists, message); }
+    catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
+    s.playlist_open = name;
+    return true;
+}
 bool playlist_add(const PlaylistEntry& entry, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -8996,7 +9145,7 @@ bool playlist_add(const PlaylistEntry& entry, std::string& message) {
         lists.lists.push_back({s.playlist_open, PlaylistMode::shuffle, {}});
     }
     auto* open = lists.named(s.playlist_open);
-    if (std::find(open->entries.begin(), open->entries.end(), entry) != open->entries.end()) {
+    if (std::any_of(open->entries.begin(), open->entries.end(), [&](const auto& old) { return same_playlist_source(old, entry); })) {
         say_locked(s, message, "That is in " + open->name + " already.");
         return false;
     }
@@ -9008,22 +9157,21 @@ bool playlist_add(const PlaylistEntry& entry, std::string& message) {
 void playlist_remove(std::size_t index) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    auto lists = s.playlists;
-    auto* open = lists.named(s.playlist_open);
-    if (!open || index >= open->entries.size()) return;
-    open->entries.erase(open->entries.begin() + static_cast<std::ptrdiff_t>(index));
-    playlists_changed_locked(s, lists, "Taken out of " + open->name + ".");
+    std::string message = "Taken out of " + s.playlist_open + ". UNDO restores it.";
+    edit_playlist_locked(s, s.playlist_open, message, [&](auto& entries) {
+        if (index >= entries.size()) return false;
+        entries.erase(entries.begin() + static_cast<std::ptrdiff_t>(index)); return true;
+    });
 }
 void playlist_move(std::size_t index, int by) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    auto lists = s.playlists;
-    auto* open = lists.named(s.playlist_open);
-    if (!open) return;
     const auto to = static_cast<std::ptrdiff_t>(index) + by;
-    if (index >= open->entries.size() || to < 0 || to >= static_cast<std::ptrdiff_t>(open->entries.size())) return;
-    std::swap(open->entries[index], open->entries[static_cast<std::size_t>(to)]);
-    playlists_changed_locked(s, lists, open->name + ": order changed.");
+    std::string message = s.playlist_open + ": order changed. UNDO restores it.";
+    edit_playlist_locked(s, s.playlist_open, message, [&](auto& entries) {
+        if (index >= entries.size() || to < 0 || to >= static_cast<std::ptrdiff_t>(entries.size())) return false;
+        std::swap(entries[index], entries[static_cast<std::size_t>(to)]); return true;
+    });
 }
 void open_playlist(const std::string& name) {
     auto& s = state();
@@ -9036,6 +9184,7 @@ bool new_playlist(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     auto lists = s.playlists;
+    if (lists.lists.size() >= 200) { say_locked(s, message, "The library has reached its 200-playlist limit."); return false; }
     // A new playlist shuffles: the versions of a trick go round, as people expect of a pack (on FIXED only the highest
     // plays, and a new playlist that did not shuffle was taken for a bug).
     const auto name = free_playlist_name(lists);
@@ -9044,6 +9193,24 @@ bool new_playlist(std::string& message) {
     playlists_changed_locked(s, lists, "Made " + name + ": add whole packs or single tricks to it, then switch it on.");
     message = s.status;
     return true;
+}
+namespace {
+// Names and playback assignments are one edit: an interrupted rename/delete must not leave a dangling modifier bind.
+void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBinding& binding,
+                                      const std::string& opened, const std::string& message) {
+    const bool changed_binding = s.modifier != binding;
+    PackFileTransaction transaction(library_folder());
+    transaction.write(playlists_file(), playlists_json(lists).dump(2));
+    if (changed_binding)
+        transaction.write(modifier_file(), Json{{"playlist", binding.playlist}, {"button", binding.button}, {"block_native", binding.block_native}}.dump(2));
+    transaction.commit();
+    if (changed_binding) { s.modifier = binding; s.modifier_read = true; s.loaded_modifier.button = 0; }
+    s.playlist_open = opened;
+    s.tricks_read = false;
+    read_library_locked(s);
+    s.status = message;
+    publish_locked(s, false);
+}
 }
 bool rename_playlist(const std::string& wanted, std::string& message) {
     auto& s = state();
@@ -9054,26 +9221,18 @@ bool rename_playlist(const std::string& wanted, std::string& message) {
     auto to = utf8_prefix(wanted, 48);
     while (!to.empty() && to.back() == ' ') to.pop_back();
     while (!to.empty() && to.front() == ' ') to.erase(to.begin());
-    if (to.empty()) {
-        say_locked(s, message, "A playlist needs a name.");
-        return false;
-    }
+    if (to.empty()) { say_locked(s, message, "A playlist needs a name."); return false; }
     if (to == open->name) return true;
-    if (lists.named(to)) {
-        say_locked(s, message, "There is a playlist called " + to + " already.");
-        return false;
-    }
-    if (s.modifier.playlist == open->name) {
-        auto binding = s.modifier;
-        binding.playlist = to;
-        try { save_modifier_locked(s, binding); }
-        catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
-    }
-    if (lists.on == open->name) lists.on = to;
-    message = "Renamed " + open->name + " to " + to + ".";
+    if (lists.named(to)) { say_locked(s, message, "There is a playlist called " + to + " already."); return false; }
+    const auto old = open->name;
+    if (lists.on == old) lists.on = to;
+    auto binding = s.modifier;
+    if (binding.playlist == old) binding.playlist = to;
     open->name = to;
-    s.playlist_open = to;
-    playlists_changed_locked(s, lists, message);
+    message = "Renamed " + old + " to " + to + ". Its playback roles are kept.";
+    try { commit_playlist_structure_locked(s, lists, binding, to, message); }
+    catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
+    if (s.playlist_history.name == old) s.playlist_history.name = to;
     return true;
 }
 bool delete_playlist(std::string& message) {
@@ -9083,18 +9242,16 @@ bool delete_playlist(std::string& message) {
     const auto* open = lists.named(s.playlist_open);
     if (!open) return false;
     const auto name = open->name;
-    if (s.modifier.playlist == name) {
-        auto binding = s.modifier;
-        binding.playlist.clear();
-        try { save_modifier_locked(s, binding); }
-        catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
-    }
     const bool was_on = lists.on == name;
     std::erase_if(lists.lists, [&](const NamedPlaylist& l) { return l.name == name; });
     if (was_on) lists.on.clear();
-    s.playlist_open = lists.lists.empty() ? std::string{} : lists.lists.front().name;
-    message = "Deleted " + name + (was_on ? ": no playlist is on, so nothing of yours plays." : ".");
-    playlists_changed_locked(s, lists, message);
+    auto binding = s.modifier;
+    if (binding.playlist == name) binding.playlist.clear();
+    const auto opened = lists.lists.empty() ? std::string{} : lists.lists.front().name;
+    message = "Deleted " + name + ". Its playback assignments were removed; animation files and packs are kept.";
+    try { commit_playlist_structure_locked(s, lists, binding, opened, message); }
+    catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
+    if (s.playlist_history.name == name) s.playlist_history = {};
     return true;
 }
 bool set_pack_playing(const std::string& pack, bool on, std::string& message) {
@@ -9112,7 +9269,7 @@ bool set_pack_playing(const std::string& pack, bool on, std::string& message) {
     } else {
         auto* list = lists.named(lists.on);
         if (!list) return true;
-        std::erase(list->entries, PlaylistEntry{pack, ""});
+        std::erase_if(list->entries, [&](const auto& e) { return e.pack == pack && e.animation.empty(); });
         message = pack + " is out of " + list->name + " and does not play now.";
     }
     playlists_changed_locked(s, lists, message);
@@ -9124,6 +9281,7 @@ std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& en
     auto lists = s.playlists;
     std::string name = playlist;
     if (name.empty()) {
+        if (lists.lists.size() >= 200) { say_locked(s, message, "The library has reached its 200-playlist limit."); return {}; }
         name = free_playlist_name(lists);
         lists.lists.push_back({name, PlaylistMode::shuffle, {}});
     }
@@ -9132,11 +9290,19 @@ std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& en
         say_locked(s, message, "There is no playlist called " + name + ".");
         return {};
     }
-    if (std::find(list->entries.begin(), list->entries.end(), entry) == list->entries.end()) list->entries.push_back(entry);
-    if (lists.on.empty()) lists.on = name;
+    if (entry.animation.empty()) {
+        if (!playlist_pack(s.packs, entry.pack)) { say_locked(s, message, "That source pack is no longer available."); return {}; }
+        set_playlist_pack(list->entries, entry.pack, true);
+    } else {
+        if (std::none_of(s.presets.begin(), s.presets.end(), [&](const auto& p) { return p.name == entry.animation; })) {
+            say_locked(s, message, "That animation is no longer available."); return {};
+        }
+        set_playlist_member(list->entries, s.packs, entry, true);
+    }
+    if (list->entries.size() > 2000) { say_locked(s, message, "This playlist has reached its 2000-entry limit."); return {}; }
     const auto what = entry.animation.empty() ? "the pack " + entry.pack : shown_name(s, entry.animation);
     message = "Added " + what + " to " + name +
-              (lists.on == name ? ": it plays in game now." : ". " + name + " is off, " + lists.on + " is on: switch " + name + " on to play it.");
+              (lists.on == name ? ": it plays in game now." : ". Playback assignments are unchanged; choose its role in the LIBRARY.");
     s.playlist_open = name;
     playlists_changed_locked(s, lists, message);
     return name;

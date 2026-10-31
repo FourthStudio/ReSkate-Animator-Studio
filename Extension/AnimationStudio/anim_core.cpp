@@ -1083,7 +1083,7 @@ Animation from_json(std::string_view text) {
     result.label = utf8_prefix(root.value("label", ""), 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
-    result.modifier_hint = root.value("modifier_hint", false);
+    result.modifier_hint = root.contains("modifier_hint") && root.at("modifier_hint").is_boolean() && root.at("modifier_hint").get<bool>();
     result.pop = root.value("pop", "");
     result.stance = root.value("stance", "");
     result.entry = root.value("entry", "ground");

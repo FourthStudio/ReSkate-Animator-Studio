@@ -20,7 +20,7 @@ python -m unittest discover -s contrib/animator-studio -p 'test_native*.py'
 python -m unittest discover -s contrib/Test -p '*tests.py'
 ```
 
-The preset stamps ReSkate 2.1.3 / AnimatorStudio 1.0.39 and turns binary auto-update off. Outputs are under `build/ci-windows/Release`. Warnings are errors. `dingosdk_regression_tests` builds all enabled `dingosdk_*_tests` executables and the graph-probe self-test: 22 CTest suites with this preset. Optional plugin fixture folders absent from a checkout are reported as skipped by the plugin suite.
+The preset stamps ReSkate 2.1.3 / AnimatorStudio 1.0.39-library.1 and turns binary auto-update off. Outputs are under `build/ci-windows/Release`. Warnings are errors. `dingosdk_regression_tests` builds all enabled `dingosdk_*_tests` executables and the graph-probe self-test: 24 CTest suites with this preset. Optional plugin fixture folders absent from a checkout are reported as skipped by the plugin suite.
 
 ## CI and downloads
 

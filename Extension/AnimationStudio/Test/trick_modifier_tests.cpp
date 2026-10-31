@@ -1,5 +1,6 @@
 #include "Extension/AnimationStudio/trick_modifier.h"
 #include "Extension/AnimationStudio/anim_runtime_rules.h"
+#include "Extension/AnimationStudio/native_modifier_selection.h"
 #include "Engine/Game/Input/playstation_report.h"
 #include "Extension/UI/Overlay/polled_gamepad.h"
 #include <array>
@@ -23,6 +24,29 @@ int main() {
         attempt.begin(false, true, false); check(!attempt.held, "The next normal attempt returns to the normal route");
         attempt.begin(true, false, false); check(!attempt.held, "An unloaded playlist cannot activate a modifier");
         attempt.begin(true, true, true); check(!attempt.held, "TEST IN GAME has priority");
+        NativeModifierHold hold;
+        hold.observe(1, 0, true, true, false);
+        check(hold.held, "A grind latches the modifier on rail entry, even before its identity arrives");
+        hold.observe(1, 12, false, true, false);
+        check(hold.held, "A late grind identity and a physical release do not swap the running route");
+        hold.observe(1, 13, false, true, false);
+        check(!hold.held, "A genuinely different grind starts a new choice");
+        hold.observe(2, 1, true, true, false);
+        hold.observe(2, 1, false, false, false);
+        check(hold.held, "A running manual can finish its chosen route after a binding is disabled");
+        hold.observe(0, 0, true, true, false);
+        check(!hold.held, "Leaving the hold clears its modifier");
+        hold.observe(3, 2, true, true, true);
+        check(!hold.held, "TEST IN GAME also has priority over native holds");
+        std::vector<NativeLoopCandidate> loops{{0, "manual", false, false, 0, 0.01f}, {1, "manual", true, false, 0, 0.01f},
+            {2, "manual", true, false, 0, 0.01f}, {3, "another grab", true, false, -1, 0.001f}};
+        check(native_loop_candidates(loops, false, true) == std::vector<std::size_t>{0}, "Without a modifier only the normal native loop is eligible");
+        check(native_loop_candidates(loops, true, true) == std::vector<std::size_t>({1, 2}), "Equivalent modifier saves remain available for playlist cycling");
+        loops[1].rank = loops[2].rank = -1;
+        check(native_loop_candidates(loops, true, true) == std::vector<std::size_t>{0}, "An unrelated grind/manual/grab never overrides a compatible normal loop");
+        loops[1].rank = 0; loops[1].mirrored = true;
+        check(native_loop_candidates(loops, true, false) == std::vector<std::size_t>{0}, "An ineligible modifier stance falls back to the normal loop");
+        check(native_loop_candidates(loops, true, true) == std::vector<std::size_t>{1}, "Front-foot mode permits a mirrored modifier loop");
 
         // Exercise the same route selector and pop/stance matcher as gameplay, with different eligible groups.
         std::vector<StanceCandidate> normal{{false, false, 0}}, special{{false, false, 0}, {false, false, 0}};

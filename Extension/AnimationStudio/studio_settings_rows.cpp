@@ -246,6 +246,33 @@ Setting playing_playlist(const studio::PlaylistsNow& now, Tell tell) {
     s.enabled = !now.lists.empty();
     return s;
 }
+Setting modifier_button(const ModifierBinding& binding) {
+    std::vector<std::string> options(modifier_button_names.begin(), modifier_button_names.end());
+    const int selected = binding.button >= 0 && binding.button < static_cast<int>(options.size()) ? binding.button : 0;
+    return one_of("Modifier button", std::move(options), selected,
+        "Hold before a trick or held move begins to use the modifier playlist. Releasing during the move does not swap animations. OFF restores normal controls. L3/R3 may also be part of your Studio opening shortcut.",
+        [](int picked) { auto live = studio::modifier_binding(); live.button = picked; studio::set_modifier_binding(live); });
+}
+Setting modifier_playlist(const studio::PlaylistsNow& now, const ModifierBinding& binding) {
+    std::vector<std::string> options{"NONE"}, names{""};
+    int selected = 0;
+    for (const auto& list : now.lists) {
+        if (list.name == binding.playlist) selected = static_cast<int>(options.size());
+        options.push_back(std::format("{} ({})", list.name, list.size));
+        names.push_back(list.name);
+    }
+    return one_of("Modifier playlist", std::move(options), selected,
+        "Normal input keeps the regular playlist. Input + modifier uses an eligible animation from this playlist, falling back to normal when none fits. Editing a playlist never changes this assignment.",
+        [names](int picked) {
+            if (picked < 0 || static_cast<std::size_t>(picked) >= names.size()) return;
+            auto live = studio::modifier_binding(); live.playlist = names[static_cast<std::size_t>(picked)]; studio::set_modifier_binding(live);
+        });
+}
+Setting modifier_native_button(const ModifierBinding& binding) {
+    return on_off("Replace native button", binding.block_native,
+        "During gameplay, reserve the modifier button for Studio. With RB/R1 this prevents the native darkcatch. Menus and Studio keep their normal controls.",
+        [](bool on) { auto live = studio::modifier_binding(); live.block_native = on; studio::set_modifier_binding(live); });
+}
 Setting which_version_plays(const studio::PlaylistsNow& now, Tell tell) {
     const auto on = std::find_if(now.lists.begin(), now.lists.end(), [&](const auto& list) { return list.name == now.on; });
     Setting s = one_of("Which version plays", {"FIXED", "IN TURNS", "SHUFFLE"},

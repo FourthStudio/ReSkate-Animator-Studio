@@ -22,6 +22,20 @@ struct ModifierAttempt {
     bool held{};
     void begin(bool down, bool ready, bool testing) noexcept { held = down && ready && !testing; }
 };
+// Native holds begin on entry to a grind/manual/grab, rather than at the preceding jump.
+// A late native identity refines the same hold; releasing the button cannot change its route.
+struct NativeModifierHold {
+    int kind{}, identity{};
+    bool held{};
+    bool observe(int next_kind, int next_identity, bool down, bool ready, bool testing) noexcept {
+        const bool began = kind != next_kind || (identity > 0 && next_identity > 0 && identity != next_identity);
+        if (began) { held = down && ready && !testing; identity = 0; }
+        kind = next_kind;
+        if (next_identity > 0) identity = next_identity;
+        if (!kind) { identity = 0; held = false; }
+        return began;
+    }
+};
 // Match the trick, entry, pop and stance before deciding whether the modifier can replace the normal route.
 template <class Choose>
 auto choose_trick_route(bool held, Choose&& choose) {

@@ -592,6 +592,10 @@ void profiles_read_back_and_bad_ones_are_refused() {
     check(hinted.modifier_hint && hinted.trick == animation.trick && hinted.pop == animation.pop,
           "The author recommendation survives save/share without changing the native trick or its pop");
     animation.modifier_hint = false;
+    auto malformed_hint = dingosdk::Json::parse(to_json(animation));
+    malformed_hint["modifier_hint"] = "recommended";
+    const auto ignored_hint = from_json(malformed_hint.dump());
+    check(!ignored_hint.modifier_hint && ignored_hint.key_count() == animation.key_count(), "Malformed advisory metadata does not invalidate an animation");
     check(back.name == "Kickflip 2" && back.trick == "Kickflip" && near(back.speed, 0.5f), "Name, trick and speed read back");
     check(back.key_count() == 2 && back.track(278) && back.track(278)->keys[0].ease == Ease::linear, "Keys read back");
     check(same_turn(back.track(7)->keys[0].rotation, from_euler({0, 10, 0})) && near(back.track(7)->keys[0].offset[1], 0.1f),
