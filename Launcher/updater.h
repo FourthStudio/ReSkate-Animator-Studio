@@ -54,6 +54,15 @@ Config parse_config(std::string_view text);
 // Whose releases update the launcher and ReSkate.dll: this build's own (launcher_release_repo), or
 // official ReSkate's (official_release_repo), which the player can choose in a modified build.
 enum class Channel { own, official };
+struct UpdateChoices {
+    bool updates{true}, prereleases{}, official{};
+    bool operator==(const UpdateChoices&) const = default;
+};
+// An update result belongs to the choices it was fetched with. A stale button must recheck,
+// never install another channel (or a pre-release the player has just disabled).
+inline bool can_apply_update(UpdateChoices checked, UpdateChoices requested, bool binary_updates, bool binaries) {
+    return requested == checked && requested.updates && binary_updates && binaries;
+}
 // Whether there is a choice: this build updates from releases that are not official ReSkate's.
 // Choosing official ReSkate installs its launcher too, which has no way back: the player
 // reinstalls this build to return to it.

@@ -16,6 +16,19 @@ void check(bool condition, const char* what) {
 
 } // namespace
 
+void choice_regressions() {
+    using launcher_update::UpdateChoices;
+    const UpdateChoices own{true, false, false}, official{true, false, true}, preview{true, true, false}, off{false, false, false};
+    check(launcher_update::can_apply_update(own, own, true, true), "unchanged choices can install their own result");
+    check(!launcher_update::can_apply_update(own, official, true, true), "choosing official cannot install a stale Studio result");
+    check(!launcher_update::can_apply_update(official, own, true, true), "staying on Studio cannot install a stale official result");
+    check(!launcher_update::can_apply_update(preview, own, true, true), "turning pre-releases off invalidates the previous result");
+    check(!launcher_update::can_apply_update(own, off, true, true) && !launcher_update::can_apply_update(off, off, true, true),
+          "updates disabled never install binaries");
+    check(!launcher_update::can_apply_update(own, own, false, true) && !launcher_update::can_apply_update(own, own, true, false),
+          "the build's update protection and --no-update cannot be bypassed by a stale button");
+}
+
 // --live: what each channel's releases on GitHub offer now (needs the network, so not in CTest).
 int live() {
     using launcher_update::Channel;
@@ -34,6 +47,7 @@ int live() {
 }
 
 int main(int argc, char** argv) {
+    choice_regressions();
     if (argc > 1 && std::string(argv[1]) == "--live") return live();
     // There is a choice only when this build's releases are not official ReSkate's.
     using launcher_update::Channel;

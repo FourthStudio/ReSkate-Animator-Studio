@@ -235,6 +235,7 @@ void Launcher::check_again_if_update_choices_changed() {
 template<class Task> void Launcher::start(Task task) {
     if (busy_) return;
     if (worker_.joinable()) worker_.join();
+    worker_update_choices_ = {settings_.updates, settings_.prereleases, settings_.official_reskate};
     busy_ = true;
     cancel_ = false;
     worker_ = std::thread([this, task] {
@@ -394,21 +395,23 @@ bool Launcher::runtime_outdated(const update::Config& config) const {
 }
 
 void Launcher::run_check() {
-    checked_updates_ = settings_.updates;
-    checked_prereleases_ = settings_.prereleases;
-    checked_official_ = settings_.official_reskate;
+    const auto choices = worker_update_choices_;
+    checked_updates_ = choices.updates;
+    checked_prereleases_ = choices.prereleases;
+    checked_official_ = choices.official;
     set(Phase::checking, "Checking for updates");
     update::remove_previous_launcher(session_.self);
-    const auto channel = update_channel(settings_);
-    auto config = update::fetch_config(settings_.prereleases, channel);
+    const auto channel = choices.official && offers_base_reskate() ? update::Channel::official : update::Channel::own;
+    auto config = update::fetch_config(choices.prereleases, channel);
     {
         std::lock_guard lock(mutex_);
         state_.config = config;
+        state_.config_channel = channel;
     }
     // (Unreachable GitHub: what the last check found stands.)
     if (config) prerelease_available_ = config->prerelease_available;
     const bool newer = config && (launcher_outdated(*config) || runtime_outdated(*config));
-    if (newer && update::binary_updates_enabled() && binaries_ && settings_.updates) {
+    if (newer && update::binary_updates_enabled() && binaries_ && choices.updates) {
         const auto version = config->runtime.version.empty() ? config->launcher.version : config->runtime.version;
         if (!offers_base_reskate()) {
             set(Phase::update_available, "A ReSkate update is ready",
@@ -458,7 +461,7 @@ void Launcher::run_check() {
         return;
     }
     std::string detail = !config ? "Offline: update check skipped."
-        : !settings_.updates ? (newer ? "ReSkate updates are off; keeping your ReSkate files." : "ReSkate updates are off.")
+        : !choices.updates ? (newer ? "ReSkate updates are off; keeping your ReSkate files." : "ReSkate updates are off.")
         : "Up to date.";
     if (const auto advice = launcher_app::memory_advice(); !advice.empty()) {
         logging::write(logging::Level::info, logging::Channel::launcher, advice);
@@ -479,6 +482,9 @@ void Launcher::leave_way_back() const {
 }
 
 void Launcher::run_updates() {
+    const update::UpdateChoices checked{checked_updates_.load(), checked_prereleases_.load(), checked_official_.load()};
+    if (!update::can_apply_update(checked, worker_update_choices_, update::binary_updates_enabled(), binaries_))
+        return run_check();
     const auto config = this->config();
     if (!config) return run_check();
     set(Phase::updating, "Updating ReSkate");
@@ -486,7 +492,7 @@ void Launcher::run_updates() {
         update::replace_file(session_.paths.dll, config->runtime, progress_for("ReSkate.dll"));
     if (launcher_outdated(*config)) {
         update::replace_running_launcher(session_.self, config->launcher, progress_for("Launcher"));
-        if (update_channel(settings_) == update::Channel::official) leave_way_back();
+        if (snapshot().config_channel == update::Channel::official) leave_way_back();
         logging::flush();
         restart_ = true;
         return;

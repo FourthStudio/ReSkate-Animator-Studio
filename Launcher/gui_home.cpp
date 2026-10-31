@@ -751,7 +751,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     ImGui::EndDisabled();
 
     const float status_top = named_mod ? S(218) : S(200);   // under "+ ANIMATOR STUDIO" when it is there
-    const float status_end = status_tile(fonts, state, channel, ImVec2(S(60), status_top), S(430), time, launcher.session().paths.logs, modal);
+    const float status_end = status_tile(fonts, state, state.config_channel, ImVec2(S(60), status_top), S(430), time, launcher.session().paths.logs, modal);
     // Under it, down to the changelog's top: the announcement.
     ImGui::BeginDisabled(modal);
     announcement_card(launcher, fonts, ui, ImVec2(S(60), status_end + S(16)), S(430), size.y - S(56) - changelog_size.y - S(16));

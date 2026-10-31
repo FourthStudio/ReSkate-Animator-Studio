@@ -271,6 +271,7 @@ struct State {
     std::vector<std::string> qr;
     std::optional<update::Prompt> prompt;
     std::optional<update::Config> config;
+    update::Channel config_channel{update::Channel::own};
     // Set when a merge before launch left mods out; PLAY waits on an answer.
     std::vector<ModProblem> mod_problems;
 };
@@ -324,6 +325,8 @@ private:
     std::vector<std::wstring> arguments_;
     Settings settings_;
     bool relaunched_{};
+    // Captured on the UI thread before starting the worker; constant until that worker joins.
+    update::UpdateChoices worker_update_choices_;
     // The update choices the last check was made with: one changed in settings is checked
     // again straight away (save()).
     std::atomic<bool> checked_updates_{true}, checked_prereleases_{}, checked_official_{};
