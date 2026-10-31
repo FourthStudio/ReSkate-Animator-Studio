@@ -2791,7 +2791,62 @@ void lead_foot_is_read_from_the_clip() {
     clip.frames[343].position = {0.1f, -0.8f, 0.07f};
     check(!clip_leads_right(clip).has_value(), "Feet together cannot tell");
 }
-// Native copies keep the clip, keyed limb and board in the same stance while preserving the source identity.
+// Whole-pose playback retains the authored placement when the game's body size differs from the clip.
+void whole_poses_fit_body_size() {
+    std::vector<Joint> source(skeleton_joints);
+    source[placement_joint].scale = {1.7f, 1.7f, 1.7f};
+    source[placement_joint].rotation = from_euler({0, 53, 0});
+    source[hips_joint].position = {0, 1, 0};
+    source[8].position = {0.1f, 0, 0}; source[341].position = {-0.1f, 0, 0};
+    for (const std::uint16_t j : {std::uint16_t{9}, std::uint16_t{10}, std::uint16_t{342}, std::uint16_t{343}})
+        source[j].position = {0, -0.4f, 0};
+    Animation animation;
+    set_key(animation, hips_joint, 0, {{0, 0, 0, 1}, {0.03f, 0.02f, 0.01f}});
+    set_key(animation, 9, 0, {from_euler({18, 0, 0}), {}});
+    const auto midpoint = [](std::span<const Joint> pose) {
+        const auto a = world(pose, 10).position, b = world(pose, 343).position;
+        return Vec3{(a[0] + b[0]) * 0.5f, (a[1] + b[1]) * 0.5f, (a[2] + b[2]) * 0.5f};
+    };
+    for (const float size : {0.85f, 0.92f, 1.0f, 1.08f, 1.15f}) {
+        auto expected = source;
+        apply_authored_edit_layer(animation, 0, expected, 1, nullptr, source, 1, 1);
+        auto native = source;
+        native[hips_joint].scale = {size, size, size};
+        auto actual = native;
+        apply_authored_edit_layer(animation, 0, actual, 1, nullptr, source, 1, 1);
+        const auto wanted = midpoint(expected), got = midpoint(actual);
+        for (std::size_t k = 0; k < 3; ++k) check(near(got[k], wanted[k], 0.00001f),
+            "A whole authored pose keeps its foot frame across body sizes without a smaller skater floating");
+        check(actual[hips_joint].scale == native[hips_joint].scale && actual[9].position == native[9].position &&
+              actual[342].position == native[342].position && same_turn(actual[9].rotation, expected[9].rotation),
+              "Fitting body size retains the live scales, leg lengths and authored bend");
+        const auto right = world(actual, 10).position, left = world(actual, 343).position;
+        const auto reference_right = world(expected, 10).position, reference_left = world(expected, 343).position;
+        for (std::size_t k = 0; k < 3; ++k) check(near(right[k] - left[k], (reference_right[k] - reference_left[k]) * size, 0.00001f),
+            "Different keyed foot heights remain different; size fitting does not plant both feet on a deck");
+        auto partial = native, raw = native, reference = source;
+        apply_authored_edit_layer(animation, 0, partial, 0.5f, nullptr, source, 1, 1);
+        apply_authored_edit_layer(animation, 0, raw, 0.5f);
+        apply_authored_edit_layer(animation, 0, reference, 0.5f, nullptr, source, 1, 1);
+        const auto halfway = midpoint(partial), from = midpoint(raw), to = midpoint(reference);
+        for (std::size_t k = 0; k < 3; ++k) check(near(halfway[k], (from[k] + to[k]) * 0.5f, 0.00001f),
+            "The body-size placement correction fades with playback weight rather than snapping");
+        auto off = native;
+        apply_authored_edit_layer(animation, 0, off, 0, nullptr, source, 1, 1);
+        check(off == native, "No custom weight means no body-size placement change");
+        LimbWeights released; released.limb[0] = 0;
+        auto hands_only = native;
+        apply_authored_edit_layer(animation, 0, hands_only, 1, &released, source, 1, 1);
+        check(hands_only[hips_joint].position == native[hips_joint].position,
+              "Returning the hips to the game also disables the body-size placement correction");
+        auto thigh_scaled = source;
+        thigh_scaled[8].scale = thigh_scaled[341].scale = {size, size, size};
+        apply_authored_edit_layer(animation, 0, thigh_scaled, 1, nullptr, source, 1, 1);
+        const auto thigh_feet = midpoint(thigh_scaled);
+        for (std::size_t k = 0; k < 3; ++k) check(near(thigh_feet[k], wanted[k], 0.00001f),
+            "Body-size fitting also works before the renderer rebases the live thigh scales onto the hips");
+    }
+}
 void native_stance_copies_keep_their_source_and_edits() {
     Clip clip;
     clip.joints = skeleton_joints;
@@ -2930,6 +2985,7 @@ int main(int argc, char** argv) {
         bent_joints_match_the_studio();
         joints_stay_in_their_range();
         lead_foot_is_read_from_the_clip();
+        whole_poses_fit_body_size();
         native_stance_copies_keep_their_source_and_edits();
         every_stance_finds_its_recording();
         fakie_recordings_have_their_own_slot();

@@ -525,6 +525,40 @@ int limb_group(std::uint16_t joint) noexcept {
     }
     return 0;
 }
+namespace {
+// A whole source pose was authored around its own body dimensions. Keeping the live bone scales
+// but its old hip placement leaves a shorter body's feet above the board (and a taller body's below).
+// Translate the hips by the change in the feet's midpoint caused by those dimensions alone. The
+// live scales, bone lengths, authored bends and difference between the two feet are retained.
+void fit_authored_body_size(std::span<const Joint> source, std::span<Joint> pose, float share, const LimbWeights* limbs) {
+    if (!(share > 0) || source.size() < skeleton_joints || pose.size() < skeleton_joints) return;
+    if (limbs) share *= std::clamp(std::min({limbs->of(hips_joint), limbs->of(341), limbs->of(8)}), 0.0f, 1.0f);
+    if (!(share > 0)) return;
+    std::array<Joint, skeleton_joints> reference;
+    std::copy_n(pose.begin(), skeleton_joints, reference.begin());
+    bool different = false;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        if (!gameplay_body_joint(j) || !editable(j) || editable(j)->group == JointGroup::fingers) continue;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const float ratio = source[j].scale[k] / pose[j].scale[k];
+            if (!std::isfinite(ratio) || ratio < 0.25f || ratio > 4.0f) return;
+            different |= std::abs(source[j].scale[k] - pose[j].scale[k]) > 0.0001f;
+        }
+        reference[j].scale = source[j].scale;
+    }
+    if (!different) return;
+    Vec3 shift{};
+    for (const std::uint16_t foot : {std::uint16_t{10}, std::uint16_t{343}}) {
+        const auto wanted = world(reference, foot), current = world(pose, foot);
+        if (!finite(wanted) || !finite(current)) return;
+        for (std::size_t k = 0; k < 3; ++k) shift[k] += (wanted.position[k] - current.position[k]) * 0.5f * share;
+    }
+    const auto frame = world(pose, static_cast<std::uint16_t>(parent(hips_joint)));
+    if (!finite(frame) || !(frame.scale[0] > 0.0001f)) return;
+    const auto local = rotate(conjugate(frame.rotation), shift);
+    for (std::size_t k = 0; k < 3; ++k) pose[hips_joint].position[k] += local[k] / frame.scale[0];
+}
+}
 void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight,
                                const LimbWeights* limbs, std::span<const Joint> studio, float match, float match_rest) {
     if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(seconds) ||
@@ -568,6 +602,7 @@ void apply_authored_edit_layer(const Animation& animation, float seconds, std::s
         }
         for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * share;
     }
+    if (match_rest > 0) fit_authored_body_size(studio, native, std::min(match_rest, 1.0f) * weight, limbs);
 }
 std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored) {
     std::vector<Joint> pose(clip.joints);

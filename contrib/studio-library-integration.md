@@ -1,6 +1,6 @@
 # Library integration candidate, 2026-10-31
 
-This is a test candidate, `1.0.39-library.2+reskate.2.1.3`, on
+This is a test candidate, `1.0.39-library.3+reskate.2.1.3`, on
 `22sh/release-library-integration`. It combines the Library/modifier workspace with reviewed team
 work and the native normal/switch feature requested separately by Fourth. It is not Studio 1.0.55
 and does not claim that every change in #25 is present or verified in game.
@@ -9,6 +9,7 @@ and does not claim that every change in #25 is present or verified in game.
 
 GitHub branches, all PR heads and recent PR discussions were fetched on 31 October. Main was
 `f3c43590`; #22 was `37a85dbf`; Fourth's #25 was `b5a14969` (19 commits after #22).
+A refresh at 17:20 UTC found those heads unchanged and a new #27 at `d218dc40`, based on #25.
 
 | Work | Treatment in this candidate |
 |---|---|
@@ -20,6 +21,7 @@ GitHub branches, all PR heads and recent PR discussions were fetched on 31 Octob
 | #21 / earlier 2.1.3 integration branch | Its runtime compatibility is superseded by the #22 base; do not re-merge its older editor snapshot. Recover the missing font provenance metadata from its audit. |
 | #25 / native normal/switch (`9523fec5`, stance portion) | Selectively ported by request. Editing, copying, stance labels and in-game selection reconciled with modifier routes and playlist modes; not a merge of #25. |
 | Remainder of #25, including joint limits and lost-air clock | Held following Fourth's request. No remote merge, partial limit fix or clock rewrite was made. |
+| #27 / Norms' 1.0.55 audit (`d218dc40`) | Reviewed as new stacked work, not merged over the held #25 base. Includes pack ownership/update protection, invalid-clip checks, failed-save handling, background reports and bounded copies; these still need reconciliation before a public release. Existing #24 fixes are retained here. |
 
 The older held-moves and game-clock prototype branches, old gizmo test branch and switch-playback
 merge branch are historical alternatives, not newly released work. Their changes must be assessed
@@ -47,7 +49,7 @@ whole-trick fakie layer to a native piece. The native stance work is based on Fo
 ## Validation
 
 - Release runtime and launcher build with warnings as errors.
-- 63/63 CTest suites pass with launcher, Studio and plugin checks enabled.
+- 64/64 CTest suites pass with launcher, Studio and plugin checks enabled.
 - 21 native Python tests pass; 13 packaging tests run, with one optional platform fixture skipped.
 - The Steam input reproducer and production native selection harness pass. The latter exercises
   native normal/switch choices, missing variants, route isolation, clock continuity, native family/style
@@ -73,3 +75,25 @@ of adding a second unfiltered scan over all saved pieces. Native Switch is alrea
 Fourth's #25 description says its latest lost-air clock fix was not yet checked in game. Its joint-limit
 and high-pop fixes are still outside this candidate. Until those held changes are resolved and the
 combined DLL is tested in game, this is not the final public-release go-ahead.
+
+## Library .3 and Size 1 report
+
+The Library now uses playlist contents, a dedicated add picker, Collection browsing and separate
+settings/setup pages. Its top strip shows what plays independently of what is being edited.
+The actual Preview/Back functions bookmark and restore the new route, filters, expanded groups,
+scroll and controller focus. Named creation happens before content is added; destructive actions
+use an explicit destination and block underlying input. Paused playback has a direct Resume action.
+
+The Size 1 report reproduced a body-scale error in whole-source fallback playback: live scale 0.92
+versus source 1, adding roughly 6 cm at landing. The shared core now fits hip placement to live body
+dimensions while retaining bone scales, keys and asymmetrical foot poses. See [body-size notes](studio-body-size.md).
+Report ZIPs reserve their summary, timeline and skeleton before large pose files exhaust the budget;
+this is separate from #27's asynchronous reporting work.
+
+Validation for .3: 64/64 CTest suites, 21 native Python tests, 13 packaging tests (one optional skip),
+production Steam/native selection checks and the new Library interaction harness pass. The latter
+executes the production Preview/Back route, failed/locked preview, membership isolation, named
+creation, search/folding, setup/confirmation input blocking and paused-playback recovery. Rendered
+screens were inspected at 1080p and 768p. The 3,200-save fixture remained responsive in the harness.
+Core tests cover five body scales and both live scale representations; the actual core also replays
+the private captured poses. These checks do not replace in-game acceptance of this exact DLL.

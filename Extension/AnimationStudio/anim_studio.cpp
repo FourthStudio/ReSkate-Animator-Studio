@@ -9176,18 +9176,30 @@ void open_playlist(const std::string& name) {
     s.playlist_open = name;
     publish_locked(s, false);
 }
+namespace {
+void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBinding& binding,
+                                      const std::string& opened, const std::string& message);
+}
 bool new_playlist(std::string& message) {
+    return new_playlist({}, message);
+}
+bool new_playlist(const std::string& wanted, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     auto lists = s.playlists;
     if (lists.lists.size() >= 200) { say_locked(s, message, "The library has reached its 200-playlist limit."); return false; }
     // A new playlist shuffles: the versions of a trick go round, as people expect of a pack (on FIXED only the highest
     // plays, and a new playlist that did not shuffle was taken for a bug).
-    const auto name = free_playlist_name(lists);
+    auto name = utf8_prefix(wanted, 48);
+    while (!name.empty() && name.back() == ' ') name.pop_back();
+    while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+    if (wanted.empty()) name = free_playlist_name(lists);
+    if (name.empty()) { say_locked(s, message, "Give this playlist a name."); return false; }
+    if (lists.named(name)) { say_locked(s, message, "There is already a playlist called " + name + "."); return false; }
     lists.lists.push_back({name, PlaylistMode::shuffle, {}});
-    s.playlist_open = name;
-    playlists_changed_locked(s, lists, "Made " + name + ": add whole packs or single tricks to it, then switch it on.");
-    message = s.status;
+    message = "Made " + name + ": add whole packs or single tricks to it, then switch it on.";
+    try { commit_playlist_structure_locked(s, lists, s.modifier, name, message); }
+    catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     return true;
 }
 namespace {
@@ -9232,18 +9244,21 @@ bool rename_playlist(const std::string& wanted, std::string& message) {
     return true;
 }
 bool delete_playlist(std::string& message) {
+    return delete_playlist(view().playlist_open, message);
+}
+bool delete_playlist(const std::string& wanted, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     auto lists = s.playlists;
-    const auto* open = lists.named(s.playlist_open);
-    if (!open) return false;
+    const auto* open = lists.named(wanted);
+    if (!open) { say_locked(s, message, "That playlist no longer exists."); return false; }
     const auto name = open->name;
     const bool was_on = lists.on == name;
     std::erase_if(lists.lists, [&](const NamedPlaylist& l) { return l.name == name; });
     if (was_on) lists.on.clear();
     auto binding = s.modifier;
     if (binding.playlist == name) binding.playlist.clear();
-    const auto opened = lists.lists.empty() ? std::string{} : lists.lists.front().name;
+    const auto opened = s.playlist_open != name ? s.playlist_open : lists.lists.empty() ? std::string{} : lists.lists.front().name;
     message = "Deleted " + name + ". Its playback assignments were removed; animation files and packs are kept.";
     try { commit_playlist_structure_locked(s, lists, binding, opened, message); }
     catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
@@ -11411,10 +11426,18 @@ bool report_bug(std::string& message) {
             const auto when = entry.last_write_time(error);
             if (newest.empty() || when > newest_time) newest = entry.path(), newest_time = when;
         }
-        if (!newest.empty())
+        if (!newest.empty()) {
+            // Reserve the context before large pose CSVs can exhaust the report budget.
+            // Without these, a remote report cannot identify which clip/phase produced the poses.
+            static constexpr std::array<const char*, 3> context{"summary.json", "timeline.csv", "skeleton.csv"};
+            for (const auto* name : context) add(newest / name, std::string("diagnostics/") + name, 8ull * 1024 * 1024);
             for (const auto& entry : std::filesystem::recursive_directory_iterator(newest, error))
-                if (entry.is_regular_file(error))
-                    add(entry.path(), "diagnostics/" + std::filesystem::relative(entry.path(), newest, error).generic_string(), 64ull * 1024 * 1024);
+                if (entry.is_regular_file(error)) {
+                    const auto relative = std::filesystem::relative(entry.path(), newest, error).generic_string();
+                    if (std::find(context.begin(), context.end(), relative) == context.end())
+                        add(entry.path(), "diagnostics/" + relative, 64ull * 1024 * 1024);
+                }
+        }
         // The game's log (its end, where the problem is) and a note of a silent exit, if there was one.
         if (const auto logs = logging::status().directory; !logs.empty()) {
             add(logs / L"ReSkate.log", "ReSkate.log", 8ull * 1024 * 1024);

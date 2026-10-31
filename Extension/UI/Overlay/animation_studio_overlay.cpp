@@ -3,6 +3,7 @@
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/AnimationStudio/playlist_management.h"
+#include "Extension/AnimationStudio/library_navigation.h"
 #include "Extension/AnimationStudio/studio_rails.h"
 #include "Extension/AnimationStudio/grind_types.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
@@ -320,12 +321,14 @@ struct Ui {
     bool asset_ready_only{}, asset_inspect{};
     std::array<char, 64> asset_query{}; // the search box over TRICKS
     std::array<char, 64> pack_query{};  // the search box over MY PACKS
-    int library_source{}; // packs, personal tricks, all saved tricks
-    std::string library_pack, library_seen_query, library_seen_target, library_confirm;
-    std::set<std::string> library_expanded, library_queue_open;
-    bool library_modifier_help{}, library_expand_all{};
-    float library_nav_scroll{}, library_browse_scroll{}, library_queue_scroll{}, library_modal_scroll{};
+    float library_modal_scroll{}; // multi-playlist chooser, independent of the Library's own pages
     std::uint64_t library_request_seen{};
+    studio::LibraryNavigation library;
+    std::optional<studio::PlaylistEntry> library_pending_source;
+    std::optional<studio::LibraryNavigation> preview_library_return;
+    int preview_return_tab{-1};
+    bool preview_return_pack_page{};
+    ImGuiID preview_return_focus{};
     // Watching a saved trick (preview mode): the pack it is from, and where to go back to.
     std::string preview_pack, preview_name;
     bool preview_from_pack{};
@@ -2614,10 +2617,8 @@ void menu_back(const studio::View& v) {
         return;
     }
     if (u.menu_tab == 1) {
-        if (!u.library_confirm.empty()) { u.library_confirm.clear(); return; }
-        if (u.library_modifier_help) { u.library_modifier_help = false; return; }
-        if (!u.library_pack.empty()) { u.library_pack.clear(); u.library_browse_scroll = 0; return; }
-        if (u.pack_query[0]) { u.pack_query.fill(0); return; }
+        if (u.library.creating) u.library_pending_source.reset();
+        if (u.library.back()) return;
     }
     if (v.has_clip) u.menu = false;
 }
@@ -3432,6 +3433,10 @@ void preview_trick(const std::string& pack, const std::string& name, bool from_p
         say(m);
         return;
     }
+    u.preview_return_tab = u.menu ? u.menu_tab : 0;
+    u.preview_return_pack_page = u.pack_page;
+    u.preview_return_focus = nav().focus;
+    u.preview_library_return = u.menu && u.menu_tab == 1 ? std::optional{u.library} : std::nullopt;
     u.preview_pack = pack;
     u.preview_name = name;
     u.preview_from_pack = from_pack;
@@ -6455,6 +6460,8 @@ void open_market_preview(const studio::market::Preview& preview, std::size_t ind
         return;
     }
     u.preview_market = preview.full_name;
+    u.preview_return_tab = -1;
+    u.preview_library_return.reset();
     u.preview_pack.clear();
     u.preview_name = pick.name;
     u.preview_from_pack = false;
@@ -7177,7 +7184,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
             rows.push_back(studio::settings_rows::modifier_playlist(studio::playlists_now(), binding));
             rows.push_back(studio::settings_rows::modifier_native_button(binding));
             rows.push_back(button_row("Modifier setup in Library", "See the two playback roles, choose animations and learn how the modifier works.",
-                [] { ui().library_modifier_help = true; open_menu(1); }));
+                [] { ui().library.modifier_setup = true; ui().library.settings_scroll = 0; open_menu(1); }));
         }
         {
             const auto build = studio::library_build();
@@ -8217,13 +8224,15 @@ void key_card(ImDrawList* d, const Fonts& f, const studio::View&, ImVec2 display
 void playlist_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui(); const float k = f.k;
     const auto name = u.playlist_for;
-    if (!saved_trick(v, name)) { u.playlist_for.clear(); return; }
+    const bool whole = u.playlist_for_entry.animation.empty() && !u.playlist_for_entry.pack.empty();
+    if (whole ? !pack_named(v, u.playlist_for_entry.pack) : !saved_trick(v, name)) { u.playlist_for.clear(); return; }
     const auto [a, b] = card_box(d, f, display, 820 * k, std::min(display.y - 100 * k, 720 * k), "CHOOSE PLAYLISTS");
     const float x = a.x + 28 * k, w = b.x - a.x - 56 * k;
-    text(d, f.bold, 18 * k, ImVec2(x, a.y + 91 * k), white, elide(f.bold, 18 * k, shown_name(v, name), w));
+    text(d, f.bold, 18 * k, ImVec2(x, a.y + 91 * k), white, elide(f.bold, 18 * k, whole ? u.playlist_for_entry.pack : shown_name(v, name), w));
     paragraph(d, f.bold, 13 * k, ImVec2(x, a.y + 122 * k), w, soft,
-        "Add to as many playlists as you like. Ticks include pack membership. Unticking removes this animation only here; playback assignments stay unchanged.");
-    const auto included = studio::playlists_containing(name);
+        whole ? "Choose a playlist to add this pack's enabled animations. Existing entries are not duplicated; local exclusions are restored. Playback assignments stay unchanged."
+              : "Add this animation to any playlist, or remove it from just one. Your animation files, source packs and playback assignments stay unchanged.");
+    const auto included = whole ? std::vector<std::string>{} : studio::playlists_containing(name);
     const auto binding = studio::modifier_binding();
     const ImVec2 la(x, a.y + 184 * k), lb(b.x - 28 * k, b.y - 86 * k);
     begin_region(205, la, lb, u.library_modal_scroll, k);
@@ -8232,18 +8241,23 @@ void playlist_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     for (const auto& list : v.playlists) {
         ImGui::PushID(list.name.c_str());
         const bool have = std::find(included.begin(), included.end(), list.name) != included.end();
-        std::string label = (have ? "[+]  " : "[ ]  ") + list.name;
-        if (list.name == v.playlist_playing) label += " / NORMAL";
-        if (list.name == binding.playlist) label += " / MODIFIER";
+        std::string label = list.name + (whole ? " / ADD PACK" : have ? " / REMOVE" : " / ADD");
+        if (list.name == v.playlist_playing) label += " / DEFAULT";
+        if (list.name == binding.playlist) label += " / BUTTON";
         if (action(d, f, "##playlistmembership", ImVec2(x, y), ImVec2(w - 8 * k, 46 * k), label, have ? Look::paper : Look::dark)) {
-            std::string m; studio::edit_playlist_member(list.name, u.playlist_for_entry, !have, m); say(m);
+            std::string m;
+            if (whole) studio::edit_playlist_pack(list.name, u.playlist_for_entry.pack, true, m);
+            else studio::edit_playlist_member(list.name, u.playlist_for_entry, !have, m);
+            say(m);
         }
         ImGui::PopID(); y += 54 * k;
     }
     end_region(d, la, lb, y + u.library_modal_scroll - la.y, u.library_modal_scroll, k);
     const float half = (w - 12 * k) / 2;
     if (action(d, f, "##newdestination", ImVec2(x, b.y - 66 * k), ImVec2(half, 40 * k), "+ NEW PLAYLIST", Look::ghost)) {
-        std::string m; studio::add_to_playlist({}, u.playlist_for_entry, m); say(m);
+        const auto source = u.playlist_for_entry;
+        u.playlist_for.clear(); library_start_create(); u.library_pending_source = source;
+        open_menu(1); u.pack_page = false;
     }
     if (action(d, f, "##doneplaylists", ImVec2(x + half + 12 * k, b.y - 66 * k), ImVec2(half, 40 * k), "DONE", Look::blue)) u.playlist_for.clear();
 }
@@ -8570,6 +8584,11 @@ void leave_preview() {
     if (!u.preview_market.empty()) {
         open_menu(2); // the pack's page in the MARKET, as it was
         u.market_open = u.preview_market;
+    } else if (u.preview_return_tab >= 0) {
+        open_menu(u.preview_return_tab);
+        u.pack_page = u.preview_return_pack_page;
+        if (u.preview_library_return) u.library = *u.preview_library_return;
+        nav().focus = u.preview_return_focus;
     } else if (u.preview_from_pack && !u.preview_pack.empty()) {
         open_menu(1);
         open_pack_page(u.preview_pack);
@@ -8577,6 +8596,8 @@ void leave_preview() {
     u.preview_market.clear();
     u.preview_pack.clear();
     u.preview_name.clear();
+    u.preview_return_tab = -1;
+    u.preview_library_return.reset();
 }
 // A MARKET pack's trick being watched before the pack is got: a card with the pack (GET IT on it), the trick, and every
 // trick in the pack, grouped by trick, to switch to (Up and Down go through them).
@@ -8786,7 +8807,7 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
         ImGui::PopID();
     }
     if (action(d, f, "##previewexit", ImVec2(b.x - 24 * k - 230 * k, by), ImVec2(230 * k, bh),
-               market ? "< BACK TO MARKET" : u.preview_from_pack ? "< BACK TO PACK" : "< BACK", Look::paper))
+               market ? "< BACK TO MARKET" : u.preview_return_tab == 1 ? "< BACK TO LIBRARY" : u.preview_from_pack ? "< BACK TO PACK" : "< BACK", Look::paper))
         leave_preview();
     // The keys.
     if (!ImGui::GetIO().WantTextInput) {
@@ -11102,8 +11123,8 @@ void draw_animation_studio() {
         u.library_request_seen = v.library_request;
         open_menu(1);
         u.pack_page = false;
-        u.library_modifier_help = v.library_modifier_help;
-        u.library_modal_scroll = 0;
+        u.library.modifier_setup = v.library_modifier_help;
+        u.library.settings_scroll = 0;
     }
     if (!v.has_clip) u.menu = true;
     studio::advance(ImGui::GetIO().DeltaTime);

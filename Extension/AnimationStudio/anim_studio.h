@@ -480,8 +480,10 @@ void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
 void open_playlist(const std::string& name);   // the one PACKS > PLAYLIST shows
 bool new_playlist(std::string& message);        // "Playlist N", empty and off, and opened
+bool new_playlist(const std::string& name, std::string& message);
 bool rename_playlist(const std::string& to, std::string& message); // the open one
 bool delete_playlist(std::string& message);     // the open one
+bool delete_playlist(const std::string& name, std::string& message);
 // Puts a whole pack or one trick in a playlist ("" a new one) and opens it. The playlist goes on when none is (one that is
 // on stays on). Returns the playlist's name ("" when it failed).
 std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message);

@@ -20,6 +20,7 @@ prefix=r'''
 #include <imgui.h>
 #include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/AnimationStudio/playlist_management.h"
+#include "Extension/AnimationStudio/library_navigation.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/studio_settings_rows.h"
 #include <algorithm>
@@ -38,11 +39,15 @@ namespace studio=dingosdk::anim_studio;
 studio::View fixture;
 bool preview_native_stances{};
 int copied_stance{-1};
+bool preview_accept=true;int preview_ends{},legacy_pack_opens{};std::string opened_save;
 studio::ModifierBinding binding{"Specials",1,true};
 std::map<std::string,std::vector<studio::PlaylistEntry>> fixture_lists;
 void sync_lists(){fixture.playlists.clear();for(const auto& [name,entries]:fixture_lists) fixture.playlists.push_back({name,entries.size()});fixture.playlist=fixture_lists[fixture.playlist_open];}
 namespace dingosdk::anim_studio {
 bool make_stance_version(const std::string&,int version,std::string&,std::string&){copied_stance=version;return false;}
+View view(){return fixture;}
+bool preview_saved(const std::string&,std::string&){return preview_accept;}
+void end_preview(){++preview_ends;}
 ModifierBinding modifier_binding(){return binding;}
 void set_modifier_binding(ModifierBinding value){binding=std::move(value);}
 void set_play_in_game(bool on){fixture.play_in_game=on;}
@@ -54,9 +59,11 @@ void set_playlist_mode(const std::string&,PlaylistMode mode,std::string&){fixtur
 void playlist_from_modifier_tags(std::string&){}
 void playlist_move(std::size_t,int){}
 void playlist_remove(std::size_t i){if(i<fixture.playlist.size())fixture_lists[fixture.playlist_open].erase(fixture_lists[fixture.playlist_open].begin()+static_cast<std::ptrdiff_t>(i));sync_lists();}
-bool new_playlist(std::string&){fixture_lists["New playlist"]={};open_playlist("New playlist");return true;}
+bool new_playlist(const std::string& wanted,std::string&){auto name=wanted;while(!name.empty()&&name.back()==' ')name.pop_back();while(!name.empty()&&name.front()==' ')name.erase(name.begin());if(name.empty()||fixture_lists.contains(name))return false;fixture_lists[name]={};open_playlist(name);return true;}
+bool new_playlist(std::string& m){return new_playlist("New playlist",m);}
 bool rename_playlist(const std::string&,std::string&){return true;}
 bool delete_playlist(std::string&){return true;}
+bool delete_playlist(const std::string& name,std::string&){fixture_lists.erase(name);if(fixture.playlist_playing==name)fixture.playlist_playing.clear();if(binding.playlist==name)binding.playlist.clear();if(fixture.playlist_open==name)fixture.playlist_open=fixture_lists.empty()?"":fixture_lists.begin()->first;sync_lists();return true;}
 bool undo_playlist_entries(const std::string&,std::string&){return true;}
 bool duplicate_playlist(const std::string&,std::string&){return true;}
 bool clear_playlist_entries(const std::string&,std::string&){return true;}
@@ -64,7 +71,7 @@ std::vector<PresetPack> packs(){std::vector<PresetPack> p;for(const auto& x:fixt
 bool edit_playlist_member(const std::string& target,const PlaylistEntry& source,bool on,std::string&){bool changed=set_playlist_member(fixture_lists[target],packs(),source,on);sync_lists();return changed;}
 bool edit_playlist_pack(const std::string& target,const std::string& pack,bool on,std::string&){bool changed=set_playlist_pack(fixture_lists[target],pack,on);sync_lists();return changed;}
 std::vector<std::string> playlists_containing(const std::string& animation){std::vector<std::string> names;for(const auto&[name,entries]:fixture_lists)if(playlist_membership(entries,packs(),animation).included())names.push_back(name);return names;}
-std::string add_to_playlist(const std::string&,const PlaylistEntry&,std::string&){return {};}
+std::string add_to_playlist(const std::string& target,const PlaylistEntry& source,std::string&){if(source.animation.empty())set_playlist_pack(fixture_lists[target],source.pack,true);else set_playlist_member(fixture_lists[target],packs(),source,true);sync_lists();return target;}
 }
 namespace dingosdk::anim_studio::settings_rows {
 '''
@@ -73,10 +80,13 @@ ui=r'''
 struct Fonts {ImFont *body,*bold,*heading,*title;float k;};
 constexpr ImU32 white=IM_COL32(243,243,239,255),soft=IM_COL32(168,170,176,255),faint=IM_COL32(112,114,120,255),blue=IM_COL32(1,131,255,255),blue_light=IM_COL32(90,180,255,255),blue_dim=IM_COL32(1,131,255,110),shop_ink=IM_COL32(11,12,15,255),row_selected=IM_COL32(62,66,74,236),row_fill_alt=IM_COL32(37,38,41,222);
 struct Ui {
- int library_source{};std::string library_pack,library_seen_query,library_seen_target,library_confirm;
- std::set<std::string> library_expanded,library_queue_open;bool library_modifier_help{},library_expand_all{},pack_page{};
- float library_nav_scroll{},library_browse_scroll{},library_queue_scroll{},library_modal_scroll{};
- std::array<char,64> playlist_name{},pack_query{};std::string playlist_name_for,playlist_for;studio::PlaylistEntry playlist_for_entry;
+ studio::LibraryNavigation library;std::optional<studio::LibraryNavigation> preview_library_return;
+ std::optional<studio::PlaylistEntry> library_pending_source;
+ bool menu{true},pack_page{},menu_after_preview{};int menu_tab{1},preview_return_tab{-1};
+ bool preview_return_pack_page{},preview_from_pack{};ImGuiID preview_return_focus{};
+ std::string preview_pack,preview_name,preview_market,market_open;
+ float library_modal_scroll{};
+ std::array<char,64> playlist_name{};std::string playlist_name_for,playlist_for;studio::PlaylistEntry playlist_for_entry;
 } preview_ui;
 Ui& ui(){return preview_ui;}
 ImFont *preview_anton{}, *preview_bold{};
@@ -87,10 +97,11 @@ ImFont* body(const Fonts& f,float){return f.body;}
 std::string upper(std::string x){for(auto& c:x)c=static_cast<char>(std::toupper(static_cast<unsigned char>(c)));return x;}
 void say(const std::string&){}
 void make_pack(const studio::View&){}
-void preview_trick(const std::string&,const std::string&,bool){}
-void open_or_preview(const studio::View&,const std::string&,const std::string& = {}){}
-void open_saved(const std::string&){}
-void open_pack_page(const std::string&){}
+
+
+void open_saved(const std::string& name){opened_save=name;}
+void open_pack_page(const std::string&){++legacy_pack_opens;ui().pack_page=true;}
+void open_menu(int tab=-1){ui().menu=true;if(tab>=0)ui().menu_tab=tab;}
 std::string trick_label(const std::string& trick){return trick=="kickflip"?"Kickflip":trick=="360flip"?"360 Flip":trick=="ollie"?"Ollie":trick=="manual"?"Manual":trick;}
 '''
 helpers=function(surface,'ImVec2 text_size(')+function(surface,'void text(ImDrawList*')+function(surface,'std::pair<float, float> caps_of(')+function(surface,'unsigned seed_of(')
@@ -100,6 +111,7 @@ helpers+=surface[navstart:navend]
 helpers+=function(surface,'std::string elide(')+function(surface,'void chosen_outline(')
 helpers+='enum class Look { dark, blue, paper, key, danger, ghost };\n'
 helpers+=''.join(function(surface,sig) for sig in ['bool action(ImDrawList*','int segmented(', 'bool field(', 'float paragraph(', 'const studio::Preset* preset_named(', 'const studio::View::PackView* pack_named(', 'bool saved_trick(', 'std::string shown_name(', 'std::string listed(', 'void tick_box(', 'void page_heading(', 'void flat_rect('])
+helpers+=function(surface,'void preview_trick(')+function(surface,'void open_or_preview(')+function(surface,'void leave_preview(')
 helpers+=''.join(function(surface,sig) for sig in ['bool nollie_trick(', 'const char* stance_word(', 'std::array<std::string, 4> stance_versions_of(', 'float stance_versions('])
 art=r'''
 void pack_cover(ImDrawList*d,const Fonts&f,const studio::View::PackView&p,ImVec2 a,ImVec2 b){
@@ -142,7 +154,7 @@ int main(int argc,char**argv){
  unsigned char* atlas{};int aw{},ah{};io.Fonts->GetTexDataAsRGBA32(&atlas,&aw,&ah);io.Fonts->SetTexID(1);
  fixture.playlist_open="Specials";fixture.playlist_playing="Everyday";fixture.playlist_mode=studio::PlaylistMode::shuffle;fixture.modifier_ready=true;fixture.play_in_game=true;
  const std::array<std::string,5> pack_names{"Street Essentials","Boned & Beyond","Rail Theory","One Foot Sessions","Flow State"};
- for(std::size_t pi=0;pi<pack_names.size();++pi){studio::View::PackView pack;pack.name=pack_names[pi];pack.made_by=pi%2?"heatz":"fourth";pack.pack.name=pack.name;pack.installed=true;
+ for(std::size_t pi=0;pi<pack_names.size();++pi){studio::View::PackView pack;pack.name=pack_names[pi];pack.made_by=pi%2?"heatz":"fourth";pack.pack.name=pack.name;pack.installed=pi%2==0;
   for(int t=0;t<9;++t){studio::Preset p;p.name="Animation "+std::to_string(pi*9+static_cast<std::size_t>(t));p.label=t%3==0?"Dolphin Flip":t%3==1?"Boned Ollie":"Steezy Tre Flip";p.trick=t%3==0?"kickflip":t%3==1?"ollie":"360flip";p.pop=t<3?"low":t<6?"mid":"high";p.stance="regular";p.foreign=pi%2==0;p.modifier_hint=pi==1;p.label+=" "+std::to_string(t);fixture.library.push_back(p.name);fixture.presets.push_back(p);pack.members.push_back(p.name);pack.pack.slots[p.trick+"|"+p.pop].push_back(p.name);}
   fixture.packs.push_back(pack);
  }
@@ -158,65 +170,92 @@ int main(int argc,char**argv){
   }else{library_workspace(d,f,view,{48*f.k,124*f.k},{width-48*f.k,height-76*f.k});if(!ui().playlist_for.empty())playlist_card(d,f,view,io.DisplaySize);}
   const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-began).count();nav_end_frame();ImGui::End();ImGui::Render();render_image(root/(name+".ppm"),width,height,atlas,aw,ah);std::cout<<name<<" rendered (UI "<<elapsed<<"ms, "<<ImGui::GetDrawData()->TotalVtxCount<<" vertices)\n";
  };
- frame("packs-1080",1920,1080);frame("packs-768",1366,768);
- ui().library_source=1;ui().library_expanded={"Kickflip","Ollie"};frame("personal-tricks",1920,1080);
- ui().library_source=0;ui().library_pack="Boned & Beyond";ui().library_expanded={"Kickflip","Ollie","360 Flip"};frame("choose-pack-tricks",1920,1080);
- ui().library_modifier_help=true;frame("modifier-setup",1920,1080);ui().library_modifier_help=false;ui().library_confirm="delete:Specials";frame("delete-confirm",1920,1080);
- ui().library_confirm.clear();ui().library_modifier_help=false;ui().library_pack.clear();ui().library_source=0;ui().library_expanded.clear();
+
  const auto press=[&](std::initializer_list<const char*> scopes,const char* id){for(auto scope:scopes)ImGui::PushID(scope);nav().focus=ImGui::GetID(id);for(std::size_t i=0;i<scopes.size();++i)ImGui::PopID();nav().keys=true;nav().press=true;};
+ const auto numeric=[&](int id,const char* button){ImGui::PushID(id);nav().focus=ImGui::GetID(button);ImGui::PopID();nav().keys=true;nav().press=true;};
  const auto expect=[](bool ok,const char* why){if(!ok)throw std::runtime_error(why);};
+ frame("playlists-1080",1920,1080);frame("playlists-768",1366,768);
+ fixture.play_in_game=false;frame("playback-paused",1366,768);
+ frame("action-resume-playback",1920,1080,[&]{press({},"##resumeplayback");});
+ expect(fixture.play_in_game,"Paused playback has a direct Resume action without assigning another playlist");
  const auto normal=fixture_lists["Everyday"];
- frame("action-browse",1920,1080,[&]{press({"Boned & Beyond"},"##browsepack");});
- expect(ui().library_pack=="Boned & Beyond" && fixture_lists["Everyday"]==normal,"Browsing a pack must not add it or change playback");
- expect(ui().library_expanded.empty(),"Groups start collapsed");
- frame("action-expand",1920,1080,[&]{press({"Kickflip"},"##group");});
- expect(ui().library_expanded.contains("Kickflip"),"A group can be expanded");
- frame("action-remove-one",1920,1080,[&]{press({"Kickflip","Boned & Beyond|Animation 9"},"##membership");});
- expect(!studio::playlist_membership(fixture_lists["Specials"],studio::packs(),"Animation 9").included(),"Unticking a whole-pack member excludes only that animation in the destination");
- expect(fixture.packs[1].pack.has("Animation 9") && !fixture.packs[1].pack.off.contains("Animation 9") && fixture_lists["Everyday"]==normal,"Source pack and regular playlist remain untouched");
- frame("action-restore-one",1920,1080,[&]{press({"Kickflip","Boned & Beyond|Animation 9"},"##membership");});
- expect(studio::playlist_membership(fixture_lists["Specials"],studio::packs(),"Animation 9").included(),"An excluded animation can be restored without adding the pack again");
- const auto before=fixture_lists["Specials"];
- ui().library_modifier_help=true;
- frame("action-help-blocks-browser",1920,1080,[&]{press({"Kickflip","Boned & Beyond|Animation 9"},"##membership");});
- expect(fixture_lists["Specials"]==before,"Hidden browser controls must not activate through the modifier help panel");
- ui().library_modifier_help=false;ui().library_confirm="delete:Specials";
- frame("action-confirm-blocks-queue",1920,1080,[&]{ImGui::PushID(0);nav().focus=ImGui::GetID("##queueremove");ImGui::PopID();nav().keys=true;nav().press=true;});
- expect(fixture_lists["Specials"]==before,"Hidden queue controls must not activate through a confirmation");
- ui().library_confirm.clear();ui().library_source=1;ui().library_pack.clear();ui().library_expanded.clear();
- std::snprintf(ui().pack_query.data(),ui().pack_query.size(),"Dolphin");
- frame("action-search",1920,1080);
- expect(ui().library_expanded.contains("Kickflip"),"Search reveals matching groups");
- frame("action-collapse-search",1920,1080,[&]{press({},"##collapseall");});
- expect(ui().library_expanded.empty(),"Search results can still be collapsed");
+ frame("action-open-picker",1920,1080,[&]{press({},"##libraryaddanimations");});
+ expect(ui().library.adding_to=="Specials"&&fixture.playlist_playing=="Everyday","Adding has an explicit destination and never changes what plays");
+ frame("packs-1080",1920,1080);frame("packs-768",1366,768);
+ frame("action-browse",1920,1080,[&]{press({"picker","Boned & Beyond"},"##browsepack");});
+ expect(ui().library.picker.pack=="Boned & Beyond"&&fixture_lists["Everyday"]==normal,"Opening a pack never adds it or changes the default playlist");
+ frame("action-expand",1920,1080,[&]{press({"picker","Kickflip"},"##group");});
+ expect(ui().library.picker.expanded.contains("Kickflip"),"Animation groups can be opened");
+ frame("choose-pack-tricks",1920,1080);
+ frame("action-remove-one",1920,1080,[&]{press({"picker","Kickflip","Boned & Beyond|Animation 9"},"##membership");});
+ expect(!studio::playlist_membership(fixture_lists["Specials"],studio::packs(),"Animation 9").included(),"Remove excludes one animation from its destination without changing a source pack");
+ expect(fixture.packs[1].pack.has("Animation 9")&&!fixture.packs[1].pack.off.contains("Animation 9")&&fixture_lists["Everyday"]==normal,"Other playlists and source packs stay intact");
+ frame("action-restore-one",1920,1080,[&]{press({"picker","Kickflip","Boned & Beyond|Animation 9"},"##membership");});
+ expect(studio::playlist_membership(fixture_lists["Specials"],studio::packs(),"Animation 9").included(),"An excluded animation can be added again independently");
+ // The real production Preview and Back functions must restore the new Library, not call the legacy pack opener.
+ ui().library.picker.expanded={"Kickflip","Ollie","360 Flip"};ui().library.picker.scroll=140;
+ frame("preview-bookmark-ready",1920,1080);
+ frame("action-preview",1920,1080,[&]{press({"picker","Kickflip","Boned & Beyond|Animation 9"},"##preview");});
+ expect(!ui().menu&&ui().preview_library_return.has_value(),"Preview bookmarks its real Library route");
+ const auto bookmark=*ui().preview_library_return;const auto focus=ui().preview_return_focus;
+ ui().library.show_page(1);leave_preview();
+ expect(ui().menu&&ui().menu_tab==1&&!ui().pack_page&&legacy_pack_opens==0&&ui().library==bookmark&&nav().focus==focus,
+  "Back from Preview restores the exact picker, source, search, expansions, scroll and focus without opening the old menu");
+ const auto before_failure=ui().library;preview_accept=false;preview_trick("Boned & Beyond","Animation 9",true);preview_accept=true;
+ expect(ui().menu&&ui().library==before_failure&&!ui().preview_library_return,"A failed preview leaves the current route untouched");
+ frame("preview-return",1920,1080);
+ frame("action-done-adding",1920,1080,[&]{press({},"##doneadding");});
+ expect(!ui().library.adding()&&fixture.playlist_open=="Specials"&&fixture.playlist_playing=="Everyday","Done returns to playlist contents, not playback activation");
+ frame("playlist-after-adding",1920,1080);
+ ui().library.show_page(1);frame("collection-1080",1920,1080);
+ ui().library.collection.source=1;ui().library.collection.expanded={"Kickflip","Ollie"};frame("personal-tricks",1920,1080);
+ std::snprintf(ui().library.collection.query.data(),ui().library.collection.query.size(),"Dolphin");frame("action-search",1920,1080);
+ expect(ui().library.collection.expanded.contains("Kickflip"),"Search reveals matching groups");
+ frame("action-collapse-search",1920,1080,[&]{press({"collection"},"##collapseall");});
  frame("action-stay-collapsed",1920,1080);
- expect(ui().library_expanded.empty() && fixture.playlist_playing=="Everyday","Collapsed results stay collapsed and editing never changes the regular assignment");
- ui().pack_query.fill(0);ui().playlist_for="Animation 9";ui().playlist_for_entry={"Boned & Beyond","Animation 9"};ui().library_modal_scroll=0;
- for(int i=0;i<13;++i)fixture_lists["Test playlist "+std::to_string(i)]={};sync_lists();
- frame("playlist-chooser",1920,1080);
+ expect(ui().library.collection.expanded.empty(),"Collapsed search results remain collapsed");
+ frame("action-collection-open-group",1920,1080,[&]{press({"collection","Kickflip"},"##group");});
+ fixture.presets[9].locked=true;ui().library.collection.source=2;
+ frame("action-locked-view",1920,1080,[&]{press({"collection","Kickflip","|Animation 9"},"##edit");});
+ expect(!ui().menu&&ui().preview_library_return&&ui().preview_library_return->page==1,"Viewing a locked animation also bookmarks Collection");
+ leave_preview();fixture.presets[9].locked=false;
+ expect(ui().library.page==1&&std::string(ui().library.collection.query.data())=="Dolphin"&&legacy_pack_opens==0,"Locked preview returns to the same Collection search");
+ ui().library.modifier_setup=true;ui().library.settings_scroll=0;frame("modifier-setup",1920,1080);frame("modifier-setup-768",1366,768);
+ const auto safe=fixture_lists["Specials"];
+ frame("action-help-blocks-browser",1920,1080,[&]{press({"collection","Kickflip","|Animation 9"},"##membership");});
+ expect(fixture_lists["Specials"]==safe&&ui().playlist_for.empty(),"Hidden collection controls cannot be activated through setup");
+ ui().library.modifier_setup=false;ui().library.page=0;ui().library.confirmation="delete:Specials";frame("delete-confirm",1920,1080);
+ frame("action-confirm-blocks-content",1920,1080,[&]{press({},"##librarynormalrole");});
+ expect(fixture.playlist_playing=="Everyday","A confirmation blocks underlying playback controls");ui().library.confirmation.clear();
+ ui().playlist_for="Animation 9";ui().playlist_for_entry={"Boned & Beyond","Animation 9"};ui().library_modal_scroll=0;
+ for(int i=0;i<13;++i)fixture_lists["Test playlist "+std::to_string(i)]={};sync_lists();frame("playlist-chooser",1920,1080);
  frame("action-add-to-thirteenth",1920,1080,[&]{press({"Test playlist 12"},"##playlistmembership");});
- expect(studio::playlist_membership(fixture_lists["Test playlist 12"],studio::packs(),"Animation 9").included(),"The multi-destination chooser can reach more than six playlists");
+ expect(studio::playlist_membership(fixture_lists["Test playlist 12"],studio::packs(),"Animation 9").included(),"The chooser reaches more than six playlists");
  frame("action-remove-from-existing",1920,1080,[&]{press({"Specials"},"##playlistmembership");});
- expect(!studio::playlist_membership(fixture_lists["Specials"],studio::packs(),"Animation 9").included() && studio::playlist_membership(fixture_lists["Test playlist 12"],studio::packs(),"Animation 9").included(),"Removing from an existing playlist keeps other memberships");
- ui().playlist_for.clear();ui().library_source=1;ui().library_expanded={"Kickflip"};ui().library_seen_query.clear();
- fixture.presets[9].available=false;
- frame("missing-clip",1920,1080,[&]{press({"Kickflip","|Animation 9"},"##membership");});
+ expect(!studio::playlist_membership(fixture_lists["Specials"],studio::packs(),"Animation 9").included()&&studio::playlist_membership(fixture_lists["Test playlist 12"],studio::packs(),"Animation 9").included(),"Removing here preserves membership elsewhere");
+ ui().playlist_for="Boned & Beyond";ui().playlist_for_entry={"Boned & Beyond",""};
+ frame("action-add-pack-via-chooser",1920,1080,[&]{press({"Test playlist 11"},"##playlistmembership");});
+ expect(studio::playlist_has_pack(fixture_lists["Test playlist 11"],"Boned & Beyond"),"A Collection pack can be assigned without opening an old pack page");
+ ui().playlist_for="Animation 9";ui().playlist_for_entry={"Boned & Beyond","Animation 9"};
+ frame("action-new-from-chooser",1920,1080,[&]{press({},"##newdestination");});
+ expect(ui().library.creating&&ui().library_pending_source,"A new destination asks for its name before creating or adding anything");
+ std::snprintf(ui().library.new_name.data(),ui().library.new_name.size(),"Street session");
+ frame("create-playlist",1920,1080);
+ frame("action-create-named",1920,1080,[&]{press({},"##createnamedplaylist");});
+ expect(fixture.playlist_open=="Street session"&&studio::playlist_membership(fixture_lists["Street session"],studio::packs(),"Animation 9").included()&&fixture.playlist_playing=="Everyday","A named destination gets only the chosen animation and stays inactive");
+ fixture.playlist_open="Specials";sync_lists();ui().library.select("Specials");ui().library.add_to("Specials","Boned & Beyond");ui().library.picker.expanded={"Kickflip"};ui().library.picker.query.fill(0);ui().library.picker.seen_query.clear();fixture.presets[9].available=false;
+ frame("missing-clip",1920,1080,[&]{press({"picker","Kickflip","Boned & Beyond|Animation 9"},"##membership");});
  expect(!studio::playlist_membership(fixture_lists["Specials"],studio::packs(),"Animation 9").included(),"Missing clips cannot be added through disabled controls");
  for(int pi=0;pi<40;++pi){studio::View::PackView pack;pack.name="Large pack "+std::to_string(pi);pack.pack.name=pack.name;
   for(int ti=0;ti<80;++ti){studio::Preset p;p.name="Large save "+std::to_string(pi)+" "+std::to_string(ti);p.label="Saved variation "+std::to_string(ti);p.trick=ti%3==0?"kickflip":ti%3==1?"ollie":"360flip";p.pop="mid";p.stance="regular";fixture.presets.push_back(p);fixture.library.push_back(p.name);pack.members.push_back(p.name);pack.pack.slots[p.trick].push_back(p.name);}fixture.packs.push_back(pack);
  }
- ui().library_source=1;ui().library_pack.clear();ui().library_expanded={"Kickflip","Ollie","360 Flip"};ui().library_browse_scroll=0;
- frame("large-collection-3200",1920,1080);
- fixture_lists.clear();fixture.packs.clear();fixture.presets.clear();fixture.library.clear();fixture.playlist_open.clear();fixture.playlist_playing.clear();binding={};sync_lists();fixture_lists.clear();fixture.playlists.clear();fixture.playlist.clear();
+ ui().library.show_page(1);ui().library.collection={};ui().library.collection.source=1;ui().library.collection.expand_all=true;frame("large-collection-3200",1920,1080);
+ fixture_lists.clear();fixture.packs.clear();fixture.presets.clear();fixture.library.clear();fixture.playlist_open.clear();fixture.playlist_playing.clear();binding={};sync_lists();fixture_lists.clear();fixture.playlists.clear();fixture.playlist.clear();ui().library={};
  frame("empty-library",1920,1080);frame("empty-library-768",1366,768);
- studio::Preset native;native.name="Native manual";native.trick="native:manual";native.stance="regular";
- fixture.presets.push_back(native);fixture.library.push_back(native.name);fixture.own_lead_right=false;preview_native_stances=true;
+ studio::Preset native;native.name="Native manual";native.trick="native:manual";native.stance="regular";fixture.presets.push_back(native);fixture.library.push_back(native.name);fixture.own_lead_right=false;preview_native_stances=true;
  frame("native-stances",1920,1080);
- frame("action-native-switch",1920,1080,[&]{ImGui::PushID(2);nav().focus=ImGui::GetID("##stance");ImGui::PopID();nav().keys=true;nav().press=true;});
- expect(copied_stance==2,"A native saved animation exposes its switch copy control");
- copied_stance=-1;
- frame("action-native-no-fakie",1366,768,[&]{ImGui::PushID(1);nav().focus=ImGui::GetID("##stance");ImGui::PopID();nav().keys=true;nav().press=true;});
- expect(copied_stance==-1,"Native saved animations do not expose invalid whole-trick fakie controls");
+ frame("action-native-switch",1920,1080,[&]{numeric(2,"##stance");});expect(copied_stance==2,"Native switch copies remain accessible");copied_stance=-1;
+ frame("action-native-no-fakie",1366,768,[&]{numeric(1,"##stance");});expect(copied_stance==-1,"Native pieces hide invalid whole-trick fakie controls");
  std::cout<<"Library navigation and playlist interaction checks passed\n";
  ImGui::DestroyContext();return 0;
 }

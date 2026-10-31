@@ -2,23 +2,29 @@
 
 The Library has three independent concepts: the playlist being edited, the normal playlist, and the
 modifier playlist. Browsing, adding, removing, copying or clearing content never changes either
-playback assignment. Assign playback explicitly with **PLAY AS NORMAL** or **USE WITH MODIFIER**.
+playback assignment. Assign playback explicitly with **PLAY BY DEFAULT** or **USE WITH A BUTTON**.
 The trainer's Animator Studio page exposes the same modifier settings and a shortcut to its Library setup.
 
 ## Manage content
 
-- Choose a destination in the left column. Its name and roles remain visible while browsing.
-- **PACKS > CHOOSE TRICKS** opens a pack without adding it. Tick one saved animation or use ADD ALL.
-  A whole pack can be partially selected: untick a member to exclude it only in this destination.
+- **PLAYLISTS** opens a playlist's contents. **YOU ARE EDITING** identifies that list; the persistent
+  top strip separately shows the default and button playback lists. Opening a list never activates it.
+- **+ NEW PLAYLIST** asks for a name before creating anything. **+ ADD ANIMATIONS** opens a dedicated
+  picker with **ADDING TO THIS PLAYLIST** and a fixed destination. **DONE** returns to its contents.
+- **PACKS > OPEN PACK** opens a pack without adding it. Use **+ ADD** on one variation or **ADD PACK**.
+  A whole pack can be partially selected: **REMOVE** excludes a member only in this destination.
   ADD REMAINING restores local exclusions; REMOVE PACK removes that source's entries.
-- **MY TRICKS** groups your own saves by trick, collapsed initially. Expand individual groups, use
+- **YOUR ANIMATIONS** groups your own saves by trick, collapsed initially. **ALL ANIMATIONS** includes
+  downloaded saves. **COLLECTION** browses without an add destination. Expand individual groups, use
   EXPAND ALL / COLLAPSE ALL, or search names, tricks, makers, source packs, pop heights and stances.
   Search reveals matching groups, but does not reopen groups the user folds afterwards.
-- Each animation shows its native trick, pop, stance, modifier hint, and source pack(s). Its membership
-  distinguishes an individual selection from inclusion through a whole pack. Preview and edit/view
-  remain independent actions. A locked animation can be viewed and selected without being edited.
-- The destination column shows source entries in playback-priority order. Expand a whole pack to
-  change individual membership. Reordering, removal, membership changes and clearing support one
+- Each animation shows its native trick, pop, stance, modifier hint, and source pack(s). **PREVIEW**,
+  **EDIT / VIEW** and **ADD / REMOVE / PLAYLISTS...** are separate controls. Clicking the row previews
+  it. Back from Preview restores the same new Library page, destination, filters, groups and scroll;
+  the source pack no longer sends it to the legacy pack manager. Failed previews keep the current page.
+- Playlist contents group whole-pack entries and keep individual saves visible. **CHOOSE ANIMATIONS**
+  opens that pack in the picker. **SETTINGS** holds rename, duplicate, mode, source order and deletion.
+  Reordering, removal, membership changes and clearing support one
   level of UNDO / REDO, scoped to that playlist and rejected if a newer edit invalidated the history.
 - PLAYLISTS on a saved animation opens a scrollable multi-destination chooser, including playlists
   it already belongs to. It can be added to several lists or removed from just one. No six-list cap.
@@ -28,7 +34,7 @@ The trainer's Animator Studio page exposes the same modifier settings and a shor
   that confirmation or the modifier setup panel.
 
 Whole-pack entries follow pack updates. Individual entries select only that save. A save included by
-multiple sources is loaded once; its first source supplies the playback rules. Unticking a save removes
+multiple sources is loaded once; its first source supplies the playback rules. Removing a save removes
 all paths that include it in that destination, creating local exclusions rather than altering the packs.
 An explicit single selection can opt into a variant disabled in its source pack, while retaining that
 pack's pop rule. Missing source packs do not silently become personal tricks with different rules.
@@ -40,7 +46,8 @@ written together with rollback on replacement failure. Limits are 200 playlists 
 
 ## Modifier setup
 
-The Library's **ONE INPUT. TWO STYLES. > SET UP** panel explains the feature and provides its controls.
+**BUTTON SETUP** opens the **ONE INPUT. TWO VERSIONS.** page, with an example and three steps:
+choose the alternate playlist, choose the button, then reserve its native gameplay action.
 Keep a regular Kickflip animation in the normal playlist. Put a Dolphin Flip variation of that same
 Kickflip input in another playlist and assign it to the modifier. Choose a controller button, for
 example RB / R1. Hold before the move begins to use that playlist; without it, keep the normal animation.
@@ -50,7 +57,7 @@ The Steam Overlay front hook and direct XInput share final filtering; Sony HID r
 selectively too. The button remains available to Studio's own reader and is released in menus, on focus
 loss/disconnection, when disabled, or if the client stops refreshing its capture lease.
 
-Tags remain optional author hints. CREATE PLAYLIST FROM MODIFIER HINTS collects saved tagged
+Tags remain optional author hints. **MAKE A PLAYLIST FROM MODIFIER TAGS** collects saved tagged
 animations into a new Modifier picks playlist and assigns it, keeping the local button preference.
 It does not turn the bind on, alter the normal role, or continuously rewrite the collection later.
 
