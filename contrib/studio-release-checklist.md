@@ -1,5 +1,24 @@
 # Studio release acceptance
 
+## 1.0.55 audit: checks to repeat in game (2026-10-31)
+
+No automated test links `anim_studio.cpp`. The tests cover the helpers, but a test still passes if a call to a helper is removed. Repeat these checks in game when you change this code. Use a temporary folder with `RESKATE_ANIMATION_STUDIO_DIR`.
+
+- [ ] Pack update: a pack names a member that files as your own trick (`Kickfli/../p`). Update the pack twice. Your trick stays.
+- [ ] Edit, then update: edit an editable pack's trick, press SAVE, then update the pack. Your edit stays first and the maker's copy is off. A SAVE with no change adds no mark.
+- [ ] Pack that names your trick: the pack does not claim the trick. You can share your own pack that holds it, and deleting the pack keeps the trick.
+- [ ] Rename, then UPDATE: no second copy.
+- [ ] Failed save: make `playlists.json` read-only and flip a pack in the ReSkate menu. A message shows and the overlay keeps running.
+- [ ] Name Windows cannot spell: add an emoji folder to the tricks folder. The log says it is passed over and the overlay keeps running.
+- [ ] ReSkate menu: set Playing to another playlist, then switch a pack ON. The pack goes in the playlist that is on.
+- [ ] Room: switch Studio room off while in the room. The studio closes and opens again on the street, with the trick still open.
+- [ ] REPORT A BUG after using the editor: the game stays in the level, and the zip holds `ReSkate.log`, the settings and the timelines. A freeze of about 7 s or more on the game or render thread drops the player out of the level.
+- [ ] Shuv-it board: play smonk's Pop Shuv-it low 2 with SMOOTH on. The board does not turn over in the fades.
+- [ ] Grab style: with melon and japan loops saved, change the style during a grab. The loop follows after 0.1 s.
+- [ ] COPY: in MY TRICKS, press SELECT, ALL and COPY. Each copy shows its stance and + PLAYLIST, and the log has no `metadata not loaded`.
+- [ ] COPY limit: with several hundred of your own tricks, press SELECT, ALL and COPY. The studio stops after about 3 s and says how many stay ticked. The game stays in the level. COPY again copies those, not the first ones again.
+- [ ] Controller: reach OPEN ANIMATION STUDIO with the D-pad, then try to reach HOW IT WORKS, REPORT A BUG and the rows below it.
+
 ## 1.0.10 review (2026-10-27)
 
 Candidate integrates #14 (`2912763`, grind entry and drop timing) and #15 (`6d5aea8`, menu entry buttons), plus rail capture lifetime fixes. A rail lock capture belongs to one fade and one skater generation: starting a saved grind or another fade invalidates it, even if both fades start at full weight. Ground prediction smoothing resets when the selected trick changes.

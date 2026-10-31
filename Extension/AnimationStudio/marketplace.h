@@ -190,6 +190,8 @@ void want_preview(const std::string& full_name);
 // A pack of the library is gone (deleted, or its last trick deleted): the package it came from no longer counts as
 // installed, so the MARKET offers GET again. Packs the ReSkate launcher installs (Mods) stay: its mod list holds those.
 void forget_installed(const std::string& library_pack);
+// A pack of the library was renamed: an UPDATE still replaces it, and deleting it still counts.
+void installed_pack_renamed(const std::string& from, const std::string& to);
 // Links a Thunderstore team for publishing: its name and a service account token of it.
 bool link_account(const std::string& team, const std::string& token, std::string& message);
 void unlink_account();

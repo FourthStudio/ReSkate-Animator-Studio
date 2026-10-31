@@ -18,7 +18,7 @@ struct DiagnosticSample {
     std::uint64_t generation{}, sequence{}, failures{}, skater_publications{}, board_publications{};
     std::optional<std::uint32_t> physics;
     std::optional<bool> live_switch, takeoff_switch, recorded_switch;
-    bool goofy{}, takeoff_goofy{}, recorded_goofy{}, enabled{}, retarget{}, mirror{};
+    bool goofy{}, takeoff_goofy{}, recorded_goofy{}, enabled{}, mirror{};
     bool reverse_facing{};
     bool source_timing{};
     // Where the game is in its own clip (NativeClock): following, looking, let go, or the trick's own clock.
@@ -95,7 +95,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     timeline << std::setprecision(12);
     poses << std::setprecision(12);
     board << std::setprecision(12);
-    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land\n";
+    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land\n";
     const std::string columns = "seconds,sequence,stage,joint,sx,sy,sz,qx,qy,qz,qw,px,py,pz\n";
     poses << columns; board << columns;
     rig << columns;
@@ -119,7 +119,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
         timeline << diagnostic_csv(s.trick) << ',' << diagnostic_csv(s.preset) << ',' << s.enabled << ',' << s.goofy << ',';
         optional(timeline, s.live_switch); timeline << s.takeoff_goofy << ','; optional(timeline, s.takeoff_switch);
         timeline << s.recorded_goofy << ','; optional(timeline, s.recorded_switch);
-        timeline << s.retarget << ',' << s.mirror << ',' << s.clip_time << ',' << s.weight << ',' << s.board_weight << ',' << s.failures << ','
+        timeline << s.mirror << ',' << s.clip_time << ',' << s.weight << ',' << s.board_weight << ',' << s.failures << ','
                  << s.skater_publications << ',' << s.board_publications << ',' << s.skater_age << ',' << s.board_age << ',' << !s.native.empty() << ','
                  << diagnostic_csv(s.observed_phase) << ',' << diagnostic_csv(s.entry) << ',' << diagnostic_csv(s.source_kind) << ','
                  << s.episode << ',' << s.render_edit_sequence << ',' << s.render_presentation << ',' << s.board_edit_sequence << ',' << s.board_presentation << ',' << s.reverse_facing << ',' << s.source_timing

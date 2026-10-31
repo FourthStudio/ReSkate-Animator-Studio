@@ -164,7 +164,7 @@ bool studio_button(SkateMenu& menu, const char* id, const char* label, const cha
     const auto a = ImGui::GetCursorScreenPos();
     const float w = ImGui::GetContentRegionAvail().x, h = px(58);
     ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     const bool lit = ImGui::IsItemHovered() || ImGui::IsItemFocused();
     ImGui::EndDisabled();
     auto* d = ImGui::GetWindowDrawList();
@@ -296,7 +296,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
             for (const auto& pack : now.packs)
                 if (!pack.in) {
                     std::string said;
-                    anim_studio::set_pack_playing(pack.name, true, said);
+                    anim_studio::set_pack_in_playlist_on(pack.name, true, said);
                     feedback(menu, said.c_str());
                 }
         }
@@ -333,7 +333,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
             const std::string label = std::format("{}  ({} tricks)", pack.name, pack.tricks);
             if (toggle_row(menu, label.c_str(), "On: the whole pack is in the playlist that is on, and plays in game.", in)) {
                 std::string said;
-                anim_studio::set_pack_playing(pack.name, in, said);
+                anim_studio::set_pack_in_playlist_on(pack.name, in, said);
                 feedback(menu, said.c_str());
             }
             ImGui::PopID();

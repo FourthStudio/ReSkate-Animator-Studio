@@ -14,11 +14,14 @@
 #include <memory>
 #include "utf8_text.h"
 
-// FOURTH Animation Studio's own data: a trick recorded from the game, and the keyframes a player puts
-// on it. Nothing here touches the game. The game side (anim_studio.cpp) copies the pose the native
-// animation just wrote into a Clip, and writes the evaluated pose back over the same buffer, the way
+// FOURTH Animation Studio's own data: a trick's clip, and the keyframes a player puts on it. Nothing
+// here touches the game. The game side (anim_studio.cpp) writes the evaluated pose over the buffer
+// that the native animation just wrote, the way
 // first person shrinks the head (client_first_person.cpp): no native animation data, channel or
 // asset is created or changed, and the next native update writes the whole pose again.
+//
+// A "recording" is a saved clip from an older build, which recorded tricks in game. Builds do not record
+// now. Those files still load and play.
 //
 // A pose is parent-local per joint, {scale, Hamilton quaternion xyzw, translation}, in the numbering
 // of the 395-joint AnimBase_Default_Skeleton the skater's animation output uses (Hips 7, Spine 42,
@@ -62,11 +65,8 @@ std::span<const EditableJoint> editable_joints() noexcept;
 const EditableJoint* editable(std::uint16_t joint) noexcept;
 inline constexpr std::uint32_t skeleton_joints = 395;
 inline constexpr std::uint16_t hips_joint = 7, placement_joint = 1;
-// The animation rig's board mount, parented directly to AITrajectory. Distinct
-// from the physical board's sixteen-bone rig (whose mount is bone 2).
-inline constexpr std::uint16_t skateboard_root_joint = 380;
 // Not a skater joint: the board (its deck's mount, which carries the deck, trucks and wheels). Its
-// track turns and moves the board where the recording had it, in the board's own frame.
+// track turns and moves the board where the clip had it, in the board's own frame.
 inline constexpr std::uint16_t board_joint = 900;
 // Keys sit on whole frames of the timeline, 30 a second, never between two: anything that moves a key in
 // time puts it back on one, so the timeline never grows odd fractions of a frame between its keys.
@@ -90,12 +90,12 @@ inline constexpr std::array<std::array<std::uint16_t, 4>, 5> left_fingers{{
 // landing. Inside this much of either, the board is part way between the two.
 inline constexpr float board_blend = 0.06f;
 
-// ---- a recorded trick -----------------------------------------------------------------------------
+// ---- a trick's clip -------------------------------------------------------------------------------
 struct Clip {
     std::uint32_t joints{};
     std::vector<float> times;  // seconds from the first frame, rising
     std::vector<Joint> frames; // times.size() * joints
-    // The board each frame, relative to the skater's placement joint (1); empty when not recorded.
+    // The board each frame, relative to the skater's placement joint (1). Empty for a clip with no board.
     std::vector<Joint> board;
     float takeoff{-1}, landing{-1}; // seconds, -1 when not seen
     // ReSkate 2.1.2 native clips may rotate a joint while keeping the live
@@ -206,6 +206,7 @@ struct Animation {
     std::string maker_key; // the key of the PC it was made on: on any other it plays, but is not opened to edit or copied
     std::string maker_team; // the Thunderstore team its maker was signed in as when it went out: theirs on any PC signed in so
     bool editable{};       // its maker let others edit and copy it (the pack it was shared in said so)
+    bool changed_here{};   // another maker's trick that was edited and saved on this PC: an update of its pack does not replace it
     std::string label;  // the name it is shown by in MY TRICKS and the packs (PACKS); empty: its name
     Clip clip;
     std::vector<Track> tracks;
@@ -213,9 +214,9 @@ struct Animation {
     bool loop{true};
     // Which pop it is for: "" any, or "low", "mid", "high" (a trick can have one of each).
     std::string pop;
-    // The stance the trick was recorded in: "regular" or "goofy" ("" for a file from before stances: regular).
+    // The stance the trick was made in: "regular" or "goofy" ("" for a file from before stances: regular).
     std::string stance;
-    // Captured at takeoff, not after a 180/landing. Absent in legacy recordings.
+    // Set at takeoff, not after a 180 or a landing. Empty in older files.
     std::optional<bool> switch_stance;
     AnimationSource source;
     std::string entry{"ground"}; // observed ground/rail entry; unknown is never guessed as ground
@@ -223,8 +224,8 @@ struct Animation {
     // clip's end). Moving either bracket retimes unlocked tracks into the new window.
     float start{0};
     float end{-1};
-    // What the game said at takeoff when it was recorded: rolling fakie, and the board turned backwards
-    // under him. Empty for recordings from before these were kept.
+    // What the game said at takeoff when the trick was made: rolling fakie, and the board turned backwards
+    // under him. Empty in older files.
     std::optional<bool> fakie, board_backwards;
     // A stance version of a trick (its fakie, switch or switch fakie copy, make_stance_version) keeps the foot it leads
     // with: the studio opens it on that foot (a switch version shows him riding switch), and it is saved on it. Empty:
@@ -274,7 +275,7 @@ struct LimbWeights {
 // are): a joint that is really bent goes towards that pose with the bend on it - what the studio shows -
 // rather than having the bend added to whatever the game is doing then. `match` (0..1) is how far.
 // `match_rest` (0..1) takes the joints with no bend towards the studio's pose too: the whole body then plays
-// the recording, with the keys on it, instead of the game's own animation showing through.
+// the clip, with the keys on it, instead of the game's own animation showing through.
 void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight,
                                const LimbWeights* limbs = nullptr, std::span<const Joint> studio = {}, float match = 0,
                                float match_rest = 0);
@@ -311,20 +312,25 @@ Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept;
 // trick's tuck goes on the game's own crouch: limited there, the knee is straightened and the foot pushed through the
 // board, while the legs are keyed against the board as they are.
 void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose, bool legs = true) noexcept;
-Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
+Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame);
 // The board's key at `seconds` (its turn and move in the board's ground frame); none where the trick has no board key then.
-std::optional<Offset> board_key(const Animation& edits, float seconds, bool mirror = false);
+std::optional<Offset> board_key(const Animation& edits, float seconds);
 // `board` with a board key on it: turned and moved in the ground frame (board_edited is board_key and this).
 Joint board_edited_by(const Joint& board, const Offset& edit, const Quat& frame) noexcept;
 // `k` of a turn, its own way round: a quaternion past half a turn (w below 0) goes on round to it, where slerp from no turn
 // takes the short way back (a flip drawn in part would seem to flip back).
 Quat scaled_turn(const Quat& q, float k) noexcept;
+// The direction a board key turns for scaled_turn: the direction it had on the frame before (`before`), or on the first
+// frame a trick draws it the short way from no edit. The sign of a saved key gives no direction: smonk's Pop Shuv-it low 2
+// has keys of 6 and 12 degrees saved with w below 0. scaled_turn read them as turns of about 350 degrees, and at part weight
+// the board went upside down (2026-10-30).
+Quat key_way_round(const Quat& key, const std::optional<Quat>& before) noexcept;
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
-// Native/custom blend at explicitly edited bracket boundaries. Legacy full-clip windows stay at 1.
+// The weight of the keys at `seconds`: 0 outside the brackets, and it eases in and out at them. A trick with no brackets stays at 1.
 float animation_window_weight(const Animation& animation, float seconds) noexcept;
-// Sets (adds or replaces) the key of `joint` at `seconds`; keys closer than `merge` are one key.
-Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge = 1.0f / 120);
+// Sets (adds or replaces) the key of `joint` at `seconds`. Keys closer than 1/120 s are one key.
+Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value);
 // Moves one bracket: 1 the start, 2 the end, to `to`. Only the keys sitting on that bracket go with it -
 // everything between the brackets stays where it is, so nothing is stretched and the timeline keeps its
 // whole frames. A key the bracket is pulled back past is left where it is and stops applying until the
@@ -408,8 +414,18 @@ Animation mirror_animation(const Animation& animation);
 // small binary file. Both throw std::runtime_error on bad input; nothing half-read is returned.
 std::string to_json(const Animation& animation);
 Animation from_json(std::string_view text); // without the clip
+// A saved trick's file under another name. Edits the file's text: to_json(from_json(text)) has no clip, so it writes a
+// duration of 0, and the file then fails to load.
+std::string renamed_trick_json(std::string_view text, const std::string& name, const std::string& label);
 std::vector<std::uint8_t> clip_bytes(const Clip& clip);
 Clip clip_from_bytes(std::span<const std::uint8_t> bytes);
+// A saved trick's clip: as clip_from_bytes, and no longer than a trick can be. The studio steps through a clip's air frame by
+// frame. A downloaded clip with times of 1e30 seconds holds that loop for ever: at 524288 s, a step of 1/60 does not move a float.
+inline constexpr float longest_trick_seconds = 120;
+// How large a saved trick's clip may go. Of the 8307 clips on a test PC (2026-10-31), every scale is 1 and the largest position
+// is 20002, because the root is in world space. A preview at position 1e6 lost the skater and stopped a plugin for the session.
+inline constexpr float largest_trick_scale = 10, farthest_trick_position = 50000;
+Clip trick_clip_from_bytes(std::span<const std::uint8_t> bytes);
 // ---- which of the game's own clips is playing -----------------------------------------------------
 // The game says which trick it is doing, never which of its clips it plays - and most of what it plays is
 // not a trick at all (setups, loops, exits, the pieces a trick is blended from). Nothing in its memory names
@@ -537,7 +553,6 @@ std::vector<NativeModels::Model> native_models_of(const Clip& clip, std::size_t 
 class NativeClock {
 public:
     static constexpr float lock_degrees = 4.5f; // how near the game's pose has to be to a clip to follow it
-    static constexpr float good_degrees = 3.0f; // nearer than this the edits are on in full
     static constexpr float lose_degrees = 6.0f; // further than this (and than it began) for a few updates: lost
     struct Reading {
         bool locked{};   // found the game's clip
@@ -548,7 +563,6 @@ public:
         float baseline{-1}; // the error it had while it was followed: how near this clip comes at best
         int clip{-1};    // which of the trick's clips (native_models_of's index)
         bool mirrored{};
-        float confidence{}; // 1 on the clip, falling to 0 as the game blends away from it
         bool switched{};    // moved onto another of the clips, that fits the game better, this update
     };
     void start(std::shared_ptr<const NativeModels> models) noexcept; // a new trick: look for its clip again
@@ -561,7 +575,7 @@ private:
     float error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept;
     std::shared_ptr<const NativeModels> models_;
     int locked_{-1};
-    float time_{-1}, error_{-1}, confidence_{}, baseline_{-1};
+    float time_{-1}, error_{-1}, baseline_{-1};
     int bad_{}, updates_{};
     int candidate_{-1}, streak_{}; // another clip fitting better, and for how many updates
     bool lost_{};

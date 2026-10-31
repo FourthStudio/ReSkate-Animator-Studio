@@ -464,43 +464,6 @@ std::string token_fingerprint(const std::string& token) {
     for (const unsigned char b : md5("reskate-animator-studio/token/" + token)) out += hex[b >> 4], out += hex[b & 15];
     return out.substr(0, 16);
 }
-std::vector<Pack> read_listing(const std::string& text) {
-    std::vector<Pack> out;
-    const auto root = Json::parse(text, JsonLimits{96 * 1024 * 1024, 64, 64 * 1024 * 1024});
-    if (!root.is_array()) return out;
-    for (const auto& package : root) {
-        try {
-            if (!package.is_object() || package.value("is_deprecated", false) || package.value("has_nsfw_content", false)) continue;
-            if (!package.contains("versions") || !package.at("versions").is_array() || package.at("versions").size() == 0) continue;
-            const auto& newest = package.at("versions").at(0);
-            const auto description = newest.value("description", "");
-            if (newest.value("website_url", "") != studio_url && !description.starts_with(description_tag)) continue; // not the studio's
-            Pack p;
-            p.full_name = package.value("full_name", "");
-            p.owner = package.value("owner", "");
-            p.name = package.value("name", "");
-            p.title = p.name;
-            std::replace(p.title.begin(), p.title.end(), '_', ' ');
-            p.version = newest.value("version_number", "");
-            p.description = description.starts_with(description_tag) ? description.substr(std::string_view(description_tag).size()) : description;
-            p.icon_url = newest.value("icon", "");
-            p.download_url = newest.value("download_url", "");
-            p.package_url = package.value("package_url", "");
-            p.updated = newest.value("date_created", "").substr(0, 10);
-            p.created = package.value("date_created", "").substr(0, 10);
-            if (p.created.empty()) p.created = p.updated;
-            p.rating = static_cast<int>(package.value("rating_score", 0.0));
-            for (const auto& v : package.at("versions")) p.downloads += static_cast<std::uint64_t>(std::max(0.0, v.value("downloads", 0.0)));
-            if (package.contains("categories") && package.at("categories").is_array())
-                for (const auto& c : package.at("categories"))
-                    if (c.is_string() && c.string() == "Animation Packs") p.section = true;
-            if (!thunderstore_url(p.icon_url)) p.icon_url.clear();
-            if (!thunderstore_url(p.download_url) || p.full_name.empty()) continue;
-            out.push_back(std::move(p));
-        } catch (...) {}
-    }
-    return out;
-}
 // A pack's newest version and its download, asked of the package itself. False when it cannot be had.
 bool fill_version(Pack& p) {
     try {
@@ -931,7 +894,7 @@ void refresh(bool force) {
         if (error.empty()) {
             try {
                 write_file(folder() / L"packs.json", packs_json(packs));
-                // The whole listing the studio kept before (several MB) is not read any more.
+                // Older versions kept the whole listing here (several MB). Nothing reads it.
                 std::error_code gone;
                 std::filesystem::remove(folder() / L"listing.json", gone);
             } catch (...) {}
@@ -1021,6 +984,15 @@ void forget_installed(const std::string& library_pack) {
         changed = true;
     }
     if (changed) save_lists_locked(m);
+}
+void installed_pack_renamed(const std::string& from, const std::string& to) {
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    read_settings_locked(m);
+    if (!rename_installed_pack(m.installed_as, from, to)) return;
+    for (auto& p : m.packs)
+        if (p.installed_as == from) p.installed_as = to;
+    save_lists_locked(m);
 }
 void set_like_prompt(bool on) {
     auto& m = market();

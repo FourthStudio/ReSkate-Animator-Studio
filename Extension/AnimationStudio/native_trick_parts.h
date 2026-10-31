@@ -231,7 +231,7 @@ inline std::vector<NativeTrickPart> fingerflip(const Words& w, std::size_t from,
         if (j + 1 == w.size() && (w[j] == "into" || w[j] == "intro")) piece = "INTO", piece_order = 0;
         else if (j + 1 == w.size() && w[j] == "exit") piece = "EXIT", piece_order = 1;
         else if (j + 2 == w.size() && w[j] == "to" && w[j + 1] == "inair") piece = "TO AIR", piece_order = 2;
-        else if (j < w.size() && w[j] == "to") {
+        else if (j + 1 < w.size() && w[j] == "to") {
             const auto target = grab_label(j + 2 < w.size() ? w[j + 2] : w[j + 1]);
             if (target.empty() || j + (j + 2 < w.size() ? 3 : 2) != w.size()) return {};
             piece = "TO " + upper(target), piece_order = 3;

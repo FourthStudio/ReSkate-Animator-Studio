@@ -35,24 +35,24 @@ inline const char* phase_name(PlaybackPhase value) noexcept {
            value == PlaybackPhase::rail_release ? "rail_release" : "idle";
 }
 struct PlaybackSample { float time{-1}, weight{}; bool finished{}; };
-// A trick fitted to the game's air, never slower than it was recorded. Seconds into the recording's air for
-// `in_air` seconds into the game's, when the game's air is expected to last `target` seconds (the recorded one
-// lasted `recorded_air`). A shorter expected air plays it a little faster (at most 1.3 times: the expectation
+// A trick fitted to the game's air, never slower than its clip. Seconds into the clip's air for
+// `in_air` seconds into the game's, when the game's air is expected to last `target` seconds (the clip's
+// lasts `clip_air`). A shorter expected air plays it a little faster (at most 1.3 times: the expectation
 // is often wrong both ways). A longer one is not slowed down to fit: a trick slowed for an air expected longer
 // than it was can still be in the air when the board lands. It never reaches its landing while the game is
 // still in the air, and it never stands still waiting for it either: over its last `ease` seconds it slows,
 // feet reaching for the ground, closer and closer to the landing however long the air runs.
-inline float fitted_air_time(float in_air, float recorded_air, float target) noexcept {
+inline float fitted_air_time(float in_air, float clip_air, float target) noexcept {
     if (!std::isfinite(in_air)) return 0;
     in_air = std::max(0.0f, in_air);
-    if (!(recorded_air > 1.0f / 30) || !std::isfinite(recorded_air)) return in_air;
+    if (!(clip_air > 1.0f / 30) || !std::isfinite(clip_air)) return in_air;
     float t = in_air;
-    if (target > 0.05f && std::isfinite(target) && target < recorded_air) t = in_air * std::min(recorded_air / target, 1.3f);
-    const float land = recorded_air - 1.0f / 60, ease = std::min(0.06f, land * 0.3f), knee = land - ease;
+    if (target > 0.05f && std::isfinite(target) && target < clip_air) t = in_air * std::min(clip_air / target, 1.3f);
+    const float land = clip_air - 1.0f / 60, ease = std::min(0.06f, land * 0.3f), knee = land - ease;
     if (t > knee) t = knee + ease * (1 - std::exp(-(t - knee) / ease));
     return t;
 }
-// After the game's touchdown, `since` seconds ago: the recording from its own landing (`down`) on, at its own
+// After the game's touchdown, `since` seconds ago: the clip from its own landing (`down`) on, at its own
 // pace, so the landing bend happens on the ground. It was at `from` at touchdown; if that was short of its
 // landing it catches up rather than jumping, over a time that grows with how far behind it was (80 to 200 ms),
 // so it never runs at more than about 2.25 times its pace.
@@ -70,10 +70,10 @@ struct PlaybackEpisode {
     std::uint64_t id{};
     double takeoff{}, landing{-1}, release_at{}, selected_at{-1}, last_observed{-1};
     float release_weight{}, last_weight{};
-    float last_time{-1};   // the recording's time last sampled
-    float landed_from{-1}; // where the recording was when the game touched down (-1 while in the air)
+    float last_time{-1};   // the clip's time last sampled
+    float landed_from{-1}; // where the clip was when the game touched down (-1 while in the air)
     ContactWindow contact;
-    GameplayClipClock clock;
+    float clip_time{-1}; // the time `sample` gave last, in the air or the landing (-1 none)
     void reset() noexcept { const auto next_id = id; *this = {}; id = next_id; }
     // True only when a new airborne episode begins. A rail exit cannot inherit the entry trick.
     bool observe(double now, MotionState motion) noexcept {
@@ -87,9 +87,9 @@ struct PlaybackEpisode {
             const auto from = previous;
             ++id; phase = PlaybackPhase::air; takeoff = now; landing = -1; selected_at = -1; landed_from = -1; last_time = -1;
             entry = from == MotionState::rail ? EntryKind::rail : from == MotionState::riding ? EntryKind::ground : EntryKind::unknown;
-            clock.reset(); contact.since.reset(); last_weight = 0; started = true;
+            clip_time = -1; contact.since.reset(); last_weight = 0; started = true;
         } else if (motion == MotionState::rail && (phase == PlaybackPhase::air || phase == PlaybackPhase::landing)) {
-            phase = selected_at >= 0 && clock.time >= 0 ? PlaybackPhase::rail_release : PlaybackPhase::idle;
+            phase = selected_at >= 0 && clip_time >= 0 ? PlaybackPhase::rail_release : PlaybackPhase::idle;
             release_at = now; release_weight = last_weight; contact.since.reset();
         } else if (motion == MotionState::riding && phase == PlaybackPhase::air && contact.observe(now, true)) {
             phase = selected_at >= 0 ? PlaybackPhase::landing : PlaybackPhase::idle; landing = *contact.since;
@@ -99,26 +99,19 @@ struct PlaybackEpisode {
         return started;
     }
     bool selection_open(double now) const noexcept { return phase == PlaybackPhase::air && now >= takeoff && now - takeoff < 0.35; }
-    void select(double now) noexcept { if (std::isfinite(now)) { selected_at = now; clock.reset(); } }
-    // `fit_air`: the trick is fitted to the air actually happening (fitted_air_time, landed_time) instead of
-    // running at the seconds it was recorded at. The studio always plays with it on.
-    PlaybackSample sample(double now, float up, float down, float duration, float speed, float predicted_air,
-                          bool source_timing = false, bool fit_air = false) noexcept {
+    void select(double now) noexcept { if (std::isfinite(now)) { selected_at = now; clip_time = -1; } }
+    // The trick is fitted to the air that the game plays (fitted_air_time, landed_time).
+    PlaybackSample sample(double now, float up, float down, float duration, float predicted_air) noexcept {
         PlaybackSample out;
         if (selected_at < 0 || up < 0 || duration <= 0 || up > duration || down > duration ||
             !std::isfinite(now) || !std::isfinite(up) || !std::isfinite(down) ||
-            !std::isfinite(duration) || !std::isfinite(speed) || speed <= 0 || !std::isfinite(predicted_air)) return out;
-        if (source_timing && (phase == PlaybackPhase::air || phase == PlaybackPhase::landing)) {
-            // Recognition can arrive late or refine ollie into a flip. Anchor the
-            // source clock at takeoff, never at selection, and keep source seconds
-            // through reception instead of stretching air and discarding late keys.
-            // Speed is a studio preview control. Slowing only this additive
-            // layer while the native trick runs at 1x desynchronizes limbs and
-            // board; source-bound gameplay keys always follow source seconds.
+            !std::isfinite(duration) || !std::isfinite(predicted_air)) return out;
+        if (phase == PlaybackPhase::air || phase == PlaybackPhase::landing) {
+            // The game can name the trick late, or change an ollie into a flip. The time starts at takeoff, not at selection.
             // Fitted to the air (fitted_air_time, landed_time): takeoff on the game's takeoff, the flip at its
-            // own pace, the recording's landing on the game's touchdown.
+            // own pace, the clip's landing on the game's touchdown.
             float time = up + static_cast<float>(std::max(0.0, now - takeoff));
-            if (fit_air && down > up) {
+            if (down > up) {
                 if (phase == PlaybackPhase::air && contact.since) {
                     // The board is down and the game is making sure (ContactWindow): the landing starts at
                     // the touch, not frames later with a jump - the pose in the air with the board on the
@@ -135,26 +128,15 @@ struct PlaybackEpisode {
                 }
             }
             out.time = std::min(duration, time);
-            clock.observe_air(now, out.time, 1);
+            clip_time = out.time;
             const auto enter = std::clamp(static_cast<float>(now - selected_at) / 0.08f, 0.0f, 1.0f);
             const auto leave = std::clamp((duration - out.time) / 0.08f, 0.0f, 1.0f);
             out.weight = enter * leave;
             out.finished = out.time >= duration;
-        } else if (phase == PlaybackPhase::air) {
-            float rate = speed;
-            if (predicted_air > 0 && down > up) rate *= (down - up) / predicted_air;
-            out.time = clock.advance_air(now, up, rate, down > up ? down : duration);
-            out.weight = std::clamp(static_cast<float>(now - selected_at) / 0.08f, 0.0f, 1.0f);
-        } else if (phase == PlaybackPhase::landing && down >= 0) {
-            const auto after = static_cast<float>(now - landing) * speed;
-            const auto span = std::max(0.05f, std::min(0.6f, duration - down));
-            const auto u = std::clamp(after / span, 0.0f, 1.0f);
-            out.time = clock.land(now, speed, duration, down + after);
-            out.weight = 1 - u*u*(3 - 2*u);
         } else if (phase == PlaybackPhase::rail_release) {
             // Entry is a release to the native constrained rail pose, never a fake airborne hold.
             const auto u = std::clamp(static_cast<float>(now - release_at) / 0.08f, 0.0f, 1.0f);
-            out.time = clock.time; out.weight = release_weight * (1 - u*u*(3 - 2*u));
+            out.time = clip_time; out.weight = release_weight * (1 - u*u*(3 - 2*u));
         }
         last_weight = out.weight;
         if (out.time >= 0) last_time = out.time;
