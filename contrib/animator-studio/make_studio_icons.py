@@ -1,4 +1,4 @@
-"""The Animator Studio's settings icons, in skate.'s own menu style: a white illustration with black line work, black
+"""The Animator Studio's settings icons (STUDIO, SKATER, TRICKS, PACKS, BAILS), in skate.'s own menu style: a white illustration with black line work, black
 halftone shading on its shadow side, rough, worn edges and the odd drip. Written to assets/animator_studio/icon_*.png
 (transparent, 512 x 512) and built into ReSkate.dll (cmake/Runtime.cmake).
 
@@ -247,10 +247,42 @@ def tape():
     return icon.render(light=(-0.7, -0.7), shade_from=0.42)
 
 
+# ---- BAILS: two plasters stuck on crossed, the slam's own mark ---------------------------------------------
+def plasters():
+    icon = Icon(67)
+
+    def plaster(angle):
+        body = canvas()
+        ink = canvas()
+        d = ImageDraw.Draw(body)
+        di = ImageDraw.Draw(ink)
+        d.rounded_rectangle([150, 424, 874, 600], radius=88, fill=255)
+        # The pad in the middle, its weave, and the air holes on either wing.
+        di.rounded_rectangle([392, 440, 632, 584], radius=20, outline=255, width=13)
+        for x in range(418, 610, 34):
+            di.line([x, 470, x + 14, 470], fill=255, width=7)
+            di.line([x + 10, 512, x + 24, 512], fill=255, width=7)
+            di.line([x, 554, x + 14, 554], fill=255, width=7)
+        for x in (226, 292, 732, 798):
+            for y in (482, 542):
+                di.ellipse([x - 9, y - 9, x + 9, y + 9], fill=255)
+        return rotate(body, angle, (512, 512)), rotate(ink, angle, (512, 512))
+
+    under_body, under_ink = plaster(-38)
+    over_body, over_ink = plaster(38)
+    # The one on top hides the other's line work, and its own edge shows where it lies across it.
+    over_edge = ImageChops.subtract(dilate(over_body, 7), erode(over_body, 7))
+    icon.body = ImageChops.lighter(under_body, over_body)
+    icon.ink = ImageChops.lighter(ImageChops.lighter(ImageChops.multiply(under_ink, ImageChops.invert(over_body)), over_ink),
+                                  ImageChops.multiply(over_edge, under_body))
+    icon.drips = [(330, 120, 54), (700, 80, 44)]
+    return icon.render(light=(-0.6, -0.8), shade_from=0.42)
+
+
 def main():
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2] / 'assets' / 'animator_studio'
     out_dir.mkdir(parents=True, exist_ok=True)
-    for name, make in (('studio', camcorder), ('skater', shoe), ('tricks', board), ('packs', tape)):
+    for name, make in (('studio', camcorder), ('skater', shoe), ('tricks', board), ('packs', tape), ('bails', plasters)):
         make().save(out_dir / f'icon_{name}.png', optimize=True)
         print('wrote', out_dir / f'icon_{name}.png')
 

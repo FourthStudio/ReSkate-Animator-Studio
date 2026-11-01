@@ -45,9 +45,10 @@ constexpr std::array<Place, 3> kickflip_places{{
     {ui::bam_toc, ui::bam_bundle},
 }};
 
-constexpr std::size_t picture_count = 10, backdrop_index = 4, backdrop_right_index = 5, first_icon = 6;
-constexpr std::array<const wchar_t*, 4> icon_names{L"studio", L"skater", L"tricks", L"packs"};
-constexpr std::array<const wchar_t*, 4> icon_resources{L"STUDIO_ICON_STUDIO", L"STUDIO_ICON_SKATER", L"STUDIO_ICON_TRICKS", L"STUDIO_ICON_PACKS"};
+constexpr std::size_t picture_count = 11, backdrop_index = 4, backdrop_right_index = 5, first_icon = 6;
+constexpr std::array<const wchar_t*, 5> icon_names{L"studio", L"skater", L"tricks", L"packs", L"bails"};
+constexpr std::array<const wchar_t*, 5> icon_resources{L"STUDIO_ICON_STUDIO", L"STUDIO_ICON_SKATER", L"STUDIO_ICON_TRICKS", L"STUDIO_ICON_PACKS",
+                                                       L"STUDIO_ICON_BAILS"};
 struct Source {
     const ui::Texture* texture; // the kickflip's is found in kickflip_places
     std::uint32_t side;
@@ -55,7 +56,7 @@ struct Source {
 };
 constexpr std::array<Source, picture_count> sources{{
     {&ui::scratches, 1024, true}, {&ui::rough_tile, 256}, {&ui::brush_bar, 692}, {nullptr, 1152}, {nullptr, 0}, {nullptr, 0},
-    {nullptr, 0}, {nullptr, 0}, {nullptr, 0}, {nullptr, 0},
+    {nullptr, 0}, {nullptr, 0}, {nullptr, 0}, {nullptr, 0}, {nullptr, 0},
 }};
 using Images = std::array<std::optional<frostbite::Image>, picture_count>;
 

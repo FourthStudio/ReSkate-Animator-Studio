@@ -20,7 +20,7 @@ void fill_animation_studio_images(ImFontAtlas& atlas) noexcept;
 
 // The icons of SETTINGS' tiles (studio, skater, tricks, packs): white, grungy, on clear (assets/animator_studio/icon_*.png,
 // or icons/<name>.png in the folder above the tricks in their place).
-enum class StudioPicture { grain, tile, brush, kickflip, backdrop, backdrop_right, icon_studio, icon_skater, icon_tricks, icon_packs };
+enum class StudioPicture { grain, tile, brush, kickflip, backdrop, backdrop_right, icon_studio, icon_skater, icon_tricks, icon_packs, icon_bails };
 // Stretched onto the box. False when the picture is not there.
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
 // The loading screen's picture, filled over the box with its own shape kept: a 21:9 artwork on a 16:9

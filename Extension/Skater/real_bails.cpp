@@ -228,10 +228,9 @@ void on_physics(std::uintptr_t core) noexcept {
 
     // The muscles: from the moment the body is a ragdoll until the game gets it up again.
     model::Output driven;
-    // Only while the game simulates the body (FollowRagdoll, FollowSimulatedRagdoll), never in FollowAnimatedRagdoll, its
-    // blend back to the animation that gets him up.
-    const bool simulated = substate == addr::offboard_flight::offboard_ragdoll_states[0][0] ||
-                           substate == addr::offboard_flight::offboard_ragdoll_states[2][0];
+    // Only in the bail's ragdoll (FollowRagdoll): never in FollowAnimatedRagdoll, the blend back to the animation that gets
+    // him up, nor FollowSimulatedRagdoll, which no bail was seen in (a stumble the game catches itself is the game's).
+    const bool simulated = substate == addr::offboard_flight::offboard_ragdoll_states[0][0];
     const bool muscles = s.enabled.load(std::memory_order_relaxed) && have && in_bail && ragdoll && simulated;
     if (muscles) {
         {

@@ -7932,8 +7932,8 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
     const float grid_w = across * tile_w + (across - 1) * gap;
     a.x += std::max(0.0f, (b.x - a.x - grid_w) * 0.5f);
     title_text(d, f, 64 * k, ImVec2(a.x, a.y - 8 * k), white, "SETTINGS");
-    static constexpr std::array<StudioPicture, 4> icons{StudioPicture::icon_studio, StudioPicture::icon_skater, StudioPicture::icon_tricks,
-                                                        StudioPicture::icon_packs};
+    static constexpr std::array<StudioPicture, 5> icons{StudioPicture::icon_studio, StudioPicture::icon_skater, StudioPicture::icon_tricks,
+                                                        StudioPicture::icon_packs, StudioPicture::icon_bails};
     for (int i = 0; i < static_cast<int>(settings_pages.size()); ++i) {
         const ImVec2 ta(a.x + static_cast<float>(i % across) * (tile_w + gap), top + static_cast<float>(i / across) * (tile_h + gap));
         const ImVec2 tb(ta.x + tile_w, ta.y + tile_h);
