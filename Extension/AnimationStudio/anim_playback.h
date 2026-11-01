@@ -262,60 +262,15 @@ struct EditTransition {
         return current;
     }
 };
-// Fourth's pose crossfade: keep the last drawn pose, rather than applying old edits to a new native move.
-struct PoseFade {
-    std::vector<Joint> from;            // the pose drawn last, as it was when the fade began
-    std::vector<unsigned char> joints;  // 1: this joint fades
-    double started{-1};
-    float length{};
-    void reset() noexcept {
-        from.clear();
-        joints.clear();
-        started = -1;
-    }
-    bool on(double now) const noexcept { return started >= 0 && now >= started && now - started < length; }
-    static bool differs(const Joint& a, const Joint& b) noexcept {
-        const float dot = std::abs(a.rotation[0] * b.rotation[0] + a.rotation[1] * b.rotation[1] + a.rotation[2] * b.rotation[2] +
-                                   a.rotation[3] * b.rotation[3]);
-        float moved = 0;
-        for (std::size_t k = 0; k < 3; ++k) moved += (a.position[k] - b.position[k]) * (a.position[k] - b.position[k]);
-        return dot < 0.9999995f || moved > 0.0005f * 0.0005f; // more than about a tenth of a degree, or half a millimetre
-    }
-    static bool changes(const Offset& o) noexcept {
-        return !(o.rotation == Quat{0, 0, 0, 1}) || o.offset[0] * o.offset[0] + o.offset[1] * o.offset[1] + o.offset[2] * o.offset[2] > 1e-8f;
-    }
-    // `native` is the baseline from the same previous frame as `drawn`, not the new move's pose.
-    // Otherwise ordinary native motion is mistaken for custom edits and gets frozen by the fade.
-    void start(double now, float seconds, std::span<const Joint> drawn, std::span<const Joint> native, std::span<const Offset> next) {
-        from.assign(drawn.begin(), drawn.end());
-        joints.assign(from.size(), 0);
-        for (const auto& joint : editable_joints()) {
-            const auto i = joint.index;
-            if (i >= from.size() || i >= native.size()) continue;
-            joints[i] = differs(drawn[i], native[i]) || (i < next.size() && changes(next[i]));
-        }
-        started = now;
-        length = std::max(seconds, 0.02f);
-    }
-    // The faded pose as changes to the game's pose now, into `out` (the fading joints only): `next` is the next animation's
-    // changes to it (none: the game's own pose).
-    void apply(double now, std::span<const Joint> native, std::span<const Offset> next, std::span<Offset> out) const noexcept {
-        if (!on(now)) return;
-        float u = std::clamp(static_cast<float>(now - started) / length, 0.0f, 1.0f);
-        u = u * u * (3 - 2 * u);
-        for (std::size_t i = 0; i < joints.size() && i < native.size() && i < out.size(); ++i) {
-            if (!joints[i]) continue;
-            const Offset change = i < next.size() ? next[i] : Offset{};
-            const Quat target = normalised(multiply(native[i].rotation, change.rotation));
-            const Quat drawn = slerp(from[i].rotation, target, u);
-            out[i].rotation = normalised(multiply(conjugate(native[i].rotation), drawn));
-            for (std::size_t k = 0; k < 3; ++k) {
-                const float to = native[i].position[k] + change.offset[k];
-                out[i].offset[k] = from[i].position[k] + (to - from[i].position[k]) * u - native[i].position[k];
-            }
-        }
-    }
-};
+// How long a change of what plays fades, on the game's live pose (the body and the board alike: EditTransition's keys go on
+// the game's pose as it is now, never on a pose held from before). Into a trick of yours, or with the game in the air doing
+// its own move, quickly: the game's pop and flip go on under the fade, and keys still easing in over half a long Crossfade
+// (0.4 s at 0.8) left the board turned short and the legs behind it - the feet through the board. Back to the game on the
+// ground over `blend` (half the Crossfade), as the Crossfade says. A grind has its own ease (grind_ease_min/max).
+inline constexpr float quick_key_fade = 0.12f;
+inline float key_fade_seconds(float blend, bool into_trick, bool in_air) noexcept {
+    return into_trick || in_air ? std::min(blend, quick_key_fade) : blend;
+}
 // On a rail the board's pass gives the board back to the game at once, but the body fades the trick out over the
 // crossfade. The game drops the board into the grind, and the fade kept the legs as they were for the landing: the feet
 // stood up to 35 cm off the board for 0.18 s (kickflip to BS crooked and BS noseslide, 2026-10-26). Cutting the fade

@@ -4565,10 +4565,6 @@ struct BodyPublicationState {
     std::uint64_t feet_generation{~std::uint64_t{0}};
     double on_rail_at{-1};
     bool feet_at_lock_ok{};
-    std::vector<Joint> drawn;
-    std::uint64_t drawn_generation{~std::uint64_t{0}};
-    double drawn_at{-1};
-    PoseFade pose_fade;
     // SMOOTH: the board's force field (guard_legs_from_the_board) has its moment (guard_moment): from when the trick starts
     // handing back to the game, for that move's crossfade (guard_window), then it lets go. guard_since: when it came on (-1
     // off); guard_handing_back: the trick was handing back last frame (it comes on as that starts).
@@ -5123,7 +5119,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                        guard_moment(publication, now, generation, handing_back, packet && !guard_releasing);
             handing = running && motion == MotionState::rail && hand_over_body(h, now, native, edited, publication, guard_on);
         }
-        if (handing) { publication.pose_fade.reset(); applied_deltas = pose_edit_deltas(native, edited); }
+        if (handing) applied_deltas = pose_edit_deltas(native, edited);
         else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
             // Into a grind the board is the game's at once (the board's pass leaves it alone on a rail), so the body goes
             // with it: the trick's last keys fade out in grind_hand_back, not over the Crossfade. Faded over up to 0.4 s,
@@ -5131,17 +5127,10 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             const float blend = trick_blend.load(std::memory_order_relaxed);
             const bool grinding = motion == MotionState::rail;
             const double now = now_seconds();
-            const float fade_seconds = grinding ? std::clamp(blend, grind_ease_min, grind_ease_max) : blend;
+            const float fade_seconds = grinding ? std::clamp(blend, grind_ease_min, grind_ease_max)
+                                                : key_fade_seconds(blend, packet != nullptr, motion == MotionState::air);
             const auto deltas = publication.transition.evaluate(now, generation, packet ? packet->episode : 0,
                 packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas, fade_seconds);
-            if (publication.transition.restarted) {
-                const bool drawn_ok = publication.drawn_generation == generation && now >= publication.drawn_at &&
-                    now - publication.drawn_at < 0.2 && publication.drawn.size() == native.size() && publication.edits.before.size() == native.size();
-                if (drawn_ok && !(grinding && !packet))
-                    publication.pose_fade.start(now, fade_seconds, publication.drawn, publication.edits.before, desired_deltas);
-                else publication.pose_fade.reset();
-            }
-            publication.pose_fade.apply(now, native, desired_deltas, publication.transition.current);
             // Into a grind the hips and legs land with the board (grind_feet_on_deck, the board's pass eases the same way)
             // while the rest of the body eases in over the Crossfade: legs still keyed mid-flip on a board already on the
             // rail put a knee or a foot through the deck for a few frames on some grinds (test.2, 2026-10-27).
@@ -5187,7 +5176,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                     applied_deltas = pose_edit_deltas(native, edited);
                 }
             }
-        } else { publication.transition.reset(); publication.pose_fade.reset(); }
+        } else publication.transition.reset();
         if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
             (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) continue;
         for (const auto& joint : edited)
@@ -5213,9 +5202,6 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                 std::memcpy(shot.skater[i].position.data(), native[i].position.data(), 12);
             }
         }
-        publication.drawn = edited;
-        publication.drawn_generation = generation;
-        publication.drawn_at = now_seconds();
         publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
         return;
     }
@@ -5954,13 +5940,14 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         if (want.rotation != native_mount.rotation) desired[0].rotation = normalised(multiply(want.rotation, conjugate(native_mount.rotation)));
         for (std::size_t k = 0; k < 3; ++k) desired[0].offset[k] = want.position[k] - native_mount.position[k];
         want = native_mount;
-        // SMOOTH: in a handover the board goes from where it was drawn on the game's to the game's, with the legs.
+        // SMOOTH: in a handover into a grind the board goes from where it was drawn on the game's to the game's, with the legs
+        // (hand_over_body, on a rail only). Anywhere else the board fades as the body does (key_fade_seconds), in step with it.
         bool handing = false;
         if (overrides_allowed.load()) {
             auto& h = handover();
             std::lock_guard hand_lock(h.mutex);
             const double now = now_seconds();
-            if (handover_running(h, now, generation, motion, packet.get())) {
+            if (motion == MotionState::rail && handover_running(h, now, generation, motion, packet.get())) {
                 want = compose(native_mount, part_of(h.board, handover_left(right_foot_joint, static_cast<float>(now - h.started) / std::max(h.scale, 0.1f))));
                 handing = true;
             }
@@ -5976,9 +5963,12 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         // On a rail the board is the game's: the trick's last board keys ease out in grind_feet_on_deck, with the hips and
         // legs (apply_gameplay_body), instead of the board jumping onto the rail in one frame under legs still mid-flip.
         else if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
+            // As the body's (apply_gameplay_body, key_fade_seconds).
             const auto delta = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
                 packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired,
-                motion == MotionState::rail ? grind_feet_on_deck : trick_blend.load(std::memory_order_relaxed),
+                motion == MotionState::rail ? grind_feet_on_deck
+                                            : key_fade_seconds(trick_blend.load(std::memory_order_relaxed), packet != nullptr,
+                                                               motion == MotionState::air),
                 smooth ? board_jump_degrees : 0.0f)[0];
             if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
             for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
@@ -11053,7 +11043,7 @@ bool write_diagnostics_now(std::string& message) {
           summary["gameplay_key_timing"] = "source_seconds_from_takeoff";
           summary["gameplay_clock_on_loss"] = "source_seconds_no_phase_extrapolation";
           summary["gameplay_joint_limits"] = "upper_body_only";
-          summary["gameplay_pose_transition"] = "previous_drawn_to_next_pose";
+          summary["gameplay_pose_transition"] = "keys_fade_on_live_pose_quick_into_tricks_and_air";
           summary["gameplay_full_source_replacement"] = false;
           summary["preview_source"] = Json::object();
           summary["preview_source"]["name"] = s.edits.name;
