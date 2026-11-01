@@ -48,6 +48,7 @@ struct Tuning {
     float lie_still{1.6f}; // 0.5 .. 4 seconds lying still before he lets go
     float grip{1.0f};      // 0 .. 2: how quickly the ground stops a slide (how heavy he is on it)
     bool catch_arms{true}, catch_step{true}, grab_hurt{true};
+    float hold_hurt{4.5f}; // 1 .. 10 seconds holding what hurts (a chin, a knee, an elbow) once he is down
 };
 struct Input {
     std::array<BodyIn, part_count> body{};
@@ -101,6 +102,9 @@ private:
     bool ground_known_{};
     int step_leg_{-1};                      // the leg taking a catch step (0 left, 1 right), -1 none
     bool step_landed_{}, stepped_{};        // its foot is down; a step was taken this bail
+    double step_down_at_{-1};               // when the step's foot came down
+    std::array<double, 2> caught_at_{-1, -1}; // when each hand came down on the ground in the catch (-1 not yet)
+    double held_{};                         // seconds the hurt has been held
     float tuck_{0.55f};                     // how far the knees come in when rolling
     std::array<float, 3> vary_{};           // -1..1: left/right tuck, each leg's bend at rest
 };

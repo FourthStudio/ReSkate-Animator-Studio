@@ -182,7 +182,7 @@ model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step
     model::Input in;
     in.dt = seconds;
     in.strength = strength;
-    in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.grip, t.catch_arms, t.catch_step, t.grab_hurt};
+    in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.grip, t.catch_arms, t.catch_step, t.grab_hurt, t.hold_hurt};
     for (std::size_t i = 1; i < model::part_count; ++i) {
         const auto& b = bodies.body[i];
         auto& o = in.body[i];
@@ -427,6 +427,7 @@ constexpr const char* saved_grip = "RealBails.Grip";
 constexpr const char* saved_catch_arms = "RealBails.CatchArms";
 constexpr const char* saved_catch_step = "RealBails.CatchStep";
 constexpr const char* saved_grab_hurt = "RealBails.GrabHurt";
+constexpr const char* saved_hold_hurt = "RealBails.HoldHurt";
 Tuning clamped(Tuning t) noexcept {
     const auto fix = [](float v, float lo, float hi, float otherwise) { return std::isfinite(v) ? std::clamp(v, lo, hi) : otherwise; };
     t.reaction = fix(t.reaction, 0.5f, 2.0f, 1.0f);
@@ -434,6 +435,7 @@ Tuning clamped(Tuning t) noexcept {
     t.tuck = fix(t.tuck, 0.0f, 1.5f, 1.0f);
     t.lie_still = fix(t.lie_still, 0.5f, 4.0f, 1.6f);
     t.grip = fix(t.grip, 0.0f, 2.0f, 1.0f);
+    t.hold_hurt = fix(t.hold_hurt, 1.0f, 10.0f, 4.5f);
     return t;
 }
 void tick() noexcept {
@@ -454,6 +456,7 @@ void tick() noexcept {
             number(saved_tuck, t.tuck);
             number(saved_lie_still, t.lie_still);
             number(saved_grip, t.grip);
+            number(saved_hold_hurt, t.hold_hurt);
             if (const auto on = profile_runtime::local_preference(saved_catch_arms)) t.catch_arms = *on;
             if (const auto on = profile_runtime::local_preference(saved_catch_step)) t.catch_step = *on;
             if (const auto on = profile_runtime::local_preference(saved_grab_hurt)) t.grab_hurt = *on;
@@ -474,7 +477,8 @@ void tick() noexcept {
                                                {saved_head, static_cast<double>(t.head)},
                                                {saved_tuck, static_cast<double>(t.tuck)},
                                                {saved_lie_still, static_cast<double>(t.lie_still)},
-                                               {saved_grip, static_cast<double>(t.grip)}});
+                                               {saved_grip, static_cast<double>(t.grip)},
+                                               {saved_hold_hurt, static_cast<double>(t.hold_hurt)}});
         }
     } catch (...) {}
     try { drain(); } catch (...) {}

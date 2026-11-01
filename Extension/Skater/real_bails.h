@@ -33,6 +33,7 @@ struct Tuning {
     float lie_still{1.6f}; // 0.5 .. 4 s lying still before he lets go
     float grip{1.0f};      // 0 .. 2: how quickly the ground stops a slide
     bool catch_arms{true}, catch_step{true}, grab_hurt{true};
+    float hold_hurt{4.5f}; // 1 .. 10 s holding what hurts once he is down
 };
 Tuning tuning() noexcept;
 void set_tuning(const Tuning& tuning) noexcept;

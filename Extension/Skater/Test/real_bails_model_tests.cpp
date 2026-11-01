@@ -90,6 +90,7 @@ int main() {
     // The phases: a hit on the back, a slide, lying still, then rest.
     {
         Input in = standing();
+        in.tune.grab_hurt = false;
         for (auto& b : in.body) b.v = {0, 0, -3.0f};
         Muscles m;
         m.begin(in);
@@ -107,6 +108,37 @@ int main() {
         const float settling = out.tone;
         for (int i = 0; i < 120; ++i) out = m.step(in);
         check(out.phase == Phase::rest && out.tone < settling, "Then it rests, with less tone");
+    }
+    // A hard hit on the back held for as long as Hold what hurts for says, then rest.
+    {
+        Input in = standing();
+        in.tune.hold_hurt = 4.0f;
+        in.tune.lie_still = 1.0f;
+        for (auto& b : in.body) b.v = {0, 0, -3.0f};
+        Muscles m;
+        m.begin(in);
+        (void)m.step(in);
+        in.body[back1].touching = true;
+        in.body[back1].impact = 5.0f;
+        (void)m.step(in);
+        in.body[back1].impact = 0;
+        for (auto& b : in.body) b.v = {};
+        Output out;
+        for (int i = 0; i < 60 * 3; ++i) out = m.step(in);
+        check(out.phase == Phase::settle, "Holding what hurts he stays down past Lie still for");
+        for (int i = 0; i < 60 * 3; ++i) out = m.step(in);
+        check(out.phase == Phase::rest, "Then he lets go and rests");
+    }
+    // A hand landing in the catch does not end the brace: the bail goes on from the catch.
+    {
+        Input in = standing();
+        for (auto& b : in.body) b.v = {0, -2.0f, -2.5f};
+        Muscles m;
+        m.begin(in);
+        for (int i = 0; i < 10; ++i) (void)m.step(in);
+        in.body[l_hand].touching = in.body[r_hand].touching = true;
+        in.body[l_hand].impact = in.body[r_hand].impact = 5.0f;
+        check(m.step(in).phase == Phase::brace, "The hands landing hard is the catch, still braced");
     }
     // A body that cannot be read: nothing is written.
     {

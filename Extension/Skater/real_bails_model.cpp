@@ -16,6 +16,8 @@ constexpr std::array<float, part_count> mass{0, 5, 1.5f, .5f, 1.3f, 2, 1.5f, .5f
 constexpr std::array<float, part_count> child_share{0, .8f, .75f, .97f, .93f, .88f, .8f, .97f, .93f, .88f, .8f, .5f, .5f, .5f, .5f,
                                                     .97f, .95f, .9f, .75f, .97f, .95f, .9f, .75f, 0};
 // Strength: the most a muscle changes its joint's turning speed, radians per second per second.
+// How long a hand or a stepping foot down on the ground stays long and firm, taking the fall, before it gives, seconds.
+constexpr float catch_hold = 0.22f;
 constexpr std::array<float, part_count> strength_of{0, 100, 110, 120, 110, 90, 70, 120, 110, 90, 70, 45, 45, 45, 45,
                                                     120, 110, 90, 70, 120, 110, 90, 70, 0};
 
@@ -168,14 +170,23 @@ Output Muscles::step(const Input& in) noexcept {
             if (b[i].touching && b[i].has_point) lowest = std::min(lowest, b[i].point[1]);
         if (lowest < 1e8f) { ground_ = lowest; ground_known_ = true; }
     }
-    // A hit that ends the brace: anything but a foot or a shin landing (a catch step lands on purpose).
+    // A hit that ends the brace: anything but a foot or a shin (a catch step lands on purpose) or a hand or forearm (the
+    // catch itself: the hands take the fall first, and the bail goes on from there).
     float upper_hit = 0;
     for (std::size_t i = 1; i < part_count; ++i) {
         const auto p = static_cast<Part>(i);
-        if (p == l_foot || p == r_foot || p == l_toe || p == r_toe || p == l_shin || p == r_shin) continue;
+        if (p == l_foot || p == r_foot || p == l_toe || p == r_toe || p == l_shin || p == r_shin || p == l_hand || p == r_hand ||
+            p == l_forearm || p == r_forearm)
+            continue;
         upper_hit = std::max(upper_hit, b[i].impact);
     }
     const float pelvis_height = ground_known_ ? b[pelvis].p[1] - ground_ : 1.0f;
+    for (int s = 0; s < 2; ++s) {
+        const Part hand_part = s == 0 ? l_hand : r_hand;
+        if ((phase_ == Phase::brace || phase_ == Phase::impact) && b[hand_part].touching && caught_at_[s] < 0) caught_at_[s] = t_;
+        // Up off the ground again and falling (a bounce, a drop): the next landing is a new catch.
+        if (phase_ == Phase::brace && caught_at_[s] >= 0 && untouched_for_ > 0.3) caught_at_[s] = -1;
+    }
     still_for_ = speed < 1.0f && spin < 2.0f ? still_for_ + dt : 0;
 
     // Where it falls: where the body goes over the ground, and where the torso leans.
@@ -213,7 +224,8 @@ Output Muscles::step(const Input& in) noexcept {
     case Phase::settle:
         if (airborne && velocity[1] < -1.5f) enter(Phase::brace);
         else if (spin > 5.0f && speed > 2.0f) enter(Phase::tumble);
-        else if (in_phase_ > std::clamp(in.tune.lie_still, 0.5f, 4.0f)) enter(Phase::rest);
+        else if (in_phase_ > std::clamp(in.tune.lie_still, 0.5f, 4.0f) && !(hurt_hand_ != 0 && held_ < std::clamp(in.tune.hold_hurt, 1.0f, 10.0f)))
+            enter(Phase::rest);
         break;
     case Phase::rest:
         if (airborne && velocity[1] < -1.5f) enter(Phase::brace);
@@ -247,6 +259,12 @@ Output Muscles::step(const Input& in) noexcept {
         break;
     case Phase::rest: tone = 0.14f; break;
     default: break;
+    }
+    // Holding what hurts he stays tense round it, however long he lies there.
+    const bool holding_hurt = phase_ == Phase::settle && hurt_hand_ != 0 && held_ < std::clamp(in.tune.hold_hurt, 1.0f, 10.0f);
+    if (holding_hurt) {
+        held_ += dt;
+        tone = std::max(tone, 0.5f);
     }
     tone *= std::clamp(in.strength, 0.25f, 2.0f);
     // A reflex takes a moment, but only a moment: a falling person's protective reactions start within about 0.06 s and
@@ -294,7 +312,10 @@ Output Muscles::step(const Input& in) noexcept {
         stepped_ = true;
     }
     if (step_leg_ >= 0) {
-        if (b[ankle[step_leg_]].touching && dot(b[ankle[step_leg_]].p - b[pelvis].p, fall_) > 0.1f) step_landed_ = true;
+        if (b[ankle[step_leg_]].touching && dot(b[ankle[step_leg_]].p - b[pelvis].p, fall_) > 0.1f) {
+            if (!step_landed_) step_down_at_ = t_;
+            step_landed_ = true;
+        }
         if (phase_ != Phase::brace && phase_ != Phase::impact) step_leg_ = -1;
     }
     switch (phase_) {
@@ -316,10 +337,14 @@ Output Muscles::step(const Input& in) noexcept {
                 const float flail = 0.35f * std::sin(static_cast<float>(swing_) + (s ? 2.1f : 0.0f));
                 reach = out_side[s] * 0.9f + f.up * (0.25f + flail) + f.forward * (0.25f - 0.5f * flail) + down * 0.2f;
             }
-            // Out for the ground as soon as the fall starts, the elbows a little bent (ready to give: a locked arm is how
-            // wrists break); once a hand is down, or the body hits, the elbow gives and soaks it up.
-            const bool giving = phase_ == Phase::impact || b[wrist[s]].touching;
-            hand[s] = b[shoulder[s]].p + normalized(reach) * arm_len[s] * (long_fall ? 0.82f : giving ? 0.66f : 0.9f);
+            // The catch: out for the ground nearly straight as the fall starts; the hand down, the arm stays long and firm
+            // and takes the fall (catch_hold), then the elbow gives and he goes on down into the bail from there.
+            float stretch = phase_ == Phase::impact ? 0.75f : 0.95f;
+            if (caught_at_[s] >= 0) {
+                const float give = std::clamp((static_cast<float>(t_ - caught_at_[s]) - catch_hold) / 0.3f, 0.0f, 1.0f);
+                stretch = 0.97f - 0.35f * give * give * (3 - 2 * give);
+            }
+            hand[s] = b[shoulder[s]].p + normalized(reach) * arm_len[s] * (long_fall ? 0.82f : stretch);
             if (!in.tune.catch_arms && !long_fall) hand[s] = b[wrist[s]].p; // the arms stay where they are
             // Knees bend to soak it up; falling back the hips fold (sitting down); a long fall reaches the feet down.
             // Dropping from height the feet reach down for the ground with the knees ready to give: landed on straight
@@ -327,14 +352,20 @@ Output Muscles::step(const Input& in) noexcept {
             V3 leg = -f.up * 0.9f + f.forward * (0.12f + 0.35f * back_fall);
             const bool reaching_down = airborne && t_ > 0.3 && velocity[1] < -2.0f;
             if (reaching_down) leg = down * 0.9f + f.forward * 0.3f + normalized(horizontal, {}) * 0.15f;
-            foot[s] = b[hip[s]].p + normalized(leg) * leg_len[s] * (reaching_down ? 0.76f : 0.86f);
+            foot[s] = b[hip[s]].p + normalized(leg) * leg_len[s] * (reaching_down ? 0.9f : 0.86f);
             if (step_leg_ == s) {
                 // The step: the foot to the ground ahead of the hips, then the knee gives under the weight.
                 // Ahead of where the hips will be by the time the foot is down (it takes about a fifth of a second).
                 const float lead = std::min(0.45f * leg_len[s] + 0.2f * length(horizontal), 0.95f * leg_len[s]);
                 V3 spot = b[pelvis].p + fall_ * lead + out_side[s] * 0.08f;
                 spot[1] = ground_ + 0.08f;
-                foot[s] = step_landed_ ? b[hip[s]].p + normalized(spot - b[hip[s]].p) * leg_len[s] * 0.8f : spot;
+                // Down, the leg stays long and takes the fall for a moment (as the arms do), then the knee gives.
+                float leg_stretch = 0.97f;
+                if (step_landed_ && step_down_at_ >= 0) {
+                    const float give = std::clamp((static_cast<float>(t_ - step_down_at_) - catch_hold) / 0.3f, 0.0f, 1.0f);
+                    leg_stretch = 0.97f - 0.25f * give * give * (3 - 2 * give);
+                }
+                foot[s] = step_landed_ ? b[hip[s]].p + normalized(spot - b[hip[s]].p) * leg_len[s] * leg_stretch : spot;
             }
         }
         spine_flex = 0.6f * back_fall + 0.1f * front_fall;
@@ -364,7 +395,7 @@ Output Muscles::step(const Input& in) noexcept {
     case Phase::slide:
     case Phase::settle:
     case Phase::rest: {
-        const bool grabbing = phase_ == Phase::settle && hurt_hand_ != 0 && in_phase_ < std::clamp(in.tune.lie_still, 0.5f, 4.0f);
+        const bool grabbing = holding_hurt;
         // How he lies decides the pose: face down the legs stay long (bent knees would lift the feet up behind him),
         // on the back the knees come up a little, on a side the top leg bends forward over the bottom one.
         const float face_down = std::max(0.0f, -dot(f.forward, world_up));
@@ -388,18 +419,19 @@ Output Muscles::step(const Input& in) noexcept {
             hand[s] = b[shoulder[s]].p + normalized(arm) * arm_len[s] * reach;
         }
         if (grabbing) {
-            // Holding what hurts. A knee: that leg pulled up to the chest and both hands round the knee. The chin or the
-            // face: both hands to it, the knees drawn up a little. An elbow: the other hand on it, the hurt arm in against
-            // the body. Anything else: a hand on the spot.
+            // Holding what hurts, for as long as Hold what hurts for says, rocking a little. A knee: that leg pulled up to
+            // the chest and both hands round the knee. The chin or the face: both hands to it, the knees drawn up. An elbow:
+            // the other hand on it, the hurt arm in against the body. Anything else: a hand on the spot.
+            const float rock = 0.5f + 0.5f * std::sin(static_cast<float>(held_) * 2.4f + vary_[2] * 3.0f);
             const bool knee_hurt = hurt_ == l_shin || hurt_ == r_shin;
             if (knee_hurt) {
                 const int leg = hurt_ == l_shin ? 0 : 1;
-                foot[leg] = b[hip[leg]].p + normalized(f.forward * 0.85f - f.up * 0.35f + out_side[leg] * 0.1f) * leg_len[leg] * 0.42f;
-                foot[1 - leg] = b[hip[1 - leg]].p + normalized(f.forward * 0.4f - f.up * 0.8f) * leg_len[1 - leg] * 0.8f;
+                foot[leg] = b[hip[leg]].p + normalized(f.forward * (0.8f + 0.15f * rock) - f.up * 0.35f + out_side[leg] * 0.1f) * leg_len[leg] * 0.42f;
+                foot[1 - leg] = b[hip[1 - leg]].p + normalized(f.forward * (0.35f + 0.2f * rock) - f.up * 0.8f) * leg_len[1 - leg] * 0.8f;
             }
             if (hurt_ == head)
                 for (int s = 0; s < 2; ++s)
-                    foot[s] = b[hip[s]].p + normalized(f.forward * 0.55f - f.up * 0.7f) * leg_len[s] * 0.7f;
+                    foot[s] = b[hip[s]].p + normalized(f.forward * (0.5f + 0.2f * rock) - f.up * 0.7f) * leg_len[s] * 0.7f;
             const bool elbow_hurt = hurt_ == l_forearm || hurt_ == l_arm || hurt_ == r_forearm || hurt_ == r_arm;
             for (int s = 0; s < 2; ++s) {
                 if (hurt_hand_ != 2 && (hurt_hand_ < 0) != (s == 0)) {
@@ -415,6 +447,8 @@ Output Muscles::step(const Input& in) noexcept {
             }
         }
         spine_flex = phase_ == Phase::slide ? 0.12f : 0.12f + 0.2f * std::abs(side_up);
+        // Curled round the hurt, rocking with it.
+        if (grabbing) spine_flex += 0.25f + 0.15f * std::sin(static_cast<float>(held_) * 2.4f + vary_[2] * 3.0f);
         // The head held up off the ground while moving, laid down on its side once still: on the back the chin comes in,
         // face down the head turns up, on a side it tilts up.
         const float hold = phase_ == Phase::slide ? 1.0f : phase_ == Phase::settle ? 0.7f : 0.45f;
@@ -494,9 +528,14 @@ Output Muscles::step(const Input& in) noexcept {
         // Settling, the arms are drawn in (under the shoulders face down, by the sides on the back) before the body lets go.
         const float muscle = std::clamp(in.strength, 0.25f, 2.0f);
         const bool holding = phase_ == Phase::settle && hurt_hand_ != 0 && in_phase_ < std::clamp(in.tune.lie_still, 0.5f, 4.0f);
-        // Out for the ground quick and firm; giving (a hand down, the body hit) soft, so the elbows bend and take it.
-        const bool giving = phase_ == Phase::impact || b[wrist[s]].touching;
-        const float arm_tone = bracing ? (giving ? std::max(tone, 0.4f * muscle) : std::max(tone, 0.8f * muscle * (0.25f + 0.75f * reflex)))
+        // Out for the ground quick and firm; on the ground firm through the catch (it takes the fall), then soft as the
+        // elbow gives and the bail goes on.
+        const float since_catch = caught_at_[s] >= 0 ? static_cast<float>(t_ - caught_at_[s]) : -1.0f;
+        const bool catching = since_catch >= 0 && since_catch < catch_hold;
+        const bool giving = since_catch >= catch_hold || (phase_ == Phase::impact && since_catch < 0);
+        const float arm_tone = bracing ? (catching ? std::max(tone, 1.0f * muscle)
+                                          : giving ? std::max(tone, 0.4f * muscle)
+                                                   : std::max(tone, 0.85f * muscle * (0.25f + 0.75f * reflex)))
                              : holding ? std::max(tone, 0.75f * muscle)
                              : phase_ == Phase::settle ? std::max(tone, 0.35f * muscle) : tone;
         const float reaction = std::clamp(in.tune.reaction, 0.5f, 2.0f);
@@ -509,7 +548,10 @@ Output Muscles::step(const Input& in) noexcept {
         const V3 knee_pole = f.forward + out_side[s] * 0.15f;
         const V3 k = reach_middle(b[hip[s]].p, foot[s], length(bone(in, hip[s], knee[s])), length(bone(in, knee[s], ankle[s])), knee_pole);
         const bool stepping = step_leg_ == s && !step_landed_;
-        const float leg_tone = stepping ? std::max(tone, 0.85f * muscle * (0.25f + 0.75f * reflex)) : step_leg_ == s ? std::max(tone * 0.6f, 0.25f * muscle)
+        const bool step_catching = step_leg_ == s && step_landed_ && step_down_at_ >= 0 && t_ - step_down_at_ < catch_hold;
+        const float leg_tone = stepping ? std::max(tone, 0.85f * muscle * (0.25f + 0.75f * reflex))
+                             : step_catching ? std::max(tone, 1.0f * muscle)
+                             : step_leg_ == s ? std::max(tone * 0.6f, 0.3f * muscle)
                              : holding ? std::max(tone, 0.6f * muscle) : tone * (phase_ == Phase::brace ? 0.7f : 1.0f);
         const float leg_quick = stepping ? 3.0f * reaction * (0.6f + 0.4f * severity_) : holding ? 1.6f : 1.0f;
         add(hip[s], swing_between(normalized(bone(in, hip[s], knee[s])), normalized(k - b[hip[s]].p)), leg_tone, leg_quick);

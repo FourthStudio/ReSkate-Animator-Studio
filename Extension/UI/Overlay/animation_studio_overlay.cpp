@@ -8041,9 +8041,17 @@ std::vector<Setting> bails_settings() {
                "game's own ragdoll does.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.grip = a * 2.0f; }); }));
     add(on_off("Grab what hurts", t.grab_hurt,
-               "Once still, his hands go to whatever hit hardest: his chin or face, a knee (both hands when they reach), an "
-               "elbow or his hip.",
+               "Once down, his hands go to whatever hit hardest and hold it: his chin or face, a knee (both hands, the leg "
+               "pulled up), an elbow or his hip.",
                [tune](bool v) { tune([v](rb::Tuning& n) { n.grab_hurt = v; }); }));
+    {
+        Setting s = slider("Hold what hurts for", (t.hold_hurt - 1.0f) / 9.0f, std::format("{:.1f} s", t.hold_hurt),
+                           "How long he lies holding what hurts, curled round it and rocking a little, before he lets go. Getting up "
+                           "(the game's button) ends it sooner.",
+                           [tune](float a) { tune([a](rb::Tuning& n) { n.hold_hurt = 1.0f + a * 9.0f; }); });
+        s.enabled = on && t.grab_hurt;
+        rows.push_back(std::move(s));
+    }
     add(slider("Lie still for", (t.lie_still - 0.5f) / 3.5f, std::format("{:.1f} s", t.lie_still),
                "How long he holds himself once he stops moving (arms drawn in, curled up) before he lets go and just lies there. "
                "Getting up is the game's, with a button, as always.",
