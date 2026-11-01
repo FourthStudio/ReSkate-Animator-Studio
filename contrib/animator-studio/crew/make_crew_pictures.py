@@ -31,7 +31,7 @@ CREW = {
     "heatz": ("heatz_portrait.webp", (775, 560, 960), "heatz_shot.webp"),
     "leafbro": ("leaf_portrait.webp", (1005, 930, 2060), "leaf_shot.webp"),  # leaf.bro: the eyes, whole
     "kanga": ("kanga_portrait.png", (455, 400, 560), "kanga_shot.webp"),  # his name behind him
-    "style_over_score": ("sos_portrait.png", (1010, 450, 640), "sos_shot.png"),  # against the graffiti wall; the kickflip
+    "style_over_score": ("sos_portrait.png", (1030, 380, 560), "sos_shot.png"),  # against the graffiti wall; the kickflip
     # BUILT BY (studio::market::builders), by the name their pictures go under.
     "22sh": ("22sh_portrait.png", (368, 330, 640), "GRIP"),
     "fourth": ("fourth_logo.webp", (570, 430, 740), "fourth_shot.webp"),  # his red tag, round
