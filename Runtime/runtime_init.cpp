@@ -1,5 +1,6 @@
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Skater/skater_events.h"
+#include "Extension/Skater/real_bails.h"
 #include "runtime_internal.h"
 #include "Extension/UI/Overlay/animation_studio_images.h"
 #include "Extension/Customization/item_browser.h"
@@ -520,6 +521,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::overlay::prepare_game_images();
         record("{\"event\":\"skater_physics_initialized\",\"active\":" + std::string(physics ? "true" : "false") + ",\"xray\":" +
                std::string(xray ? "true" : "false") + "}");
+        const bool real_bails = physics && dingosdk::real_bails::start(r.base);
+        record("{\"event\":\"real_bails_initialized\",\"active\":" + std::string(real_bails ? "true" : "false") + "}");
         const bool launch_hooks = dingosdk::launches::start(r.base);
         record("{\"event\":\"launches_initialized\",\"active\":" + std::string(launch_hooks ? "true" : "false") + "}");
         const bool trick_rewrites = dingosdk::trick_rewrite::start(r.base);

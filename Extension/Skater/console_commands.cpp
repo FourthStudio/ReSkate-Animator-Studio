@@ -2,6 +2,7 @@
 #include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "ai_skaters.h"
+#include "real_bails.h"
 #include "Engine/Game/Skater/velocity_boost.h"
 #include <algorithm>
 #include <cstdlib>
@@ -388,5 +389,41 @@ void register_ai_commands(Commands &registry) {
         out(std::format("{} AI skater(s) active; details follow in the log.", ai_skaters::active_count()));
     };
     registry.add(std::move(status));
+}
+// Real Bails (real_bails.h): the ragdoll's muscles, their strength and the bail recordings.
+void register_real_bails_commands(Commands &registry) {
+    const auto ready = [](const Model &) {
+        return State{real_bails::available(), {}, "The skater's physics could not be read in this game.", {}, false};
+    };
+    auto on = action("realbails", "Muscles in the ragdoll so bails look like a skater's (1, the default) or the game's own (0)",
+                     Group::gameplay, {argument("0|1", Type::boolean)});
+    on.aliases = {"bails.real"};
+    on.inspect = ready;
+    on.run = [](const Model &, const Values &args, const Output &out) {
+        real_bails::set_enabled(std::get<bool>(args[0]));
+        out(real_bails::enabled() ? "Real bails on." : "Real bails off: the game's own ragdoll.");
+    };
+    registry.add(std::move(on));
+    auto strength = argument("percent", Type::unsigned_integer);
+    strength.minimum = 25;
+    strength.maximum = 200;
+    auto power = action("realbails strength", "How strong the bail muscles are, 25 to 200 percent (100 as tuned)", Group::gameplay,
+                        {strength});
+    power.aliases = {"bails.strength"};
+    power.inspect = ready;
+    power.run = [](const Model &, const Values &args, const Output &out) {
+        real_bails::set_strength(static_cast<float>(std::get<std::uint64_t>(args[0])) / 100.0f);
+        out(std::format("Bail muscles at {:.0f}%.", real_bails::strength() * 100));
+    };
+    registry.add(std::move(power));
+    auto record = action("realbails record", "Write every bail to logs\\RealBails, step by step (1) or not (0)", Group::gameplay,
+                         {argument("0|1", Type::boolean)});
+    record.aliases = {"bails.record"};
+    record.inspect = ready;
+    record.run = [](const Model &, const Values &args, const Output &out) {
+        real_bails::set_recording(std::get<bool>(args[0]));
+        out(real_bails::recording() ? "Recording bails to logs\\RealBails." : "Not recording bails.");
+    };
+    registry.add(std::move(record));
 }
 } // namespace dingosdk::console

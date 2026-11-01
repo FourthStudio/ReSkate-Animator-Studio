@@ -50,6 +50,7 @@
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Localization/text_overrides.h"
 #include "Extension/Skater/bone_cam.h"
+#include "Extension/Skater/real_bails.h"
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/World/level_loading.h"
@@ -1783,6 +1784,7 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             // A custom map is a sublevel of the root level: that is the map the player means.
             dingosdk::trainer::tick(r.base, client, multiplayer_ready, r.catalog_level.empty() ? r.last_level : r.catalog_level);
             dingosdk::bonecam::tick_bone_cam(r.base,client,multiplayer_ready);
+            dingosdk::real_bails::tick();
         }
         {
             DINGO_PROFILE_ZONE("tick/Steam friend join");
