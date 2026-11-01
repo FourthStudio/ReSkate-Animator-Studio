@@ -219,6 +219,14 @@ struct EditTransition {
     bool restarted{}; // this evaluation starts a different animation or releases the current one
     static constexpr float jump_fade = 0.1f;
     void reset() { *this = {}; }
+    // What a handover drew this frame (hand_over_body, the board's pass): whatever plays next fades in from it, even the
+    // same trick back after a frame or two with no packet, instead of snapping to its keys.
+    void hold_drawn(std::span<const Offset> drawn) {
+        current.assign(drawn.begin(), drawn.end());
+        from = current;
+        from_left = 0;
+        started = -1;
+    }
     // Any joint whose wanted turn is more than `degrees` from the one drawn, or moved more than 25 cm.
     static bool jumps(std::span<const Offset> drawn, std::span<const Offset> wanted, float degrees) noexcept {
         const float most = std::cos(degrees * 0.5f * 3.14159265f / 180);
@@ -262,15 +270,11 @@ struct EditTransition {
         return current;
     }
 };
-// How long a change of what plays fades, on the game's live pose (the body and the board alike: EditTransition's keys go on
-// the game's pose as it is now, never on a pose held from before). Into a trick of yours, or with the game in the air doing
-// its own move, quickly: the game's pop and flip go on under the fade, and keys still easing in over half a long Crossfade
-// (0.4 s at 0.8) left the board turned short and the legs behind it - the feet through the board. Back to the game on the
-// ground over `blend` (half the Crossfade), as the Crossfade says. A grind has its own ease (grind_ease_min/max).
-inline constexpr float quick_key_fade = 0.12f;
-inline float key_fade_seconds(float blend, bool into_trick, bool in_air) noexcept {
-    return into_trick || in_air ? std::min(blend, quick_key_fade) : blend;
-}
+// A change of what plays fades over half the trick's Crossfade, as its maker set it, on the game's live pose: the body and
+// the board alike (EditTransition's keys go on the game's pose as it is now, never on a pose held from before), so the
+// game's pop and flip go on under the fade and the feet stay with the board. A trick handing back to the game goes over in
+// the SMOOTH handover (Handover, hand_over_body), on a rail or off it: at its landing, over a gap, into the next pop. A
+// grind has its own ease (grind_ease_min/max).
 // On a rail the board's pass gives the board back to the game at once, but the body fades the trick out over the
 // crossfade. The game drops the board into the grind, and the fade kept the legs as they were for the landing: the feet
 // stood up to 35 cm off the board for 0.18 s (kickflip to BS crooked and BS noseslide, 2026-10-26). Cutting the fade

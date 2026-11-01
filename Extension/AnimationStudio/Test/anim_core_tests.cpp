@@ -2901,29 +2901,35 @@ void bent_joints_match_the_studio() {
 // A change of what plays fades on the game's live pose: the keys' changes, never a pose held from before. Into a trick, or with
 // the game in the air, quickly whatever the Crossfade; back to the game on the ground over the Crossfade.
 void key_fades_go_with_the_games_pose() {
-    check(near(key_fade_seconds(0.4f, true, true), quick_key_fade) && near(key_fade_seconds(0.4f, true, false), quick_key_fade) &&
-              near(key_fade_seconds(0.4f, false, true), quick_key_fade),
-          "Into a trick, or in the air, the keys fade in and out quickly at a long Crossfade");
-    check(near(key_fade_seconds(0.4f, false, false), 0.4f) && near(key_fade_seconds(0.08f, true, false), 0.08f),
-          "On the ground the hand-back takes the Crossfade, and a short Crossfade is never made longer");
-    // The pop goes on under a fade into a trick: halfway, a keyed knee is the game's knee now with half its key on it.
+    // A long Crossfade (0.8, so 0.4 s of fade) as a pack's maker set it: the pop goes on under the fade into a trick, and
+    // halfway a keyed knee is the game's knee now with half its key on it - never a knee held from before the pop.
+    constexpr float blend = 0.4f;
     EditTransition fade;
     std::vector<Offset> none(skeleton_joints), keyed(skeleton_joints);
     keyed[9].rotation = from_euler({40, 0, 0});
-    (void)fade.evaluate(10.0, 1, 0, 0, none, quick_key_fade);
-    (void)fade.evaluate(10.05, 1, 7, 99, keyed, quick_key_fade); // the trick starts: its fade begins
-    (void)fade.evaluate(10.05 + quick_key_fade / 2, 1, 7, 99, keyed, quick_key_fade);
+    (void)fade.evaluate(10.0, 1, 0, 0, none, blend);
+    (void)fade.evaluate(10.05, 1, 7, 99, keyed, blend); // the trick starts: its fade begins
+    (void)fade.evaluate(10.05 + blend / 2, 1, 7, 99, keyed, blend);
     const std::vector<Offset> half = fade.current;
     std::vector<Joint> popping(skeleton_joints);
     popping[9].rotation = from_euler({65, 0, 0});
     auto midway = popping; apply_pose_deltas(half, midway);
     check(same_turn(midway[9].rotation, normalised(multiply(popping[9].rotation, scaled_turn(keyed[9].rotation, 0.5f)))),
           "Halfway in, the knee is the game's knee as it pops with half its key on it");
-    const auto later = fade.evaluate(10.05 + quick_key_fade + 0.001, 1, 7, 99, keyed, quick_key_fade);
+    const auto later = fade.evaluate(10.05 + blend + 0.001, 1, 7, 99, keyed, blend);
     auto drawn = popping; apply_pose_deltas(later, drawn);
     check(same_turn(later[9].rotation, keyed[9].rotation) &&
               same_turn(drawn[9].rotation, normalised(multiply(popping[9].rotation, keyed[9].rotation))),
-          "A trick's keys are in within the quick fade, on the game's knee as it pops");
+          "A trick's keys are in when the maker's Crossfade is over, on the game's knee as it pops");
+    // A handover drew the knee part way back to the game's (a frame or two with no packet), then the same trick comes back:
+    // it fades in again from what was drawn, not in one frame.
+    std::vector<Offset> handed(skeleton_joints);
+    handed[9].rotation = scaled_turn(keyed[9].rotation, 0.5f);
+    fade.hold_drawn(handed);
+    const auto back = fade.evaluate(11.0, 1, 7, 99, keyed, blend);
+    check(same_turn(back[9].rotation, handed[9].rotation), "The same trick back after a handover starts where the handover drew it");
+    const auto back_in = fade.evaluate(11.0 + blend + 0.001, 1, 7, 99, keyed, blend);
+    check(same_turn(back_in[9].rotation, keyed[9].rotation), "and is all in over the Crossfade");
 }
 void release_playback_regressions() {
     check(to_euler({0, 0, 0, 0}) == Vec3{} && to_euler({1e30f, 1e30f, 1e30f, 1e30f}) == Vec3{},
