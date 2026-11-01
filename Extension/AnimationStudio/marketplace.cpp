@@ -1,5 +1,6 @@
 #include "marketplace.h"
 #include "marketplace_listing.h"
+#include "marketplace_month.h"
 #include "anim_studio.h"
 #include "anim_core.h"
 #include "Engine/Core/Json/json.h"
@@ -406,6 +407,18 @@ struct Market {
     bool settings_read{};
     Preview preview;
     bool preview_worker{};
+    // TOP OF THE MONTH: each pack's versions (their downloads, when each came out) and where this month's counting began.
+    VersionCounts counts;
+    std::chrono::steady_clock::time_point counts_fetched{};
+    bool counts_fresh{}; // read from Thunderstore this run (not only from the copy on disk)
+    MonthBase month_base;
+    // The developers' VERIFIED list (read from GitHub every few minutes, kept on disk between runs).
+    VerifiedList verified_list;
+    std::chrono::steady_clock::time_point verified_fetched{};
+    bool verified_ever{};
+    int look{};
+    int dev_state{};
+    std::string dev_login, dev_error;
 };
 Market& market() {
     static auto* m = new Market;
@@ -418,7 +431,8 @@ void save_lists_locked(const Market& m) {
         for (const auto& [name, version] : m.installed) installed[name] = version;
         for (const auto& [name, pack] : m.installed_as) installed_as[name] = pack;
         write_file(folder() / L"settings.json", Json{{"favorites", std::move(favorites)}, {"installed", std::move(installed)},
-                                                     {"installed_as", std::move(installed_as)}, {"like_prompt", m.like_prompt}}.dump(2));
+                                                     {"installed_as", std::move(installed_as)}, {"like_prompt", m.like_prompt},
+                                                     {"look", m.look}}.dump(2));
     } catch (...) {}
 }
 void read_settings_locked(Market& m) {
@@ -440,12 +454,33 @@ void read_settings_locked(Market& m) {
                 for (const auto& [name, pack] : root.at("installed_as").items())
                     if (pack.is_string()) m.installed_as[name] = pack.string();
             m.like_prompt = root.value("like_prompt", true);
+            if (root.contains("look") && root.at("look").is_number()) m.look = std::clamp(static_cast<int>(root.at("look").get<double>()), 0, 16);
             if (old_name) {
                 save_lists_locked(m);
                 std::error_code error;
                 if (std::filesystem::exists(folder() / L"settings.json", error)) std::filesystem::remove(folder() / L"market.json", error);
             }
         }
+        // What was counted and read before: this month's numbers and the VERIFIED list at once, while they are read again.
+        try {
+            if (const auto text = read_file(folder() / L"versions.json"); !text.empty()) m.counts = read_version_counts_json(text);
+        } catch (...) {}
+        try {
+            if (const auto text = read_file(folder() / L"month.json"); !text.empty()) m.month_base = read_month_base(text);
+        } catch (...) {}
+        try {
+            if (const auto text = read_file(folder() / L"verified.json"); !text.empty()) m.verified_list = read_verified(text);
+        } catch (...) {}
+        // A developer key that GitHub said could write: remembered (VERIFY says so if it no longer can).
+        try {
+            std::error_code missing;
+            if (std::filesystem::is_regular_file(folder() / L"dev.key", missing))
+                if (const auto text = read_file(folder() / L"dev.json"); !text.empty()) {
+                    const auto root = Json::parse(text);
+                    m.dev_login = root.value("login", "");
+                    if (!m.dev_login.empty()) m.dev_state = 2;
+                }
+        } catch (...) {}
         if (const auto text = read_file(account_file()); !text.empty()) {
             const auto root = Json::parse(text);
             m.team = root.value("team", "");
@@ -463,6 +498,36 @@ std::string token_fingerprint(const std::string& token) {
     std::string out;
     for (const unsigned char b : md5("reskate-animator-studio/token/" + token)) out += hex[b >> 4], out += hex[b & 15];
     return out.substr(0, 16);
+}
+// This month, in UTC as Thunderstore's dates are ("2026-11").
+std::string this_month() {
+    const auto days = std::chrono::duration_cast<std::chrono::hours>(std::chrono::system_clock::now().time_since_epoch()).count() / 24;
+    return month_of_day(days);
+}
+// The VERIFIED list as GitHub has it now, every few minutes (or when asked): kept on disk, and kept as it was when GitHub
+// cannot be reached. Not there at all (no developer has verified anything yet) is an empty list.
+void refresh_verified(bool force) {
+    auto& m = market();
+    {
+        std::lock_guard lock(m.mutex);
+        if (!force && m.verified_ever && std::chrono::steady_clock::now() - m.verified_fetched < std::chrono::minutes(3)) return;
+        m.verified_ever = true;
+        m.verified_fetched = std::chrono::steady_clock::now();
+    }
+    https::Download got{};
+    const auto text = https::get_text(widen(verified_list_url()), 1024 * 1024, 30, agent, &got);
+    std::optional<VerifiedList> list;
+    try {
+        if (text) list = read_verified(*text);
+        else if (got.http_status == 404) list = VerifiedList{};
+    } catch (...) {}
+    if (!list) return;
+    std::lock_guard lock(m.mutex);
+    if (list->packs == m.verified_list.packs && list->makers == m.verified_list.makers) return;
+    m.verified_list = std::move(*list);
+    try {
+        write_file(folder() / L"verified.json", verified_json(m.verified_list));
+    } catch (...) {}
 }
 // A pack's newest version and its download, asked of the package itself. False when it cannot be had.
 bool fill_version(Pack& p) {
@@ -822,6 +887,13 @@ View view() {
     v.team_state = m.team_checked == m.team ? m.team_state : 0;
     v.account_state = m.account_checked == m.team ? m.account_state : 0;
     v.like_prompt = m.like_prompt;
+    v.dev_state = m.dev_state;
+    v.dev_login = m.dev_login;
+    v.dev_error = m.dev_error;
+    v.month = this_month();
+    v.month_known = !m.counts.empty();
+    v.verified_count = m.verified_list.packs.size() + m.verified_list.makers.size();
+    v.look = m.look;
     v.job = m.job;
     v.detail = m.detail;
     v.preview = m.preview;
@@ -839,7 +911,14 @@ View view() {
         }
         p.dev = builder_of(p.owner) != nullptr;                // BUILT BY, with a team: DEV
         p.crew = crew_member(p.owner) != nullptr || p.dev; // THE CREW: CREW CERTIFIED (and in the crew's lists, the devs too)
-        p.verified = verified_maker(p.owner);
+        p.verified = verified_by(m.verified_list, p.owner, p.full_name);
+        {
+            const auto found = m.counts.find(p.full_name);
+            const auto n = month_numbers(p, found == m.counts.end() ? nullptr : &found->second, m.month_base, v.month);
+            p.month_downloads = n.downloads;
+            p.month_likes = n.likes;
+            p.month_counted = n.counted;
+        }
         if (const auto path = icon_path(p); std::filesystem::is_regular_file(path, error)) p.icon_file = utf8(path);
     }
     return v;
@@ -877,20 +956,35 @@ void refresh(bool force) {
         auto& m = market();
         std::vector<Pack> packs;
         std::string error;
+        std::optional<VersionCounts> counts;
+        const auto listing_url = std::string(site) + "/c/" + community + "/api/v1/package/";
         // Thunderstore's search first: only the studio's packs, and a new one shows within a minute. Its whole listing
         // (every package of the community, several MB, rebuilt only now and then) when the search cannot be had.
         if (!search_packs(packs, error)) {
             packs.clear();
             error.clear();
             https::Download result{};
-            const auto url = std::string(site) + "/c/" + community + "/api/v1/package/";
-            const auto text = fetch_text(url, 96ull * 1024 * 1024, 300, &result);
+            const auto text = fetch_text(listing_url, 96ull * 1024 * 1024, 300, &result);
             if (!text) error = listing_failure(result);
             else
                 try {
                     packs = read_listing(*text);
+                    counts = read_version_counts(*text);
                 } catch (const std::exception& e) { error = std::string("Thunderstore's listing could not be read: ") + e.what(); }
+        } else {
+            // TOP OF THE MONTH needs each version's downloads, which only the whole listing has: read every twenty minutes.
+            bool due = false;
+            {
+                std::lock_guard lock(m.mutex);
+                due = !m.counts_fresh || std::chrono::steady_clock::now() - m.counts_fetched > std::chrono::minutes(20);
+            }
+            if (due)
+                if (const auto text = fetch_text(listing_url, 96ull * 1024 * 1024, 300))
+                    try {
+                        counts = read_version_counts(*text);
+                    } catch (...) {}
         }
+        refresh_verified(false);
         if (error.empty()) {
             try {
                 write_file(folder() / L"packs.json", packs_json(packs));
@@ -906,6 +1000,20 @@ void refresh(bool force) {
             m.fetched = std::chrono::steady_clock::now();
             m.error = error;
             if (error.empty()) m.packs = std::move(packs);
+            if (counts && !counts->empty()) {
+                m.counts = std::move(*counts);
+                m.counts_fresh = true;
+                m.counts_fetched = std::chrono::steady_clock::now();
+                try {
+                    write_file(folder() / L"versions.json", version_counts_json(m.counts));
+                } catch (...) {}
+            }
+            // Where this month's counting starts: a new month starts it again, a pack seen for the first time this month
+            // starts from what it has now.
+            if (error.empty() && update_month_base(m.month_base, m.packs, m.counts, this_month()))
+                try {
+                    write_file(folder() / L"month.json", month_base_json(m.month_base));
+                } catch (...) {}
         }
         {
             std::vector<std::string> names;
@@ -1122,6 +1230,204 @@ void want_preview(const std::string& full_name) {
         m.preview.state = 3;
         m.preview.error = "It could not be started.";
     }
+}
+// ---- VERIFIED: the developer key and the list on GitHub ----------------------------------------------
+static std::filesystem::path dev_key_file() { return folder() / L"dev.key"; }
+static std::filesystem::path dev_file() { return folder() / L"dev.json"; }
+static std::vector<std::wstring> github_headers(const std::string& token, bool json_body = false) {
+    std::vector<std::wstring> out{L"Authorization: Bearer " + widen(token), L"Accept: application/vnd.github+json", L"X-GitHub-Api-Version: 2022-11-28"};
+    if (json_body) out.push_back(L"Content-Type: application/json");
+    return out;
+}
+// What GitHub said when it said no: its message, short.
+static std::string github_said(const Answer& a) {
+    if (!a.error.empty()) return "GitHub could not be reached: " + a.error;
+    std::string text;
+    try {
+        const auto root = Json::parse(a.body);
+        if (root.is_object()) text = root.value("message", "");
+    } catch (...) {}
+    if (text.size() > 200) text.resize(200);
+    return "GitHub answered " + std::to_string(a.status) + (text.empty() ? std::string{} : " (" + text + ")");
+}
+static std::string github_api() { return std::string("https://api.github.com/repos/") + verified_repo; }
+bool link_dev_key(const std::string& token, std::string& message) {
+    if (token.size() < 20 || token.size() > 512 || token.find_first_of(" \r\n\t") != std::string::npos) {
+        message = "That is not a GitHub token: make one on github.com under Settings > Developer settings > Personal access tokens, and paste it here.";
+        return false;
+    }
+    const auto sealed = protect(token, true);
+    if (sealed.empty()) {
+        message = "The key could not be kept safely on this PC.";
+        return false;
+    }
+    try {
+        write_file(dev_key_file(), sealed);
+        std::error_code error;
+        std::filesystem::remove(dev_file(), error);
+    } catch (const std::exception& e) {
+        message = e.what();
+        return false;
+    }
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        m.dev_state = 0;
+        m.dev_login.clear();
+        m.dev_error.clear();
+    }
+    check_dev_key(true);
+    message = "Developer key kept. Asking GitHub whether it can write to the studio's repository...";
+    return true;
+}
+void unlink_dev_key() {
+    std::error_code error;
+    std::filesystem::remove(dev_key_file(), error);
+    std::filesystem::remove(dev_file(), error);
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    m.dev_state = 0;
+    m.dev_login.clear();
+    m.dev_error.clear();
+}
+void check_dev_key(bool again) {
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        read_settings_locked(m);
+        if (m.dev_state == 1 || (!again && m.dev_state != 0)) return;
+        std::error_code missing;
+        if (!std::filesystem::is_regular_file(dev_key_file(), missing)) {
+            m.dev_state = 0;
+            return;
+        }
+        m.dev_state = 1;
+    }
+    std::thread([] {
+        int state = 4;
+        std::string login, why;
+        const auto token = protect(read_file(dev_key_file()), false);
+        if (token.empty()) state = 3, why = "The key on this PC could not be read: add it again.";
+        else {
+            // The repository as the key's account sees it: whether it may push to it.
+            const auto repo = request(L"GET", github_api(), github_headers(token), {}, 30000);
+            if (repo.status == 200) {
+                bool push = false;
+                try {
+                    const auto root = Json::parse(repo.body);
+                    if (root.contains("permissions") && root.at("permissions").is_object()) push = root.at("permissions").value("push", false);
+                } catch (...) {}
+                if (push) {
+                    state = 2;
+                    const auto user = request(L"GET", "https://api.github.com/user", github_headers(token), {}, 30000);
+                    try {
+                        if (user.status == 200) login = Json::parse(user.body).value("login", "");
+                    } catch (...) {}
+                    if (login.empty()) login = "developer";
+                } else {
+                    state = 3;
+                    why = std::string("This key's account cannot write to ") + verified_repo + ". Only the studio's developers can verify packs.";
+                }
+            } else if (repo.status == 401 || repo.status == 403 || repo.status == 404) {
+                state = 3;
+                why = "GitHub did not take the key (wrong, expired or taken back): " + github_said(repo);
+            } else why = github_said(repo);
+        }
+        logging::log(Level::info, Channel::skater, "Animator Studio market: the developer key {}.",
+                     state == 2 ? "can verify packs" : state == 3 ? "cannot verify packs" : "could not be checked");
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        m.dev_state = state;
+        m.dev_login = login;
+        m.dev_error = why;
+        try {
+            std::error_code error;
+            if (state == 2) write_file(dev_file(), Json{{"login", login}}.dump(2));
+            else if (state == 3) std::filesystem::remove(dev_file(), error);
+        } catch (...) {}
+    }).detach();
+}
+void set_verified(const std::string& full_name, bool on) {
+    if (!plain_full_name(full_name)) return;
+    std::string title = full_name;
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        for (const auto& p : m.packs)
+            if (p.full_name == full_name) title = p.title;
+    }
+    start_job((on ? "Verifying " : "Taking VERIFIED off ") + title, [full_name, title, on](Job& result) {
+        const auto token = protect(read_file(dev_key_file()), false);
+        if (token.empty()) throw std::runtime_error("No developer key on this PC: add one in SETTINGS > STUDIO > Developer key.");
+        const auto api = github_api();
+        const auto file = api + "/contents/" + verified_file;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            progress(0.15f);
+            VerifiedList list;
+            std::string sha;
+            const auto got = request(L"GET", file + "?ref=" + verified_branch, github_headers(token), {}, 30000);
+            if (got.status == 200) {
+                const auto root = Json::parse(got.body);
+                sha = root.value("sha", "");
+                list = read_verified(base64_decode(root.value("content", "")));
+            } else if (got.status == 404) {
+                // Not there yet: the file, or its branch, made from the default branch's newest commit the first time.
+                const auto ref = request(L"GET", api + "/git/ref/heads/" + verified_branch, github_headers(token), {}, 30000);
+                if (ref.status == 404) {
+                    const auto repo = request(L"GET", api, github_headers(token), {}, 30000);
+                    if (repo.status != 200) throw std::runtime_error(github_said(repo));
+                    const auto main = Json::parse(repo.body).value("default_branch", "main");
+                    const auto head = request(L"GET", api + "/git/ref/heads/" + main, github_headers(token), {}, 30000);
+                    if (head.status != 200) throw std::runtime_error(github_said(head));
+                    const auto root = Json::parse(head.body);
+                    const auto from = root.contains("object") && root.at("object").is_object() ? root.at("object").value("sha", "") : std::string{};
+                    if (from.empty()) throw std::runtime_error("GitHub did not say where " + main + " is.");
+                    const auto made = request(L"POST", api + "/git/refs", github_headers(token, true),
+                                              Json{{"ref", std::string("refs/heads/") + verified_branch}, {"sha", from}}.dump(), 30000);
+                    if (made.status != 201 && made.status != 422) throw std::runtime_error(github_said(made)); // 422: made meanwhile
+                } else if (ref.status != 200) throw std::runtime_error(github_said(ref));
+            } else throw std::runtime_error(github_said(got));
+            progress(0.55f);
+            std::erase_if(list.packs, [&](const std::string& p) { return same_name(p, full_name); });
+            if (on) list.packs.insert(full_name);
+            Json body{{"message", std::string("Market: ") + full_name + (on ? " is VERIFIED" : " is no longer VERIFIED")},
+                      {"content", base64_encode(verified_json(list))},
+                      {"branch", verified_branch}};
+            if (!sha.empty()) body["sha"] = sha;
+            const auto put = request(L"PUT", file, github_headers(token, true), body.dump(), 30000);
+            if (put.status == 200 || put.status == 201) {
+                auto& m = market();
+                {
+                    std::lock_guard lock(m.mutex);
+                    m.verified_list = list;
+                    m.verified_fetched = std::chrono::steady_clock::now();
+                    try {
+                        write_file(folder() / L"verified.json", verified_json(list));
+                    } catch (...) {}
+                }
+                const auto dash = full_name.find('-');
+                const bool by_maker = !on && std::any_of(list.makers.begin(), list.makers.end(),
+                                                         [&](const std::string& t) { return same_name(t, std::string_view(full_name).substr(0, dash)); });
+                result.message = on ? title + " is VERIFIED: it is on the VERIFIED shelf now, and in everyone's MARKET within a few minutes."
+                               : by_maker ? title + " is off the list, but its maker is VERIFIED, so it still shows the tag."
+                                          : title + " is no longer VERIFIED: everyone's MARKET has it within a few minutes.";
+                return;
+            }
+            if ((put.status == 409 || put.status == 422) && attempt == 0) continue; // changed meanwhile: read it again
+            if (put.status == 403 || put.status == 404)
+                throw std::runtime_error(std::string("GitHub would not let the key write to ") + verified_repo +
+                                         ": it needs Contents read and write there. " + github_said(put));
+            throw std::runtime_error(github_said(put));
+        }
+        throw std::runtime_error("The VERIFIED list changed on GitHub while it was being written: try again.");
+    });
+}
+void set_look(int look) {
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    read_settings_locked(m);
+    m.look = std::clamp(look, 0, 16);
+    save_lists_locked(m);
 }
 bool link_account(const std::string& team, const std::string& token, std::string& message) {
     const bool team_ok = !team.empty() && team.size() <= 64 &&

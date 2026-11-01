@@ -116,20 +116,24 @@ void read_art() {
         wall.width = static_cast<UINT>(w->width);
         wall.height = static_cast<UINT>(w->height);
     } else log_missing("the wall");
-    // The sheet: the three tiles along the top, the pictures under them.
+    // The sheet: the tiles along the top, the pictures in rows under them.
     struct Item {
         MarketArt art;
         const wchar_t* name;
         int most_wide;
         bool tile;
     };
-    const std::array<Item, 6> items{{{MarketArt::grip, L"STUDIO_ART_GRIP", 0, true},
-                                     {MarketArt::paper_white, L"STUDIO_ART_PAPER_WHITE", 0, true},
-                                     {MarketArt::paper_blue, L"STUDIO_ART_PAPER_BLUE", 0, true},
-                                     {MarketArt::skater, L"STUDIO_ART_SKATER", 1000, false},
-                                     {MarketArt::splatter_a, L"STUDIO_ART_SPLATTER_A", 0, false},
-                                     {MarketArt::splatter_b, L"STUDIO_ART_SPLATTER_B", 0, false}}};
-    std::array<std::optional<ArtPixels>, 6> pictures;
+    constexpr std::size_t item_count = 9;
+    const std::array<Item, item_count> items{{{MarketArt::grip, L"STUDIO_ART_GRIP", 0, true},
+                                              {MarketArt::paper_white, L"STUDIO_ART_PAPER_WHITE", 0, true},
+                                              {MarketArt::paper_blue, L"STUDIO_ART_PAPER_BLUE", 0, true},
+                                              {MarketArt::concrete, L"STUDIO_ART_CONCRETE", 0, true},
+                                              {MarketArt::skater, L"STUDIO_ART_SKATER", 1000, false},
+                                              {MarketArt::splatter_a, L"STUDIO_ART_SPLATTER_A", 0, false},
+                                              {MarketArt::splatter_b, L"STUDIO_ART_SPLATTER_B", 0, false},
+                                              {MarketArt::skater_print, L"STUDIO_ART_PRINT", 800, false},
+                                              {MarketArt::skater_bw, L"STUDIO_ART_SKATER_BW", 800, false}}};
+    std::array<std::optional<ArtPixels>, item_count> pictures;
     for (std::size_t i = 0; i < items.size(); ++i) {
         pictures[i] = decode_studio_resource(items[i].name, items[i].most_wide);
         if (!pictures[i] || (items[i].tile && (pictures[i]->width != tile_side || pictures[i]->height != tile_side))) {
@@ -138,9 +142,23 @@ void read_art() {
         }
     }
     const int cell = tile_side + tile_border * 2;
-    int row_width = 0, row_height = 0;
-    for (std::size_t i = 3; i < items.size(); ++i)
-        if (pictures[i]) row_width += pictures[i]->width + 8, row_height = std::max(row_height, pictures[i]->height);
+    int tiles = 0;
+    for (const auto& item : items) tiles += item.tile;
+    const int sheet_width = std::max(cell * tiles, 4096);
+    // The pictures, as many to a row as fit.
+    std::array<std::pair<int, int>, item_count> spots{};
+    int pictures_height = 0;
+    {
+        int px = 0, py = 0, line = 0;
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            if (!pictures[i] || items[i].tile) continue;
+            if (px > 0 && px + pictures[i]->width > sheet_width) px = 0, py += line + 8, line = 0;
+            spots[i] = {px, py};
+            px += pictures[i]->width + 8;
+            line = std::max(line, pictures[i]->height);
+        }
+        pictures_height = py + line + 8;
+    }
     // THE CREW's pictures, those who sent theirs: in rows under the rest, as many to a row as fit.
     struct CrewPicture {
         std::string key;
@@ -161,7 +179,6 @@ void read_art() {
                 crew.push_back({crew_key(owner, which), std::move(*pixels)});
             else log_missing("a picture of THE CREW");
         }
-    const int sheet_width = std::max({cell * 3, row_width, crew.empty() ? 0 : 4096});
     int crew_height = 0;
     {
         int cx = 0, cy = 0, line = 0;
@@ -176,33 +193,33 @@ void read_art() {
     }
     Canvas sheet;
     sheet.width = sheet_width;
-    sheet.height = cell + row_height + 8 + crew_height;
+    sheet.height = cell + pictures_height + crew_height;
     sheet.rgba.assign(static_cast<std::size_t>(sheet.width) * sheet.height * 4, 0);
     std::array<ArtPlace, static_cast<std::size_t>(MarketArt::count)> places{};
     const float sw = static_cast<float>(sheet.width), sh = static_cast<float>(sheet.height);
-    int x = 0;
+    int tile_at = 0;
     for (std::size_t i = 0; i < items.size(); ++i) {
         if (!pictures[i]) continue;
         auto& place = places[static_cast<std::size_t>(items[i].art)];
         if (items[i].tile) {
-            const int tx = static_cast<int>(i) * cell;
+            const int tx = tile_at++ * cell;
             blit_tile(sheet, *pictures[i], tx, 0);
             place.uv0 = ImVec2((tx + tile_border) / sw, tile_border / sh);
             place.uv1 = ImVec2((tx + tile_border + tile_side) / sw, (tile_border + tile_side) / sh);
             place.width = place.height = static_cast<float>(tile_side);
             place.border = static_cast<float>(tile_border);
         } else {
-            blit(sheet, *pictures[i], x, cell);
-            place.uv0 = ImVec2(x / sw, cell / sh);
-            place.uv1 = ImVec2((x + pictures[i]->width) / sw, (cell + pictures[i]->height) / sh);
+            const int x = spots[i].first, y = cell + spots[i].second;
+            blit(sheet, *pictures[i], x, y);
+            place.uv0 = ImVec2(x / sw, y / sh);
+            place.uv1 = ImVec2((x + pictures[i]->width) / sw, (y + pictures[i]->height) / sh);
             place.width = static_cast<float>(pictures[i]->width);
             place.height = static_cast<float>(pictures[i]->height);
-            x += pictures[i]->width + 8;
         }
     }
     std::map<std::string, ArtPlace> crew_places;
     for (const auto& c : crew) {
-        const int y = cell + row_height + 8 + c.y;
+        const int y = cell + pictures_height + c.y;
         blit(sheet, c.pixels, c.x, y);
         ArtPlace place;
         place.uv0 = ImVec2(c.x / sw, y / sh);

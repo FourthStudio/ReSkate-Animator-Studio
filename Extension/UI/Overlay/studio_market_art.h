@@ -10,13 +10,14 @@
 
 // The Animator Studio MARKET's art (assets/animator_studio/market, made by contrib/animator-studio/market_art and built
 // into ReSkate.dll): the wall behind the shop, sharp at 3840 x 1620 in a texture of its own; and one sheet of the rest -
-// the tiling grip tape and papers the shop's torn paper is cut from, the skater's print and the blue splatters. Read
-// off the render thread the first time the MARKET is opened, and kept on the GPU from then on.
+// the tiling grip tape, papers and concrete the front page's looks are cut from, the skater's three prints (blue, black
+// and white, halftone) and the blue splatters. Read off the render thread the first time the MARKET is opened, and kept
+// on the GPU from then on.
 namespace dingosdk::overlay {
-enum class MarketArt { wallpaper, grip, paper_white, paper_blue, skater, splatter_a, splatter_b, count };
+enum class MarketArt { wallpaper, grip, paper_white, paper_blue, concrete, skater, splatter_a, splatter_b, skater_print, skater_bw, count };
 // Asked for each frame the MARKET is drawn: the first ask starts reading it.
 void want_market_art() noexcept;
-// Where a picture is on the GPU. For the tiling ones (grip, the papers) uv0..uv1 is one tile without the wrapped
+// Where a picture is on the GPU. For the tiling ones (grip, the papers, concrete) uv0..uv1 is one tile without the wrapped
 // border round it (`border` texels of it each side, so a quad may run a little past the tile). False until it is there.
 struct ArtPlace {
     ImTextureID texture{};

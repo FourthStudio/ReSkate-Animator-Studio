@@ -31,6 +31,7 @@ CREW = {
     "heatz": ("heatz_portrait.webp", (775, 560, 960), "heatz_shot.webp"),
     "leafbro": ("leaf_portrait.webp", (1005, 930, 2060), "leaf_shot.webp"),  # leaf.bro: the eyes, whole
     "kanga": ("kanga_portrait.png", (455, 400, 560), "kanga_shot.webp"),  # his name behind him
+    "style_over_score": ("sos_portrait.png", (1010, 450, 640), "sos_shot.png"),  # against the graffiti wall; the kickflip
     # BUILT BY (studio::market::builders), by the name their pictures go under.
     "22sh": ("22sh_portrait.png", (368, 330, 640), "GRIP"),
     "fourth": ("fourth_logo.webp", (570, 430, 740), "fourth_shot.webp"),  # his red tag, round
@@ -64,6 +65,10 @@ def main() -> None:
     for team, (portrait, (cx, cy, side), shot, *rest) in CREW.items():
         brighten = rest[0] if rest else 1.0
         blur = rest[1] if len(rest) > 1 else 0
+        if not (SOURCE / portrait).exists() or (shot != "GRIP" and not (SOURCE / shot).exists()):
+            # Not sent yet: the studio shows its stand-in for them until their pictures are in source/.
+            print(team, "skipped: its pictures are not in source/ yet")
+            continue
         lift = (lambda img: ImageEnhance.Brightness(img).enhance(brighten)) if brighten != 1.0 else (lambda img: img)
         src = lift(opaque(Image.open(SOURCE / portrait), team in ON_WHITE))
         box = (cx - side // 2, cy - side // 2, cx + side // 2, cy + side // 2)

@@ -382,9 +382,10 @@ if(EXISTS "${dingosdk_studio_loading}")
     string(REPLACE "\\" "\\\\" dingosdk_studio_loading_native "${dingosdk_studio_loading_native}")
     set(dingosdk_studio_resources "STUDIO_LOADING RCDATA \"${dingosdk_studio_loading_native}\"\n")
     # The MARKET's art (contrib/animator-studio/market_art/make_market_art.py): its wall, the tiling grip tape, concrete and
-    # papers, the skater's two prints, the splatters and the halftone (studio_market_art.h, studio_cover_maker.h).
+    # papers, the skater's three prints, the splatters and the halftone (studio_market_art.h, studio_cover_maker.h).
     foreach(dingosdk_art wallpaper:wallpaper.jpg grip:grip.jpg concrete:concrete.jpg paper_white:paper_white.jpg paper_blue:paper_blue.jpg
-            skater:skater_duotone.jpg print:skater_halftone.jpg splatter_a:splatter_a.png splatter_b:splatter_b.png halftone:halftone_blue.png)
+            skater:skater_duotone.jpg print:skater_halftone.jpg skater_bw:skater_bw.jpg splatter_a:splatter_a.png splatter_b:splatter_b.png
+            halftone:halftone_blue.png)
         string(REPLACE ":" ";" dingosdk_art_pair "${dingosdk_art}")
         list(GET dingosdk_art_pair 0 dingosdk_art_name)
         list(GET dingosdk_art_pair 1 dingosdk_art_file)

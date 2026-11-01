@@ -48,6 +48,7 @@ inline constexpr std::array crew_members{
     CrewMember{"Heatz", "Heatz", "Brought the heat every session: if a build could break, Heatz broke it first.", 0.5f, 0.36f},
     CrewMember{"Bonksz", "Bonksz", "Bonked every rail, ledge and kicker until the bugs gave up.", 0.6f, 0.42f},
     CrewMember{"kanga", "Kanga", "Hops every gap first: if a trick bounces off a bug, the log is already in your DMs.", 0.66f, 0.42f},
+    CrewMember{"Style_Over_Score", "Style over Score", "Steez before points: filmed every trick until it looked right, and every bug that didn't.", 0.5f, 0.5f},
 };
 // BUILT BY, on ABOUT: who made the Animator Studio. Their pictures are found by `pictures` (assets/animator_studio/crew/
 // <pictures>_profile.jpg and _thumbnail.jpg, as THE CREW's); `team` is their Thunderstore team where there is one to link to;
@@ -73,8 +74,8 @@ inline const Builder* builder_of(std::string_view team) {
             return &builder;
     return nullptr;
 }
-// VERIFIED makers, by their Thunderstore team: their packs carry the yellow VERIFIED tag and have a shelf of their own on
-// the MARKET's front page. In the build, like THE CREW, so nobody can verify themselves.
+// VERIFIED makers built in, by their Thunderstore team: their packs carry the yellow VERIFIED tag and have a shelf of their
+// own on the MARKET's front page. The developers' list on GitHub (marketplace_month.h, verified_list_url) says the rest.
 inline constexpr std::array<std::string_view, 0> verified_makers{};
 inline bool verified_maker(std::string_view team) {
     if (team.empty()) return false;
@@ -109,8 +110,13 @@ struct Pack {
     bool favorite{}, mine{};    // favorite: liked here (the heart)
     bool crew{};                // made by one of THE CREW, or one of BUILT BY (with `dev`)
     bool dev{};                 // made by one of BUILT BY: stamped DEV, not CREW CERTIFIED
-    bool verified{};            // made by a VERIFIED maker (verified_makers)
+    bool verified{};            // VERIFIED by the studio's developers (the pack, or its maker), or by a maker built in
     bool section{};             // listed in the community's Animation Packs section
+    // What it did this month (marketplace_month.h): its downloads and likes since the month began. `month_counted` false:
+    // its versions are not known yet, so the downloads are not this month's (TOP OF THE MONTH leaves it out until they are).
+    std::uint64_t month_downloads{};
+    int month_likes{};
+    bool month_counted{};
     std::string installed;      // the version installed here, "" none
     std::string installed_as;   // the pack it became in the library ("" not known: installed before this was kept)
     // Its README, read in the background for every pack (so a search finds a pack by the tricks in it): what its maker
@@ -162,6 +168,15 @@ struct View {
     // 2 it does (the team is yours), 3 it does not (another team's token, or not a token), 4 Thunderstore not reached.
     int account_state{};
     bool like_prompt{true}; // a like asks to like it on Thunderstore too
+    // The developer key (a GitHub token that can write to the studio's repository), which lets VERIFY be pressed on a
+    // pack's page: 0 none on this PC, 1 being checked, 2 it can (`dev_login` is whose), 3 GitHub said no (not a key, or
+    // one that cannot write there), 4 GitHub could not be reached.
+    int dev_state{};
+    std::string dev_login, dev_error;
+    std::string month;      // the month TOP OF THE MONTH is of ("2026-11", UTC)
+    bool month_known{};     // the packs' versions have been read (this month's numbers are counted, not guessed)
+    std::size_t verified_count{}; // packs and makers on the developers' VERIFIED list
+    int look{};             // the front page's look: 0 a new one each week, else the one chosen (1 on)
     Job job;
     Detail detail;
     Preview preview;
@@ -204,6 +219,17 @@ void verify_account(bool again = false);
 std::string verified_team();
 // Goes up whenever verified_team() changes: who owns which pack is worked out again.
 unsigned account_generation();
+// ---- VERIFIED, for the studio's developers ----
+// Keeps the developer key (encrypted for this Windows user, as the Thunderstore token) and asks GitHub, in the background,
+// whether it can write to the studio's repository (View::dev_state). False, with why, when it is not a token at all.
+bool link_dev_key(const std::string& token, std::string& message);
+void unlink_dev_key();
+void check_dev_key(bool again = false);
+// A pack put on the developers' VERIFIED list, or taken off it, in the background (as a job): written to verified.json
+// on the repository's market-data branch (the branch is made the first time), and everyone's MARKET has it within minutes.
+void set_verified(const std::string& full_name, bool on);
+// The front page's look (View::look): 0 a new one each week, else the one chosen. Kept with the MARKET's settings.
+void set_look(int look);
 // The Thunderstore team a pack in the library came from (got in the MARKET or from the launcher's Mods), "" none.
 std::string installed_from(const std::string& pack_name);
 // Builds the pack as a Thunderstore package and publishes it, in the background. `pack` is a pack of the library;

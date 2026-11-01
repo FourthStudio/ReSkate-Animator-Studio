@@ -427,6 +427,11 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     add_executable(dingosdk_studio_pack_file_tests Extension/AnimationStudio/Test/pack_file_tests.cpp)
     target_include_directories(dingosdk_studio_pack_file_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME studio_pack_files COMMAND dingosdk_studio_pack_file_tests)
+    # TOP OF THE MONTH's numbers and the developers' VERIFIED list.
+    add_executable(dingosdk_marketplace_month_tests Extension/AnimationStudio/Test/marketplace_month_tests.cpp)
+    target_include_directories(dingosdk_marketplace_month_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_marketplace_month_tests PRIVATE dingosdk_json)
+    add_test(NAME marketplace_month COMMAND dingosdk_marketplace_month_tests)
     # studio-settings.json, read and written back.
     add_executable(dingosdk_studio_settings_file_tests Extension/AnimationStudio/Test/studio_settings_file_tests.cpp)
     target_include_directories(dingosdk_studio_settings_file_tests PRIVATE "${PROJECT_SOURCE_DIR}")
