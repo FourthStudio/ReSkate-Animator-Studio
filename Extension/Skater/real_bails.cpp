@@ -182,7 +182,7 @@ model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step
     model::Input in;
     in.dt = seconds;
     in.strength = strength;
-    in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.catch_arms, t.catch_step, t.grab_hurt};
+    in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.grip, t.catch_arms, t.catch_step, t.grab_hurt};
     for (std::size_t i = 1; i < model::part_count; ++i) {
         const auto& b = bodies.body[i];
         auto& o = in.body[i];
@@ -273,6 +273,13 @@ void on_physics(std::uintptr_t core) noexcept {
             l.bails = s.bails.load(std::memory_order_relaxed);
             l.driven = s.driven.load(std::memory_order_relaxed);
             l.bail_seconds = f.bail ? f.t : 0;
+            if (have && bodies.body[2].ok && bodies.body[23].ok && bodies.body[5].ok && bodies.body[9].ok) {
+                using namespace math;
+                const auto at = [&](std::size_t i) { return Vec3{bodies.body[i].m[12], bodies.body[i].m[13], bodies.body[i].m[14]}; };
+                const auto up = math::normalized(at(2) - at(23));
+                const auto right = math::normalized(math::across(at(9) - at(5), up));
+                l.chest_forward = math::cross(up, right);
+            }
             l.phase = muscles ? model::name(driven.phase) : in_bail ? "off" : "";
         }
     }
@@ -417,6 +424,7 @@ constexpr const char* saved_reaction = "RealBails.Reaction";
 constexpr const char* saved_head = "RealBails.Head";
 constexpr const char* saved_tuck = "RealBails.Tuck";
 constexpr const char* saved_lie_still = "RealBails.LieStill";
+constexpr const char* saved_grip = "RealBails.Grip";
 constexpr const char* saved_catch_arms = "RealBails.CatchArms";
 constexpr const char* saved_catch_step = "RealBails.CatchStep";
 constexpr const char* saved_grab_hurt = "RealBails.GrabHurt";
@@ -426,6 +434,7 @@ Tuning clamped(Tuning t) noexcept {
     t.head = fix(t.head, 0.0f, 1.5f, 1.0f);
     t.tuck = fix(t.tuck, 0.0f, 1.5f, 1.0f);
     t.lie_still = fix(t.lie_still, 0.5f, 4.0f, 1.6f);
+    t.grip = fix(t.grip, 0.0f, 2.0f, 1.0f);
     return t;
 }
 void tick() noexcept {
@@ -445,6 +454,7 @@ void tick() noexcept {
             number(saved_head, t.head);
             number(saved_tuck, t.tuck);
             number(saved_lie_still, t.lie_still);
+            number(saved_grip, t.grip);
             if (const auto on = profile_runtime::local_preference(saved_catch_arms)) t.catch_arms = *on;
             if (const auto on = profile_runtime::local_preference(saved_catch_step)) t.catch_step = *on;
             if (const auto on = profile_runtime::local_preference(saved_grab_hurt)) t.grab_hurt = *on;
@@ -464,7 +474,8 @@ void tick() noexcept {
                                                {saved_reaction, static_cast<double>(t.reaction)},
                                                {saved_head, static_cast<double>(t.head)},
                                                {saved_tuck, static_cast<double>(t.tuck)},
-                                               {saved_lie_still, static_cast<double>(t.lie_still)}});
+                                               {saved_lie_still, static_cast<double>(t.lie_still)},
+                                               {saved_grip, static_cast<double>(t.grip)}});
         }
     } catch (...) {}
     try { drain(); } catch (...) {}

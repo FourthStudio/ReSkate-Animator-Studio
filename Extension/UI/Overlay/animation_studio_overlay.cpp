@@ -7635,14 +7635,20 @@ std::vector<Setting> bails_settings() {
                "the hands take the rest.",
                [tune](bool v) { tune([v](rb::Tuning& n) { n.catch_step = v; }); }));
     add(slider("Head protection", t.head / 1.5f, t.head <= 0.01f ? std::string("OFF") : percent(t.head),
-               "How hard the neck keeps the head up off the ground, whichever way he falls: chin in going backwards, head back "
-               "going face first, tilted up on a side. OFF lets it hang.",
+               "How hard the neck keeps the head up off the ground, whichever way he falls: he lifts his head going over "
+               "backwards (chin in), tips it back going face first, tilts it up on a side. OFF: the neck lets go and the head "
+               "hits the ground with the rest of him.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.head = a * 1.5f; }); }));
     add(slider("Tuck when rolling", t.tuck / 1.5f, t.tuck <= 0.01f ? std::string("OFF") : percent(t.tuck),
                "How far the knees come in and the back rounds when he rolls. OFF rolls stretched out.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.tuck = a * 1.5f; }); }));
+    add(slider("Grip on the ground", t.grip / 2.0f, t.grip <= 0.01f ? std::string("OFF") : percent(t.grip),
+               "How heavy he is on the ground: how quickly a slide on his back, side or front stops. OFF slides as the "
+               "game's own ragdoll does.",
+               [tune](float a) { tune([a](rb::Tuning& n) { n.grip = a * 2.0f; }); }));
     add(on_off("Grab what hurts", t.grab_hurt,
-               "Once still, a hand goes to whatever hit hardest (a knee, an elbow, his hip) for a moment.",
+               "Once still, his hands go to whatever hit hardest: his chin or face, a knee (both hands when they reach), an "
+               "elbow or his hip.",
                [tune](bool v) { tune([v](rb::Tuning& n) { n.grab_hurt = v; }); }));
     add(slider("Lie still for", (t.lie_still - 0.5f) / 3.5f, std::format("{:.1f} s", t.lie_still),
                "How long he holds himself once he stops moving (arms drawn in, curled up) before he lets go and just lies there. "

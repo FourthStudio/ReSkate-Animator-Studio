@@ -46,6 +46,7 @@ struct Tuning {
     float head{1.0f};      // 0 .. 1.5: how hard the neck holds the head up off the ground
     float tuck{1.0f};      // 0 .. 1.5: how tight he tucks rolling
     float lie_still{1.6f}; // 0.5 .. 4 seconds lying still before he lets go
+    float grip{1.0f};      // 0 .. 2: how quickly the ground stops a slide (how heavy he is on it)
     bool catch_arms{true}, catch_step{true}, grab_hurt{true};
 };
 struct Input {
@@ -93,7 +94,8 @@ private:
     float fall_forward_{}, fall_side_{};    // that in the torso's frame (+ forward, + to its right)
     Part hurt_{board};                      // what hit hardest (board = nothing yet)
     float hurt_impact_{};
-    int hurt_hand_{};                       // which hand holds it: -1 left, +1 right
+    int hurt_hand_{};                       // which hand holds it: -1 left, +1 right, 2 both
+    float severity_{0.5f};                  // 0.3 .. 1: how hard the fall is (speed, drop): small hits get small reactions
     float swing_{};                         // the arms' swing in a long fall, radians
     float ground_{};                        // the ground's height, from the contacts (and the feet at the start)
     bool ground_known_{};

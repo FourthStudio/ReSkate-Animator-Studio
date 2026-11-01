@@ -31,6 +31,7 @@ struct Tuning {
     float head{1.0f};      // 0 .. 1.5: how hard the neck holds the head up
     float tuck{1.0f};      // 0 .. 1.5: how tight he tucks rolling
     float lie_still{1.6f}; // 0.5 .. 4 s lying still before he lets go
+    float grip{1.0f};      // 0 .. 2: how quickly the ground stops a slide
     bool catch_arms{true}, catch_step{true}, grab_hurt{true};
 };
 Tuning tuning() noexcept;
@@ -48,6 +49,7 @@ struct Live {
     bool ragdoll{}, in_bail{};
     std::uint32_t substate{};    // the off-board substate's offset in its parent (which ragdoll mode), 0 = none
     std::array<float, 3> board_velocity{}, pelvis_velocity{};
+    std::array<float, 3> chest_forward{}; // which way his chest faces (from the ragdoll's bodies)
     std::uint64_t bails{};       // bails seen since the game started
     std::uint64_t driven{};      // physics steps the muscles drove
     double bail_seconds{};       // how long the current (or last) bail has lasted

@@ -131,6 +131,51 @@ int main() {
         weak.begin(in);
         check(weak.step(in).tone < tone_strong, "Strength scales the muscles");
     }
+    // The muscles move one part against another, never the whole body: off the ground the body's momentum is the same
+    // after they act as before (it was launched forwards at up to 4 m/s before this was kept).
+    {
+        static constexpr std::array<float, part_count> kg{0, 5, 1.5f, .5f, 1.3f, 2, 1.5f, .5f, 1.3f, 2, 1.5f, 8, 6, 5, 5, .3f, 1, 4, 9, .3f, 1, 4, 9, 11};
+        for (const V3 going : {V3{0, -1, -3}, V3{0, -1, 3}, V3{3, -2, 0}}) {
+            Input in = standing();
+            for (auto& b : in.body) b.v = going;
+            Muscles m;
+            m.begin(in);
+            Output out;
+            for (int i = 0; i < 3; ++i) out = m.step(in);
+            V3 before{}, after{};
+            for (std::size_t i = 1; i < part_count; ++i) {
+                before = before + in.body[i].v * kg[i];
+                after = after + (out.write[i] ? out.v[i] : in.body[i].v) * kg[i];
+            }
+            check(math::length(after - before) < 0.05f * 75, "The muscles never push the body as a whole");
+        }
+    }
+    // Head protection off: the neck lets go (it is driven far more weakly than with protection on).
+    {
+        Input in = standing();
+        for (auto& b : in.body) b.v = {0, -1.0f, 2.5f};
+        in.body[head].r = math::rotation({1, 0, 0}, 0.6f); // the head tipped well away from where it was
+        const auto neck_drive = [&](float guard) {
+            Input copy = in;
+            copy.tune.head = guard;
+            Muscles m;
+            m.begin(standing());
+            const auto out = m.step(copy);
+            return math::length(out.w[head] - copy.body[head].w);
+        };
+        check(neck_drive(0.0f) < 0.3f * neck_drive(1.0f), "Head protection off lets the head go");
+    }
+    // Nothing is aimed through the body: on his back with the hands told to grab a hurt chest, no hand is driven into him.
+    {
+        Input in = standing();
+        Muscles m;
+        m.begin(in);
+        for (int i = 0; i < 40; ++i) (void)m.step(in);
+        const auto out = m.step(in);
+        bool finite_all = true;
+        for (std::size_t i = 1; i < part_count; ++i) finite_all = finite_all && math::finite(out.w[i]) && math::finite(out.v[i]);
+        check(finite_all, "Lying still the drives stay finite");
+    }
     if (failures) {
         std::cerr << failures << " check(s) failed\n";
         return 1;
