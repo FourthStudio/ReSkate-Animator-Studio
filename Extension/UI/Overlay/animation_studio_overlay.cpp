@@ -9,6 +9,7 @@
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
+#include "Extension/Skater/real_bails.h"
 #include "studio_cover_maker.h"
 #include "studio_market_art.h"
 #include "studio_torn.h"
@@ -7584,11 +7585,82 @@ using studio::settings_rows::on_off;
 using studio::settings_rows::slider;
 using studio::settings_rows::button_row;
 using studio::settings_rows::info_setting;
-constexpr std::array<const char*, 4> settings_pages{"STUDIO", "SKATER", "TRICKS", "PACKS"};
-constexpr std::array<const char*, 4> settings_blurbs{"The room, the camera, playback and the studio's own tools.",
+constexpr std::array<const char*, 5> settings_pages{"STUDIO", "SKATER", "TRICKS", "PACKS", "BAILS"};
+constexpr std::array<const char*, 5> settings_blurbs{"The room, the camera, playback and the studio's own tools.",
                                                      "How the skater is posed: limits, keeping clear, the ground, his stance.",
                                                      "How your tricks play in game: on or off, the crossfade, matching, your name.",
-                                                     "Where packs are exported to and imported from, and bringing them in."};
+                                                     "Where packs are exported to and imported from, and bringing them in.",
+                                                     "How he falls: catching it with his hands, a step, his head, rolling, lying still."};
+// SETTINGS > BAILS: Real Bails (Extension/Skater/real_bails.h), the muscles in the ragdoll, and how they are tuned.
+std::vector<Setting> bails_settings() {
+    namespace rb = dingosdk::real_bails;
+    std::vector<Setting> rows;
+    if (!rb::available()) {
+        rows.push_back(info_setting("Real bails", "UNAVAILABLE", "The skater's physics could not be read in this game, so bails are the game's own."));
+        return rows;
+    }
+    const bool on = rb::enabled();
+    const auto t = rb::tuning();
+    const auto percent = [](float v) { return std::format("{:.0f}%", v * 100); };
+    const auto tune = [](auto change) {
+        auto now = rb::tuning();
+        change(now);
+        rb::set_tuning(now);
+    };
+    rows.push_back(on_off("Real bails", on,
+                          "Muscles in the ragdoll, so a slam looks like a skater's: the hands go out to catch it, a leg steps out "
+                          "when there is room, the head is held up off the ground, he tucks and rolls, then lies curled up and lets "
+                          "go. Off: the game's own ragdoll.",
+                          [](bool v) { rb::set_enabled(v); }));
+    auto add = [&](Setting s) {
+        s.enabled = on;
+        rows.push_back(std::move(s));
+    };
+    add(slider("Muscle strength", (rb::strength() - 0.25f) / 1.75f, percent(rb::strength()),
+               "How strong all of it is. Low: closer to the game's floppy ragdoll. High: stiff and quick, every reflex at full force.",
+               [](float a) { rb::set_strength(0.25f + a * 1.75f); }));
+    add(slider("Reaction speed", (t.reaction - 0.5f) / 1.5f, percent(t.reaction),
+               "How fast the arms shoot out and the catch step goes, from the moment the board is lost. 100% is about as quick "
+               "as a person's protective reach.",
+               [tune](float a) { tune([a](rb::Tuning& n) { n.reaction = 0.5f + a * 1.5f; }); }));
+    {
+        Setting s = on_off("Catch with the hands", t.catch_arms,
+                           "Going down, the arms stretch out for the ground where he is falling: ahead and down falling forwards, back "
+                           "and out to the sides falling backwards, out to the side falling sideways.",
+                           [tune](bool v) { tune([v](rb::Tuning& n) { n.catch_arms = v; }); });
+        add(std::move(s));
+    }
+    add(on_off("Catch step", t.catch_step,
+               "Going over forwards or sideways while still up, one leg steps out ahead to take the weight, the knee gives, and "
+               "the hands take the rest.",
+               [tune](bool v) { tune([v](rb::Tuning& n) { n.catch_step = v; }); }));
+    add(slider("Head protection", t.head / 1.5f, t.head <= 0.01f ? std::string("OFF") : percent(t.head),
+               "How hard the neck keeps the head up off the ground, whichever way he falls: chin in going backwards, head back "
+               "going face first, tilted up on a side. OFF lets it hang.",
+               [tune](float a) { tune([a](rb::Tuning& n) { n.head = a * 1.5f; }); }));
+    add(slider("Tuck when rolling", t.tuck / 1.5f, t.tuck <= 0.01f ? std::string("OFF") : percent(t.tuck),
+               "How far the knees come in and the back rounds when he rolls. OFF rolls stretched out.",
+               [tune](float a) { tune([a](rb::Tuning& n) { n.tuck = a * 1.5f; }); }));
+    add(on_off("Grab what hurts", t.grab_hurt,
+               "Once still, a hand goes to whatever hit hardest (a knee, an elbow, his hip) for a moment.",
+               [tune](bool v) { tune([v](rb::Tuning& n) { n.grab_hurt = v; }); }));
+    add(slider("Lie still for", (t.lie_still - 0.5f) / 3.5f, std::format("{:.1f} s", t.lie_still),
+               "How long he holds himself once he stops moving (arms drawn in, curled up) before he lets go and just lies there. "
+               "Getting up is the game's, with a button, as always.",
+               [tune](float a) { tune([a](rb::Tuning& n) { n.lie_still = 0.5f + a * 3.5f; }); }));
+    add(on_off("Record bails", rb::recording(),
+               "Writes every bail, step by step, to logs\\RealBails in the Skate folder, for tuning. About 2 MB a bail.",
+               [](bool v) { rb::set_recording(v); }));
+    add(button_row("Back to as tuned", "Every bail setting back to how it came, strength 100%.", [] {
+        rb::reset_tuning();
+        say("Bails are back to how they came.");
+    }));
+    const auto live = rb::live();
+    if (live.bails > 0)
+        rows.push_back(info_setting("Bails so far", std::format("{}", live.bails),
+                                    std::format("The last one lasted {:.1f} s.", live.bail_seconds)));
+    return rows;
+}
 std::vector<Setting> settings_of(int page, const studio::View& v) {
     auto& u = ui();
     const auto now = studio::settings();
@@ -7725,6 +7797,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(studio::settings_rows::made_by(now, tell));
         break;
     }
+    case 4: rows = bails_settings(); break;
     default: {
         rows.push_back(studio::settings_rows::pack_folder(now, true));
         rows.push_back(studio::settings_rows::pack_folder(now, false));
@@ -7789,6 +7862,24 @@ void tile_picture(ImDrawList* d, int which, ImVec2 a, ImVec2 b, bool lit) {
         }
         break;
     }
+    case 4: { // a skater going over forwards, arms out to catch it, a leg stepping out, the board flying away
+        d->AddCircle(at(42, -30), 13 * s, line, 24, w);
+        d->AddLine(at(30, -22), at(-14, 6), line, w);   // the back, pitched forwards
+        d->AddLine(at(22, -16), at(56, 14), line, w);   // an arm reaching for the ground
+        d->AddLine(at(56, 14), at(70, 40), line, w);
+        d->AddLine(at(16, -12), at(34, 22), line, w);   // the other arm
+        d->AddLine(at(34, 22), at(44, 44), line, w);
+        d->AddLine(at(-14, 6), at(8, 30), line, w);     // the stepping leg
+        d->AddLine(at(8, 30), at(14, 52), line, w);
+        d->AddLine(at(-14, 6), at(-44, 18), line, w);   // the trailing leg
+        d->AddLine(at(-44, 18), at(-62, 4), line, w);
+        d->AddLine(at(-80, 56), at(80, 56), IM_COL32(255, 255, 255, 90), 3 * s); // the ground
+        const float angle = 0.6f;
+        const ImVec2 dir(std::cos(angle), std::sin(angle)), up(-dir.y, dir.x);
+        const auto p = [&](float along, float across) { return at(-58 + dir.x * along + up.x * across, -52 + dir.y * along + up.y * across); };
+        d->AddQuadFilled(p(-30, -6), p(30, -6), p(30, 6), p(-30, 6), accent);
+        break;
+    }
     default: // packs, stacked
         for (int i = 2; i >= 0; --i) {
             const float o = static_cast<float>(i) * 16;
@@ -7809,15 +7900,16 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     const float k = f.k, gap = 14 * k;
     const float top = a.y + 92 * k;
-    const float tile_w = std::min(640 * k, (b.x - a.x - gap) / 2), tile_h = std::min(300 * k, (b.y - top - gap) / 2);
+    constexpr int across = 3;
+    const float tile_w = std::min(560 * k, (b.x - a.x - gap * (across - 1)) / across), tile_h = std::min(300 * k, (b.y - top - gap) / 2);
     // The grid in the middle of the page, the title over its left edge.
-    const float grid_w = 2 * tile_w + gap;
+    const float grid_w = across * tile_w + (across - 1) * gap;
     a.x += std::max(0.0f, (b.x - a.x - grid_w) * 0.5f);
     title_text(d, f, 64 * k, ImVec2(a.x, a.y - 8 * k), white, "SETTINGS");
     static constexpr std::array<StudioPicture, 4> icons{StudioPicture::icon_studio, StudioPicture::icon_skater, StudioPicture::icon_tricks,
                                                         StudioPicture::icon_packs};
-    for (int i = 0; i < 4; ++i) {
-        const ImVec2 ta(a.x + static_cast<float>(i % 2) * (tile_w + gap), top + static_cast<float>(i / 2) * (tile_h + gap));
+    for (int i = 0; i < static_cast<int>(settings_pages.size()); ++i) {
+        const ImVec2 ta(a.x + static_cast<float>(i % across) * (tile_w + gap), top + static_cast<float>(i / across) * (tile_h + gap));
         const ImVec2 tb(ta.x + tile_w, ta.y + tile_h);
         ImGui::PushID(i);
         bool lit = false;
@@ -7831,7 +7923,7 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
         ImGui::PushClipRect(ImVec2(ta.x + 6 * k, ta.y + 6 * k), ImVec2(tb.x - 6 * k, tb.y - 6 * k), true);
         const float side = tile_h * 1.28f;
         const ImVec2 ia(tb.x - side * 0.80f, ta.y - tile_h * 0.04f);
-        if (!draw_studio_picture(d, icons[static_cast<std::size_t>(i)], ia, ImVec2(ia.x + side, ia.y + side), white))
+        if (i >= static_cast<int>(icons.size()) || !draw_studio_picture(d, icons[static_cast<std::size_t>(i)], ia, ImVec2(ia.x + side, ia.y + side), white))
             tile_picture(d, i, ImVec2(tb.x - tile_h * 1.1f, ta.y + tile_h * 0.1f), ImVec2(tb.x, tb.y), lit);
         ImGui::PopClipRect();
         const ImU32 ink = lit ? IM_COL32(8, 8, 10, 255) : white;
@@ -7848,7 +7940,7 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         u.settings_page = -1;
         return;
     }
-    const int page = std::clamp(u.settings_page, 0, 3);
+    const int page = std::clamp(u.settings_page, 0, static_cast<int>(settings_pages.size()) - 1);
     title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, settings_pages[static_cast<std::size_t>(page)]);
     const auto rows = settings_of(page, v);
     const float rows_w = std::min(1000 * k, (b.x - a.x) * 0.62f);

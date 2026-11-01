@@ -1,9 +1,7 @@
 #include "skate_menu_internal.h"
 #include "Extension/AnimationStudio/anim_studio.h"
-#include "Extension/Skater/real_bails.h"
 
 #include <algorithm>
-#include <format>
 #include <array>
 #include <cmath>
 
@@ -222,39 +220,6 @@ void cheats_tab(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     end_card();
 }
 
-// Skater > BAILS: Real Bails (Extension/Skater/real_bails.h), muscles for the ragdoll.
-void bails_tab(SkateMenu& menu) {
-    begin_card(menu, "real-bails", "REAL BAILS");
-    if (!real_bails::available()) {
-        note("Real Bails could not start in this game: the skater's physics could not be read.");
-        end_card();
-        return;
-    }
-    bool on = real_bails::enabled();
-    if (toggle_row(menu, "Real bails",
-            "Muscles in the ragdoll, so a slam looks like a skater's: the hands go out to catch a fall, the chin tucks "
-            "going backwards, he rolls instead of flopping, holds his head up off the ground, then lies curled up and "
-            "grabs what hit hardest. Off: the game's own ragdoll.", on, true))
-        real_bails::set_enabled(on);
-    ImGui::BeginDisabled(!on);
-    field(menu, "Muscle strength");
-    float strength = real_bails::strength() * 100.0f;
-    if (slider_float("##real-bails-strength", &strength, 25.0f, 200.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
-        real_bails::set_strength(strength / 100.0f);
-    ImGui::EndDisabled();
-    bool record = real_bails::recording();
-    if (toggle_row(menu, "Record bails",
-            "Writes every bail, step by step, to logs\\RealBails in the Skate folder (for tuning; about 2 MB a bail).", record, true))
-        real_bails::set_recording(record);
-    const auto live = real_bails::live();
-    if (live.bails > 0) {
-        const auto line = std::format("Bails so far: {}. Last one {:.1f} s{}{}.", live.bails, live.bail_seconds,
-                                      live.phase.empty() ? "" : ", now: ", live.phase);
-        note(line.c_str());
-    }
-    end_card();
-}
-
 // Dark Pop (Extension/Skater/no_bail.cpp): shown with the tricklining tools on SANDBOX > TUNE > TRICKLINING.
 // Dark Pop 3.0 (Sivaes/darkpop): the pre-0.32.0 dark pop put back through the game's own sink-and-pop state. One switch;
 // everything that tested out is on by default. Not the auto-release version 0.5.0 shipped (which timed a D-pad Right
@@ -286,13 +251,12 @@ void skater_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
         menu.close_requested = true;
     }
     if (const auto blocked = animator_studio_blocked_reason(model); !blocked.empty()) warn(blocked.c_str());
-    category_tabs(menu, menu.skater_tab, {"FREECAM", "FIRST PERSON", "BAILS", "CHEATS"}, "skater-tabs");
+    category_tabs(menu, menu.skater_tab, {"FREECAM", "FIRST PERSON", "CHEATS"}, "skater-tabs");
     ImGui::PushID(menu.skater_tab);
     ImGui::BeginChild("skater-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     switch (menu.skater_tab) {
     case 0: camera_controls(menu, model, callbacks); break;
     case 1: first_person_controls(menu, model, callbacks); break;
-    case 2: bails_tab(menu); break;
     default: cheats_tab(menu, model, callbacks); break;
     }
     ImGui::EndChild();

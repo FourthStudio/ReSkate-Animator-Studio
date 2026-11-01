@@ -137,6 +137,7 @@ struct Frame {
     float dt{};
     std::uint32_t state{}, substate{};
     std::uint8_t ragdoll{}, air{}, phase{};
+    std::int8_t step{-1}; // the catch step's leg, +10 once landed
     float tone{};
     std::array<std::array<float, 18>, body_count> body{}; // where, right, up, forward, velocity, spin
     std::array<std::uint32_t, body_count> flags{};
@@ -157,6 +158,8 @@ struct Shared {
     std::atomic<bool> ready{}, enabled{true}, recording{};
     std::atomic<float> strength{1.0f};
     std::atomic<bool> loaded{}, dirty{}; // the saved settings read; a change to save
+    std::mutex tuning_mutex;
+    Tuning tuning;
     std::atomic<std::uint64_t> bails{}, driven{};
     std::mutex live_mutex;
     Live live;
@@ -170,14 +173,16 @@ struct Follow {
     double t{};
     double out_for{1}; // seconds out of the bail since it was last in one
     model::Muscles muscles;
+    Tuning tuning; // the last tuning read
     std::uintptr_t physics{}; // the rig's physics the muscles began on
 };
 Follow& follow() { static auto* value = new Follow; return *value; }
 
-model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step, float seconds, float strength) noexcept {
+model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step, float seconds, float strength, const Tuning& t) noexcept {
     model::Input in;
     in.dt = seconds;
     in.strength = strength;
+    in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.catch_arms, t.catch_step, t.grab_hurt};
     for (std::size_t i = 1; i < model::part_count; ++i) {
         const auto& b = bodies.body[i];
         auto& o = in.body[i];
@@ -189,6 +194,7 @@ model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step
         o.w = b.w;
         o.touching = step.body.bodies[i].touching;
         o.impact = step.body.bodies[i].impact;
+        if (const auto& at = step.body.bodies[i].point) { o.has_point = true; o.point = *at; }
     }
     return in;
 }
@@ -228,7 +234,11 @@ void on_physics(std::uintptr_t core) noexcept {
                            substate == addr::offboard_flight::offboard_ragdoll_states[2][0];
     const bool muscles = s.enabled.load(std::memory_order_relaxed) && have && in_bail && ragdoll && simulated;
     if (muscles) {
-        const auto input = muscle_input(bodies, step, seconds, s.strength.load(std::memory_order_relaxed));
+        {
+            std::unique_lock lock(s.tuning_mutex, std::try_to_lock);
+            if (lock.owns_lock()) f.tuning = s.tuning;
+        }
+        const auto input = muscle_input(bodies, step, seconds, s.strength.load(std::memory_order_relaxed), f.tuning);
         if (fresh || !f.muscles.started() || f.physics != bodies.physics) {
             f.muscles.begin(input, static_cast<std::uint32_t>(f.bail));
             f.physics = bodies.physics;
@@ -281,6 +291,7 @@ void on_physics(std::uintptr_t core) noexcept {
     fr.air = step.airborne;
     fr.phase = static_cast<std::uint8_t>(muscles ? driven.phase : model::Phase::idle);
     fr.tone = muscles ? driven.tone : 0.0f;
+    fr.step = static_cast<std::int8_t>(muscles && driven.step >= 0 ? driven.step + (driven.step_landed ? 10 : 0) : -1);
     for (std::size_t i = 0; i < body_count; ++i)
         fr.command[i] = muscles && i < model::part_count && driven.write[i] ? driven.w[i] : std::array<float, 3>{};
     for (std::size_t i = 0; i < body_count; ++i) {
@@ -309,8 +320,8 @@ struct Writer {
 Writer& writer() { static auto* value = new Writer; return *value; }
 
 void write_row(std::FILE* out, const Frame& fr) {
-    std::fprintf(out, "%llu,%.5f,%.5f,%u,%u,%u,%u,%u,%.3f", static_cast<unsigned long long>(fr.bail), fr.t, fr.dt, fr.state, fr.substate,
-                 fr.ragdoll, fr.air, fr.phase, fr.tone);
+    std::fprintf(out, "%llu,%.5f,%.5f,%u,%u,%u,%u,%u,%.3f,%d", static_cast<unsigned long long>(fr.bail), fr.t, fr.dt, fr.state, fr.substate,
+                 fr.ragdoll, fr.air, fr.phase, fr.tone, fr.step);
     for (std::size_t i = 0; i < body_count; ++i) {
         std::fprintf(out, ",%u,%u", fr.ok[i], fr.flags[i]);
         for (float x : fr.body[i]) std::fprintf(out, ",%.5g", x);
@@ -320,7 +331,7 @@ void write_row(std::FILE* out, const Frame& fr) {
     std::fputc('\n', out);
 }
 void write_header(std::FILE* out) {
-    std::fputs("bail,t,dt,state,substate,ragdoll,air,phase,tone", out);
+    std::fputs("bail,t,dt,state,substate,ragdoll,air,phase,tone,step", out);
     static const char* parts[] = {"px", "py", "pz", "rx", "ry", "rz", "ux", "uy", "uz", "fx", "fy", "fz", "vx", "vy", "vz", "wx", "wy", "wz"};
     for (std::size_t i = 0; i < body_count; ++i) {
         std::fprintf(out, ",b%zu_ok,b%zu_flags", i, i);
@@ -402,19 +413,58 @@ bool available() noexcept { return shared().ready.load(std::memory_order_acquire
 // Saved beside the profile (profile_runtime's "ReSkate." store), on unless switched off.
 constexpr const char* saved_enabled = "RealBails.Enabled";
 constexpr const char* saved_strength = "RealBails.Strength";
+constexpr const char* saved_reaction = "RealBails.Reaction";
+constexpr const char* saved_head = "RealBails.Head";
+constexpr const char* saved_tuck = "RealBails.Tuck";
+constexpr const char* saved_lie_still = "RealBails.LieStill";
+constexpr const char* saved_catch_arms = "RealBails.CatchArms";
+constexpr const char* saved_catch_step = "RealBails.CatchStep";
+constexpr const char* saved_grab_hurt = "RealBails.GrabHurt";
+Tuning clamped(Tuning t) noexcept {
+    const auto fix = [](float v, float lo, float hi, float otherwise) { return std::isfinite(v) ? std::clamp(v, lo, hi) : otherwise; };
+    t.reaction = fix(t.reaction, 0.5f, 2.0f, 1.0f);
+    t.head = fix(t.head, 0.0f, 1.5f, 1.0f);
+    t.tuck = fix(t.tuck, 0.0f, 1.5f, 1.0f);
+    t.lie_still = fix(t.lie_still, 0.5f, 4.0f, 1.6f);
+    return t;
+}
 void tick() noexcept {
     if (!available()) return;
     auto& s = shared();
     try {
         if (!s.loaded.load() && profile_runtime::local_profile_store_ready()) {
             if (const auto on = profile_runtime::local_preference(saved_enabled)) s.enabled.store(*on);
-            if (const auto value = profile_runtime::local_value(saved_strength); value && value->is_number())
-                s.strength.store(std::clamp(static_cast<float>(value->get<double>()), 0.25f, 2.0f));
+            const auto number = [](const char* key, float& into) {
+                if (const auto value = profile_runtime::local_value(key); value && value->is_number()) into = static_cast<float>(value->get<double>());
+            };
+            float strength_now = s.strength.load();
+            number(saved_strength, strength_now);
+            s.strength.store(std::clamp(strength_now, 0.25f, 2.0f));
+            Tuning t;
+            number(saved_reaction, t.reaction);
+            number(saved_head, t.head);
+            number(saved_tuck, t.tuck);
+            number(saved_lie_still, t.lie_still);
+            if (const auto on = profile_runtime::local_preference(saved_catch_arms)) t.catch_arms = *on;
+            if (const auto on = profile_runtime::local_preference(saved_catch_step)) t.catch_step = *on;
+            if (const auto on = profile_runtime::local_preference(saved_grab_hurt)) t.grab_hurt = *on;
+            {
+                std::lock_guard lock(s.tuning_mutex);
+                s.tuning = clamped(t);
+            }
             s.loaded.store(true);
         }
         if (s.loaded.load() && s.dirty.exchange(false)) {
+            const auto t = tuning();
             profile_runtime::set_local_preference(saved_enabled, s.enabled.load());
-            profile_runtime::set_local_values({{saved_strength, static_cast<double>(s.strength.load())}});
+            profile_runtime::set_local_preference(saved_catch_arms, t.catch_arms);
+            profile_runtime::set_local_preference(saved_catch_step, t.catch_step);
+            profile_runtime::set_local_preference(saved_grab_hurt, t.grab_hurt);
+            profile_runtime::set_local_values({{saved_strength, static_cast<double>(s.strength.load())},
+                                               {saved_reaction, static_cast<double>(t.reaction)},
+                                               {saved_head, static_cast<double>(t.head)},
+                                               {saved_tuck, static_cast<double>(t.tuck)},
+                                               {saved_lie_still, static_cast<double>(t.lie_still)}});
         }
     } catch (...) {}
     try { drain(); } catch (...) {}
@@ -430,6 +480,23 @@ void set_strength(float value) noexcept {
     shared().dirty.store(true);
 }
 float strength() noexcept { return shared().strength.load(); }
+Tuning tuning() noexcept {
+    auto& s = shared();
+    std::lock_guard lock(s.tuning_mutex);
+    return s.tuning;
+}
+void set_tuning(const Tuning& t) noexcept {
+    auto& s = shared();
+    {
+        std::lock_guard lock(s.tuning_mutex);
+        s.tuning = clamped(t);
+    }
+    s.dirty.store(true);
+}
+void reset_tuning() noexcept {
+    set_tuning(Tuning{});
+    set_strength(1.0f);
+}
 void set_recording(bool on) noexcept { shared().recording.store(on); }
 bool recording() noexcept { return shared().recording.load(); }
 Live live() noexcept {

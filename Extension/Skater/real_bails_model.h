@@ -38,11 +38,21 @@ struct BodyIn {
     V3 v{}, w{};  // velocity, spin
     bool touching{};
     float impact{}; // hardest contact this step, m/s along its normal
+    bool has_point{}; V3 point{}; // where that contact was, when known
+};
+// What the player can tune (the Animator Studio's SETTINGS > BAILS).
+struct Tuning {
+    float reaction{1.0f};  // 0.5 .. 2: how fast the arms and the catch step go out
+    float head{1.0f};      // 0 .. 1.5: how hard the neck holds the head up off the ground
+    float tuck{1.0f};      // 0 .. 1.5: how tight he tucks rolling
+    float lie_still{1.6f}; // 0.5 .. 4 seconds lying still before he lets go
+    bool catch_arms{true}, catch_step{true}, grab_hurt{true};
 };
 struct Input {
     std::array<BodyIn, part_count> body{};
     float dt{};
     float strength{1.0f};
+    Tuning tune{};
 };
 enum class Phase : std::uint8_t { idle, brace, impact, tumble, slide, settle, rest };
 const char* name(Phase phase) noexcept;
@@ -52,6 +62,8 @@ struct Output {
     std::array<bool, part_count> write{};
     Phase phase{};
     float tone{};
+    int step{-1};          // the leg taking a catch step (0 left, 1 right), -1 none
+    bool step_landed{};
 };
 
 class Muscles {
@@ -83,6 +95,10 @@ private:
     float hurt_impact_{};
     int hurt_hand_{};                       // which hand holds it: -1 left, +1 right
     float swing_{};                         // the arms' swing in a long fall, radians
+    float ground_{};                        // the ground's height, from the contacts (and the feet at the start)
+    bool ground_known_{};
+    int step_leg_{-1};                      // the leg taking a catch step (0 left, 1 right), -1 none
+    bool step_landed_{}, stepped_{};        // its foot is down; a step was taken this bail
     float tuck_{0.55f};                     // how far the knees come in when rolling
     std::array<float, 3> vary_{};           // -1..1: left/right tuck, each leg's bend at rest
 };

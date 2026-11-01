@@ -25,6 +25,18 @@ bool enabled() noexcept;
 // 0.25 .. 2: how strong the muscles are (1 = as tuned).
 void set_strength(float strength) noexcept;
 float strength() noexcept;
+// The rest of what can be tuned (the Animator Studio's SETTINGS > BAILS), saved with the profile.
+struct Tuning {
+    float reaction{1.0f};  // 0.5 .. 2: how fast the arms and the catch step go out
+    float head{1.0f};      // 0 .. 1.5: how hard the neck holds the head up
+    float tuck{1.0f};      // 0 .. 1.5: how tight he tucks rolling
+    float lie_still{1.6f}; // 0.5 .. 4 s lying still before he lets go
+    bool catch_arms{true}, catch_step{true}, grab_hurt{true};
+};
+Tuning tuning() noexcept;
+void set_tuning(const Tuning& tuning) noexcept;
+// Everything back as tuned (strength too).
+void reset_tuning() noexcept;
 // Every bail written to logs\RealBails as a table of the bodies' motion, step by step.
 void set_recording(bool on) noexcept;
 bool recording() noexcept;
