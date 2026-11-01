@@ -231,6 +231,7 @@ add_library(dingosdk_runtime SHARED
     Extension/AnimationStudio/studio_settings_rows.cpp
     Extension/AnimationStudio/native_library.cpp
     Extension/AnimationStudio/marketplace.cpp
+    Extension/AnimationStudio/studio_update.cpp
     Extension/AnimationStudio/anim_commands.cpp
     Extension/AnimationStudio/pop_grades.cpp
     Extension/AnimationStudio/studio_room.cpp

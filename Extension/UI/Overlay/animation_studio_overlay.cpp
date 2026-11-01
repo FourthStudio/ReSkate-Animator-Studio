@@ -10,6 +10,7 @@
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/Skater/real_bails.h"
+#include "Extension/AnimationStudio/studio_update.h"
 #include "studio_cover_maker.h"
 #include "studio_market_art.h"
 #include "studio_torn.h"
@@ -236,6 +237,7 @@ struct Ui {
     std::string like_pack; // the LIKED! card's pack ("" closed)
     // The loop the COPY TO INS AND OUTS card is for, and the clips of its line taken off its list (by their assets).
     float loop_scroll{};
+    float update_scroll{}; // the update card's notes
     std::string loop_offer_for;
     std::set<std::string> loop_left_out;
     // The cover designer: the pack it is for ("" closed), the cover as it is being made, its title as typed.
@@ -2444,7 +2446,7 @@ bool any_card_open(const studio::View& v) {
     const auto& u = ui();
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
            !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account || !u.reshare_pack.empty() ||
-           !u.playlist_for.empty() || !u.binding.empty() || v.loop_offer.has_value() || !v.guide_seen;
+           !u.playlist_for.empty() || !u.binding.empty() || v.loop_offer.has_value() || !v.guide_seen || studio::update::popup_wanted();
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -7693,6 +7695,24 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               [](bool on) { ui().controls_open = on; }));
         rows.push_back(studio::settings_rows::catch_marker(now));
         rows.push_back(studio::settings_rows::how_it_works());
+        {
+            namespace up = studio::update;
+            rows.push_back(on_off("Check for updates", up::checking(),
+                                  "At each start the studio asks GitHub whether a newer Animator Studio is out. When one is, a note "
+                                  "says so in game and the studio offers to download it, with what changed. Nothing is put in for "
+                                  "you: you swap the DLL with the game closed.",
+                                  [](bool on) { up::set_checking(on); }));
+            const auto st = up::state();
+            Setting s = button_row("Updates", "Asks GitHub now. A newer version brings up the download card.", [] { up::check_now(); });
+            s.value = st.step == up::Step::checking ? std::string("CHECKING...")
+                      : st.step == up::Step::current ? "UP TO DATE (" + st.running + ")  -  CHECK"
+                      : st.step == up::Step::newer || st.step == up::Step::download_failed ? st.latest + " IS OUT  -  CHECK AGAIN"
+                      : st.step == up::Step::downloading ? std::string("DOWNLOADING...")
+                      : st.step == up::Step::downloaded ? st.latest + " DOWNLOADED  -  CHECK"
+                      : st.step == up::Step::failed ? "COULD NOT CHECK  -  TRY AGAIN"
+                                                    : "YOU HAVE " + st.running + "  -  CHECK NOW";
+            rows.push_back(std::move(s));
+        }
         rows.push_back(studio::settings_rows::report_a_bug(tell));
         rows.push_back(button_row("Export diagnostics",
                                   "Reproduce a problem, open the studio, then export: the last 25 seconds of play's poses, stances, timings, the board and "
@@ -9776,6 +9796,89 @@ void adding_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
     if (action(d, f, "##addingdone", ImVec2(b.x - 30 * k - 200 * k, b.y - 66 * k), ImVec2(200 * k, 46 * k), "DONE", Look::blue)) u.pack_adding = false;
 }
 // Whichever card is up, over everything.
+// A newer Animator Studio on GitHub (Extension/AnimationStudio/studio_update.h): what it says about itself, and DOWNLOAD or
+// CANCEL; then the download going, done (where it went, OPEN FOLDER, and how to put it in) or failed.
+void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
+    namespace up = studio::update;
+    auto& u = ui();
+    const float k = f.k;
+    const auto st = up::state();
+    const bool done = st.step == up::Step::downloaded, failed = st.step == up::Step::download_failed;
+    const bool going = st.step == up::Step::downloading;
+    const auto [a, b] = card_box(d, f, display, 1040 * k, 800 * k, done ? "UPDATE DOWNLOADED" : failed ? "DOWNLOAD FAILED" : "UPDATE AVAILABLE");
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 92 * k;
+    y += paragraph(d, f.bold, 21 * k, ImVec2(x, y), w, white, "Animator Studio " + st.latest + " is out. You have " + st.running + ".") + 2 * k;
+    if (!st.title.empty()) y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, soft, st.title) + 12 * k;
+    // What changed, as the release says it (its Markdown read plainly: headings in blue, bullets, no stars or backticks).
+    const ImVec2 la(x, y), lb(x + w, b.y - (done || failed || going ? 170 : 96) * k);
+    d->AddRectFilled(la, lb, IM_COL32(8, 9, 11, 200));
+    begin_region(240, ImVec2(la.x + 14 * k, la.y + 10 * k), ImVec2(lb.x - 8 * k, lb.y - 10 * k), u.update_scroll, k);
+    float ny = la.y + 10 * k - u.update_scroll;
+    const float nx = la.x + 16 * k, nw = w - 40 * k;
+    std::size_t from = 0;
+    const std::string& notes = st.notes;
+    while (from <= notes.size() && !notes.empty()) {
+        auto to = notes.find('\n', from);
+        if (to == std::string::npos) to = notes.size();
+        std::string line = notes.substr(from, to - from);
+        from = to + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        std::string plain;
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            if (line[i] == '`') continue;
+            if (line[i] == '*' && i + 1 < line.size() && line[i + 1] == '*') { ++i; continue; }
+            plain += line[i];
+        }
+        if (plain.empty()) { ny += 8 * k; if (from > notes.size()) break; continue; }
+        std::size_t hashes = 0;
+        while (hashes < plain.size() && plain[hashes] == '#') ++hashes;
+        if (hashes > 0) {
+            ny += 6 * k;
+            ny += paragraph(d, f.heading, (hashes == 1 ? 22 : 18) * k, ImVec2(nx, ny), nw, blue_light, upper(plain.substr(std::min(plain.size(), hashes + 1)))) + 6 * k;
+        } else if (plain.rfind("- ", 0) == 0 || plain.rfind("* ", 0) == 0) {
+            text(d, f.bold, 15 * k, ImVec2(nx, ny), blue_light, "-");
+            ny += paragraph(d, f.body, 15 * k, ImVec2(nx + 18 * k, ny), nw - 18 * k, white, plain.substr(2)) + 4 * k;
+        } else {
+            ny += paragraph(d, f.body, 15 * k, ImVec2(nx, ny), nw, white, plain) + 4 * k;
+        }
+        if (from > notes.size()) break;
+    }
+    if (notes.empty()) ny += paragraph(d, f.body, 15 * k, ImVec2(nx, ny), nw, soft, "The release says nothing about what changed. Its page: " + st.page);
+    end_region(d, ImVec2(la.x + 14 * k, la.y + 10 * k), ImVec2(lb.x - 8 * k, lb.y - 10 * k), ny + u.update_scroll - (la.y + 10 * k), u.update_scroll, k);
+    // What happens next.
+    float by = lb.y + 16 * k;
+    if (going) {
+        const double got = static_cast<double>(st.received) / (1024.0 * 1024.0), all = static_cast<double>(st.total) / (1024.0 * 1024.0);
+        paragraph(d, f.bold, 16 * k, ImVec2(x, by), w, white,
+                  st.total ? std::format("Downloading ReSkate.dll: {:.1f} of {:.1f} MB", got, all) : std::format("Downloading ReSkate.dll: {:.1f} MB", got));
+        const float bar_y = by + 34 * k, frac = st.total ? std::clamp(static_cast<float>(got / std::max(all, 0.001)), 0.0f, 1.0f) : 0.0f;
+        d->AddRectFilled(ImVec2(x, bar_y), ImVec2(x + w, bar_y + 10 * k), IM_COL32(255, 255, 255, 30));
+        d->AddRectFilled(ImVec2(x, bar_y), ImVec2(x + w * frac, bar_y + 10 * k), blue);
+    } else if (done) {
+        paragraph(d, f.bold, 16 * k, ImVec2(x, by), w, white,
+                  "Saved, and checked against GitHub's SHA-256: " + st.saved_to.string() +
+                      ". Close the game, then put this ReSkate.dll in your Skate folder in place of the one there. Keep the old one "
+                      "somewhere if you want to go back.");
+    } else if (failed) {
+        paragraph(d, f.bold, 16 * k, ImVec2(x, by), w, IM_COL32(255, 140, 130, 255), "The download did not work: " + st.error);
+    }
+    const float bh = 50 * k, bw = 260 * k, row = b.y - 26 * k - bh;
+    const ImVec2 right_button(b.x - 30 * k - bw, row), left_button(b.x - 30 * k - 2 * bw - 14 * k, row);
+    if (st.step == up::Step::newer) {
+        if (action(d, f, "##updatedownload", right_button, ImVec2(bw, bh), "DOWNLOAD", Look::blue)) up::download();
+        if (action(d, f, "##updatecancel", left_button, ImVec2(bw, bh), "CANCEL", Look::ghost)) up::cancel();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) up::cancel();
+    } else if (going) {
+        if (action(d, f, "##updatestop", right_button, ImVec2(bw, bh), "CANCEL", Look::ghost)) up::cancel();
+    } else if (done) {
+        if (action(d, f, "##updatefolder", left_button, ImVec2(bw, bh), "OPEN FOLDER", Look::blue)) up::open_folder();
+        if (action(d, f, "##updatedone", right_button, ImVec2(bw, bh), "DONE", Look::ghost)) up::close_popup();
+    } else if (failed) {
+        if (action(d, f, "##updateagain", left_button, ImVec2(bw, bh), "TRY AGAIN", Look::blue)) up::download();
+        if (action(d, f, "##updateclose", right_button, ImVec2(bw, bh), "CLOSE", Look::ghost)) up::close_popup();
+    }
+}
 void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     if (!any_card_open(v)) {
@@ -9803,6 +9906,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (u.save_card) save_card(d, f, v, display);
     else if (v.loop_offer) loop_card(d, f, v, display);
     else if (!v.test_returned.empty()) test_card(d, f, v, display);
+    else if (studio::update::popup_wanted()) update_card(d, f, display);
     else if (!v.guide_seen) guide_card(d, f, display);
     end_card();
 }
