@@ -210,6 +210,10 @@ Output Muscles::step(const Input& in) noexcept {
     const V3 down = -world_up;
     const float back_fall = std::max(0.0f, -fall_forward_), front_fall = std::max(0.0f, fall_forward_);
     float spine_flex = 0, head_flex = 0, head_tilt = 0; // radians: + curls forward; + tilts the head to its right
+    // The head-righting reflex: the neck turns the head towards the sky whichever way the body lies or falls, so falling
+    // back the chin tucks, face first the head tips back and on a side it tilts up, all off the ground.
+    const float right_flex = std::atan2(dot(world_up, f.forward), dot(world_up, f.up));
+    const float right_tilt = std::atan2(dot(world_up, f.right), dot(world_up, f.up));
     // Hands and feet: where each one goes (world), and the bend side (pole) of the elbow and knee.
     V3 hand[2], foot[2];
     const Part shoulder[2] = {l_arm, r_arm}, elbow[2] = {l_forearm, r_forearm}, wrist[2] = {l_hand, r_hand};
@@ -248,8 +252,8 @@ Output Muscles::step(const Input& in) noexcept {
             foot[s] = b[hip[s]].p + normalized(leg) * leg_len[s] * (reaching_down ? 0.76f : 0.86f);
         }
         spine_flex = 0.6f * back_fall + 0.1f * front_fall;
-        head_flex = 0.75f * back_fall - 0.8f * front_fall;
-        head_tilt = -0.35f * fall_side_;
+        head_flex = std::clamp(0.3f * (0.75f * back_fall - 0.8f * front_fall) + 0.7f * right_flex, -0.95f, 1.05f);
+        head_tilt = std::clamp(0.7f * right_tilt - 0.15f * fall_side_, -0.7f, 0.7f);
         break;
     }
     case Phase::tumble:
@@ -298,8 +302,8 @@ Output Muscles::step(const Input& in) noexcept {
         // The head held up off the ground while moving, laid down on its side once still: on the back the chin comes in,
         // face down the head turns up, on a side it tilts up.
         const float hold = phase_ == Phase::slide ? 1.0f : phase_ == Phase::settle ? 0.7f : 0.45f;
-        head_flex = hold * (0.55f * on_back - 0.45f * face_down) + 0.05f;
-        head_tilt = hold * 0.45f * side_up;
+        head_flex = std::clamp(hold * 0.7f * right_flex, -0.9f, 1.0f) + 0.05f;
+        head_tilt = std::clamp(hold * 0.7f * right_tilt, -0.7f, 0.7f);
         break;
     }
     case Phase::idle: break;
