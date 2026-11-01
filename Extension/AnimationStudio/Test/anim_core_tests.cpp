@@ -2898,33 +2898,32 @@ void bent_joints_match_the_studio() {
 }
 // Joint limits: the game's own range for each joint. The average pose is left alone, limiting twice is the
 // same as once, and a knee is a hinge - it cannot be twisted round or bent the wrong way.
-void transitions_start_from_the_drawn_pose() {
-    std::vector<Joint> old_native(skeleton_joints), drawn = old_native, next_native = old_native;
-    drawn[9].rotation = from_euler({60, 0, 0}); drawn[hips_joint].position[1] = 0.1f;
-    next_native[9].rotation = from_euler({20, 0, 0}); next_native[342].rotation = from_euler({70, 0, 0});
-    next_native[hips_joint].position[1] = 0.5f;
-    std::vector<Offset> next(skeleton_joints);
-    next[9].rotation = from_euler({-10, 0, 0}); next[hips_joint].offset[1] = 0.03f;
-    PoseFade fade;
-    fade.start(1, 0.2f, drawn, old_native, next);
-    const auto at = [&](double now) {
-        auto changes = next; fade.apply(now, next_native, next, changes);
-        auto pose = next_native; apply_pose_deltas(changes, pose); return pose;
-    };
-    const auto first = at(1), half = at(1.1), last = at(1.21);
-    check(same_turn(first[9].rotation, drawn[9].rotation) && near(first[hips_joint].position[1], 0.1f),
-          "A new native move cannot receive the old trick's edits again at the start of a handoff");
-    check(same_turn(half[9].rotation, from_euler({35, 0, 0})) && near(half[hips_joint].position[1], 0.315f),
-          "The last drawn pose blends directly into the next edited pose");
-    check(same_turn(first[342].rotation, next_native[342].rotation) && same_turn(half[342].rotation, next_native[342].rotation),
-          "Native motion in an unedited joint is never mistaken for an outgoing custom edit");
-    check(same_turn(last[9].rotation, from_euler({10, 0, 0})) && near(last[hips_joint].position[1], 0.53f),
-          "An elapsed fade leaves the next animation and its native motion fully in control");
-    const auto interrupted = at(1.08);
-    fade.start(1.08, 0.2f, interrupted, next_native, next);
-    check(same_turn(at(1.08)[9].rotation, interrupted[9].rotation) && near(at(1.08)[hips_joint].position[1], interrupted[hips_joint].position[1]),
-          "An interrupted handoff resumes from what was actually drawn without a discontinuity");
-    fade.reset(); check(!fade.on(1.1), "A reset cannot keep a pose from another episode alive");
+// A change of what plays fades on the game's live pose: the keys' changes, never a pose held from before. Into a trick, or with
+// the game in the air, quickly whatever the Crossfade; back to the game on the ground over the Crossfade.
+void key_fades_go_with_the_games_pose() {
+    check(near(key_fade_seconds(0.4f, true, true), quick_key_fade) && near(key_fade_seconds(0.4f, true, false), quick_key_fade) &&
+              near(key_fade_seconds(0.4f, false, true), quick_key_fade),
+          "Into a trick, or in the air, the keys fade in and out quickly at a long Crossfade");
+    check(near(key_fade_seconds(0.4f, false, false), 0.4f) && near(key_fade_seconds(0.08f, true, false), 0.08f),
+          "On the ground the hand-back takes the Crossfade, and a short Crossfade is never made longer");
+    // The pop goes on under a fade into a trick: halfway, a keyed knee is the game's knee now with half its key on it.
+    EditTransition fade;
+    std::vector<Offset> none(skeleton_joints), keyed(skeleton_joints);
+    keyed[9].rotation = from_euler({40, 0, 0});
+    (void)fade.evaluate(10.0, 1, 0, 0, none, quick_key_fade);
+    (void)fade.evaluate(10.05, 1, 7, 99, keyed, quick_key_fade); // the trick starts: its fade begins
+    (void)fade.evaluate(10.05 + quick_key_fade / 2, 1, 7, 99, keyed, quick_key_fade);
+    const std::vector<Offset> half = fade.current;
+    std::vector<Joint> popping(skeleton_joints);
+    popping[9].rotation = from_euler({65, 0, 0});
+    auto midway = popping; apply_pose_deltas(half, midway);
+    check(same_turn(midway[9].rotation, normalised(multiply(popping[9].rotation, scaled_turn(keyed[9].rotation, 0.5f)))),
+          "Halfway in, the knee is the game's knee as it pops with half its key on it");
+    const auto later = fade.evaluate(10.05 + quick_key_fade + 0.001, 1, 7, 99, keyed, quick_key_fade);
+    auto drawn = popping; apply_pose_deltas(later, drawn);
+    check(same_turn(later[9].rotation, keyed[9].rotation) &&
+              same_turn(drawn[9].rotation, normalised(multiply(popping[9].rotation, keyed[9].rotation))),
+          "A trick's keys are in within the quick fade, on the game's knee as it pops");
 }
 void release_playback_regressions() {
     check(to_euler({0, 0, 0, 0}) == Vec3{} && to_euler({1e30f, 1e30f, 1e30f, 1e30f}) == Vec3{},
@@ -3308,7 +3307,7 @@ int main(int argc, char** argv) {
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();
         bent_joints_match_the_studio();
-        transitions_start_from_the_drawn_pose();
+        key_fades_go_with_the_games_pose();
         release_playback_regressions();
         joints_stay_in_their_range();
         lead_foot_is_read_from_the_clip();
