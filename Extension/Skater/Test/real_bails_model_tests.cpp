@@ -564,9 +564,10 @@ int main() {
         Input hit = in;
         hit.body[head].impact = 5.0f;
         (void)m.step(hit);
-        // Still sliding along fast (over 2.6 m/s): nothing.
+        // Still sliding along fast (over 4.5 m/s): nothing. (Slower than that he already reacts: lying still, the game
+        // keeps none of a push on a limb.)
         Input sliding = in;
-        move_all(sliding, {3.0f, 0, 0});
+        move_all(sliding, {5.0f, 0, 0});
         bool none = true;
         run(m, sliding, 90, [&](const Output& o) { none = none && !o.pain; });
         check(none, "No pain reaction while he slides fast");
@@ -915,6 +916,35 @@ int main() {
         check(o.driven[r_arm] && mark_to(o, 1, in.body[l_forearm].p) < 0.12f, "The right hand goes to the left elbow");
         check(o.driven[l_arm] && o.driven[l_forearm], "The hurt arm is held in");
         check(!o.leg_lifted[0] && !o.leg_lifted[1], "An elbow lifts no leg");
+    }
+    // In the game the muscles follow how much of each push the game keeps: in a game that keeps a tenth of every change
+    // (a limb on the ground in the user's recordings) the arms still come out most of the way they do where all of it
+    // stays, and nothing runs away (no spin over 25 rad/s, nothing not finite).
+    {
+        const auto reach = [&](float keeps, bool in_game) {
+            Input in = forward_fall();
+            in.in_game = in_game;
+            Muscles m;
+            m.begin(in, 3);
+            float most = 0, fastest = 0;
+            bool finite_all = true;
+            for (int k = 0; k < 30; ++k) {
+                const Output o = m.step(in);
+                for (std::size_t i = 1; i < part_count; ++i) {
+                    if (!o.write[i]) continue;
+                    in.body[i].w = in.body[i].w + (o.w[i] - in.body[i].w) * keeps;
+                    in.body[i].v = in.body[i].v + (o.v[i] - in.body[i].v) * keeps;
+                    finite_all = finite_all && math::finite(in.body[i].w);
+                    fastest = std::max(fastest, length(in.body[i].w));
+                }
+                for (const Part p : {l_arm, r_arm}) most = std::max(most, length(in.body[p].w - in.body[chest3].w));
+            }
+            return std::array<float, 3>{most, fastest, finite_all ? 1.0f : 0.0f};
+        };
+        const auto person = reach(1.0f, false), game = reach(0.1f, true), uncorrected = reach(0.1f, false);
+        check(game[0] > 0.6f * person[0], "Where the game keeps a tenth, the arms still come out most of the way");
+        check(game[0] > 2.0f * uncorrected[0], "... far more than if the muscles did not follow what the game keeps");
+        check(game[2] > 0 && game[1] < 25.0f, "... and nothing runs away");
     }
     // Lying on his back with his hands on the ground, the hand that reaches is written with its arm (left planted, the
     // game's wrist joint held the arm back: the hand stopped 0.4 m short), and it is sent towards what it reaches for, not

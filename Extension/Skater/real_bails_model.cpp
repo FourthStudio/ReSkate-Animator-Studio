@@ -363,6 +363,35 @@ Output Muscles::step(const Input& in) noexcept {
     tree.build(mass, b);
     const auto centre = [&](std::size_t i) { return mass.com + mass.at[i]; };
 
+    // ---- what the game keeps -------------------------------------------------------------------------------------------
+    // In the game, how much of last step's push each joint kept: its turn from before we wrote to now, against what we
+    // asked, in running sums over about a quarter of a second. The game's share is nothing like one number: in the user's
+    // recordings it kept 17-73% of a turn in the air (by joint), 5-11% of one on a limb still moving on the ground, and none
+    // on a limb lying still. A fixed gain was too strong in the air or did nothing on the ground; this one follows it.
+    if (in.in_game && asked_known_) {
+        const float fade = std::exp(-dt / 0.25f);
+        for (const auto& l : ranges()) {
+            const Part c = l.child;
+            kept_got_[c] *= fade;
+            kept_asked_[c] *= fade;
+            const float asked2 = dot(asked_[c], asked_[c]);
+            if (asked2 < 1e-4f || !finite(asked_[c])) continue;
+            const V3 got = (b[c].w - b[l.frame].w) - before_[c];
+            if (!finite(got)) continue;
+            kept_got_[c] += dot(got, asked_[c]);
+            kept_asked_[c] += asked2;
+        }
+    }
+    asked_known_ = false;
+    // What to hand the game for a joint so what stays is what the muscles mean: one over the share it keeps, starting
+    // from the measured average for that joint (game_gain) until it has been asked something, at most 10 times (a limb
+    // lying still keeps nothing: more would only flick it once it moves).
+    const auto gain_of = [&](Part c) {
+        const float prior = 0.5f; // (rad/s)^2 of asking at the average share
+        const float kept = (kept_got_[c] + prior / game_gain(c)) / (kept_asked_[c] + prior);
+        return std::clamp(1.0f / std::max(kept, 0.1f), 1.0f, 10.0f);
+    };
+
     // ---- the read ------------------------------------------------------------------------------------------------
     bool any_touch = false, torso_touch = false;
     float torso_hit = 0, upper_hit = 0;
@@ -723,13 +752,14 @@ Output Muscles::step(const Input& in) noexcept {
     out.phase = phase_;
 
     // Down: on something with his trunk (the ground, or the rail he is astride), not tumbling, flying or sliding fast, and
-    // no hard landing coming in the next 0.3 s. Slow enough under 2 m/s and 3.5 rad/s of the trunk (in the user's
-    // recordings about 0.6 s after the torso lands, where lying still came 1.3 s after it), and fast again over 2.6 m/s or
-    // 4.5 rad/s (sliding along on his back or side slower than that, a skater holds what hurts already). Racked he holds
-    // on even falling off the rail.
+    // no hard landing coming in the next 0.3 s. Slow enough under 3.5 m/s and 4.5 rad/s of the trunk, and fast again over
+    // 4.5 m/s or 6 rad/s: he reacts while he still slides. It has to start then: in the user's recordings the game kept
+    // none of a push on a limb lying still on the ground (and 5-11% while it still moved), so a reaction started once he
+    // was still only twitched; started while he slides it gets there, and the pose stays as he comes to rest. Racked he
+    // holds on even falling off the rail.
     {
         const float speed = length(mass.velocity);
-        slow_ = slow_ ? speed < 2.6f && torso_spin < 4.5f : speed < 2.0f && torso_spin < 3.5f;
+        slow_ = slow_ ? speed < 4.5f && torso_spin < 6.0f : speed < 3.5f && torso_spin < 4.5f;
         const bool landing_soon = pred.hit && pred.t < 0.3f && out.hit_speed > 2.5f;
         down_ = racked_now ? slow_ : slow_ && torso_off_for_ < 0.25 && !airborne && !landing_soon;
         down_for_ = down_ ? down_for_ + dt : 0;
@@ -1328,11 +1358,12 @@ Output Muscles::step(const Input& in) noexcept {
         }
         case Hurt::left_hand:
         case Hurt::right_hand: {
-            // The hurt hand pulled to his belly, the other wrapped round its wrist; curled over it, knees up.
+            // The hurt hand pulled in to his belly and the other forearm folded over it, both resting on him; curled over
+            // it, knees up. (Not the other hand round the hurt wrist: two hands chasing each other through the air is the
+            // one reach the ragdoll never made; in the user's game it only raised the arms a little.)
             const int s = hurt_arm;
             hand_to(s, belly(-hurt_side), 0.35f, 0.45f);
-            const Part hand = s ? r_hand : l_hand;
-            hand_to(other_arm, b[hand].p + world_up * 0.03f, 0.45f, 0.45f);
+            hand_to(other_arm, belly(-hurt_side) + chest[1] * 0.03f, 0.4f, 0.5f);
             curl_back(0.5f * curl, 0, 0, 0.15f, 0.9f);
             for (int k = 0; k < 2; ++k) knee_up(k, 0.5f * curl, 0.8f * curl, 0.2f);
             break;
@@ -1557,10 +1588,19 @@ Output Muscles::step(const Input& in) noexcept {
         std::array<V3, part_count> handed{};
         for (std::size_t k = 1; k < body::chain.size(); ++k) {
             const Part c = body::chain[k];
-            if (!body::weld(c) && !planted[c]) handed[c] = torque_of(c) * (dt * game_gain(c));
+            if (!body::weld(c) && !planted[c]) handed[c] = torque_of(c) * (dt * gain_of(c));
         }
         tree.articulate(std::array<M3, part_count>{});
         tree.solve(handed, dw, dv, outside);
+        // Never more than 6 rad/s added to a body in one step however much the game takes back: if it is more, the whole
+        // set is scaled down together (still one side of each joint against the other).
+        float most = 0;
+        for (std::size_t i = 1; i < part_count; ++i)
+            if (written_body[i]) most = std::max(most, length(dw[i]));
+        if (most > 6.0f && std::isfinite(most)) {
+            for (auto& h : handed) h = h * (6.0f / most);
+            tree.solve(handed, dw, dv, outside);
+        }
     }
 
     // ---- the joints' stops -----------------------------------------------------------------------------------------
@@ -1610,6 +1650,17 @@ Output Muscles::step(const Input& in) noexcept {
         written.w[i] = w;
         written.v[i] = v;
         written.write[i] = true;
+    }
+    // What each joint was asked, for how much of it the game keeps (next step).
+    if (in.in_game) {
+        for (const auto& l : ranges()) {
+            const Part c = l.child, f = l.frame;
+            const V3 now = b[c].w - b[f].w;
+            const V3 c_w = written.write[c] ? written.w[c] : b[c].w, f_w = written.write[f] ? written.w[f] : b[f].w;
+            before_[c] = now;
+            asked_[c] = (c_w - f_w) - now;
+        }
+        asked_known_ = true;
     }
     return written;
 }

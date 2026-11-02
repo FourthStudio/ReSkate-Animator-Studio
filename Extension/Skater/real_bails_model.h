@@ -178,6 +178,11 @@ private:
     bool ground_known_{};
     // The hits.
     std::array<double, part_count> landed_at_{}; // when each body last came down hard on something (a limb's thud)
+    // What the game keeps of what the muscles hand it (in the game): each joint's turn as last written and as it was
+    // before, and running sums of what came of it against what was asked (real_bails_model.cpp, the game's share).
+    std::array<V3, part_count> asked_{}, before_{};
+    std::array<float, part_count> kept_got_{}, kept_asked_{};
+    bool asked_known_{};
     std::array<double, 4> limb_hit_at_{};        // each limb's last hit (left arm, right arm, left leg, right leg)
     std::array<float, 4> limb_hit_size_{};
     std::array<V3, 4> limb_hit_from_{};          // the way the hit pushed it (world, unit)
