@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,17 @@ inline constexpr std::array<std::string_view, 78> skate_grind_types{
 };
 // A grind he is doing (not Invalid, not Exit).
 inline bool real_grind_type(std::uint32_t type) noexcept { return type > 0 && type < 77; }
+// The grind the game names now, 0 for none. Enum.GS.SkateGrindType is the value the game picks its grind clips by,
+// so while it can be read it is the only one used. At a lock it can say Invalid while CurrentGrindType still holds the last grind:
+// a loop of that grind then played for 2 frames.
+inline std::uint32_t grind_the_game_names(const std::optional<std::uint32_t>& skate_grind_type,
+                                          const std::optional<std::uint32_t>& current_skate_grind_type,
+                                          const std::optional<std::uint32_t>& current_grind_type) noexcept {
+    if (skate_grind_type) return real_grind_type(*skate_grind_type) ? *skate_grind_type : 0;
+    if (current_skate_grind_type && real_grind_type(*current_skate_grind_type)) return *current_skate_grind_type;
+    if (current_grind_type && real_grind_type(*current_grind_type)) return *current_grind_type;
+    return 0;
+}
 inline std::uint32_t skate_grind_type(std::string_view name) noexcept {
     for (std::uint32_t i = 0; i < skate_grind_types.size(); ++i)
         if (skate_grind_types[i] == name) return i;

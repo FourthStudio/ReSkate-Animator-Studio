@@ -2247,6 +2247,10 @@ void grind_rail_goes_under_the_grind() {
 
 // A saved grind plays only on the grinds its clip is for, as the game names them (grind_types.h).
 void a_grind_is_known_by_the_games_name() {
+    check(grind_the_game_names(0u, 19u, 32u) == 0, "SkateGrindType says Invalid: no grind, whatever the others still hold");
+    check(grind_the_game_names(28u, 19u, 32u) == 28, "SkateGrindType names a grind: that one");
+    check(grind_the_game_names(std::nullopt, 19u, 32u) == 19, "SkateGrindType cannot be read: CurrentSkateGrindType");
+    check(grind_the_game_names(std::nullopt, std::nullopt, 32u) == 32, "Then CurrentGrindType");
     const auto of = [](const char* name) { return grind_types_of(std::string("animation/dingo/") + name); };
     using V = std::vector<std::uint32_t>;
     const auto id = [](const char* name) { return skate_grind_type(name); };

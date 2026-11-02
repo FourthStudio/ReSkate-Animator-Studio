@@ -611,6 +611,7 @@ struct Live {
     // logged.
     std::uint32_t grind_now{}, grind_told{};
     double grind_now_at{-1};
+    double grind_named_on_this_rail_at{-1};
     // Each piece's manual (piece_tricks indices): the game's Enum.Manual it is (1 tail, 2 nose; 0 not a manual's loop or
     // pose) and whether it is the fakie one. The game's manual now (Enum.Intent.Manual, -1 not read) and riding fakie.
     struct PieceManual {
@@ -3006,7 +3007,8 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
 void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generation, std::uintptr_t component,
                  const Joint& live_placement, std::shared_ptr<const GameplayPacket>& scheduled, Joint& board_target,
                  float& board_weight, MotionState motion, std::optional<std::uint32_t> state) {
-    const std::uint32_t grind = l.grind_now_at >= 0 && at - l.grind_now_at < 0.5 ? l.grind_now : 0;
+    const std::uint32_t grind = l.grind_named_on_this_rail_at >= 0 && at - l.grind_named_on_this_rail_at < 0.5 ? l.grind_now : 0;
+    const std::uint32_t grind_of_moving_piece = l.grind_now_at >= 0 && at - l.grind_now_at < 0.5 ? l.grind_now : 0;
     const auto modifier = modifier_mask(snap.modifier);
     const bool ready = modifier != 0 && !testing_tricks.load();
     const bool down = ready && overlay::trick_modifier_held(modifier);
@@ -3092,8 +3094,9 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     if (!l.game_trick && !scheduled) {
         match = l.pieces.update(at, l.pose);
         if (match) match->piece = match->piece < l.tracked.size() ? l.tracked[match->piece] : l.piece_tricks.size();
-        // A piece of one of the game's grinds (its way in, its lean, its pop-out) only on that grind.
-        if (match && match->piece < l.piece_grinds.size() && !l.piece_grinds[match->piece].empty() && !grind_allows(l, match->piece, grind))
+        // A piece of one of the game's grinds (its way in, its lean, its pop-out) only on that grind. A pop-out plays off the rail, so
+        // a name said off the rail counts here.
+        if (match && match->piece < l.piece_grinds.size() && !l.piece_grinds[match->piece].empty() && !grind_allows(l, match->piece, grind_of_moving_piece))
             match.reset();
         if (match) {
             bool version_wanted = wanted;
@@ -3596,18 +3599,17 @@ void on_animation(std::uintptr_t component) noexcept {
             // Not grabbing (when that can be read): no grab, whatever the grab's type was left at.
             l.grab_now = !l.game.grab_type ? -1 : l.game.grabbing && !*l.game.grabbing ? 0 : static_cast<int>(*l.game.grab_type);
             l.grab_style_now = l.game.detailed_grab_type ? static_cast<int>(*l.game.detailed_grab_type) : -1;
-            // Which grind the game is doing (grind_types.h): Enum.GS.SkateGrindType, the one the game picks its grind clips by
-            // (CurrentSkateGrindType can name another grind than the clip it plays); else CurrentSkateGrindType, else
-            // CurrentGrindType.
+            // Which grind the game is doing (grind_types.h).
             {
-                std::uint32_t type = 0;
-                if (l.game.anim_grind_type && real_grind_type(*l.game.anim_grind_type)) type = *l.game.anim_grind_type;
-                else if (l.game.skate_grind_type && real_grind_type(*l.game.skate_grind_type)) type = *l.game.skate_grind_type;
-                else if (l.game.grind_type && real_grind_type(*l.game.grind_type)) type = *l.game.grind_type;
+                const auto type = grind_the_game_names(l.game.anim_grind_type, l.game.skate_grind_type, l.game.grind_type);
                 if (type) {
                     l.grind_now = type;
                     l.grind_now_at = at;
                 }
+                // Off a rail the game keeps the last grind's name. A pop back onto the rail with that name played the last grind's loop
+                // for 2 frames: 17.4 cm into the deck, off BS Smith in 3 of 3 runs on 1.1.1.
+                if (motion != MotionState::rail) l.grind_named_on_this_rail_at = -1;
+                else if (type) l.grind_named_on_this_rail_at = at;
             }
             game_targeting_grind.store(l.game.targeting_grind.value_or(false), std::memory_order_release);
             game_time_to_land.store(l.game.time_to_land.value_or(-1.0f), std::memory_order_release);
