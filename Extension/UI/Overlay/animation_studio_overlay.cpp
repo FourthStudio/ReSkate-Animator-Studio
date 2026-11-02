@@ -8201,7 +8201,7 @@ constexpr std::array<const char*, 5> settings_blurbs{"The room, the camera, play
                                                      "How the skater is posed: limits, keeping clear, the ground, his stance.",
                                                      "How your tricks play in game: on or off, the crossfade, matching, your name.",
                                                      "Where packs are exported to and imported from, and bringing them in.",
-                                                     "How he falls: catching it with his hands, a step, his head, rolling, lying still."};
+                                                     "How he falls: reaching out, his head, the board, what hurts, lying still."};
 // SETTINGS > BAILS: Real Bails (Extension/Skater/real_bails.h), the muscles in the ragdoll, and how they are tuned.
 std::vector<Setting> bails_settings() {
     namespace rb = dingosdk::real_bails;
@@ -8220,8 +8220,9 @@ std::vector<Setting> bails_settings() {
     };
     rows.push_back(on_off("Real bails", on,
                           "Muscles in the ragdoll, so a slam looks like a skater's: he falls as the game's ragdoll does, heavy, with a "
-                          "person's tone and joint ranges in every joint; going down, his hands come out to catch it; once he lies "
-                          "still he may reach for what hurts and curl up a little. Off: the game's own ragdoll.",
+                          "person's tone and joint ranges in every joint; going down, his hands reach out, his chin goes in and he "
+                          "kicks the board away; every hit makes him flinch; once he is down he holds what hurts and curls up. Off: "
+                          "the game's own ragdoll.",
                           [](bool v) { rb::set_enabled(v); }));
     auto add = [&](Setting s) {
         s.enabled = on;
@@ -8237,34 +8238,43 @@ std::vector<Setting> bails_settings() {
                "loose limbs.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.weight = a * 2.0f; }); }));
     add(slider("Reaction speed", (t.reaction - 0.5f) / 1.5f, percent(t.reaction),
-               "How fast the arms come out to catch the fall, from the moment the board is lost. 100% is about as quick as a "
-               "person's protective reach.",
+               "How fast the arms come out to catch the fall, from the moment the board is lost, and how quickly a hand gets to "
+               "what hurts. 100% is about as quick as a person's protective reach.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.reaction = 0.5f + a * 1.5f; }); }));
     {
         Setting s = on_off("Catch with the hands", t.catch_arms,
-                           "Going down, both hands come up and out for the ground where he is falling: ahead going forwards, to the "
-                           "side going sideways, back and down a little going backwards. Once down they give with the slam.",
+                           "From the moment the bail starts, both hands reach the way his momentum takes him: forwards, back and "
+                           "down, or out to the side he goes, one a moment before the other; tumbling through the air they cover "
+                           "his head. Once down they give with the slam.",
                            [tune](bool v) { tune([v](rb::Tuning& n) { n.catch_arms = v; }); });
         add(std::move(s));
     }
+    add(on_off("Kick the board away", t.kick_board,
+               "As the bail starts with his feet still on the board, the foot on it kicks it away from him: out in front when "
+               "he goes over backwards, away from where he lands otherwise. OFF: the board goes where the bail sends it.",
+               [tune](bool v) { tune([v](rb::Tuning& n) { n.kick_board = v; }); }));
     // Catch step and Grip on the ground are gone from the page: the legs are left to the fall and a slide runs out on the
     // ground's own friction. Their saved values stay in Tuning so older settings still load.
     add(slider("Head protection", t.head / 1.5f, t.head <= 0.01f ? std::string("OFF") : percent(t.head),
-               "The neck's tone: how hard it resists the head being thrown, and how much the chin tucks going over backwards. A "
-               "hard enough slam still throws the head. OFF: the neck lets go and the head goes with the rest of him.",
+               "How hard he pulls his chin to his chest going over backwards or sideways, dropping, tumbling and through "
+               "every hit, to keep the back of his head off the ground. Going down face first a tuck would put his face in "
+               "first, so there it is how far he turns his head, cheek to the ground. Also the neck's tone. A hard enough slam "
+               "still throws the head. OFF: the neck lets go and the head goes with the rest of him.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.head = a * 1.5f; }); }));
     add(slider("Curl up when hurt", t.tuck / 1.5f, t.tuck <= 0.01f ? std::string("OFF") : percent(t.tuck),
-               "Lying still after a hit that hurt, how far he curls up: knees drawn up with his feet on the ground, back "
-               "rounded. Never while he is still falling or rolling. OFF: he lies as he landed.",
+               "Once he is down and hurt, how far he curls up over it, more for a harder hit: a hurt knee drawn to his chest, "
+               "his knees drawn up with his feet on the ground, his back rounded; racked on a rail, into a ball on his side. "
+               "Never while he is still falling, tumbling or sliding fast. OFF: only his hands go to it.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.tuck = a * 1.5f; }); }));
     add(on_off("Grab what hurts", t.grab_hurt,
-               "Once he lies still, a hand eases over to whatever hit hardest (his chin or face, a knee, an elbow or his hip) "
-               "and holds it, then lets go slowly. Never while he is still moving; moving again ends it.",
+               "As soon as he is down and no longer tumbling or sliding fast, his hands go to what hit hardest and press on "
+               "it: the other hand to a hurt elbow or wrist, both to a knee or his head, a hand to a hip, his back or ribs; "
+               "racked on a rail, both hands to his groin. Tumbling or sliding fast again stops it.",
                [tune](bool v) { tune([v](rb::Tuning& n) { n.grab_hurt = v; }); }));
     {
         Setting s = slider("Hold what hurts for", (t.hold_hurt - 1.0f) / 9.0f, std::format("{:.1f} s", t.hold_hurt),
-                           "How long he holds what hurts once he lies still, before he lets go. Getting up (the game's button) ends it "
-                           "sooner.",
+                           "About how long he holds what hurts once he is down, before he lets go: longer for a harder hit and for "
+                           "what hurts more (racked, longest). Getting up (the game's button) ends it sooner.",
                            [tune](float a) { tune([a](rb::Tuning& n) { n.hold_hurt = 1.0f + a * 9.0f; }); });
         s.enabled = on && t.grab_hurt;
         rows.push_back(std::move(s));

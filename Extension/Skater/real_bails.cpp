@@ -89,6 +89,38 @@ std::uint32_t read_substate(const NoBailSkater& skater) noexcept {
     return static_cast<std::uint32_t>(active - machine);
 }
 
+// The board's bodies as its physics holds them (skater_state.h: the board holder core+0x430, its physics +0x18, nine
+// bodies, body 0 its root), read as the rig's are.
+struct Board {
+    std::uintptr_t holder{};
+    std::array<Body, state::board_body_count> body{};
+};
+bool read_board(const NoBailSkater& skater, Board& out) noexcept {
+    std::uintptr_t holder{}, physics{}, type{}, bodies{};
+    std::uint32_t count{};
+    if (!memory::peek(skater.core + state::board_holder_offset, holder) || !holder ||
+        !memory::peek(holder + state::board_physics_offset, physics) || !memory::peek(physics, type) ||
+        type != skater.base + state::board_physics_vtable || !memory::peek(physics + state::physics_bodies_offset, bodies) ||
+        !memory::peek(bodies, count) || count != state::board_body_count)
+        return false;
+    out.holder = holder;
+    for (std::size_t i = 0; i < state::board_body_count; ++i) {
+        auto& b = out.body[i];
+        b = {};
+        b.at = bodies + i * state::physics_body_size;
+        std::uintptr_t owner{};
+        if (!memory::peek(b.at + state::body_owner_offset, owner) || owner != physics ||
+            !memory::peek(b.at + addr::skater_body::body_transform_offset, b.m) ||
+            !memory::peek(b.at + state::body_velocity_offset, b.v) || !memory::peek(b.at + state::body_spin_offset, b.w) || !finite(b.v) ||
+            !finite(b.w))
+            continue;
+        bool valid = true;
+        for (float x : b.m) valid = valid && std::isfinite(x) && std::abs(x) < 100000;
+        b.ok = valid;
+    }
+    return out.body[0].ok;
+}
+
 // ---- the physics world's own bodies (ragdoll_bodies.h) ------------------------------------------------------------
 namespace world = addr::ragdoll_bodies;
 using SetMotion = void(__fastcall*)(const world::BodyHandle*, const float*);
@@ -130,6 +162,25 @@ bool call_set(SetMotion set, const world::BodyHandle& h, const Vec3& v) noexcept
     }
 }
 
+// The kick's push on the board itself: OFF until it is seen in the game. The board's records are read as the rig's are,
+// and its world bodies would be set through the same validated setters and generation-checked handles as the ragdoll's
+// (ragdoll_bodies.h: the board holder's +0x718, one per board body, which the game's own board sync sets). Not proved:
+// that in a bail the board's records are the world's mirror, refreshed every step (the liveness check in on_physics
+// guards it: the record's position has to follow its velocity; never seen in a bail), that handle k is board body k
+// (assumed: the board sync walks them together; every body gets the same change, so a mix-up would not tear the board),
+// and the board's mass in the game (real_bails_model.cpp takes a real board's 2.5 kg for the push the leg gets back).
+// Off, the foot on the board still kicks it: it pushes the board through the game's own contact, and the game's solver
+// gives both their share.
+constexpr bool board_kick_writes = false;
+// The board's root as it was last read, and for how many steps in a row its record has moved as its velocity says.
+struct BoardSeen {
+    bool have{};
+    Vec3 p{}, v{};
+    int live{};
+};
+// After this many steps in a row, the board's record is taken to be the world's.
+constexpr int board_live_steps = 3;
+
 // ---- recording ---------------------------------------------------------------------------------------------------
 struct Frame {
     std::uint64_t bail{}; // 0 = not in a bail
@@ -145,6 +196,11 @@ struct Frame {
     std::array<std::uint8_t, body_count> ok{};
     std::array<std::uint8_t, skater_body::count> touching{};
     std::array<float, skater_body::count> impact{};
+    // What the muscles reacted to (real_bails_model.h's Output): what hurts (Hurt by number), the reaction to it on, down
+    // and slow, the leg kicking the board (-1 left, +1 right), the strongest flinch, and the board's record seen live.
+    std::uint8_t hurt{}, pain{}, down{}, board_live{};
+    std::int8_t kick{};
+    float flinch{}, hurt_amount{};
 };
 constexpr std::size_t ring_size = 2048;
 struct Ring {
@@ -175,6 +231,8 @@ struct Follow {
     model::Muscles muscles;
     Tuning tuning; // the last tuning read
     std::uintptr_t physics{}; // the rig's physics the muscles began on
+    BoardSeen board;
+    bool logged_kick{};
 };
 Follow& follow() { static auto* value = new Follow; return *value; }
 
@@ -182,8 +240,8 @@ model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step
     model::Input in;
     in.dt = seconds;
     in.strength = strength;
-    in.in_game = true; // the game's joint solve takes most of each push back: the muscles make up for it
-    in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.grip, t.catch_arms, t.catch_step, t.grab_hurt, t.hold_hurt, t.weight};
+    in.in_game = true; // the game's joint solve takes part of each push back: the muscles make up for it
+    in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.grip, t.catch_arms, t.catch_step, t.grab_hurt, t.hold_hurt, t.weight, t.kick_board};
     for (std::size_t i = 1; i < model::part_count; ++i) {
         const auto& b = bodies.body[i];
         auto& o = in.body[i];
@@ -198,6 +256,8 @@ model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step
         if (const auto& at = step.body.bodies[i].point) { o.has_point = true; o.point = *at; }
         // The surface's normal tells a floor from a wall: only a floor is the ground he lands on.
         if (const auto& normal = step.body.bodies[i].normal) { o.has_normal = true; o.normal = *normal; }
+        // What the contact was with: the board (the game's own feet-on-board test reads the same flag).
+        o.on_board = step.body.bodies[i].hit.board;
     }
     return in;
 }
@@ -228,6 +288,29 @@ void on_physics(std::uintptr_t core) noexcept {
     Bodies bodies;
     const bool have = read_bodies(skater, bodies);
     const auto substate = physics_state == offboard_state ? read_substate(skater) : 0u;
+    // The board, every step (in a bail or not), so that by the time he bails it is known whether its record follows the
+    // board: its position has to move by about what its velocity says (a stale copy, or one the game stops refreshing,
+    // does not).
+    Board board;
+    const bool have_board = read_board(skater, board);
+    if (have_board) {
+        const auto& root = board.body[0];
+        const Vec3 p{root.m[12], root.m[13], root.m[14]};
+        auto& seen = f.board;
+        if (seen.have) {
+            using namespace math;
+            const Vec3 expect = seen.p + seen.v * seconds;
+            const float off = math::length(p - expect), speed = math::length(seen.v);
+            const bool follows = off < 0.02f + 0.25f * speed * seconds && (speed < 0.05f || math::length(p - seen.p) > 1e-4f);
+            seen.live = follows ? std::min(seen.live + 1, 1000) : 0;
+        }
+        seen.have = true;
+        seen.p = p;
+        seen.v = root.v;
+    } else {
+        f.board = {};
+    }
+    const bool board_live = have_board && f.board.live >= board_live_steps;
 
     // The muscles: from the moment the body is a ragdoll until the game gets it up again.
     model::Output driven;
@@ -240,10 +323,18 @@ void on_physics(std::uintptr_t core) noexcept {
             std::unique_lock lock(s.tuning_mutex, std::try_to_lock);
             if (lock.owns_lock()) f.tuning = s.tuning;
         }
-        const auto input = muscle_input(bodies, step, seconds, s.strength.load(std::memory_order_relaxed), f.tuning);
+        auto input = muscle_input(bodies, step, seconds, s.strength.load(std::memory_order_relaxed), f.tuning);
+        if (board_live) {
+            const auto& root = board.body[0];
+            input.board.ok = true;
+            input.board.p = {root.m[12], root.m[13], root.m[14]};
+            input.board.v = root.v;
+            input.board.writable = board_kick_writes && world_calls().ok;
+        }
         if (fresh || !f.muscles.started() || f.physics != bodies.physics) {
             f.muscles.begin(input, static_cast<std::uint32_t>(f.bail));
             f.physics = bodies.physics;
+            f.logged_kick = false;
         }
         driven = f.muscles.step(input);
         // Through the world's own bodies: the rig's records are only its mirror (ragdoll_bodies.h).
@@ -258,6 +349,21 @@ void on_physics(std::uintptr_t core) noexcept {
                 }
         }
         if (wrote) s.driven.fetch_add(1, std::memory_order_relaxed);
+        // The kick: the board gets its change of velocity, every one of its bodies the same (so its own joints are left as
+        // they are), through the world's own bodies as the ragdoll's are set.
+        if (driven.board_kick && input.board.writable) {
+            using namespace math;
+            std::array<world::BodyHandle, state::board_body_count> board_handles{};
+            int set = 0;
+            if (memory::peek(board.holder + world::board_handles_offset, board_handles))
+                for (std::size_t k = 0; k < state::board_body_count; ++k)
+                    if (board.body[k].ok && call_set(world_calls().set_velocity, board_handles[k], board.body[k].v + driven.board_dv)) ++set;
+            if (!f.logged_kick) {
+                f.logged_kick = true;
+                logging::log(Level::info, Channel::skater, "Real Bails: kicked the board away at {:.1f} m/s ({} of its bodies set).",
+                             math::length(driven.board_dv), set);
+            }
+        }
     } else if (!in_bail && f.muscles.started()) {
         f.muscles = {};
     }
@@ -303,6 +409,12 @@ void on_physics(std::uintptr_t core) noexcept {
     fr.step = static_cast<std::int8_t>(muscles && driven.step >= 0 ? driven.step + (driven.step_landed ? 10 : 0) : -1);
     for (std::size_t i = 0; i < body_count; ++i)
         fr.command[i] = muscles && i < model::part_count && driven.write[i] ? driven.w[i] : std::array<float, 3>{};
+    // Body 0 is not one of his (the rig's is the board's root bone, never read): the board's own root is recorded there,
+    // and its command is the kick's change of its velocity.
+    if (have_board) {
+        bodies.body[0] = board.body[0];
+        if (muscles && driven.board_kick) fr.command[0] = driven.board_dv;
+    }
     for (std::size_t i = 0; i < body_count; ++i) {
         const auto& b = bodies.body[i];
         fr.ok[i] = b.ok;
@@ -315,6 +427,13 @@ void on_physics(std::uintptr_t core) noexcept {
         fr.touching[i] = step.body.bodies[i].touching;
         fr.impact[i] = step.body.bodies[i].impact;
     }
+    fr.hurt = static_cast<std::uint8_t>(muscles ? driven.hurt : model::Hurt::none);
+    fr.pain = muscles && driven.pain;
+    fr.down = muscles && driven.down;
+    fr.kick = static_cast<std::int8_t>(muscles ? driven.kick_leg : 0);
+    fr.flinch = muscles ? driven.flinch : 0.0f;
+    fr.board_live = board_live;
+    fr.hurt_amount = muscles ? driven.hurt_amount : 0.0f;
     r.head.store(head + 1, std::memory_order_release);
 }
 
@@ -337,6 +456,7 @@ void write_row(std::FILE* out, const Frame& fr) {
         std::fprintf(out, ",%.4g,%.4g,%.4g", fr.command[i][0], fr.command[i][1], fr.command[i][2]);
     }
     for (std::size_t i = 0; i < skater_body::count; ++i) std::fprintf(out, ",%u,%.4g", fr.touching[i], fr.impact[i]);
+    std::fprintf(out, ",%u,%u,%u,%d,%.3f,%u,%.3f", fr.hurt, fr.pain, fr.down, fr.kick, fr.flinch, fr.board_live, fr.hurt_amount);
     std::fputc('\n', out);
 }
 void write_header(std::FILE* out) {
@@ -348,6 +468,8 @@ void write_header(std::FILE* out) {
         std::fprintf(out, ",b%zu_cx,b%zu_cy,b%zu_cz", i, i, i);
     }
     for (std::size_t i = 0; i < skater_body::count; ++i) std::fprintf(out, ",c%zu_touch,c%zu_imp", i, i);
+    // b0: the board's root (its command: the kick's change of its velocity). hurt: real_bails_model.h's Hurt by number.
+    std::fputs(",hurt,pain,down,kick,flinch,board_live,hurt_amount", out);
     std::fputc('\n', out);
 }
 void close_file(Writer& w) {
@@ -432,6 +554,7 @@ constexpr const char* saved_catch_step = "RealBails.CatchStep";
 constexpr const char* saved_grab_hurt = "RealBails.GrabHurt";
 constexpr const char* saved_hold_hurt = "RealBails.HoldHurt";
 constexpr const char* saved_weight = "RealBails.Weight";
+constexpr const char* saved_kick_board = "RealBails.KickBoard";
 Tuning clamped(Tuning t) noexcept {
     const auto fix = [](float v, float lo, float hi, float otherwise) { return std::isfinite(v) ? std::clamp(v, lo, hi) : otherwise; };
     t.reaction = fix(t.reaction, 0.5f, 2.0f, 1.0f);
@@ -466,6 +589,7 @@ void tick() noexcept {
             if (const auto on = profile_runtime::local_preference(saved_catch_arms)) t.catch_arms = *on;
             if (const auto on = profile_runtime::local_preference(saved_catch_step)) t.catch_step = *on;
             if (const auto on = profile_runtime::local_preference(saved_grab_hurt)) t.grab_hurt = *on;
+            if (const auto on = profile_runtime::local_preference(saved_kick_board)) t.kick_board = *on;
             {
                 std::lock_guard lock(s.tuning_mutex);
                 s.tuning = clamped(t);
@@ -478,6 +602,7 @@ void tick() noexcept {
             profile_runtime::set_local_preference(saved_catch_arms, t.catch_arms);
             profile_runtime::set_local_preference(saved_catch_step, t.catch_step);
             profile_runtime::set_local_preference(saved_grab_hurt, t.grab_hurt);
+            profile_runtime::set_local_preference(saved_kick_board, t.kick_board);
             profile_runtime::set_local_values({{saved_strength, static_cast<double>(s.strength.load())},
                                                {saved_reaction, static_cast<double>(t.reaction)},
                                                {saved_head, static_cast<double>(t.head)},

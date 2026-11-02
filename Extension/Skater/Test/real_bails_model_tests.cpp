@@ -1,9 +1,12 @@
 // Real Bails' muscles (Extension/Skater/real_bails_model.h) on a made-up ragdoll. The bail is the ragdoll's: what the
-// muscles must never do is snap the body on the first step, push or spin the body as a whole, use more torque than a
-// person has, drive the legs or back towards any pose while he falls, rolls or slides, lift the legs, hold the head
-// against a hard slam, react to pain while he still moves, or keep moving him once he lies still. What they must do:
-// bring the arms out towards where he will land (forwards, to the side, back and down), let them give once down, and
-// stay finite whatever the bodies do.
+// muscles must never do is snap the body on the first step, push or spin the body as a whole (but for the board's push
+// back on a kicking foot), use more torque than a person has, drive the legs or back towards any pose while he falls,
+// rolls or slides, lift the legs lying down (but the hugged knee and the racked curl), hold the head against a hard slam,
+// react to pain while he tumbles or slides fast, hold a flinch, or keep moving him once he lies still. What they must
+// do: bring the arms out the way his momentum takes him (forwards, to the side, back and down) whatever the fall, let
+// them give once down, pull the chin in as hard as Head protection says, flinch briefly from a hit, react to what hurt
+// most as soon as he is down and slow (the other hand to an elbow, the hands to a knee or the head, both hands to the
+// groin and curled up), kick the board away once when the feet are on it, and stay finite whatever the bodies do.
 #include "Extension/Skater/real_bails_body.h"
 #include "Extension/Skater/real_bails_model.h"
 #include <algorithm>
@@ -193,6 +196,37 @@ Input right_fall() {
     on_ground(in, {l_foot, r_foot, l_toe, r_toe});
     return in;
 }
+// Astride a rail, racked: the pelvis comes down on it from above between his legs (they hang either side, the feet well
+// under him, off the ground), the rail under the middle of the pelvis.
+Input racked() {
+    Input in = standing();
+    auto& p = in.body[pelvis];
+    p.touching = true;
+    p.impact = 3.5f;
+    p.has_point = true;
+    p.point = p.p - p.r[0] * 0.13f; // under its middle, towards the legs
+    p.has_normal = true;
+    p.normal = {0, 1, 0};
+    return in;
+}
+// The skater with his feet on the board (the game's contact says so), going over backwards.
+Input on_board_backwards() {
+    Input in = backward_fall();
+    for (const Part p : {l_foot, r_foot, l_toe, r_toe}) in.body[p].on_board = true;
+    return in;
+}
+// The distance from a hand's mark to a point.
+float mark_to(const Output& o, int hand, const V3& at) { return math::length(o.hand_mark[static_cast<std::size_t>(hand)] - at); }
+// Lying still on his back after a hit of `speed` m/s on `part` (on the first step); then `steps` steps lying there.
+Output hurt_on_back(Muscles& m, Part part, float speed, int steps, Input* lying = nullptr) {
+    Input in = on_his_back();
+    m.begin(in, 9);
+    Input hit = in;
+    hit.body[part].impact = speed;
+    (void)m.step(hit);
+    if (lying) *lying = in;
+    return run(m, in, steps);
+}
 // Rolling over along the ground: on his back, the torso touching, the whole of him turning about his length and moving.
 Input rolling() {
     Input in = on_his_back();
@@ -356,12 +390,13 @@ int main() {
         run(m, roll, 240, [&](const Output& o) {
             if (o.phase == Phase::brace || o.phase == Phase::impact) return; // its first moments, before he is rolling
             for (std::size_t i = 1; i < part_count; ++i) {
-                passive = passive && !o.driven[i];
+                // The neck may have its goal: the chin tucked while he tumbles (Head protection).
+                if (i != neck && i != head) passive = passive && !o.driven[i];
                 if (is_arm(static_cast<Part>(i))) arms_loose = arms_loose && o.activation[i] < 0.2f;
             }
             passive = passive && o.phase != Phase::settle && o.phase != Phase::rest && !o.pain;
         });
-        check(passive, "Falling, rolling or sliding, no leg, back or neck joint is driven towards a pose");
+        check(passive, "Falling, rolling or sliding, no leg or back joint is driven towards a pose");
         check(arms_loose, "Rolling, the arms are as loose as the rest of him");
     }
 
@@ -416,7 +451,7 @@ int main() {
             m.begin(in, 1);
             return run(m, in, steps);
         };
-        const Output fwd = aims(forward_fall(), 15);
+        const Output fwd = aims(forward_fall(), 24);
         check(fwd.fall == Fall::forward, "Tipping forwards over his feet is read as a forward fall");
         check(fwd.time_to_hit > 0.15f && fwd.time_to_hit < 1.2f, "A forward fall from standing is read to land in a fraction of a second");
         const Input f_in = forward_fall();
@@ -428,7 +463,7 @@ int main() {
             const V3 heads = cross(spin_of(f_in, fwd, shoulder) - spin_of(f_in, fwd, chest3), f_in.body[elbow].p - f_in.body[shoulder].p);
             check(dot(heads, V3{0, 0, -1}) > 0, "Falling forwards, the arms swing forwards");
         }
-        const Output back = aims(backward_fall(), 15);
+        const Output back = aims(backward_fall(), 24);
         check(back.fall == Fall::backward, "Tipping backwards is read as a backward fall");
         const Input b_in = backward_fall();
         for (const Part shoulder : {l_arm, r_arm}) {
@@ -437,19 +472,19 @@ int main() {
             check(dot(off, V3{0, 0, 1}) > 0.05f, "Falling backwards, each arm aims behind him");
             check(dot(off, V3{shoulder == l_arm ? -1.0f : 1.0f, 0, 0}) > 0.1f, "Falling backwards, each arm aims out to its side");
         }
-        const Output side = aims(right_fall(), 15);
+        const Output side = aims(right_fall(), 24);
         check(side.fall == Fall::right, "Tipping to his right is read as a fall to the right");
         const Input s_in = right_fall();
         check(dot(side.hand_mark[1] - s_in.body[r_arm].p, V3{1, 0, 0}) > 0.15f, "Falling to his right, the right hand reaches out to the right");
         check(dot(side.hand_mark[0] - s_in.body[l_arm].p, V3{1, 0, 0}) > 0.0f, "Falling to his right, the left hand comes towards the right too");
         Input off = forward_fall();
         off.tune.catch_arms = false;
-        const Output still = aims(off, 15);
+        const Output still = aims(off, 24);
         check(!still.driven[l_arm] && !still.driven[r_arm], "Catch with the arms off, the arms do not reach");
     }
 
-    // A hand landing is the catch: the fall goes on, the hand is the ground's, and the arm has no goal any more: for a
-    // moment it resists folding as hard as it can, then it is loose.
+    // A hand landing is the catch: the fall goes on, the hand is the ground's, and the shoulder has no goal any more: for
+    // a moment the arm resists folding, the elbow giving to about 100 degrees against high damping, then it is loose.
     {
         Input in = forward_fall();
         Muscles m;
@@ -461,13 +496,16 @@ int main() {
         check(!caught.write[l_hand] && !caught.write[r_hand], "A hand on the ground is the ground's: not written");
         for (auto& b : in.body) b.impact = 0;
         const Output giving = run(m, in, 6);
-        check(!giving.driven[l_arm] && !giving.driven[l_forearm], "Once down, the arm has no goal");
+        check(!giving.driven[l_arm], "Once down, the shoulder has no goal");
+        check(giving.driven[l_forearm] && dot(spin_of(in, giving, l_forearm) - spin_of(in, giving, l_arm), in.body[l_arm].r[2]) > 0,
+              "Once down, the elbow gives (it bends)");
         check(giving.activation[l_forearm] > 0.3f, "Once down, the arm resists folding for a moment");
-        const Output loose = run(m, in, 20);
+        const Output loose = run(m, in, 30);
         check(loose.activation[l_forearm] < 0.15f, "Then it is loose");
     }
 
-    // The neck: tone only, but falling backwards the chin tucks in (lightly); falling forwards the head is left alone.
+    // Head protection: falling backwards the chin tucks in; falling forwards it does not (that would put the face in
+    // first): the head turns instead, the cheek to the ground. Head protection off lets the head go.
     {
         Muscles m;
         const Input in = backward_fall();
@@ -475,11 +513,14 @@ int main() {
         const Output back = run(m, in, 15);
         check(back.driven[neck] && dot(spin_of(in, back, neck) - spin_of(in, back, chest3), in.body[chest3].r[2]) > 0,
               "Falling backwards, the chin tucks");
-        check(back.torque[neck] < 0.35f * torque_limit(neck, 1), "Falling backwards, the chin's pull is a light one");
+        check(back.torque[neck] < 0.75f * torque_limit(neck, 1), "Falling backwards, the chin's pull is a neck's, not more");
         Muscles f;
         const Input fin = forward_fall();
         f.begin(fin, 2);
-        check(!run(f, fin, 15).driven[neck], "Falling forwards, the head is left to the fall");
+        const Output fwd = run(f, fin, 15);
+        const V3 nod = spin_of(fin, fwd, neck) - spin_of(fin, fwd, chest3);
+        check(fwd.driven[neck] && dot(nod, fin.body[chest3].r[2]) <= 1e-3f, "Falling forwards, the chin is not tucked");
+        check(std::abs(dot(nod, fin.body[chest3].r[0])) > 0.02f, "Falling forwards, the head turns (the cheek to the ground)");
         // Head protection off lets the head go: the chin does not tuck and the neck's tone is next to nothing.
         Input loose = backward_fall();
         loose.tune.head = 0;
@@ -523,30 +564,31 @@ int main() {
         Input hit = in;
         hit.body[head].impact = 5.0f;
         (void)m.step(hit);
-        // Still sliding along: nothing.
+        // Still sliding along fast (over 2.6 m/s): nothing.
         Input sliding = in;
-        move_all(sliding, {2.5f, 0, 0});
+        move_all(sliding, {3.0f, 0, 0});
         bool none = true;
         run(m, sliding, 90, [&](const Output& o) { none = none && !o.pain; });
-        check(none, "No pain reaction while he still moves");
+        check(none, "No pain reaction while he slides fast");
         // Lying still: after a moment, the reaction.
         bool started = false, light = true, kept = true, trunk_kept = true, arms_led = true;
         Output o = run(m, in, 90, [&](const Output& r) {
             if (!r.pain) return;
             started = true;
-            for (std::size_t i = 1; i < part_count; ++i) light = light && r.torque[i] <= 0.16f * torque_limit(static_cast<Part>(i), 1) + 1e-3f;
+            for (std::size_t i = 1; i < part_count; ++i) light = light && r.torque[i] <= 0.5f * torque_limit(static_cast<Part>(i), 1) + 1e-3f;
             V3 linear{}, angular{};
             change_of(in, r, linear, angular);
             kept = kept && length(linear) < 0.02f && length(angular) < 0.02f;
             change_of(in, r, [](Part p) { return is_trunk(p); }, linear, angular);
-            trunk_kept = trunk_kept && length(linear) < 0.3f && length(angular) < 0.5f;
+            // Lifting his arms presses his trunk into the ground (their weight); along the ground or round it, next to nothing.
+            trunk_kept = trunk_kept && std::hypot(linear[0], linear[2]) < 0.3f && length(angular) < 0.5f;
             arms_led = arms_led && (r.driven[l_arm] || r.driven[r_arm]);
         });
         check(started && o.phase == Phase::settle, "Lying still and hurt, he reacts to it");
         check(arms_led, "A hand goes to what hurts");
-        check(light, "The pain reaction is light (a few Nm)");
+        check(light, "The pain reaction is moderate (at most half a joint's strength: an arm lifted to the spot, pressed there)");
         check(kept, "The pain reaction never moves the body as a whole");
-        check(trunk_kept, "The pain reaction hardly moves his trunk");
+        check(trunk_kept, "The pain reaction never drags or rolls his trunk");
         check(o.driven[l_shin] && o.driven[r_shin], "Hurt and lying still with his feet down, the knees draw up a little");
         // Moving again stops it at once.
         const Output moved = m.step(sliding);
@@ -735,6 +777,319 @@ int main() {
             }
         }
         check(ok, "Whatever the bodies do, every spin, velocity and torque stays finite and bounded");
+    }
+
+    // The arms reach the way his momentum takes him from the start of every fall, whatever its kind: with nothing to go
+    // on (no lean, no momentum: forwards, the way he faces), off the ground with nothing in reach below (still out), and
+    // when the board shoots out ahead of him (his feet go on, he is left behind it: back and down).
+    {
+        const auto marks = [](Input in, int steps) {
+            Muscles m;
+            m.begin(in, 1);
+            return run(m, in, steps);
+        };
+        Input slump = standing();
+        on_ground(slump, {l_foot, r_foot, l_toe, r_toe});
+        const Output still = marks(slump, 24);
+        check(still.driven[l_arm] && still.driven[r_arm], "With nothing to go on, the arms still reach");
+        check(dot(still.hand_mark[0] - slump.body[l_arm].p, V3{0, 0, -1}) > 0.1f && dot(still.hand_mark[1] - slump.body[r_arm].p, V3{0, 0, -1}) > 0.1f,
+              "With nothing to go on, the arms reach forwards (the way he faces)");
+        Input up = standing();
+        move_all(up, {0, 8.0f, 0}); // thrown up: nothing below him within the look ahead
+        const Output high = marks(up, 24);
+        check(high.driven[l_arm] && high.driven[r_arm], "Flying with no landing in sight, the arms still reach");
+        Input shot = standing();
+        on_ground(shot, {l_foot, r_foot, l_toe, r_toe});
+        for (const Part p : {l_foot, r_foot, l_toe, r_toe}) shot.body[p].v = {0, 0, -3.0f}; // the feet go on forwards
+        const Output back = marks(shot, 24);
+        check(back.fall == Fall::backward, "The board shooting out ahead of him is a fall backwards");
+        check(dot(back.hand_mark[0] - shot.body[l_arm].p, V3{0, 0, 1}) > 0.0f && dot(back.hand_mark[1] - shot.body[r_arm].p, V3{0, 0, 1}) > 0.0f,
+              "The board shooting out ahead, the arms go back");
+        // Short of time (onto the face in a fraction of a second) they still go, part of the way.
+        Input fast = leaning(0.9f);
+        move_all(fast, {0, -2.5f, -2.5f});
+        on_ground(fast, {l_foot, r_foot, l_toe, r_toe});
+        const Output quick = marks(fast, 12);
+        check(quick.driven[l_arm] || quick.driven[r_arm], "Short of time, the arms still reach");
+    }
+
+    // A hit flinches the limb hit: for a moment it tenses (25 ms on), then pulls back from it (60 to 90 ms on); a fifth of
+    // a second or so later it is over, never a pose held, and the body's momentum is kept throughout. A hit to the chest
+    // brings the chin in, briefly.
+    {
+        Input in = forward_fall();
+        for (const Part p : {l_foot, r_foot, l_toe, r_toe}) in.body[p].touching = false;
+        Muscles m;
+        m.begin(in, 4);
+        run(m, in, 10);
+        Input hit = in;
+        auto& fa = hit.body[l_arm]; // the upper arm (a forearm coming down going down is the catch)
+        fa.touching = true;
+        fa.impact = 5.0f;
+        fa.has_point = true;
+        fa.point = fa.p + fa.r[0] * 0.15f - V3{0, 0.05f, 0};
+        fa.has_normal = true;
+        fa.normal = {0, 1, 0};
+        (void)m.step(hit);
+        bool tensed_soon = false, pulled = false, never_posed = true, kept = true;
+        float last_reflex = 0;
+        for (int k = 1; k <= 45; ++k) {
+            const Output o = m.step(in);
+            const float t = static_cast<float>(k) / 60;
+            if (o.reflex[l_arm] && t <= 0.05f) tensed_soon = true;
+            if (t > 0.08f && t < 0.25f && dot(spin_of(in, o, l_forearm) - spin_of(in, o, l_arm), in.body[l_arm].r[2]) > 0.05f) pulled = true;
+            if (o.reflex[l_forearm] || o.reflex[l_arm]) last_reflex = t;
+            if (t < 0.55f) never_posed = never_posed && !o.driven[l_forearm] && !o.driven[l_arm]; // (after 0.6 s it may reach again)
+            V3 linear{}, angular{};
+            change_of(in, o, linear, angular);
+            kept = kept && length(linear) < 0.02f && length(angular) < 0.02f;
+        }
+        check(tensed_soon, "A hit limb tenses within 50 ms");
+        check(pulled, "Then it pulls back from the hit (the elbow bends)");
+        check(last_reflex > 0.1f && last_reflex < 0.45f, "The flinch is brief (over in under half a second)");
+        check(never_posed, "A flinch is never a pose");
+        check(kept, "A flinch keeps the body's momentum");
+        // The chest hit: the chin comes in, 30 to 60 ms on, and it is over by half a second.
+        Input lying = on_his_back();
+        move_all(lying, {1.0f, 0, 0});
+        Muscles c;
+        c.begin(lying, 4);
+        run(c, lying, 30);
+        Input chest_hit = lying;
+        chest_hit.body[chest2].impact = 4.0f;
+        (void)c.step(chest_hit);
+        float first = -1, last = -1;
+        for (int k = 1; k <= 45; ++k) {
+            const Output o = c.step(lying);
+            if (o.reflex[neck]) {
+                if (first < 0) first = static_cast<float>(k) / 60;
+                last = static_cast<float>(k) / 60;
+            }
+        }
+        check(first > 0.02f && first < 0.07f, "A chest hit brings the chin in 30 to 60 ms after it");
+        check(last > 0 && last < 0.5f, "The chin's flinch is over within half a second");
+    }
+
+    // What hurts, as soon as he is down: not while he tumbles, and within half a second of being down and slow.
+    {
+        Input roll = rolling();
+        Muscles m;
+        m.begin(roll, 6);
+        Input hit = roll;
+        hit.body[l_shin].touching = true;
+        hit.body[l_shin].impact = 5.0f;
+        (void)m.step(hit);
+        bool none = true;
+        run(m, roll, 90, [&](const Output& o) { none = none && !o.pain; });
+        check(none, "No reaction to what hurts while he tumbles");
+        Input still = on_his_back();
+        int steps = 0;
+        bool started = false;
+        run(m, still, 60, [&](const Output& o) {
+            if (!started) ++steps;
+            started = started || o.pain;
+        });
+        check(started && steps <= 30, "Once he is down and slow he reacts to what hurts within half a second");
+        // From a hit as he lands: it starts within half a second.
+        Muscles l;
+        int to_pain = 0;
+        Input on_back = on_his_back();
+        l.begin(on_back, 6);
+        Input knock = on_back;
+        knock.body[l_shin].impact = 5.0f;
+        (void)l.step(knock);
+        bool on = false;
+        run(l, on_back, 60, [&](const Output& o) {
+            if (!on) ++to_pain;
+            on = on || o.pain;
+        });
+        check(on && to_pain <= 30, "A knee hit on landing: the reaction starts within half a second");
+    }
+
+    // An elbow that hurts: the other hand goes to it, the hurt arm is held in.
+    {
+        Muscles m;
+        Input in;
+        const Output o = hurt_on_back(m, l_forearm, 5.0f, 60, &in);
+        check(o.pain && o.hurt == Hurt::left_arm, "A hit on the left forearm hurts the left arm");
+        check(o.driven[r_arm] && mark_to(o, 1, in.body[l_forearm].p) < 0.12f, "The right hand goes to the left elbow");
+        check(o.driven[l_arm] && o.driven[l_forearm], "The hurt arm is held in");
+        check(!o.leg_lifted[0] && !o.leg_lifted[1], "An elbow lifts no leg");
+    }
+    // A knee that hurts: the hands go to it and it comes up to the chest (that leg only).
+    {
+        Muscles m;
+        Input in;
+        const Output o = hurt_on_back(m, l_shin, 5.0f, 60, &in);
+        check(o.pain && o.hurt == Hurt::left_leg, "A hit on the left shin hurts the left leg");
+        check(mark_to(o, 0, in.body[l_shin].p) < 0.15f && mark_to(o, 1, in.body[l_shin].p) < 0.15f, "Both hands go to the hurt knee");
+        check(o.leg_lifted[0] && !o.leg_lifted[1], "Only the hurt leg comes up off the ground");
+        check(dot(spin_of(in, o, l_thigh) - spin_of(in, o, pelvis), in.body[pelvis].r[2]) < 0, "The hurt knee is drawn towards the chest");
+    }
+    // The head: both hands to it.
+    {
+        Muscles m;
+        Input in;
+        const Output o = hurt_on_back(m, head, 5.0f, 90, &in);
+        check(o.pain && o.hurt == Hurt::head, "A hit on the head hurts the head");
+        const V3 at = in.body[head].p + in.body[head].r[0] * 0.064f;
+        check(mark_to(o, 0, at) < 0.2f && mark_to(o, 1, at) < 0.2f, "Both hands go to the head");
+        check(!o.leg_lifted[0] && !o.leg_lifted[1], "A head hit lifts no leg off the ground");
+    }
+    // Racked on a rail: both hands to the groin at once, the knees drawn to the chest, the back rounded, held longest.
+    {
+        Input in = racked();
+        Muscles m;
+        m.begin(in, 3);
+        (void)m.step(in);
+        Input sat = in;
+        sat.body[pelvis].impact = 0;
+        int to_pain = 0;
+        bool on = false;
+        const Output o = run(m, sat, 90, [&](const Output& r) {
+            if (!on) ++to_pain;
+            on = on || r.pain;
+        });
+        const V3 groin = sat.body[pelvis].p - sat.body[pelvis].r[0] * 0.12f + sat.body[pelvis].r[1] * 0.07f;
+        check(o.hurt == Hurt::groin && on && to_pain <= 12, "Racked: the reaction starts at once (within 0.2 s)");
+        check(mark_to(o, 0, groin) < 0.06f && mark_to(o, 1, groin) < 0.06f && o.driven[l_arm] && o.driven[r_arm], "Racked: both hands go to the groin");
+        check(o.leg_lifted[0] && o.leg_lifted[1], "Racked: both knees come up");
+        check(dot(spin_of(sat, o, l_thigh) - spin_of(sat, o, pelvis), sat.body[pelvis].r[2]) < 0 &&
+                  dot(spin_of(sat, o, r_thigh) - spin_of(sat, o, pelvis), sat.body[pelvis].r[2]) < 0,
+              "Racked: both knees are drawn towards the chest");
+        check(o.driven[spine] && o.driven[chest3], "Racked: the back rounds");
+        V3 linear{}, angular{};
+        change_of(sat, o, linear, angular);
+        check(length(linear) < 0.02f && length(angular) < 0.02f, "Racked: the curl keeps the body's momentum");
+        // Held longest: longer than a knee hit as hard.
+        int racked_for = 0, knee_for = 0;
+        run(m, sat, 60 * 16, [&](const Output& r) { racked_for += r.pain ? 1 : 0; });
+        Muscles k;
+        Input lying;
+        (void)hurt_on_back(k, l_shin, 3.5f, 0, &lying);
+        run(k, lying, 60 * 16, [&](const Output& r) { knee_for += r.pain ? 1 : 0; });
+        check(racked_for > knee_for + 120, "Racked is held longest");
+        // Sitting down hard on flat ground is not racked: the legs do not hang.
+        Input seat = on_his_back();
+        seat.body[pelvis].impact = 3.5f;
+        Muscles f;
+        f.begin(seat, 3);
+        check(f.step(seat).hurt != Hurt::groin, "Sitting down hard on the ground is not racked");
+    }
+
+    // Head protection pulls the chin in as hard as its slider says.
+    {
+        const auto chin = [](float head_k) {
+            Input in = backward_fall();
+            in.tune.head = head_k;
+            Muscles m;
+            m.begin(in, 2);
+            return run(m, in, 15).torque[neck];
+        };
+        check(chin(1.5f) > 1.5f * chin(0.5f), "Head protection scales how hard the chin is pulled in");
+    }
+
+    // The board: with his feet on it as the bail starts he kicks it away once, out in front going over backwards, at 2 to
+    // 4 m/s; not with his feet on the ground, nor with Kick the board away off. When the board gets the kick, the leg gets
+    // it back: the body's momentum changes by the board's, that once.
+    {
+        const auto kicks = [](Input in, int& count, V3& dv, int& leg_steps, float& at) {
+            Muscles m;
+            m.begin(in, 5);
+            count = 0;
+            leg_steps = 0;
+            at = -1;
+            for (int k = 1; k <= 60; ++k) {
+                const Output o = m.step(in);
+                if (o.board_kick) {
+                    ++count;
+                    dv = o.board_dv;
+                    at = static_cast<float>(k) / 60;
+                }
+                leg_steps += o.kick_leg != 0 ? 1 : 0;
+            }
+        };
+        int count{}, leg_steps{};
+        V3 dv{};
+        float at{};
+        kicks(on_board_backwards(), count, dv, leg_steps, at);
+        check(count == 1, "Feet on the board: he kicks it away, once");
+        check(length(dv) >= 2.0f && length(dv) <= 4.0f && dot(dv, V3{0, 0, -1}) > 0.9f * length(dv), "Going over backwards the board goes out in front, 2 to 4 m/s");
+        check(leg_steps >= 6 && leg_steps <= 12, "The kick lasts 100 to 200 ms");
+        check(at > 0.17f && at < 0.4f, "The kick comes 170 to 300 ms into the bail");
+        kicks(backward_fall(), count, dv, leg_steps, at);
+        check(count == 0 && leg_steps == 0, "Feet on the ground: no kick");
+        Input off = on_board_backwards();
+        off.tune.kick_board = false;
+        kicks(off, count, dv, leg_steps, at);
+        check(count == 0 && leg_steps == 0, "Kick the board away off: no kick");
+        // Written to the board: the body gets the push back, exactly; other steps keep its momentum.
+        Input write = on_board_backwards();
+        write.board.writable = true;
+        Muscles m;
+        m.begin(write, 5);
+        bool honest = true, kept = true;
+        for (int k = 1; k <= 40; ++k) {
+            const Output o = m.step(write);
+            V3 linear{}, angular{};
+            change_of(write, o, linear, angular);
+            if (o.board_kick) honest = length(linear + o.board_dv * 2.5f) < 0.05f;
+            else kept = kept && length(linear) < 0.02f && length(angular) < 0.02f;
+        }
+        check(honest, "Kicked, the body gets back what the board gets (2.5 kg x its change)");
+        check(kept, "Before and after the kick the momentum is kept");
+    }
+
+    // What hurts is remembered by place: a hit counts once (lying or sliding on the spot adds nothing), knocks on one place
+    // add up (two on an elbow outweigh one harder on the hip), and a hurt arm is weaker for the rest of the bail.
+    {
+        Input lying = on_his_back();
+        Muscles m;
+        m.begin(lying, 2);
+        Input pressed = lying;
+        pressed.body[l_forearm].impact = 3.5f;
+        (void)m.step(pressed);
+        const float once = m.step(pressed).hurt_amount;
+        float most = once;
+        run(m, pressed, 60, [&](const Output& o) { most = std::max(most, o.hurt_amount); });
+        check(once > 1.0f && most <= once + 1e-4f, "A hit counts once: lying on the spot adds nothing");
+        // Two knocks on the left elbow, then one harder on the right hip: he holds the elbow.
+        Muscles k;
+        Input base = on_his_back();
+        for (auto& b : base.body) b.touching = false;
+        k.begin(base, 2);
+        Input knock = base;
+        knock.body[l_forearm].touching = true;
+        knock.body[l_forearm].impact = 3.5f;
+        (void)k.step(knock);
+        run(k, base, 9); // off the ground a moment (a contact that only flickers is the same hit)
+        (void)k.step(knock);
+        run(k, base, 9);
+        Input hip = base;
+        hip.body[pelvis].touching = true;
+        hip.body[pelvis].impact = 4.5f;
+        hip.body[pelvis].has_point = true;
+        hip.body[pelvis].point = hip.body[pelvis].p + V3{0.13f, 0, 0}; // his right side
+        check(k.step(hip).hurt == Hurt::left_arm, "Two knocks on one elbow outweigh one harder knock on the hip");
+        // The hurt arm is weaker: lying there (no reaction to it, so both arms have only their tone), a hard knock on the
+        // right hand; a second later both arms are flung the same: the right one resists less.
+        Input still = on_his_back();
+        still.tune.grab_hurt = false;
+        Muscles w;
+        w.begin(still, 1);
+        run(w, still, 60);
+        Input knocked = still;
+        knocked.body[r_hand].impact = 6.0f;
+        (void)w.step(knocked);
+        run(w, still, 60);
+        Input pushed = still;
+        for (const Part p : {l_arm, r_arm, l_forearm, r_forearm, l_hand, r_hand}) pushed.body[p].w = pushed.body[p].w + V3{0, 30.0f, 0};
+        float l = 0, r = 0;
+        run(w, pushed, 3, [&](const Output& o) {
+            l = std::max(l, o.torque[l_arm]);
+            r = std::max(r, o.torque[r_arm]);
+        });
+        check(r < 0.8f * l, "A hurt arm is weaker than the other");
     }
 
     if (failures) {

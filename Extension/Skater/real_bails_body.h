@@ -169,7 +169,10 @@ public:
     // The linked bodies with each joint's armature (by child; a hinge's in [0][0]).
     void articulate(const std::array<M3, part_count>& armature) noexcept;
     // Each joint's angular impulse (by child; a hinge's along its axis) to each body's change of spin and velocity.
-    void solve(const std::array<V3, part_count>& impulse, std::array<V3, part_count>& dw, std::array<V3, part_count>& dv) const noexcept;
+    // `external`, when given: a linear impulse from outside the body on each body, through its centre of mass (the board
+    // pushing back on the foot that kicks it), which is the one thing that changes the body's momentum.
+    void solve(const std::array<V3, part_count>& impulse, std::array<V3, part_count>& dw, std::array<V3, part_count>& dv,
+               const std::array<V3, part_count>* external = nullptr) const noexcept;
     // Each joint's inertia as it presents it now: the impulse per unit change of its own turn (child against parent) from
     // an impulse there and nowhere else (a hinge's in [0][0]; a weld's nothing).
     std::array<M3, part_count> respond() const noexcept;
@@ -321,11 +324,15 @@ inline std::array<M3, part_count> Tree::respond() const noexcept {
     }
     return out;
 }
-inline void Tree::solve(const std::array<V3, part_count>& impulse, std::array<V3, part_count>& dw, std::array<V3, part_count>& dv) const noexcept {
+inline void Tree::solve(const std::array<V3, part_count>& impulse, std::array<V3, part_count>& dw, std::array<V3, part_count>& dv,
+                        const std::array<V3, part_count>* external) const noexcept {
     using namespace math;
     const Mass& m = *mass_;
     std::array<V6, part_count> bias{}, motion{};
     std::array<V3, part_count> u{};
+    // An outside impulse is a bias of minus itself (Featherstone's p = -f_ext), about com: its moment, and itself.
+    if (external)
+        for (std::size_t i = 1; i < part_count; ++i) bias[i] = {-cross(m.at[i], (*external)[i]), -(*external)[i]};
     // Inwards: what each subtree passes on to its parent.
     for (std::size_t k = chain.size(); k-- > 1;) {
         const Part c = chain[k], p = model::parent_of[c];
