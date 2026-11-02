@@ -510,6 +510,19 @@ Output Muscles::step(const Input& in) noexcept {
                 hand[s] = spot;
             }
         }
+        // Lying there, nothing holds a leg up against its own weight: a foot is never aimed above its hip, and near the
+        // ground it is aimed at the ground, so drawn-up knees come up with the feet flat. The legs were aimed at a pose
+        // taken from his own body: on his back that held both feet up in the air for as long as he held what hurt, and
+        // upside down against a step it held him in a shoulder stand. Not a hurt knee he hugs to his chest: his hands
+        // hold that one up.
+        const int hugged = grabbing && hurt_ == l_shin ? 0 : grabbing && hurt_ == r_shin ? 1 : -1;
+        for (int s = 0; s < 2; ++s) {
+            if (s == hugged) continue;
+            const float hip_height = b[hip[s]].p[1];
+            float highest = hip_height - 0.04f;
+            if (ground_known_ && hip_height - ground_ < 0.45f) highest = std::min(highest, ground_ + 0.1f);
+            if (foot[s][1] > highest) foot[s][1] = highest;
+        }
         spine_flex = phase_ == Phase::slide ? 0.12f : 0.12f + 0.2f * std::abs(side_up);
         // Curled round the hurt, rocking with it.
         if (grabbing) spine_flex += 0.25f + 0.15f * std::sin(static_cast<float>(held_) * 2.4f + vary_[2] * 3.0f);
@@ -566,6 +579,8 @@ Output Muscles::step(const Input& in) noexcept {
         hand[s] = keep_out(hand[s]);
         const float side = s == 0 ? -1.0f : 1.0f, lateral = dot(foot[s] - b[pelvis].p, f.right) * side;
         if (lateral < 0.06f) foot[s] = foot[s] + f.right * (side * (0.06f - lateral));
+        out.hand_mark[static_cast<std::size_t>(s)] = hand[s];
+        out.foot_mark[static_cast<std::size_t>(s)] = foot[s];
     }
 
     // ---- joints --------------------------------------------------------------------------------------------------

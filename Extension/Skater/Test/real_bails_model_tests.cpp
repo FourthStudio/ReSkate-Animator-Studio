@@ -183,6 +183,30 @@ int main() {
         for (int i = 0; i < 60 * 3; ++i) out = m.step(in);
         check(out.phase == Phase::rest, "Then he lets go and rests");
     }
+    // On his back after a hard hit to the head, holding it: the knees may come up but the feet stay down. They were aimed
+    // at a pose taken from his body alone, which held both feet up in the air for as long as he held his head.
+    {
+        Input in = leaning(-1.5708f); // flat on his back, facing the sky
+        for (auto& b : in.body) b.v = {0, 0, -3.0f};
+        Muscles m;
+        m.begin(in);
+        (void)m.step(in);
+        in.body[head].touching = in.body[back1].touching = true;
+        in.body[head].has_point = in.body[back1].has_point = true;
+        in.body[head].point = in.body[head].p - V3{0, 0.1f, 0};
+        in.body[back1].point = in.body[back1].p - V3{0, 0.12f, 0};
+        in.body[head].impact = 5.0f;
+        (void)m.step(in);
+        in.body[head].impact = 0;
+        for (auto& b : in.body) b.v = {};
+        Output out;
+        for (int i = 0; i < 60 * 2; ++i) out = m.step(in);
+        check(out.phase == Phase::settle, "Holding his head he lies there");
+        for (int s = 0; s < 2; ++s) {
+            const Part hip = s == 0 ? l_thigh : r_thigh;
+            check(out.foot_mark[static_cast<std::size_t>(s)][1] <= in.body[hip].p[1] + 0.001f, "Lying on his back, no foot is held up above its hip");
+        }
+    }
     // A hand landing in the catch does not end the brace: the bail goes on from the catch.
     {
         Input in = standing();

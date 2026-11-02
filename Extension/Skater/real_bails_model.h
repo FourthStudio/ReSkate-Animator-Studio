@@ -66,6 +66,7 @@ struct Output {
     float tone{};
     int step{-1};          // the leg taking a catch step (0 left, 1 right), -1 none
     bool step_landed{};
+    std::array<V3, 2> hand_mark{}, foot_mark{}; // where each hand and foot is aimed (world; 0 left, 1 right)
 };
 
 class Muscles {
