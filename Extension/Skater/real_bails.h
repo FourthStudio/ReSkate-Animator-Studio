@@ -34,6 +34,7 @@ struct Tuning {
     float grip{1.0f};      // 0 .. 2: no longer used (a slide is the ground's friction); kept so settings load
     bool catch_arms{true}, catch_step{true}, grab_hurt{true}; // catch_step: no longer used; kept so settings load
     float hold_hurt{4.5f}; // 1 .. 10 s holding what hurts once he lies still
+    float weight{1.0f};    // 0 .. 2: how heavy his arms and legs are (their tone, and how they land)
 };
 Tuning tuning() noexcept;
 void set_tuning(const Tuning& tuning) noexcept;

@@ -126,6 +126,15 @@ constexpr float arm_latency = 0.10f, neck_latency = 0.06f;
 // game's own range is a little wider, and a slam can push a joint there) it goes no further, but it is not pushed back:
 // a stop that pushes back is a motor, and one that springs back adds energy.
 constexpr float stop_zone = 15 * deg, stop_brake = 0.08f, stop_back = 0.0f;
+// The pain reaction's timing: a hand takes about a second to get to what hurts (a slow, hurting reach) and the curl a
+// little longer; letting go, the arm eases down and the curl out over most of a second.
+constexpr float reach_time = 1.1f, curl_time = 1.4f, let_go_time = 0.8f;
+// A minimum-jerk path from 0 to 1: how a person's hand moves from one place to another (slow off, quickest halfway,
+// slow in), so the reach never starts or stops with a jolt.
+float min_jerk(float x) noexcept {
+    x = std::clamp(x, 0.0f, 1.0f);
+    return x * x * x * (10 + x * (-15 + 6 * x));
+}
 }
 
 const char* name(Phase phase) noexcept {
@@ -182,6 +191,7 @@ void Muscles::begin(const Input& in, std::uint32_t seed) noexcept {
     for (std::size_t i = 1; i < part_count; ++i)
         if (b[i].ok && b[parent_of[i]].ok && finite(b[i].r) && finite(b[parent_of[i]].r)) rest_[i] = multiply(transposed(b[parent_of[i]].r), b[i].r);
     for (auto& m : base_) m = identity3();
+    landed_at_.fill(-10);
     // The tone he rode with: back and legs a little tense, arms looser.
     for (std::size_t k = 0; k < joint_count; ++k) {
         const Group g = group_of(ranges()[k].child);
@@ -213,6 +223,7 @@ Output Muscles::step(const Input& in) noexcept {
     const float tuck_k = fin(in.tune.tuck, 0.0f, 1.5f, 1.0f);
     const float lie_still = fin(in.tune.lie_still, 0.5f, 4.0f, 1.6f);
     const float hold_hurt = fin(in.tune.hold_hurt, 1.0f, 10.0f, 4.5f);
+    const float heavy = fin(in.tune.weight, 0.0f, 2.0f, 1.0f);
 
     const body::Mass mass = body::measure(b);
     if (!finite(mass.com) || !finite(mass.velocity) || !finite(mass.spin) || !(mass.total > 0)) return out;
@@ -333,6 +344,12 @@ Output Muscles::step(const Input& in) noexcept {
     }
     out.fall = kind_;
 
+    // Each arm or leg body that comes down hard on something lands heavily (its limb's thud, below).
+    for (std::size_t i = 1; i < part_count; ++i) {
+        const Group g = group_of(static_cast<Part>(i));
+        if ((g == arm_left || g == arm_right || g == leg_left || g == leg_right) && b[i].touching && fin(b[i].impact, 0.0f, 50.0f, 0.0f) > 1.0f)
+            landed_at_[i] = t_;
+    }
     // What hit hardest, for a hand to go to once he lies still: not the hands and feet (they land on purpose); the head
     // (a chin or a face) counts most, a knee for a shin or a thigh.
     for (std::size_t i = 1; i < part_count; ++i) {
@@ -433,7 +450,13 @@ Output Muscles::step(const Input& in) noexcept {
             const auto& l = ranges()[k];
             base_[k] = multiply(transposed(b[l.frame].r), b[l.child].r);
         }
+        pain_since_ = t_;
+        let_go_at_ = -1;
     }
+    // Held for as long as Hold what hurts for says and still lying there: he lets go slowly (the arm eases down, the
+    // curl eases out). Moving again ends everything at once.
+    if (pain_ && !pain && still_ && held_ >= hold_hurt) let_go_at_ = t_;
+    if (!still_ || (let_go_at_ >= 0 && t_ - let_go_at_ > let_go_time)) let_go_at_ = -1;
     if (phase_ != Phase::settle && phase_ != Phase::rest) held_ = 0;
     pain_ = pain;
     if (pain) held_ += dt;
@@ -463,12 +486,28 @@ Output Muscles::step(const Input& in) noexcept {
     case Phase::idle: break;
     }
     tone[neck_group] *= head_k;
+    // Heavy limbs: the arms' and legs' tone, so they swing with the weight of an arm or a leg instead of flopping (half
+    // of it at 0, 1.4 times as tuned, 2.3 times at 200%).
+    for (const Group g : {arm_left, arm_right, leg_left, leg_right}) tone[g] *= 0.5f + 0.9f * heavy;
+    // A limb that has just come down hard lands heavily: for a fifth of a second its joints, from where it landed up to
+    // the shoulder or hip, soak the landing up, so the limb stays where it lands instead of bouncing or flopping on.
+    std::array<bool, part_count> thud{};
+    for (std::size_t i = 1; i < part_count; ++i)
+        if (t_ - landed_at_[i] < 0.2)
+            for (Part c = static_cast<Part>(i); c != pelvis && c != l_collar && c != r_collar && group_of(c) != trunk && group_of(c) != neck_group;
+                 c = parent_of[c])
+                thud[c] = true;
     std::array<Drive, joint_count> drive{};
     for (std::size_t k = 0; k < joint_count; ++k) {
         auto& d = drive[k];
-        d.u = tone[group_of(ranges()[k].child)];
+        const Part c = ranges()[k].child;
+        d.u = tone[group_of(c)];
         // Tense muscle resists being turned fast: from about 1/s (lying there) to 3.5/s (falling, tense).
         d.damp = 1.0f + 12.0f * d.u * strength;
+        if (thud[c] && heavy > 0.01f) {
+            d.u = std::max(d.u, 0.25f * heavy);
+            d.damp = std::max(d.damp, (4.0f + 4.0f * heavy) * strength);
+        }
     }
     const auto drive_of = [&](Part c) -> Drive& { return drive[index_of()[c]]; };
     const auto rel_of = [&](Part c) {
@@ -568,7 +607,8 @@ Output Muscles::step(const Input& in) noexcept {
         }
         if (!going_down) aim_[i] = {};
         const bool this_hand = hurt_hand_ == 2 || (hurt_hand_ < 0 && s == 0) || (hurt_hand_ > 0 && s == 1);
-        if (pain && this_hand) {
+        const bool letting_go = let_go_at_ >= 0;
+        if ((pain || letting_go) && this_hand) {
             // A hand to what hurts, slowly: the arm only, with what it takes to lift an arm off the ground against its
             // weight (about 10 N m at the shoulder lying down; at a tenth of its strength it never got there).
             V3 spot = centre(hurt_) + world_up * 0.07f;
@@ -584,47 +624,59 @@ Output Muscles::step(const Input& in) noexcept {
             const V3 elbow_at = reach_middle(shoulder, spot, a, c, pole);
             const float d = std::clamp(length(spot - shoulder), std::abs(a - c) + 0.02f, (a + c) * 0.98f);
             const float bend = pi - std::acos(std::clamp((a * a + c * c - d * d) / (2 * a * c), -1.0f, 1.0f));
+            // The goal moves along a minimum-jerk path from where the arm lay when it set off to the hurt spot (slow off,
+            // quickest halfway, slow in, as a person's hand moves), and the arm follows it; then it is held there. Letting
+            // go, the hold eases off and the arm sinks back down under its own weight.
+            const float along = min_jerk(static_cast<float>(t_ - pain_since_) * std::sqrt(reaction) / reach_time);
+            const float hold = letting_go ? 1.0f - smooth(static_cast<float>(t_ - let_go_at_) / let_go_time) : 1.0f;
+            const V3 from = normalized(base_[index_of()[upper]][0], -chest[0]);
+            const V3 to = normalized(turn_back(chest, normalized(elbow_at - shoulder, toward)), from);
+            const float apart = std::acos(std::clamp(dot(from, to), -1.0f, 1.0f));
             auto& sh = drive_of(upper);
             sh.goal = true;
-            sh.want = swing_goal(upper, turn_back(chest, normalized(elbow_at - shoulder, toward)));
-            sh.wn = 5;
+            sh.want = swing_goal(upper, turn_towards(from, to, apart * along));
+            sh.wn = 6;
             sh.zeta = 1;
-            sh.u = 0.35f;
+            sh.u = 0.35f * hold;
             auto& el = drive_of(fore);
             el.goal = true;
-            el.want = rotation(V3{0, 0, bend});
-            el.wn = 5;
+            el.want = rotation(V3{0, 0, lerp(bend_of(base_[index_of()[fore]]), bend, along)});
+            el.wn = 6;
             el.zeta = 1;
-            el.u = 0.3f;
+            el.u = 0.3f * hold;
             out.hand_mark[i] = spot;
         }
     }
-    // Hurt and lying still: he curls a little, as far as Tuck says: the back rounded, the knees drawn up while his feet
-    // stay on the ground (a leg whose foot is off the ground is left as it lies). Lightly, from how he lay.
-    if (pain && tuck_k > 0.01f) {
+    // Hurt and lying still: he curls up, as far as Curl up when hurt says: the back rounded, the knees drawn up while his
+    // feet stay on the ground (a leg whose foot is off the ground is left as it lies). Eased in along the same kind of
+    // path as the hand, from how he lay, and eased back out when he lets go.
+    if ((pain || let_go_at_ >= 0) && tuck_k > 0.01f) {
+        const float hold = let_go_at_ >= 0 ? 1.0f - smooth(static_cast<float>(t_ - let_go_at_) / let_go_time) : 1.0f;
+        const float curl = tuck_k * min_jerk(static_cast<float>(t_ - pain_since_) / curl_time) * hold;
         for (const Part p : {spine, back1, chest2, chest3}) {
             auto& d = drive_of(p);
             d.goal = true;
-            d.want = multiply(rotation(V3{0, 0, 0.08f * tuck_k}), base_[index_of()[p]]);
+            d.want = multiply(rotation(V3{0, 0, 0.12f * curl}), base_[index_of()[p]]);
             d.wn = 4;
             d.zeta = 1;
-            d.u = 0.15f;
+            d.u = 0.15f * std::max(hold, 0.3f);
         }
         for (int s = 0; s < 2; ++s) {
             const Part thigh = s ? r_thigh : l_thigh, shin = s ? r_shin : l_shin, foot = s ? r_foot : l_foot, toe = s ? r_toe : l_toe;
             if (!b[foot].touching && !b[toe].touching) continue;
             auto& hip = drive_of(thigh);
             hip.goal = true;
-            hip.want = multiply(rotation(V3{0, 0, -0.25f * tuck_k}), base_[index_of()[thigh]]); // -z swings a thigh forwards
+            hip.want = multiply(rotation(V3{0, 0, -0.35f * curl}), base_[index_of()[thigh]]); // -z swings a thigh forwards
             hip.wn = 4;
             hip.zeta = 1;
-            hip.u = 0.15f;
+            hip.u = 0.15f * std::max(hold, 0.3f);
             auto& knee = drive_of(shin);
             knee.goal = true;
-            knee.want = rotation(V3{0, 0, std::min(bend_of(base_[index_of()[shin]]) + 0.5f * tuck_k, 100 * deg)});
+            const float knee_from = bend_of(base_[index_of()[shin]]);
+            knee.want = rotation(V3{0, 0, std::max(knee_from, std::min(knee_from + 0.7f * curl, 100 * deg))});
             knee.wn = 4;
             knee.zeta = 1;
-            knee.u = 0.15f;
+            knee.u = 0.15f * std::max(hold, 0.3f);
         }
     }
     for (int s = 0; s < 2; ++s) out.foot_mark[static_cast<std::size_t>(s)] = b[s ? r_foot : l_foot].p;

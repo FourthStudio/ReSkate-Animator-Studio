@@ -58,6 +58,7 @@ struct Tuning {
     float grip{1.0f};      // 0 .. 2 (unused)
     bool catch_arms{true}, catch_step{true}, grab_hurt{true};
     float hold_hurt{4.5f}; // 1 .. 10 s
+    float weight{1.0f};    // 0 .. 2: Heavy limbs (the arms' and legs' tone, and how they land)
 };
 struct Input {
     std::array<BodyIn, part_count> body{};
@@ -135,6 +136,9 @@ private:
     int hurt_hand_{};                      // the hand that goes to it: -1 left, +1 right, 2 both, 0 none
     bool pain_{};
     double held_{};
+    double pain_since_{-1};                      // when the hand set off for what hurts (the reach eases from there)
+    double let_go_at_{-1};                       // when he let go of it (the arm eases down from there; -1 not letting go)
+    std::array<double, part_count> landed_at_{}; // when each body last came down hard on something (a limb's thud)
     double stun_until_{-1}, last_stun_{-10};
     float stun_depth_{};
     std::array<double, 2> caught_at_{-1, -1};    // when each hand came down on the ground (-1 not yet)

@@ -8231,6 +8231,11 @@ std::vector<Setting> bails_settings() {
                "How strong all of it is. Low: closer to the game's floppy ragdoll. High: more tone in every joint and a firmer "
                "catch.",
                [](float a) { rb::set_strength(0.25f + a * 1.75f); }));
+    add(slider("Heavy limbs", t.weight / 2.0f, t.weight <= 0.01f ? std::string("OFF") : percent(t.weight),
+               "How heavy his arms and legs feel: how much tone they carry, so they swing with their weight instead of "
+               "flopping, and how hard they land: a limb that comes down stays down instead of bouncing. OFF: the game's own "
+               "loose limbs.",
+               [tune](float a) { tune([a](rb::Tuning& n) { n.weight = a * 2.0f; }); }));
     add(slider("Reaction speed", (t.reaction - 0.5f) / 1.5f, percent(t.reaction),
                "How fast the arms come out to catch the fall, from the moment the board is lost. 100% is about as quick as a "
                "person's protective reach.",
@@ -8253,8 +8258,8 @@ std::vector<Setting> bails_settings() {
                "rounded. Never while he is still falling or rolling. OFF: he lies as he landed.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.tuck = a * 1.5f; }); }));
     add(on_off("Grab what hurts", t.grab_hurt,
-               "Once he lies still, a hand goes slowly to whatever hit hardest: his chin or face, a knee, an elbow or his hip. "
-               "Never while he is still moving; moving again ends it.",
+               "Once he lies still, a hand eases over to whatever hit hardest (his chin or face, a knee, an elbow or his hip) "
+               "and holds it, then lets go slowly. Never while he is still moving; moving again ends it.",
                [tune](bool v) { tune([v](rb::Tuning& n) { n.grab_hurt = v; }); }));
     {
         Setting s = slider("Hold what hurts for", (t.hold_hurt - 1.0f) / 9.0f, std::format("{:.1f} s", t.hold_hurt),

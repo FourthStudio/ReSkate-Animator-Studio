@@ -10,6 +10,7 @@
 #include <cmath>
 #include <initializer_list>
 #include <iostream>
+#include <vector>
 
 namespace {
 using namespace dingosdk::real_bails;
@@ -570,6 +571,43 @@ int main() {
         // Then he lets go and rests.
         o = run(m, in, 60 * 5);
         check(o.phase == Phase::rest && !o.pain, "Then he lets go and rests");
+    }
+
+    // The hand goes to what hurts smoothly: its goal moves along a minimum-jerk path, so the arm's torque builds from
+    // nothing with no jolt, and letting go it eases off over most of a second instead of dropping the arm.
+    {
+        Input in = on_his_back();
+        in.tune.hold_hurt = 2.0f;
+        in.tune.tuck = 0.0f;
+        Muscles m;
+        m.begin(in, 9);
+        Input hit = in;
+        hit.body[head].impact = 5.0f;
+        (void)m.step(hit);
+        std::vector<float> torque, act;
+        bool was_pain = false;
+        int let_go_steps = 0;
+        float held_act = 0, after_act_min = 1;
+        run(m, in, 60 * 5, [&](const Output& r) {
+            const float t = std::max(r.torque[l_arm], r.torque[r_arm]), a = std::max(r.activation[l_arm], r.activation[r_arm]);
+            if (r.pain) {
+                torque.push_back(t);
+                held_act = a;
+            } else if (was_pain && let_go_steps < 12) {
+                ++let_go_steps; // the first fifth of a second of letting go
+                after_act_min = std::min(after_act_min, a);
+            }
+            was_pain = was_pain || r.pain;
+        });
+        float peak = 0, jolt = 0;
+        for (std::size_t i = 0; i < torque.size(); ++i) {
+            peak = std::max(peak, torque[i]);
+            if (i) jolt = std::max(jolt, std::abs(torque[i] - torque[i - 1]));
+        }
+        check(torque.size() > 30 && peak > 0.5f, "The hand sets off for what hurts");
+        check(torque.front() < 0.1f * peak, "The reach starts from nothing (no jolt as it sets off)");
+        check(jolt < 0.15f * peak, "The reach builds smoothly, step by step");
+        check(let_go_steps > 0 && after_act_min > 0.5f * held_act, "Letting go, the arm eases down instead of dropping");
     }
 
     // Lying still: next to nothing. The tone of lying there (a few percent) and no motion of its own.
