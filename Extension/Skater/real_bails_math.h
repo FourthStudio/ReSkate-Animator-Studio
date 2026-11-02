@@ -103,6 +103,40 @@ inline M3 from_rows(const V3& right, const V3& up, const V3& forward) noexcept {
     if (dot(z, forward) < 0) z = -z; // keep the game's own handedness
     return {x, y, z};
 }
+// 3x3 matrices as sums and products, for inertias (symmetric) and the small linear solves of the body's mechanics.
+constexpr M3 identity3() noexcept { return {V3{1, 0, 0}, V3{0, 1, 0}, V3{0, 0, 1}}; }
+constexpr M3 add(const M3& a, const M3& b) noexcept { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
+constexpr M3 subtract(const M3& a, const M3& b) noexcept { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+constexpr M3 scaled(const M3& a, float s) noexcept { return {a[0] * s, a[1] * s, a[2] * s}; }
+// u v^T.
+constexpr M3 outer(const V3& u, const V3& v) noexcept { return {u * v[0], u * v[1], u * v[2]}; }
+// [a]x: [a]x v = a x v.
+constexpr M3 skew(const V3& a) noexcept { return {V3{0, a[2], -a[1]}, V3{-a[2], 0, a[0]}, V3{a[1], -a[0], 0}}; }
+// The inertia of a point mass `m` at `r` from a centre: m (|r|^2 E - r r^T).
+constexpr M3 point_inertia(float m, const V3& r) noexcept {
+    return scaled(subtract(scaled(identity3(), dot(r, r)), outer(r, r)), m);
+}
+inline bool finite(const M3& m) noexcept { return finite(m[0]) && finite(m[1]) && finite(m[2]); }
+// The inverse; a matrix that is (nearly) singular comes back as the inverse of its mean diagonal, so nothing blows up.
+inline M3 inverse(const M3& m) noexcept {
+    const float a = m[0][0], b = m[1][0], c = m[2][0];
+    const float d = m[0][1], e = m[1][1], f = m[2][1];
+    const float g = m[0][2], h = m[1][2], i = m[2][2];
+    const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    const float scale = std::abs(a) + std::abs(e) + std::abs(i);
+    if (!std::isfinite(det) || std::abs(det) <= 1e-9f * scale * scale * scale || scale <= 0) {
+        const float mean = scale / 3;
+        return scaled(identity3(), mean > 1e-9f ? 1.0f / mean : 0.0f);
+    }
+    const float k = 1.0f / det;
+    return {V3{(e * i - f * h) * k, (f * g - d * i) * k, (d * h - e * g) * k}, V3{(c * h - b * i) * k, (a * i - c * g) * k, (b * g - a * h) * k},
+            V3{(b * f - c * e) * k, (c * d - a * f) * k, (a * e - b * d) * k}};
+}
+// The rotation of a rotation vector (axis x angle).
+inline M3 rotation(const V3& turn) noexcept {
+    const float angle = length(turn);
+    return angle > 1e-7f ? rotation(turn * (1.0f / angle), angle) : identity3();
+}
 // Two-bone reach: where the middle joint goes for `root` to reach `target` with bones of lengths a and b, bent
 // towards `pole`. The target is pulled in when out of reach.
 inline V3 reach_middle(const V3& root, const V3& target, float a, float b, const V3& pole) noexcept {

@@ -8219,59 +8219,54 @@ std::vector<Setting> bails_settings() {
         rb::set_tuning(now);
     };
     rows.push_back(on_off("Real bails", on,
-                          "Muscles in the ragdoll, so a slam looks like a skater's: the hands go out to catch it, a leg steps out "
-                          "when there is room, the head is held up off the ground, he tucks and rolls, then lies curled up and lets "
-                          "go. Off: the game's own ragdoll.",
+                          "Muscles in the ragdoll, so a slam looks like a skater's: he falls as the game's ragdoll does, heavy, with a "
+                          "person's tone and joint ranges in every joint; going down, his hands come out to catch it; once he lies "
+                          "still he may reach for what hurts and curl up a little. Off: the game's own ragdoll.",
                           [](bool v) { rb::set_enabled(v); }));
     auto add = [&](Setting s) {
         s.enabled = on;
         rows.push_back(std::move(s));
     };
     add(slider("Muscle strength", (rb::strength() - 0.25f) / 1.75f, percent(rb::strength()),
-               "How strong all of it is. Low: closer to the game's floppy ragdoll. High: stiff and quick, every reflex at full force.",
+               "How strong all of it is. Low: closer to the game's floppy ragdoll. High: more tone in every joint and a firmer "
+               "catch.",
                [](float a) { rb::set_strength(0.25f + a * 1.75f); }));
     add(slider("Reaction speed", (t.reaction - 0.5f) / 1.5f, percent(t.reaction),
-               "How fast the arms shoot out and the catch step goes, from the moment the board is lost. 100% is about as quick "
-               "as a person's protective reach.",
+               "How fast the arms come out to catch the fall, from the moment the board is lost. 100% is about as quick as a "
+               "person's protective reach.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.reaction = 0.5f + a * 1.5f; }); }));
     {
         Setting s = on_off("Catch with the hands", t.catch_arms,
-                           "Going down, the arms stretch out for the ground where he is falling: ahead and down falling forwards, back "
-                           "and out to the sides falling backwards, out to the side falling sideways.",
+                           "Going down, both hands come up and out for the ground where he is falling: ahead going forwards, to the "
+                           "side going sideways, back and down a little going backwards. Once down they give with the slam.",
                            [tune](bool v) { tune([v](rb::Tuning& n) { n.catch_arms = v; }); });
         add(std::move(s));
     }
-    add(on_off("Catch step", t.catch_step,
-               "Going over forwards or sideways while still up, one leg steps out ahead to take the weight, the knee gives, and "
-               "the hands take the rest.",
-               [tune](bool v) { tune([v](rb::Tuning& n) { n.catch_step = v; }); }));
+    // Catch step and Grip on the ground are gone from the page: the legs are left to the fall and a slide runs out on the
+    // ground's own friction. Their saved values stay in Tuning so older settings still load.
     add(slider("Head protection", t.head / 1.5f, t.head <= 0.01f ? std::string("OFF") : percent(t.head),
-               "How hard the neck keeps the head up off the ground, whichever way he falls: he lifts his head going over "
-               "backwards (chin in), tips it back going face first, tilts it up on a side. OFF: the neck lets go and the head "
-               "hits the ground with the rest of him.",
+               "The neck's tone: how hard it resists the head being thrown, and how much the chin tucks going over backwards. A "
+               "hard enough slam still throws the head. OFF: the neck lets go and the head goes with the rest of him.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.head = a * 1.5f; }); }));
-    add(slider("Tuck when rolling", t.tuck / 1.5f, t.tuck <= 0.01f ? std::string("OFF") : percent(t.tuck),
-               "How far the knees come in and the back rounds when he rolls. OFF rolls stretched out.",
+    add(slider("Curl up when hurt", t.tuck / 1.5f, t.tuck <= 0.01f ? std::string("OFF") : percent(t.tuck),
+               "Lying still after a hit that hurt, how far he curls up: knees drawn up with his feet on the ground, back "
+               "rounded. Never while he is still falling or rolling. OFF: he lies as he landed.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.tuck = a * 1.5f; }); }));
-    add(slider("Grip on the ground", t.grip / 2.0f, t.grip <= 0.01f ? std::string("OFF") : percent(t.grip),
-               "How heavy he is on the ground: how quickly a slide on his back, side or front stops. OFF slides as the "
-               "game's own ragdoll does.",
-               [tune](float a) { tune([a](rb::Tuning& n) { n.grip = a * 2.0f; }); }));
     add(on_off("Grab what hurts", t.grab_hurt,
-               "Once down, his hands go to whatever hit hardest and hold it: his chin or face, a knee (both hands, the leg "
-               "pulled up), an elbow or his hip.",
+               "Once he lies still, a hand goes slowly to whatever hit hardest: his chin or face, a knee, an elbow or his hip. "
+               "Never while he is still moving; moving again ends it.",
                [tune](bool v) { tune([v](rb::Tuning& n) { n.grab_hurt = v; }); }));
     {
         Setting s = slider("Hold what hurts for", (t.hold_hurt - 1.0f) / 9.0f, std::format("{:.1f} s", t.hold_hurt),
-                           "How long he lies holding what hurts, curled round it and rocking a little, before he lets go. Getting up "
-                           "(the game's button) ends it sooner.",
+                           "How long he holds what hurts once he lies still, before he lets go. Getting up (the game's button) ends it "
+                           "sooner.",
                            [tune](float a) { tune([a](rb::Tuning& n) { n.hold_hurt = 1.0f + a * 9.0f; }); });
         s.enabled = on && t.grab_hurt;
         rows.push_back(std::move(s));
     }
     add(slider("Lie still for", (t.lie_still - 0.5f) / 3.5f, std::format("{:.1f} s", t.lie_still),
-               "How long he holds himself once he stops moving (arms drawn in, curled up) before he lets go and just lies there. "
-               "Getting up is the game's, with a button, as always.",
+               "How long he takes to let go once he stops moving, before he just lies there. Getting up is the game's, with a "
+               "button, as always.",
                [tune](float a) { tune([a](rb::Tuning& n) { n.lie_still = 0.5f + a * 3.5f; }); }));
     add(on_off("Record bails", rb::recording(),
                "Writes every bail, step by step, to logs\\RealBails in the Skate folder, for tuning. About 2 MB a bail.",

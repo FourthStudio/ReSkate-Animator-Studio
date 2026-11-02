@@ -195,6 +195,8 @@ model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step
         o.touching = step.body.bodies[i].touching;
         o.impact = step.body.bodies[i].impact;
         if (const auto& at = step.body.bodies[i].point) { o.has_point = true; o.point = *at; }
+        // The surface's normal tells a floor from a wall: only a floor is the ground he lands on.
+        if (const auto& normal = step.body.bodies[i].normal) { o.has_normal = true; o.normal = *normal; }
     }
     return in;
 }
