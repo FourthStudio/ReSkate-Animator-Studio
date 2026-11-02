@@ -105,6 +105,14 @@ private:
     double step_down_at_{-1};               // when the step's foot came down
     std::array<double, 2> caught_at_{-1, -1}; // when each hand came down on the ground in the catch (-1 not yet)
     double held_{};                         // seconds the hurt has been held
+    // The limbs' marks as they are drawn now: each hand's from its shoulder in chest3's axes and each foot's from its hip in
+    // the pelvis's (a direction, and how far out of the limb's length), turned towards where the phase wants them no
+    // faster than a reflex moves a limb, from where the limb was when the bail began.
+    std::array<V3, 2> hand_dir_{}, foot_dir_{};
+    std::array<float, 2> hand_out_{}, foot_out_{};
+    float spine_flex_now_{}, head_flex_now_{}, head_tilt_now_{}; // the back's curl and the head's, eased the same way
+    bool fall_known_{};                     // he has leaned far enough to say which way he falls
+    std::array<float, 2> arm_delay_{};      // each arm's reflex starts this much later (one arm goes first)
     float tuck_{0.55f};                     // how far the knees come in when rolling
     std::array<float, 3> vary_{};           // -1..1: left/right tuck, each leg's bend at rest
 };

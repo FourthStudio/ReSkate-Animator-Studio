@@ -1,4 +1,5 @@
 #include "real_bails_model.h"
+#include "real_bails_limits.h"
 #include <algorithm>
 #include <cmath>
 
@@ -17,7 +18,30 @@ constexpr std::array<float, part_count> child_share{0, .8f, .75f, .97f, .93f, .8
                                                     .97f, .95f, .9f, .75f, .97f, .95f, .9f, .75f, 0};
 // Strength: the most a muscle changes its joint's turning speed, radians per second per second.
 // How long a hand or a stepping foot down on the ground stays long and firm, taking the fall, before it gives, seconds.
-constexpr float catch_hold = 0.22f;
+constexpr float catch_hold = 0.15f;
+// A mark (a direction in `frame`'s axes and how far out of the limb's length) turned towards `target` by at most `most`
+// radians, and its reach eased the same way.
+void slew_mark(V3& dir, float& out, const M3& frame, const V3& from, const V3& target, float len, float most) noexcept {
+    const V3 world = target - from;
+    const float want_out = std::clamp(length(world) / std::max(len, 1e-3f), 0.2f, 1.0f);
+    const V3 want = turn_back(frame, normalized(world, turn_by(frame, dir)));
+    if (length(dir) < 0.5f) {
+        dir = want;
+        out = want_out;
+        return;
+    }
+    const float angle = std::acos(std::clamp(dot(dir, want), -1.0f, 1.0f));
+    if (angle <= most) dir = want;
+    else {
+        V3 axis = cross(dir, want);
+        if (length(axis) < 1e-4f) axis = cross(dir, std::abs(dir[1]) < 0.9f ? V3{0, 1, 0} : V3{1, 0, 0});
+        axis = normalized(axis);
+        dir = normalized(dir * std::cos(most) + cross(axis, dir) * std::sin(most) + axis * (dot(axis, dir) * (1 - std::cos(most))));
+    }
+    // The reach eases slower than the direction turns: bent before it has turned, the elbow is pulled back and the whole arm
+    // swings the wrong way first.
+    out += std::clamp(want_out - out, -most * 0.2f, most * 0.2f);
+}
 constexpr std::array<float, part_count> strength_of{0, 100, 110, 120, 110, 90, 70, 120, 110, 90, 70, 45, 45, 45, 45,
                                                     120, 110, 90, 70, 120, 110, 90, 70, 0};
 
@@ -76,16 +100,30 @@ void Muscles::begin(const Input& in, std::uint32_t seed) noexcept {
     const auto& b = in.body;
     for (std::size_t i = 1; i < part_count; ++i)
         if (b[i].ok && b[parent_of[i]].ok) rest_[i] = multiply(transposed(b[parent_of[i]].r), b[i].r);
-    // Each hinge from the joint's own bend now (the riding pose keeps knees and elbows bent); a near-straight one takes
-    // the upper bone's own z axis.
-    const std::array<std::array<Part, 3>, 4> hinges{{{l_arm, l_forearm, l_hand}, {r_arm, r_forearm, r_hand},
-                                                     {l_thigh, l_shin, l_foot}, {r_thigh, r_shin, r_foot}}};
-    for (std::size_t k = 0; k < hinges.size(); ++k) {
-        const auto [upper, middle, end] = hinges[k];
-        hinge_[k] = {0, 0, 1};
-        if (!b[upper].ok || !b[middle].ok || !b[end].ok) continue;
-        const V3 axis = cross(normalized(b[middle].p - b[upper].p), normalized(b[end].p - b[middle].p));
-        if (length(axis) > 0.08f) hinge_[k] = turn_back(b[upper].r, normalized(axis));
+    // Each elbow and knee is a hinge about its upper bone's own z axis, bending +z on both sides (measured in the game's
+    // ragdoll: the bend's own axis is within a degree of it, and the game holds the other two axes to a few degrees).
+    for (auto& axis : hinge_) axis = {0, 0, 1};
+    // Each limb's mark starts where the limb is: nothing is asked of it on the first frame.
+    for (int s = 0; s < 2; ++s) {
+        const Part shoulder = s ? r_arm : l_arm, elbow = s ? r_forearm : l_forearm, wrist = s ? r_hand : l_hand;
+        const Part hip = s ? r_thigh : l_thigh, knee = s ? r_shin : l_shin, ankle = s ? r_foot : l_foot;
+        if (b[shoulder].ok && b[elbow].ok && b[wrist].ok && b[chest3].ok) {
+            const float len = length(b[elbow].p - b[shoulder].p) + length(b[wrist].p - b[elbow].p);
+            const V3 d = b[wrist].p - b[shoulder].p;
+            hand_dir_[static_cast<std::size_t>(s)] = turn_back(b[chest3].r, normalized(d));
+            hand_out_[static_cast<std::size_t>(s)] = std::clamp(length(d) / std::max(len, 1e-3f), 0.3f, 1.0f);
+        }
+        if (b[hip].ok && b[knee].ok && b[ankle].ok && b[pelvis].ok) {
+            const float len = length(b[knee].p - b[hip].p) + length(b[ankle].p - b[knee].p);
+            const V3 d = b[ankle].p - b[hip].p;
+            foot_dir_[static_cast<std::size_t>(s)] = turn_back(b[pelvis].r, normalized(d));
+            foot_out_[static_cast<std::size_t>(s)] = std::clamp(length(d) / std::max(len, 1e-3f), 0.3f, 1.0f);
+        }
+    }
+    // One arm goes first, the other 20 to 50 ms after it.
+    {
+        const float later = 0.02f + 0.03f * std::abs(vary_[1]);
+        arm_delay_ = vary_[0] > 0 ? std::array<float, 2>{0.0f, later} : std::array<float, 2>{later, 0.0f};
     }
     // How hard the fall is: a small hit is a small fall with small reactions, a slam at speed or a drop the whole lot.
     {
@@ -192,8 +230,28 @@ Output Muscles::step(const Input& in) noexcept {
     // Where it falls: where the body goes over the ground, and where the torso leans.
     const V3 horizontal = across(velocity, world_up);
     const V3 lean = across(f.up, world_up);
-    const V3 falling = horizontal * 1.0f + lean * 1.2f;
-    if (length(falling) > 0.15f) fall_ = normalized(falling);
+    // Which way he falls: where the torso leans, and a little of where the body is going. Not where the board was going:
+    // he rides sideways to it, and the arms were thrown across him on the first frame. Not known until he has leaned 15
+    // degrees (until then the arms come up ready either way); then it turns no faster than 4 rad/s, so the arms do not
+    // swap sides on a wobble.
+    const float tilt = std::acos(std::clamp(dot(f.up, world_up), -1.0f, 1.0f));
+    const V3 falling = lean * 1.0f + horizontal * 0.25f;
+    if (length(falling) > 0.15f) {
+        const V3 now = normalized(falling);
+        if (!fall_known_) {
+            if (tilt > 15 * deg) {
+                fall_ = now;
+                fall_known_ = true;
+            }
+        } else {
+            const float angle = std::acos(std::clamp(dot(fall_, now), -1.0f, 1.0f)), most = 4.0f * dt;
+            if (angle <= most) fall_ = now;
+            else {
+                const V3 axis = normalized(cross(fall_, now), world_up);
+                fall_ = normalized(fall_ * std::cos(most) + cross(axis, fall_) * std::sin(most) + axis * (dot(axis, fall_) * (1 - std::cos(most))));
+            }
+        }
+    }
     const V3 forward_flat = normalized(across(f.forward, world_up), f.forward);
     const V3 right_flat = normalized(across(f.right, world_up), f.right);
     if (phase_ == Phase::brace && length(fall_) > 0.5f) {
@@ -301,7 +359,8 @@ Output Muscles::step(const Input& in) noexcept {
     // A catch step: going over forwards or to a side while still up, with the ground under him and room for a leg,
     // one leg steps out where the body is going to take the weight (the trailing one going forwards, the one on the
     // falling side going sideways). Once its foot is down the knee gives and the hands take the rest.
-    if (in.tune.catch_step && severity_ > 0.36f && phase_ == Phase::brace && step_leg_ < 0 && !stepped_ && ground_known_ && t_ < 0.7 &&
+    if (in.tune.catch_step && fall_known_ && t_ > 0.12 && severity_ > 0.36f && phase_ == Phase::brace && step_leg_ < 0 && !stepped_ && ground_known_ &&
+        t_ < 0.7 &&
         back_fall < 0.4f &&
         f.up[1] > 0.45f && pelvis_height > 0.45f && pelvis_height < 1.4f && length(falling) > 0.35f && !airborne) {
         float best = -1e9f;
@@ -331,7 +390,10 @@ Output Muscles::step(const Input& in) noexcept {
             // sides falling backwards (the arms do not reach far straight back); out to the side falling sideways.
             V3 reach = fall_ * (0.95f - 0.25f * back_fall) + down * (0.8f + 0.2f * back_fall) +
                        out_side[s] * (0.2f + 0.45f * back_fall + 0.35f * towards);
-            if (towards == 0 && std::abs(fall_side_) > 0.6f) reach = reach + f.up * 0.5f; // the high arm stays up
+            // The high arm on a side fall goes up and out for balance, not across his chest.
+            if (towards == 0 && std::abs(fall_side_) > 0.6f) reach = out_side[s] * 0.7f + f.up * 0.45f + f.forward * 0.25f;
+            // Before the fall's way is known: up and ready, forwards and out, elbows bent.
+            if (!fall_known_) reach = f.forward * 0.6f + out_side[s] * 0.5f - f.up * 0.6f;
             if (long_fall) {
                 // A long fall: the arms go out and up for balance and flail a little, each out of step with the other.
                 const float flail = 0.35f * std::sin(static_cast<float>(swing_) + (s ? 2.1f : 0.0f));
@@ -339,10 +401,12 @@ Output Muscles::step(const Input& in) noexcept {
             }
             // The catch: out for the ground nearly straight as the fall starts; the hand down, the arm stays long and firm
             // and takes the fall (catch_hold), then the elbow gives and he goes on down into the bail from there.
-            float stretch = phase_ == Phase::impact ? 0.75f : 0.95f;
+            // Out a little bent (about 25 degrees at the elbow, as a skater's arm lands), firm through the catch, then the elbow
+            // gives and soaks it up.
+            float stretch = !fall_known_ ? 0.8f : phase_ == Phase::impact ? 0.75f : 0.93f;
             if (caught_at_[s] >= 0) {
-                const float give = std::clamp((static_cast<float>(t_ - caught_at_[s]) - catch_hold) / 0.3f, 0.0f, 1.0f);
-                stretch = 0.97f - 0.35f * give * give * (3 - 2 * give);
+                const float give = std::clamp((static_cast<float>(t_ - caught_at_[s]) - catch_hold) / 0.25f, 0.0f, 1.0f);
+                stretch = 0.93f - 0.3f * give * give * (3 - 2 * give);
             }
             hand[s] = b[shoulder[s]].p + normalized(reach) * arm_len[s] * (long_fall ? 0.82f : stretch);
             if (!in.tune.catch_arms && !long_fall) hand[s] = b[wrist[s]].p; // the arms stay where they are
@@ -459,6 +523,32 @@ Output Muscles::step(const Input& in) noexcept {
     case Phase::idle: break;
     }
 
+    // ---- the marks, as a reflex moves them ---------------------------------------------------------------------------
+    // Nothing jumps: each hand's and foot's mark turns from where it was towards where the phase wants it no faster than a
+    // reflex moves a limb - nothing at the bail's start, up to 7 rad/s (Reaction speed scales it) a tenth of a second
+    // later, 3 rad/s holding or lying - and the back's and head's curl ease the same way.
+    {
+        const float react = std::clamp(in.tune.reaction, 0.5f, 2.0f);
+        const float ramp = std::clamp((static_cast<float>(t_) * react - 0.06f) / 0.12f, 0.0f, 1.0f);
+        const float rate = (phase_ == Phase::settle || phase_ == Phase::rest ? 3.0f : 7.0f * react) * ramp;
+        for (int s = 0; s < 2; ++s) {
+            const auto i = static_cast<std::size_t>(s);
+            const float arm_ramp = std::clamp((static_cast<float>(t_) * react - 0.06f - arm_delay_[i]) / 0.12f, 0.0f, 1.0f);
+            const float arm_rate = (phase_ == Phase::settle || phase_ == Phase::rest ? 3.0f : 7.0f * react) * arm_ramp;
+            slew_mark(hand_dir_[i], hand_out_[i], b[chest3].r, b[shoulder[s]].p, hand[s], arm_len[s], arm_rate * dt);
+            hand[s] = b[shoulder[s]].p + turn_by(b[chest3].r, hand_dir_[i]) * (hand_out_[i] * arm_len[s]);
+            slew_mark(foot_dir_[i], foot_out_[i], b[pelvis].r, b[hip[s]].p, foot[s], leg_len[s], (step_leg_ == s ? 1.4f : 1.0f) * rate * dt);
+            foot[s] = b[hip[s]].p + turn_by(b[pelvis].r, foot_dir_[i]) * (foot_out_[i] * leg_len[s]);
+        }
+        const float ease = 3.0f * ramp * dt;
+        spine_flex_now_ += std::clamp(spine_flex - spine_flex_now_, -ease, ease);
+        head_flex_now_ += std::clamp(head_flex - head_flex_now_, -ease * 1.5f, ease * 1.5f);
+        head_tilt_now_ += std::clamp(head_tilt - head_tilt_now_, -ease * 1.5f, ease * 1.5f);
+        spine_flex = spine_flex_now_;
+        head_flex = head_flex_now_;
+        head_tilt = head_tilt_now_;
+    }
+
     // ---- nothing through the body ---------------------------------------------------------------------------------
     // The game's ragdoll lets its own limbs pass through each other, so the muscles never aim one through him: a hand or
     // an elbow's mark inside the torso (a capsule from the pelvis to the neck) or the head is moved out to its surface,
@@ -479,6 +569,14 @@ Output Muscles::step(const Input& in) noexcept {
     }
 
     // ---- joints --------------------------------------------------------------------------------------------------
+    // Every target is moved into its joint's range first (real_bails_limits.h), 8 degrees inside the stops: nothing is ever
+    // aimed past where a skater's joint goes.
+    static const auto ranges = limits::table();
+    const auto in_range = [&](Part child, const M3& want) {
+        for (const auto& l : ranges)
+            if (l.child == child) return limits::clamp_target(l, b[l.frame].r, want, rest_);
+        return want;
+    };
     std::array<Joint, part_count> joints{};
     std::size_t count = 0;
     const auto add = [&](Part child, const V3& error, float joint_tone, float quick = 1.0f) {
@@ -488,12 +586,12 @@ Output Muscles::step(const Input& in) noexcept {
     const V3 flex_axis = normalized(cross(f.up, f.forward));
     const V3 tilt_axis = normalized(cross(f.up, f.right)); // turns the head up towards its right
     for (const Part p : {spine, back1, chest2, chest3}) {
-        const M3 want = multiply(rotation(flex_axis, spine_flex * 0.25f), multiply(b[parent_of[p]].r, rest_[p]));
+        const M3 want = in_range(p, multiply(rotation(flex_axis, spine_flex * 0.25f), multiply(b[parent_of[p]].r, rest_[p])));
         add(p, turn_to(b[p].r, want), tone * (phase_ == Phase::brace ? 0.75f : 0.9f));
     }
     {
-        const M3 neck_want = multiply(rotation(flex_axis, head_flex * 0.4f), multiply(rotation(tilt_axis, head_tilt * 0.4f),
-                                                                                     multiply(b[chest3].r, rest_[neck])));
+        const M3 neck_want = in_range(neck, multiply(rotation(flex_axis, head_flex * 0.4f), multiply(rotation(tilt_axis, head_tilt * 0.4f),
+                                                                                                   multiply(b[chest3].r, rest_[neck]))));
         // The neck: held as hard as Head protection says through the whole fall and while he moves on the ground (the head
         // is what a falling person guards most), less once he is still; OFF it goes limp and the head hits the ground with
         // him. (It was as soft as the rest of the body, and the head's weight won: the slider did nothing to see.)
@@ -502,8 +600,8 @@ Output Muscles::step(const Input& in) noexcept {
                                                    : std::max(tone * 0.5f, 0.85f * std::clamp(in.strength, 0.25f, 2.0f) * (0.3f + 0.7f * reflex) * guard_hold) *
                                                          (0.25f + 0.75f * std::min(head_guard, 1.5f));
         add(neck, turn_to(b[neck].r, neck_want), neck_tone * 1.1f, 1.6f);
-        const M3 head_want = multiply(rotation(flex_axis, head_flex * 0.6f), multiply(rotation(tilt_axis, head_tilt * 0.6f),
-                                                                                     multiply(b[neck].r, rest_[head])));
+        const M3 head_want = in_range(head, multiply(rotation(flex_axis, head_flex * 0.6f), multiply(rotation(tilt_axis, head_tilt * 0.6f),
+                                                                                                   multiply(b[neck].r, rest_[head]))));
         add(head, turn_to(b[head].r, head_want), neck_tone * 1.1f, 1.6f);
     }
     for (const Part p : {l_collar, r_collar, l_hand, r_hand, l_foot, r_foot, l_toe, r_toe})
@@ -515,7 +613,10 @@ Output Muscles::step(const Input& in) noexcept {
         const auto bend_to = [&](Part upper, Part middle, Part end, const V3& target, const V3& axis_local) {
             const float a = length(bone(in, upper, middle)), c = length(bone(in, middle, end));
             const float d = std::clamp(length(target - b[upper].p), std::abs(a - c) + 0.02f, (a + c) * 0.995f);
-            const float wanted = pi - std::acos(std::clamp((a * a + c * c - d * d) / (2 * a * c), -1.0f, 1.0f));
+            // Within the hinge's range, 8 degrees inside its stops: an elbow 0 to 145, a knee 10 to 150.
+            const bool knee_joint = middle == l_shin || middle == r_shin;
+            const float wanted = std::clamp(pi - std::acos(std::clamp((a * a + c * c - d * d) / (2 * a * c), -1.0f, 1.0f)),
+                                            (knee_joint ? 18.0f : 8.0f) * deg, (knee_joint ? 142.0f : 137.0f) * deg);
             const V3 u = normalized(bone(in, upper, middle)), l = normalized(bone(in, middle, end));
             const V3 axis = normalized(turn_by(b[upper].r, axis_local));
             const float now = std::atan2(dot(cross(u, l), axis), dot(u, l));
@@ -527,76 +628,128 @@ Output Muscles::step(const Input& in) noexcept {
         const bool bracing = phase_ == Phase::brace || phase_ == Phase::impact || (phase_ == Phase::tumble && pitching);
         // Settling, the arms are drawn in (under the shoulders face down, by the sides on the back) before the body lets go.
         const float muscle = std::clamp(in.strength, 0.25f, 2.0f);
-        const bool holding = phase_ == Phase::settle && hurt_hand_ != 0 && in_phase_ < std::clamp(in.tune.lie_still, 0.5f, 4.0f);
+        const bool holding = holding_hurt;
         // Out for the ground quick and firm; on the ground firm through the catch (it takes the fall), then soft as the
         // elbow gives and the bail goes on.
         const float since_catch = caught_at_[s] >= 0 ? static_cast<float>(t_ - caught_at_[s]) : -1.0f;
         const bool catching = since_catch >= 0 && since_catch < catch_hold;
         const bool giving = since_catch >= catch_hold || (phase_ == Phase::impact && since_catch < 0);
-        const float arm_tone = bracing ? (catching ? std::max(tone, 1.0f * muscle)
-                                          : giving ? std::max(tone, 0.4f * muscle)
-                                                   : std::max(tone, 0.85f * muscle * (0.25f + 0.75f * reflex)))
+        const float arm_tone = bracing ? (catching ? std::max(tone, 0.85f * muscle)
+                                          : giving ? std::max(tone, 0.35f * muscle)
+                                                   : std::max(tone, 0.7f * muscle * (0.25f + 0.75f * reflex)))
                              : holding ? std::max(tone, 0.75f * muscle)
                              : phase_ == Phase::settle ? std::max(tone, 0.35f * muscle) : tone;
         const float reaction = std::clamp(in.tune.reaction, 0.5f, 2.0f);
-        const float arm_quick = bracing && in.tune.catch_arms && !giving ? 3.0f * reaction * (0.6f + 0.4f * severity_) : holding ? 2.0f : 1.0f;
-        const V3 elbow_pole = -f.forward * 0.7f + out_side[s] * 0.5f - f.up * 0.3f;
+        const float arm_quick = bracing && in.tune.catch_arms && !giving ? 1.6f * reaction * (0.7f + 0.3f * severity_) : holding ? 1.4f : 1.0f;
+        // The elbow and knee bend about their own hinge (the upper bone's z): the mark's bend plane is the one they have, so
+        // the arm is never asked to bend backwards or twist to reach it.
+        const auto pole_of = [&](Part upper, const V3& mark, const V3& otherwise) {
+            const V3 pole = cross(normalized(mark - b[upper].p, b[upper].r[0]), b[upper].r[2]);
+            return length(pole) > 0.15f ? pole : otherwise;
+        };
+        // The upper bone swung towards where the elbow or knee goes, moved into the shoulder's or hip's cone and twist.
+        const auto swing_in_range = [&](Part upper, Part middle, const V3& to) {
+            const V3 swing = swing_between(normalized(bone(in, upper, middle)), normalized(to - b[upper].p));
+            const float a = length(swing);
+            const M3 want = a > 1e-5f ? multiply(rotation(swing * (1.0f / a), a), b[upper].r) : b[upper].r;
+            return turn_to(b[upper].r, in_range(upper, want));
+        };
+        const V3 elbow_pole = pole_of(shoulder[s], hand[s], -f.forward * 0.7f + out_side[s] * 0.5f - f.up * 0.3f);
         const V3 e = keep_out(reach_middle(b[shoulder[s]].p, hand[s], length(bone(in, shoulder[s], elbow[s])),
                                            length(bone(in, elbow[s], wrist[s])), elbow_pole));
-        add(shoulder[s], swing_between(normalized(bone(in, shoulder[s], elbow[s])), normalized(e - b[shoulder[s]].p)), arm_tone, arm_quick);
+        add(shoulder[s], swing_in_range(shoulder[s], elbow[s], e), arm_tone, arm_quick);
         add(elbow[s], bend_to(shoulder[s], elbow[s], wrist[s], hand[s], hinge_[s]), arm_tone, arm_quick);
-        const V3 knee_pole = f.forward + out_side[s] * 0.15f;
+        const V3 knee_pole = pole_of(hip[s], foot[s], f.forward + out_side[s] * 0.15f);
         const V3 k = reach_middle(b[hip[s]].p, foot[s], length(bone(in, hip[s], knee[s])), length(bone(in, knee[s], ankle[s])), knee_pole);
         const bool stepping = step_leg_ == s && !step_landed_;
         const bool step_catching = step_leg_ == s && step_landed_ && step_down_at_ >= 0 && t_ - step_down_at_ < catch_hold;
-        const float leg_tone = stepping ? std::max(tone, 0.85f * muscle * (0.25f + 0.75f * reflex))
-                             : step_catching ? std::max(tone, 1.0f * muscle)
+        const float leg_tone = stepping ? std::max(tone, 0.75f * muscle * (0.25f + 0.75f * reflex))
+                             : step_catching ? std::max(tone, 0.85f * muscle)
                              : step_leg_ == s ? std::max(tone * 0.6f, 0.3f * muscle)
                              : holding ? std::max(tone, 0.6f * muscle) : tone * (phase_ == Phase::brace ? 0.7f : 1.0f);
-        const float leg_quick = stepping ? 3.0f * reaction * (0.6f + 0.4f * severity_) : holding ? 1.6f : 1.0f;
-        add(hip[s], swing_between(normalized(bone(in, hip[s], knee[s])), normalized(k - b[hip[s]].p)), leg_tone, leg_quick);
+        const float leg_quick = stepping ? 1.6f * reaction * (0.7f + 0.3f * severity_) : holding ? 1.3f : 1.0f;
+        add(hip[s], swing_in_range(hip[s], knee[s], k), leg_tone, leg_quick);
         add(knee[s], bend_to(hip[s], knee[s], ankle[s], foot[s], hinge_[2 + s]), leg_tone, leg_quick);
     }
 
     // ---- muscles -------------------------------------------------------------------------------------------------
-    std::array<V3, part_count> w{};
-    for (std::size_t i = 1; i < part_count; ++i) w[i] = b[i].w;
-    // Each body's centre of mass: along its bone (its own x axis, as the game's bones run) a little short of halfway.
+    // Each joint's turning speed relative to its parent: the muscles change these, the joint stops cut them, and the
+    // spins are then built from the pelvis outwards, so a turned upper arm carries its forearm and hand round with it
+    // (nothing further out is bent by its parent's move).
+    // Each body's centre of mass, from the recordings (the joint velocities match at these): about halfway along an arm or
+    // leg bone, 7 cm into a hand, 6 cm up the head; the pelvis's at its own origin.
+    static constexpr std::array<float, part_count> com_along{0, .064f, .068f, .068f, .15f, .16f, .11f, .068f, .15f, .16f, .11f,
+                                                              .078f, .097f, .047f, .038f, .025f, .055f, .238f, .22f, .025f, .055f, .238f, .22f, 0};
     std::array<V3, part_count> centre{};
-    for (std::size_t i = 1; i < part_count; ++i) {
-        float reach = 0.08f;
-        for (std::size_t k = 1; k < part_count; ++k)
-            if (parent_of[k] == i && k != i) { reach = std::max(reach, length(b[k].p - b[i].p)); break; }
-        centre[i] = b[i].p + b[i].r[0] * (reach * 0.45f);
-    }
-    const float strength = std::clamp(in.strength, 0.25f, 2.0f);
-    for (std::size_t j = 0; j < count; ++j) {
+    for (std::size_t i = 1; i < part_count; ++i) centre[i] = b[i].p + b[i].r[0] * com_along[i];
+    std::array<V3, part_count> rel{};
+    for (std::size_t i = 1; i < part_count; ++i) rel[i] = i == pelvis ? V3{} : b[i].w - b[parent_of[i]].w;
+    // A reflex takes 0.06 s to start (less with Reaction speed up): until then nothing is driven, only the stops act.
+    const bool reacting = t_ * std::clamp(in.tune.reaction, 0.5f, 2.0f) > 0.06;
+    for (std::size_t j = 0; reacting && j < count; ++j) {
         const auto& joint = joints[j];
-        const Part c = joint.child, p = parent_of[c];
-        const float t = std::clamp(joint.tone, 0.0f, 1.5f);
+        const Part c = joint.child;
+        const float t = std::clamp(joint.tone, 0.0f, 1.5f); // Strength is in the tone already: not again here
         if (t <= 0 || !finite(joint.error)) continue;
-        // The speed the joint should turn at to close its error, and how much of the way the muscle gets there now.
         const V3 wanted = clamp_length(joint.error * (7.0f + 3.0f * (joint.quick - 1.0f)), 9.0f * std::sqrt(joint.quick));
-        const V3 relative = w[c] - w[p];
-        const float gain = 1.0f - std::exp(-t * 30.0f * dt);
-        const V3 change = clamp_length((wanted - relative) * gain, strength_of[c] * strength * t * dt * 1.6f * joint.quick);
-        // In the air the game holds the body upright itself; a muscle there moves its limb without turning the torso the
-        // other way (with the turn shared, reaching the legs down pitched the body over onto its head).
-        const float share = airborne && phase_ == Phase::brace ? 1.0f : child_share[c];
-        // Both sides turn about the joint they share (the child's own origin), not about their middles: a body spun
-        // about its middle pulls its joint apart and the game's joint solve takes the turn straight back out.
-        w[c] = w[c] + change * share;
-        w[p] = w[p] - change * (1.0f - share);
+        // Not a servo that kills the limb's own swing at once: about a tenth of a second to take it over, so it lags and
+        // follows through as a real limb does (the momentum leads, the muscle steers).
+        const float gain = 1.0f - std::exp(-t * 14.0f * dt);
+        rel[c] = rel[c] + clamp_length((wanted - rel[c]) * gain, strength_of[c] * t * dt * 1.6f * joint.quick);
     }
-    // The velocities that go with those turns, down each chain from the pelvis: a turned upper arm carries its forearm and
-    // hand round with it, so nothing further out drags it back (each body turning about its joint, not its middle).
+    // ---- joint stops ---------------------------------------------------------------------------------------------
+    // Every joint, driven or not, every step: its speed into a stop is cut so it comes to rest on it, and past it it is
+    // turned back. The table runs from the pelvis outwards.
+    static const auto stops = limits::table();
+    std::array<int, part_count> stop_of{};
+    for (std::size_t k = 0; k < stops.size(); ++k) stop_of[stops[k].child] = static_cast<int>(k);
+    for (const auto& l : stops) {
+        const Part c = l.child, p = parent_of[c];
+        const V3 now = l.frame == p ? rel[c] : rel[c] + rel[p]; // a shoulder is measured against chest3
+        rel[c] = clamp_length(rel[c] + limits::stop_fix(l, limits::measure(l, b, rest_), now), 20.0f);
+    }
     static constexpr std::array<Part, part_count - 1> chain{pelvis, spine, back1, chest2, chest3, neck, head, l_collar, l_arm,
         l_forearm, l_hand, r_collar, r_arm, r_forearm, r_hand, l_thigh, l_shin, l_foot, l_toe, r_thigh, r_shin, r_foot, r_toe};
-    std::array<V3, part_count> dw{}, dv{};
-    for (std::size_t i = 1; i < part_count; ++i) {
-        w[i] = clamp_length(w[i], 25.0f);
-        dw[i] = w[i] - b[i].w;
+    std::array<V3, part_count> w{};
+    w[pelvis] = clamp_length(b[pelvis].w, 25.0f);
+    for (const Part c : chain)
+        if (c != pelvis) w[c] = w[parent_of[c]] + rel[c];
+    // A hand, foot or toes on the ground keeps the ground's spin; its joint's stop is then kept from the other side (the
+    // forearm turns instead of the wrist bending on), up the limb as far as the shoulder or hip.
+    std::array<bool, part_count> planted{};
+    for (const Part e : {l_hand, r_hand, l_foot, r_foot, l_toe, r_toe}) {
+        if (!b[e].touching) continue;
+        planted[e] = true;
+        w[e] = b[e].w;
+        for (Part c = e; c != l_arm && c != r_arm && c != l_thigh && c != r_thigh && c != pelvis; c = parent_of[c]) {
+            const auto& l = stops[stop_of[c]];
+            const V3 fix = limits::stop_fix(l, limits::measure(l, b, rest_), w[c] - w[l.frame]);
+            if (dot(fix, fix) < 1e-8f) break;
+            w[parent_of[c]] = w[parent_of[c]] - fix;
+        }
     }
+    // The muscles move one part against another, never the body as a whole: what they added to its turning is taken back
+    // out as one turn of the whole body, which leaves every joint's speed as it is.
+    {
+        V3 com{};
+        float total_mass = 0;
+        for (std::size_t i = 1; i < part_count; ++i) { com = com + centre[i] * mass[i]; total_mass += mass[i]; }
+        com = com * (1.0f / total_mass);
+        V3 turning{};
+        float inertia = 0;
+        for (std::size_t i = 1; i < part_count; ++i) {
+            if (planted[i]) continue;
+            const V3 off = centre[i] - com;
+            const float size = mass[i] * (0.01f + dot(off, off)); // its own turning, and its swing round the middle
+            turning = turning + (w[i] - b[i].w) * size;
+            inertia += size;
+        }
+        if (inertia > 0)
+            for (std::size_t i = 1; i < part_count; ++i)
+                if (!planted[i]) w[i] = w[i] - turning * (1.0f / inertia);
+    }
+    std::array<V3, part_count> dw{}, dv{};
+    for (std::size_t i = 1; i < part_count; ++i) dw[i] = w[i] - b[i].w;
     for (const Part c : chain) {
         if (c == pelvis) continue;
         const Part p = parent_of[c];

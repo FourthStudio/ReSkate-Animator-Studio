@@ -45,22 +45,76 @@ Input standing() {
         put(right ? r_foot : l_foot, {side * 0.1f, 0.1f, 0});
         put(right ? r_toe : l_toe, {side * 0.1f, 0.03f, -0.12f});
     }
+    // Each body's axes as the game's are (the recordings, 2026-11-02): its bone along x; the torso's y forwards and z to his
+    // left; an arm's z to his right and a leg's z to his left, so elbows and knees bend +z.
+    const auto axes = [&](Part part, V3 x, V3 side) {
+        x = math::normalized(x);
+        const V3 z = math::normalized(side - x * math::dot(side, x));
+        in.body[part].r = {x, math::cross(z, x), z};
+    };
+    for (const Part p : {pelvis, spine, back1, chest2, chest3, neck, head}) in.body[p].r = {V3{0, 1, 0}, V3{0, 0, -1}, V3{-1, 0, 0}};
+    const auto along = [&](Part from, Part to) { return in.body[to].p - in.body[from].p; };
+    for (const bool right : {false, true}) {
+        const float side = right ? 1.0f : -1.0f;
+        const Part collar = right ? r_collar : l_collar, arm = right ? r_arm : l_arm, forearm = right ? r_forearm : l_forearm, hand = right ? r_hand : l_hand;
+        const Part thigh = right ? r_thigh : l_thigh, shin = right ? r_shin : l_shin, foot = right ? r_foot : l_foot, toe = right ? r_toe : l_toe;
+        axes(collar, along(collar, arm), V3{0, 0, -1});
+        axes(arm, along(arm, forearm), V3{1, 0, 0});
+        axes(forearm, along(forearm, hand), V3{1, 0, 0});
+        axes(hand, along(forearm, hand), V3{1, 0, 0});
+        axes(thigh, along(thigh, shin), V3{-1, 0, 0});
+        axes(shin, along(shin, foot), V3{-1, 0, 0});
+        axes(foot, along(foot, toe), V3{-1, 0, 0});
+        axes(toe, along(foot, toe), V3{-1, 0, 0});
+        (void)side;
+    }
     return in;
 }
 V3 bone_of(const Input& in, Part a, Part b) { return math::normalized(in.body[b].p - in.body[a].p); }
+// The same skater tipped `forward` radians about his feet (+ his head towards -z, forwards; - backwards): a fall begun.
+Input leaning(float forward) {
+    Input in = standing();
+    const float c = std::cos(-forward), s = std::sin(-forward);
+    for (auto& b : in.body) {
+        if (!b.ok) continue;
+        const float y = b.p[1], z = b.p[2];
+        b.p[1] = y * c - z * s;
+        b.p[2] = y * s + z * c;
+        for (auto& axis : b.r) {
+            const float ay = axis[1], az = axis[2];
+            axis[1] = ay * c - az * s;
+            axis[2] = ay * s + az * c;
+        }
+    }
+    return in;
+}
 }
 
 int main() {
     using math::cross;
     using math::dot;
-    // Falling forwards: the arms swing their hands out in front.
+    // Nothing on the first frames: a reflex takes a moment, and the body goes where the slam sends it.
     {
-        Input in = standing();
+        Input in = leaning(0.4f);
         for (auto& b : in.body) b.v = {0, -1.0f, -2.5f};
         Muscles m;
         m.begin(in);
         const auto out = m.step(in);
         check(out.phase == Phase::brace, "A fall starts braced");
+        float most = 0;
+        for (std::size_t i = 1; i < part_count; ++i)
+            if (out.write[i]) most = std::max(most, math::length(out.w[i] - in.body[i].w));
+        check(most < 0.5f, "Nothing is driven on the first frame (the joints' stops only)");
+    }
+    // Falling forwards: the arms swing their hands out in front.
+    {
+        Input in = leaning(0.4f);
+        for (auto& b : in.body) b.v = {0, -1.0f, -2.5f};
+        Muscles m;
+        m.begin(in);
+        Output out;
+        for (int i = 0; i < 18; ++i) out = m.step(in);
+        check(out.phase == Phase::brace, "A fall stays braced until it hits");
         bool all_finite = true, bounded = true;
         for (std::size_t i = 1; i < part_count; ++i) {
             all_finite = all_finite && math::finite(out.w[i]);
@@ -76,12 +130,12 @@ int main() {
     }
     // Falling backwards: the chin comes in (the head turns forward) and the hands go back.
     {
-        Input in = standing();
+        Input in = leaning(-0.4f);
         for (auto& b : in.body) b.v = {0, -1.0f, 2.5f};
         Muscles m;
         m.begin(in);
         Output out;
-        for (int i = 0; i < 4; ++i) out = m.step(in);
+        for (int i = 0; i < 12; ++i) out = m.step(in);
         const V3 heads = cross(out.w[l_arm], bone_of(in, l_arm, l_forearm));
         check(dot(heads, V3{0, 0, 1}) > 0, "Falling backwards, the hands go back");
         const V3 nods = cross(out.w[head] - out.w[neck], V3{0, 1, 0});
@@ -173,7 +227,7 @@ int main() {
             Muscles m;
             m.begin(in);
             Output out;
-            for (int i = 0; i < 3; ++i) out = m.step(in);
+            for (int i = 0; i < 12; ++i) out = m.step(in);
             V3 before{}, after{};
             for (std::size_t i = 1; i < part_count; ++i) {
                 before = before + in.body[i].v * kg[i];
@@ -186,13 +240,14 @@ int main() {
     {
         Input in = standing();
         for (auto& b : in.body) b.v = {0, -1.0f, 2.5f};
-        in.body[head].r = math::rotation({1, 0, 0}, 0.6f); // the head tipped well away from where it was
+        in.body[head].r = math::multiply(math::rotation({1, 0, 0}, 0.6f), in.body[head].r); // the head tipped well away from where it was
         const auto neck_drive = [&](float guard) {
             Input copy = in;
             copy.tune.head = guard;
             Muscles m;
             m.begin(standing());
-            const auto out = m.step(copy);
+            Output out;
+            for (int i = 0; i < 10; ++i) out = m.step(copy);
             return math::length(out.w[head] - copy.body[head].w);
         };
         check(neck_drive(0.0f) < 0.3f * neck_drive(1.0f), "Head protection off lets the head go");
