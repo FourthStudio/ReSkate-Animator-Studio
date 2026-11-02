@@ -272,6 +272,42 @@ int main() {
         check(kept, "The muscles never change the body's momentum, linear or angular");
     }
 
+    // In the game, whose joint solve takes most of each push back, the muscles push harder by about what is lost (a
+    // shoulder about four times): the arms come out as hard as a person's would. Still one part against another.
+    {
+        // Feet on the ground (where the ground is, so the fall is read and the arms reach).
+        const auto arm_turn = [&](bool in_game) {
+            Input in = forward_fall();
+            in.in_game = in_game;
+            Muscles m;
+            m.begin(in, 3);
+            float most = 0;
+            run(m, in, 15, [&](const Output& o) {
+                for (const Part p : {l_arm, r_arm})
+                    most = std::max(most, length((spin_of(in, o, p) - spin_of(in, o, chest3)) - (in.body[p].w - in.body[chest3].w)));
+            });
+            return most;
+        };
+        const float person = arm_turn(false), game = arm_turn(true);
+        check(person > 0.05f && game > 2.5f * person, "In the game the arms are pushed harder, making up for what its joints take back");
+        // Nothing planted (so every body is written): the momentum is the same after they act.
+        bool kept = true;
+        for (Input in : {forward_fall(), rolling()}) {
+            for (const Part p : {l_foot, r_foot, l_toe, r_toe}) in.body[p].touching = false;
+            in.body[l_forearm].w = in.body[l_forearm].w + in.body[l_arm].r[2] * 5.0f;
+            in.body[l_hand].w = in.body[l_forearm].w;
+            in.in_game = true;
+            Muscles m;
+            m.begin(in, 3);
+            run(m, in, 40, [&](const Output& o) {
+                V3 linear{}, angular{};
+                change_of(in, o, linear, angular);
+                kept = kept && length(linear) < 0.02f && length(angular) < 0.02f;
+            });
+        }
+        check(kept, "In the game too, the muscles never change the body's momentum");
+    }
+
     // No joint ever gets more torque than a person's joint has, at any strength, in any fall.
     {
         bool within = true;

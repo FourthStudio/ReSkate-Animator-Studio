@@ -182,7 +182,8 @@ model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step
     model::Input in;
     in.dt = seconds;
     in.strength = strength;
-    in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.grip, t.catch_arms, t.catch_step, t.grab_hurt, t.hold_hurt};
+    in.in_game = true; // the game's joint solve takes most of each push back: the muscles make up for it
+    in.tune ={t.reaction, t.head, t.tuck, t.lie_still, t.grip, t.catch_arms, t.catch_step, t.grab_hurt, t.hold_hurt};
     for (std::size_t i = 1; i < model::part_count; ++i) {
         const auto& b = bodies.body[i];
         auto& o = in.body[i];

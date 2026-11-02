@@ -64,6 +64,9 @@ struct Input {
     float dt{};
     float strength{1.0f}; // 0.25 .. 2: every muscle's strength and tone
     Tuning tune{};
+    // In the game, whose own joint solve takes most of each push back (real_bails_model.cpp, game_gain). Off: the
+    // muscles as a person's are, for tests and the offline bench, where every push stays.
+    bool in_game{};
 };
 // What the muscles are doing. Recorded by number: new ones only ever go at the end. (stumble is no longer used.)
 enum class Phase : std::uint8_t { idle, brace, impact, tumble, slide, settle, rest, stumble };

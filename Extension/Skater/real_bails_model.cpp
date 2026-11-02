@@ -39,6 +39,20 @@ Group group_of(Part c) noexcept {
     }
 }
 bool is_end(Part p) noexcept { return p == l_hand || p == r_hand || p == l_foot || p == r_foot || p == l_toe || p == r_toe; }
+// In the game a muscle's push does not all stay: the game's own joint solve takes most of each step's change back. The
+// recordings (2026-11-01, the commanded spins against the next step's) keep about 17% of a turn asked at a shoulder,
+// 11-16% at an elbow, 17-30% at a hip or knee, 35% along the back, 30-60% at the neck and 30-40% at a wrist or ankle, so
+// muscles built to a person's strength did next to nothing in the game ("he does not catch, he feels light"). In the game
+// each joint's spring, damper and strength are scaled up by about what is lost, so what reaches the body is what the
+// muscles mean. Held short of the full loss: the solve here is implicit and cannot overshoot, but the game's take-back
+// varies from step to step.
+float game_gain(Part c) noexcept {
+    switch (c) {
+    case l_arm: case r_arm: case l_forearm: case r_forearm: case l_thigh: case r_thigh: case l_shin: case r_shin: return 4.0f;
+    case spine: case back1: case chest2: case chest3: return 2.5f;
+    default: return 2.0f; // the neck and head, collars, wrists, ankles and toes
+    }
+}
 bool is_torso(Part p) noexcept {
     return p == pelvis || p == spine || p == back1 || p == chest2 || p == chest3 || p == neck || p == head || p == l_collar || p == r_collar;
 }
@@ -555,7 +569,8 @@ Output Muscles::step(const Input& in) noexcept {
         if (!going_down) aim_[i] = {};
         const bool this_hand = hurt_hand_ == 2 || (hurt_hand_ < 0 && s == 0) || (hurt_hand_ > 0 && s == 1);
         if (pain && this_hand) {
-            // A hand to what hurts, slowly and lightly: the arm only, with about what it takes to move an arm.
+            // A hand to what hurts, slowly: the arm only, with what it takes to lift an arm off the ground against its
+            // weight (about 10 N m at the shoulder lying down; at a tenth of its strength it never got there).
             V3 spot = centre(hurt_) + world_up * 0.07f;
             if (hurt_ == head) spot = centre(head) + b[head].r[1] * 0.1f + chest[2] * (0.04f * out_z);
             if (hurt_ == l_shin || hurt_ == r_shin) spot = b[hurt_].p + world_up * 0.06f + chest[2] * (0.05f * out_z);
@@ -572,15 +587,15 @@ Output Muscles::step(const Input& in) noexcept {
             auto& sh = drive_of(upper);
             sh.goal = true;
             sh.want = swing_goal(upper, turn_back(chest, normalized(elbow_at - shoulder, toward)));
-            sh.wn = 3;
+            sh.wn = 5;
             sh.zeta = 1;
-            sh.u = 0.1f;
+            sh.u = 0.35f;
             auto& el = drive_of(fore);
             el.goal = true;
             el.want = rotation(V3{0, 0, bend});
-            el.wn = 3;
+            el.wn = 5;
             el.zeta = 1;
-            el.u = 0.1f;
+            el.u = 0.3f;
             out.hand_mark[i] = spot;
         }
     }
@@ -591,9 +606,9 @@ Output Muscles::step(const Input& in) noexcept {
             auto& d = drive_of(p);
             d.goal = true;
             d.want = multiply(rotation(V3{0, 0, 0.08f * tuck_k}), base_[index_of()[p]]);
-            d.wn = 3;
+            d.wn = 4;
             d.zeta = 1;
-            d.u = 0.05f;
+            d.u = 0.15f;
         }
         for (int s = 0; s < 2; ++s) {
             const Part thigh = s ? r_thigh : l_thigh, shin = s ? r_shin : l_shin, foot = s ? r_foot : l_foot, toe = s ? r_toe : l_toe;
@@ -601,15 +616,15 @@ Output Muscles::step(const Input& in) noexcept {
             auto& hip = drive_of(thigh);
             hip.goal = true;
             hip.want = multiply(rotation(V3{0, 0, -0.25f * tuck_k}), base_[index_of()[thigh]]); // -z swings a thigh forwards
-            hip.wn = 3;
+            hip.wn = 4;
             hip.zeta = 1;
-            hip.u = 0.05f;
+            hip.u = 0.15f;
             auto& knee = drive_of(shin);
             knee.goal = true;
             knee.want = rotation(V3{0, 0, std::min(bend_of(base_[index_of()[shin]]) + 0.5f * tuck_k, 100 * deg)});
-            knee.wn = 3;
+            knee.wn = 4;
             knee.zeta = 1;
-            knee.u = 0.05f;
+            knee.u = 0.15f;
         }
     }
     for (int s = 0; s < 2; ++s) out.foot_mark[static_cast<std::size_t>(s)] = b[s ? r_foot : l_foot].p;
@@ -717,6 +732,18 @@ Output Muscles::step(const Input& in) noexcept {
         out.torque[c] = length(torque_of(c));
     }
     out.work = body::energy_of(mass, b, dw, dv, written_body);
+    // In the game: each joint's torque, as a person's muscles have it above, is handed over larger by about what the
+    // game's joint solve takes back (game_gain), so what stays is that torque. Still one side of each joint against the
+    // other through the linked bodies: the body's momentum is kept. (`torque` and `work` stay what the muscles mean.)
+    if (in.in_game) {
+        std::array<V3, part_count> handed{};
+        for (std::size_t k = 1; k < body::chain.size(); ++k) {
+            const Part c = body::chain[k];
+            if (!body::weld(c) && !planted[c]) handed[c] = torque_of(c) * (dt * game_gain(c));
+        }
+        tree.articulate(std::array<M3, part_count>{});
+        tree.solve(handed, dw, dv);
+    }
 
     // ---- the joints' stops -----------------------------------------------------------------------------------------
     // Every joint, every step: its speed into a stop (with what the muscles add) is cut so it comes to rest on it, and
