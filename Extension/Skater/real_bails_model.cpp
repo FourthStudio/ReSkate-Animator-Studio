@@ -44,16 +44,20 @@ bool is_foot(Part p) noexcept { return p == l_foot || p == r_foot || p == l_toe 
 // the game each joint's torque is handed over larger by about what is lost (gain x what stays = 1), and what reaches the
 // body is what the muscles mean. Measured from the user's recordings of 2026-11-02 (21 bails, rb_track.py: each joint's
 // commanded turn against the next step's): of each written change the game kept 24% at a shoulder, 27% at an elbow, 57%
-// at a hip, 43% at a knee, 51% along the back, 99% at the neck and head, and 34% at a wrist, an ankle or the toes.
+// at a hip, 43% at a knee, 51% along the back, 99% at the neck and head, and 34% at a wrist, an ankle or the toes. The
+// second set (25 bails with these gains, the fall only: brace and impact, rb_track_phase.py) kept 19% at a shoulder, 17%
+// at an elbow, 73% at a hip, 45% at a knee, 37% along the back, 54% at the neck and 26% at a wrist or ankle: these are
+// set from it. (Lying down it kept almost nothing, but that was the planted hands: see `reaching` below.)
 float game_gain(Part c) noexcept {
     switch (c) {
-    case l_arm: case r_arm: return 4.1f;
-    case l_forearm: case r_forearm: return 3.7f;
-    case l_thigh: case r_thigh: return 1.75f;
-    case l_shin: case r_shin: return 2.3f;
-    case spine: case back1: case chest2: case chest3: return 2.0f;
-    case l_hand: case r_hand: case l_foot: case r_foot: case l_toe: case r_toe: return 2.9f;
-    default: return 1.0f; // the neck and head (the game keeps all of it), and the collarbones (welded: nothing of their own)
+    case l_arm: case r_arm: return 5.0f;
+    case l_forearm: case r_forearm: return 5.5f;
+    case l_thigh: case r_thigh: return 1.4f;
+    case l_shin: case r_shin: return 2.2f;
+    case spine: case back1: case chest2: case chest3: return 2.6f;
+    case l_hand: case r_hand: case l_foot: case r_foot: case l_toe: case r_toe: return 3.6f;
+    case neck: case head: return 1.8f;
+    default: return 1.0f; // the collarbones (welded: nothing of their own)
     }
 }
 bool is_torso(Part p) noexcept {
@@ -608,7 +612,16 @@ Output Muscles::step(const Input& in) noexcept {
             const V3 local = b[i].has_point && finite(b[i].point) ? turn_back(b[i].r, b[i].point - centre(i)) : V3{};
             const Hurt h = hurt_of(p, local, b[i].has_point && finite(b[i].point), roll_side_ > 0);
             if (h == Hurt::groin || (racked && (p == pelvis || p == l_thigh || p == r_thigh))) continue; // racked: below
-            const bool catching = (p == l_hand && caught_at_[0] >= 0) || (p == r_hand && caught_at_[1] >= 0);
+            // A hand that came down to catch, or its forearm or upper arm coming down after it within a third of a second
+            // (the catch rolling on up the arm), meant to land: it counts under half. In the recordings the arm that
+            // caught was nearly always what hurt most, so he held an arm after almost every bail.
+            // (A hand that came down during the fall, not one on the ground from the start.)
+            const auto caught_just = [&](int s) {
+                const double at = caught_at_[static_cast<std::size_t>(s)];
+                return at >= 0.05 && t_ - at < 0.35;
+            };
+            const bool catching = (p == l_hand && caught_at_[0] >= 0) || (p == r_hand && caught_at_[1] >= 0) ||
+                                  ((p == l_forearm || p == l_arm) && caught_just(0)) || ((p == r_forearm || p == r_arm) && caught_just(1));
             add(h, p, speed, (speed - 1.5f) * site_factor(h) * (catching ? 0.45f : 1.0f));
         }
         // Racked hurts a lot however soft (at least as much as a hard knock on the head), and most of all.
@@ -1108,6 +1121,10 @@ Output Muscles::step(const Input& in) noexcept {
     const bool letting_go = let_go_at_ >= 0;
     std::array<bool, part_count> no_crawl{};
     std::array<bool, 2> lifted{};
+    // A hand reaching for what hurts is lifted off the ground and written with its arm. Left planted (not written, as
+    // every hand on the ground is), the game's wrist joint held the arm to it: lying down the game kept 3-8% of the
+    // arm's turns (the recordings), the hand stopped about 0.4 m short and the arms hung in the air.
+    std::array<bool, 2> reaching{};
     if (pain || letting_go) {
         const float hold = letting_go ? 1.0f - smooth(static_cast<float>(t_ - let_go_at_) / let_go) : 1.0f;
         const float since = static_cast<float>(t_ - pain_since_);
@@ -1149,20 +1166,30 @@ Output Muscles::step(const Input& in) noexcept {
             const V3 shoulder = b[upper].p;
             const float a = length(b[fore].p - shoulder), c = length(b[hand].p - b[fore].p) + 0.07f;
             const V3 toward = normalized(spot - shoulder, -chest[0]);
-            V3 pole = cross(toward, b[upper].r[2]);
-            if (length(pole) < 0.15f) pole = -chest[1];
+            // The elbow out to his side and down: lying there it rests on the ground, never pointing up into the air.
+            const V3 pole = chest[2] * (s == 0 ? 1.0f : -1.0f) - world_up * 0.7f;
             const V3 elbow_at = reach_middle(shoulder, spot, a, c, pole);
             const float d = std::clamp(length(spot - shoulder), std::abs(a - c) + 0.02f, (a + c) * 0.98f);
             const float bend = pi - std::acos(std::clamp((a * a + c * c - d * d) / (2 * a * c), -1.0f, 1.0f));
             const float along = min_jerk(since * quick / duration);
             if (gave_up_at_[i] < 0 && since > duration / quick + 1.0f && length(spot - shoulder) > (a + c) * 1.05f) gave_up_at_[i] = t_;
             const float rest = gave_up_at_[i] >= 0 ? 1.0f - smooth(static_cast<float>(t_ - gave_up_at_[i]) / 0.5f) : 1.0f;
-            const V3 from = normalized(base_[index_of()[upper]][0], -chest[0]);
-            const V3 to = normalized(turn_back(chest, normalized(elbow_at - shoulder, toward)), from);
-            const float apart = std::acos(std::clamp(dot(from, to), -1.0f, 1.0f));
+            reaching[i] = rest > 0.05f;
+            // The upper arm's whole turn, its twist too: its bone to the elbow, and its y axis to the hand's side of it, so
+            // the elbow's bend (about the upper arm's z, +z bringing the forearm towards its y) folds the forearm to the
+            // spot. Swung with its twist left as it lay, the elbow folded in whatever plane that left: lying on his back
+            // the forearm stood up in the air and the hand hung 0.4 m off what it reached for.
+            const V3 ux = normalized(elbow_at - shoulder, toward);
+            V3 uy = across(spot - elbow_at, ux);
+            if (length(uy) < 1e-3f) uy = across(b[upper].r[1], ux);
+            uy = normalized(uy, b[upper].r[1]);
+            const M3 frame_r = b[ranges()[index_of()[upper]].frame].r;
+            const M3 want_rel = multiply(transposed(frame_r), M3{ux, uy, cross(ux, uy)});
+            const M3& from_rel = base_[index_of()[upper]];
+            const V3 turn = rotation_vector(multiply(want_rel, transposed(from_rel)));
             auto& sh = drive_of(upper);
             sh.goal = true;
-            sh.want = swing_goal(upper, turn_towards(from, to, apart * along));
+            sh.want = multiply(rotation(turn * along), from_rel);
             sh.wn = 8;
             sh.zeta = 1;
             sh.u = u * hold * rest;
@@ -1295,6 +1322,8 @@ Output Muscles::step(const Input& in) noexcept {
             hand_to(other_arm, spot, 0.45f, 0.5f);
             curl_back(0.35f * curl, 0.17f * curl * static_cast<float>(hurt_side), 0, 0.15f, 0.9f);
             neck_bend(0.4f * curl, 0.3f * curl * static_cast<float>(hurt_side), 0.25f);
+            // In pain he does not lie flat: the knees come up a little, feet on the ground.
+            for (int k = 0; k < 2; ++k) knee_up(k, 0.4f * curl, 0.7f * curl, 0.2f);
             break;
         }
         case Hurt::left_hand:
@@ -1393,7 +1422,8 @@ Output Muscles::step(const Input& in) noexcept {
     const Part kick_foot = kick_leg_ > 0 ? r_foot : l_foot, kick_toe = kick_leg_ > 0 ? r_toe : l_toe;
     for (std::size_t i = 1; i < part_count; ++i) {
         const auto p = static_cast<Part>(i);
-        const bool lifting = (lifted[0] && (p == l_foot || p == l_toe)) || (lifted[1] && (p == r_foot || p == r_toe));
+        const bool lifting = (lifted[0] && (p == l_foot || p == l_toe)) || (lifted[1] && (p == r_foot || p == r_toe)) ||
+                             (reaching[0] && p == l_hand) || (reaching[1] && p == r_hand);
         planted[i] = is_end(p) && b[i].touching && !(kicking && (p == kick_foot || p == kick_toe)) && !lifting;
         written_body[i] = !planted[i];
     }

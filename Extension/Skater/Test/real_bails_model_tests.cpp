@@ -916,6 +916,29 @@ int main() {
         check(o.driven[l_arm] && o.driven[l_forearm], "The hurt arm is held in");
         check(!o.leg_lifted[0] && !o.leg_lifted[1], "An elbow lifts no leg");
     }
+    // Lying on his back with his hands on the ground, the hand that reaches is written with its arm (left planted, the
+    // game's wrist joint held the arm back: the hand stopped 0.4 m short), and it is sent towards what it reaches for, not
+    // up into the air (the upper arm turned with its twist, so the elbow folds the forearm to the spot).
+    {
+        Input in = on_his_back();
+        for (const Part p : {l_hand, r_hand}) in.body[p].touching = true;
+        Muscles m;
+        m.begin(in, 4);
+        Input hit = in;
+        hit.body[l_forearm].impact = 5.0f;
+        (void)m.step(hit);
+        int written = 0, toward = 0, pain_steps = 0;
+        run(m, in, 60, [&](const Output& o) {
+            if (!o.pain) return;
+            ++pain_steps;
+            if (!o.write[r_hand]) return;
+            ++written;
+            const V3 to_spot = o.hand_mark[1] - in.body[r_hand].p;
+            if (dot(o.v[r_hand] - in.body[r_hand].v, to_spot) > 0) ++toward;
+        });
+        check(pain_steps > 10 && written > pain_steps / 2, "The reaching hand is lifted off the ground and moved with its arm");
+        check(toward > written * 3 / 4, "The reaching hand is sent towards the spot");
+    }
     // A knee that hurts: the hands go to it and it comes up to the chest (that leg only).
     {
         Muscles m;

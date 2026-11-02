@@ -170,8 +170,10 @@ bool call_set(SetMotion set, const world::BodyHandle& h, const Vec3& v) noexcept
 // (assumed: the board sync walks them together; every body gets the same change, so a mix-up would not tear the board),
 // and the board's mass in the game (real_bails_model.cpp takes a real board's 2.5 kg for the push the leg gets back).
 // Off, the foot on the board still kicks it: it pushes the board through the game's own contact, and the game's solver
-// gives both their share.
-constexpr bool board_kick_writes = false;
+// gives both their share. On since the user's recordings of 2026-11-02 (25 bails): the board's record followed its
+// velocity (live) in 70-96% of each bail's steps, so it is the world's mirror in a bail; the liveness check still guards
+// every write.
+constexpr bool board_kick_writes = true;
 // The board's root as it was last read, and for how many steps in a row its record has moved as its velocity says.
 struct BoardSeen {
     bool have{};
