@@ -8408,6 +8408,13 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                 const int count = static_cast<int>(front_looks.size()) + 1;
                 studio::market::set_look(((look + by) % count + count) % count);
             }));
+            // Only for the studio's developers and its crew (their linked Thunderstore team is BUILT BY's or THE CREW's, and
+            // Thunderstore has not said there is no such team), or a key already on this PC (to change or take it off).
+            // Everyone else never sees it. (The key itself is GitHub's: only one that can write to the studio's repository
+            // works; this keeps the row away from the players it could only confuse.)
+            const bool team_ok = !market.team.empty() && market.team_state != 3 &&
+                                 (studio::market::builder_of(market.team) || studio::market::crew_member(market.team));
+            if (team_ok || market.dev_state != 0) {
             Setting s = button_row("Developer key",
                                    "For the studio's developers only: a GitHub token that can write to FourthStudio/ReSkate-Animator-Studio. With it, "
                                    "every pack's page in the MARKET has VERIFY, which puts the pack on everyone's VERIFIED shelf.",
@@ -8418,6 +8425,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                       : market.dev_state == 4 ? std::string("NOT CHECKED  -  CHANGE")
                                               : std::string("NONE  -  ADD");
             rows.push_back(std::move(s));
+            }
         }
         rows.push_back(studio::settings_rows::report_a_bug(tell));
         rows.push_back(button_row("Export diagnostics",
