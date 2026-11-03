@@ -116,6 +116,64 @@ std::wstring wide(const std::string& text) {
     return out;
 }
 
+// The ReSkate.dll this code runs from (the one the launcher put in the game: its own path, whatever the folder).
+std::filesystem::path own_dll() {
+    static const int marker = 0;
+    HMODULE self{};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&marker), &self))
+        return {};
+    std::array<wchar_t, 32768> path{};
+    const DWORD n = GetModuleFileNameW(self, path.data(), static_cast<DWORD>(path.size()));
+    if (!n || n >= path.size()) return {};
+    return std::filesystem::path(path.data());
+}
+std::filesystem::path launcher_beside(const std::filesystem::path& dll) {
+    std::error_code error;
+    const auto launcher = dll.parent_path() / L"ReSkateLauncher.exe";
+    return !dll.empty() && std::filesystem::is_regular_file(launcher, error) ? launcher : std::filesystem::path{};
+}
+
+// Puts the downloaded ReSkate.dll in place of the one the game loaded. Windows lets a loaded DLL be renamed but never
+// overwritten or deleted, so: the new one is copied in beside it first (same folder, so the swap is two renames) and
+// read back against its SHA-256, the running one is renamed to ReSkate.dll.previous (the one before is replaced: kept
+// to go back to), and the new one renamed into its place. Anything failing puts the old one back.
+bool install(const std::filesystem::path& downloaded, const std::string& digest, std::filesystem::path& current, std::string& why) {
+    current = own_dll();
+    if (current.empty()) {
+        why = "the running ReSkate.dll could not be found";
+        return false;
+    }
+    const auto folder = current.parent_path();
+    const auto previous = folder / (current.filename().wstring() + L".previous");
+    const auto incoming = folder / (current.filename().wstring() + L".incoming");
+    std::error_code error;
+    std::filesystem::remove(incoming, error);
+    if (!CopyFileW(downloaded.c_str(), incoming.c_str(), FALSE)) {
+        why = std::format("it could not be copied into {} (Windows error {}). Is the folder read-only?", folder.string(), GetLastError());
+        return false;
+    }
+    if (!digest.empty() && sha256_of(incoming) != digest) {
+        std::filesystem::remove(incoming, error);
+        why = "the copy did not match its SHA-256, so nothing was changed";
+        return false;
+    }
+    if (!MoveFileExW(current.c_str(), previous.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        const auto code = GetLastError();
+        std::filesystem::remove(incoming, error);
+        why = std::format("the running ReSkate.dll could not be moved aside (Windows error {})", code);
+        return false;
+    }
+    if (!MoveFileExW(incoming.c_str(), current.c_str(), 0)) {
+        const auto code = GetLastError();
+        MoveFileExW(previous.c_str(), current.c_str(), 0); // the old one back where it was
+        std::filesystem::remove(incoming, error);
+        why = std::format("the new ReSkate.dll could not be put in place (Windows error {}); the old one is back", code);
+        return false;
+    }
+    return true;
+}
+
 void set(const std::function<void(State&)>& change) {
     auto& s = shared();
     std::lock_guard lock(s.mutex);
@@ -174,7 +232,7 @@ void run_check() {
                      is_newer ? " (newer)" : "");
         if (is_newer)
             overlay::notify(overlay::NoticeLevel::info, "Animator Studio " + tag + " is out",
-                            "You have " + running_version() + ". Open the studio (F8) to see what is new and download it.");
+                            "You have " + running_version() + ". Open the studio (F8) to see what is new and update in one click.");
     } catch (...) {
         set([](State& st) { st.step = Step::failed; st.error = "GitHub's answer could not be read"; });
     }
@@ -205,9 +263,28 @@ void run_download() {
     const auto folder = updates_folder(version);
     std::filesystem::create_directories(folder, error);
     const auto final_path = folder / L"ReSkate.dll", part = folder / L"ReSkate.dll.part";
+    // Installed once downloaded and checked: the game runs it from its next start.
+    const auto put_in_place = [&] {
+        std::filesystem::path current;
+        std::string why;
+        if (!install(final_path, digest, current, why)) {
+            set([&](State& st) { st.step = Step::install_failed; st.error = why; st.saved_to = final_path; });
+            logging::log(Level::warning, Channel::runtime, "Animator Studio {} not installed: {}", version, why);
+            return;
+        }
+        const bool restartable = !launcher_beside(current).empty();
+        set([&](State& st) {
+            st.step = Step::installed;
+            st.saved_to = final_path;
+            st.installed_to = current;
+            st.can_restart = restartable;
+        });
+        logging::log(Level::info, Channel::runtime, "Animator Studio {} installed in place of {} (the old one is ReSkate.dll.previous)", version,
+                     current.string());
+    };
     // Downloaded before and whole: nothing to fetch.
     if (!digest.empty() && std::filesystem::exists(final_path, error) && sha256_of(final_path) == digest) {
-        set([&](State& st) { st.step = Step::downloaded; st.saved_to = final_path; });
+        put_in_place();
         return;
     }
     std::filesystem::remove(part, error);
@@ -230,6 +307,7 @@ void run_download() {
     set([&](State& st) { st.step = Step::downloaded; st.saved_to = final_path; });
     logging::log(Level::info, Channel::runtime, "Animator Studio {} downloaded to {}{}", version, final_path.string(),
                  digest.empty() ? " (no SHA-256 to check it against)" : ", SHA-256 checked");
+    put_in_place();
 }
 
 void start_thread(void (*work)()) {
@@ -286,6 +364,59 @@ void cancel() noexcept {
     set([](State& st) { st.answered = true; });
     shared().popup_closed.store(true);
 }
+void restart() noexcept {
+    try {
+        const auto st = state();
+        if (st.step != Step::installed || !st.can_restart) return;
+        const auto launcher = launcher_beside(st.installed_to);
+        if (launcher.empty()) return;
+        const auto folder = launcher.parent_path();
+        // A hidden PowerShell (no window: CREATE_NO_WINDOW) waits for this game to close, then starts ReSkateLauncher.exe
+        // as its Play does (--no-gui, the saved launch options) without its own update check (--no-update: that would put
+        // base ReSkate's DLL back over this one). The launcher's folder has plain letters only (it will not run anywhere
+        // else), and a quote in it is doubled for PowerShell.
+        std::array<wchar_t, MAX_PATH> system{};
+        const UINT n = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
+        if (!n || n >= system.size()) return;
+        const std::wstring shell = std::wstring(system.data()) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
+        const auto quoted = [](std::wstring text) {
+            std::wstring out = L"'";
+            for (const wchar_t c : text) out += c == L'\'' ? std::wstring(L"''") : std::wstring(1, c);
+            return out + L"'";
+        };
+        const std::wstring script = L"Wait-Process -Id " + std::to_wstring(GetCurrentProcessId()) +
+                                    L" -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Start-Process -FilePath " + quoted(launcher.wstring()) +
+                                    L" -ArgumentList '--no-gui','--no-update' -WorkingDirectory " + quoted(folder.wstring());
+        std::wstring command = L"\"" + shell + L"\" -NoProfile -NonInteractive -WindowStyle Hidden -Command \"" + script + L"\"";
+        STARTUPINFOW startup{sizeof(startup)};
+        PROCESS_INFORMATION process{};
+        // Outside any job the game is in when it may be (so closing the game does not end it), else as it is.
+        BOOL started = CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB,
+                                      nullptr, folder.c_str(), &startup, &process);
+        if (!started)
+            started = CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, folder.c_str(), &startup, &process);
+        if (!started) {
+            const auto code = GetLastError();
+            set([&](State& s) { s.error = std::format("the game could not be restarted (Windows error {}); close it and start it as usual", code); });
+            return;
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        set([](State& s) { s.step = Step::restarting; });
+        logging::log(Level::info, Channel::runtime, "Animator Studio update: closing the game to start it again with the new ReSkate.dll");
+        logging::flush();
+        // Then the game is asked to close as its own window's close button would: every top-level window of this process
+        // gets WM_CLOSE (it saves and closes as it always does).
+        EnumWindows(
+            [](HWND window, LPARAM) -> BOOL {
+                DWORD owner = 0;
+                GetWindowThreadProcessId(window, &owner);
+                if (owner == GetCurrentProcessId() && IsWindowVisible(window) && !GetWindow(window, GW_OWNER)) PostMessageW(window, WM_CLOSE, 0, 0);
+                return TRUE;
+            },
+            0);
+    } catch (...) {}
+}
 void open_folder() noexcept {
     const auto st = state();
     if (st.saved_to.empty()) return;
@@ -295,7 +426,9 @@ void open_folder() noexcept {
 bool popup_wanted() noexcept {
     const auto st = state();
     if (st.step == Step::newer) return !st.answered;
-    if (st.step == Step::downloading || st.step == Step::downloaded || st.step == Step::download_failed) return !shared().popup_closed.load();
+    if (st.step == Step::downloading || st.step == Step::downloaded || st.step == Step::download_failed || st.step == Step::installed ||
+        st.step == Step::install_failed || st.step == Step::restarting)
+        return !shared().popup_closed.load();
     return false;
 }
 void close_popup() noexcept {
