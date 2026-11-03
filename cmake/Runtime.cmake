@@ -411,7 +411,7 @@ if(EXISTS "${dingosdk_studio_loading}")
         string(APPEND dingosdk_studio_resources "STUDIO_CREW_${dingosdk_crew_upper} RCDATA \"${dingosdk_crew_native}\"\n")
     endforeach()
     # The settings tiles' icons (contrib/animator-studio/make_studio_icons.py), in skate.'s own grungy white style.
-    foreach(dingosdk_studio_icon studio skater tricks packs bails)
+    foreach(dingosdk_studio_icon studio skater tricks packs bails updates)
         set(dingosdk_studio_icon_path "${PROJECT_SOURCE_DIR}/assets/animator_studio/icon_${dingosdk_studio_icon}.png")
         if(EXISTS "${dingosdk_studio_icon_path}")
             set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_studio_icon_path}")

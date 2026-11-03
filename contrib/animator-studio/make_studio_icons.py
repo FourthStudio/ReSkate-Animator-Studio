@@ -1,8 +1,8 @@
-"""The Animator Studio's settings icons (STUDIO, SKATER, TRICKS, PACKS, BAILS), in skate.'s own menu style: a white illustration with black line work, black
+"""The Animator Studio's settings icons (STUDIO, SKATER, TRICKS, PACKS, BAILS, UPDATES), in skate.'s own menu style: a white illustration with black line work, black
 halftone shading on its shadow side, rough, worn edges and the odd drip. Written to assets/animator_studio/icon_*.png
 (transparent, 512 x 512) and built into ReSkate.dll (cmake/Runtime.cmake).
 
-    python contrib/animator-studio/make_studio_icons.py [out_dir]
+    python contrib/animator-studio/make_studio_icons.py [out_dir [names...]]
 """
 import math
 import random
@@ -279,10 +279,65 @@ def plasters():
     return icon.render(light=(-0.6, -0.8), shade_from=0.42)
 
 
+# ---- UPDATES: a fresh one dropping into its box - a fat arrow going down into an open shoebox, its lid up behind ----
+def shoebox():
+    icon = Icon(83)
+    # The box: its front, the rim of its opening, and the lid leaning open behind it.
+    box = canvas()
+    db = ImageDraw.Draw(box)
+    db.rounded_rectangle([210, 580, 820, 810], radius=26, fill=255)
+    db.polygon([(190, 560), (840, 560), (820, 612), (210, 612)], fill=255)
+    lid = canvas()
+    dl = ImageDraw.Draw(lid)
+    dl.rounded_rectangle([520, 330, 900, 420], radius=20, fill=255)
+    lid = rotate(lid, -28, (560, 560))
+    box_ink = canvas()
+    dbi = ImageDraw.Draw(box_ink)
+    dbi.line([214, 612, 816, 612], fill=255, width=12)                              # the rim against the front
+    dbi.rounded_rectangle([300, 664, 560, 760], radius=14, outline=255, width=12)    # its label
+    for y in (694, 728):
+        dbi.line([326, y, 534, y], fill=255, width=8)
+    thick(dbi, [(600, 760), (660, 724), (720, 716), (780, 676)], 26)               # the brand's stripe
+    lid_ink = canvas()
+    dli = ImageDraw.Draw(lid_ink)
+    dli.rounded_rectangle([540, 350, 880, 400], radius=12, outline=255, width=10)
+    lid_ink = rotate(lid_ink, -28, (560, 560))
+    # The arrow: a fat shaft and its head, going down into the box (its tip hidden by the box's front).
+    arrow = canvas()
+    da = ImageDraw.Draw(arrow)
+    da.rounded_rectangle([426, 150, 598, 470], radius=26, fill=255)
+    da.polygon([(300, 440), (724, 440), (512, 690)], fill=255)
+    arrow_ink = canvas()
+    dai = ImageDraw.Draw(arrow_ink)
+    dai.line([452, 186, 452, 452], fill=255, width=10)                              # the light down its side
+    # Speed lines over it.
+    speed = canvas()
+    ds = ImageDraw.Draw(speed)
+    for x, top, length in ((370, 120, 110), (512, 40, 80), (654, 120, 110)):
+        thick(ds, [(x, top), (x, top + length)], 26)
+    # Behind to front: the lid, the arrow, the box (each hides the line work of what is behind it, and its own edge shows
+    # where it lies across it).
+    behind = ImageChops.lighter(lid, speed)
+    front_of_lid = ImageChops.lighter(arrow, box)
+    lid_shown_ink = ImageChops.multiply(lid_ink, ImageChops.invert(front_of_lid))
+    arrow_shown_ink = ImageChops.multiply(arrow_ink, ImageChops.invert(box))
+    box_edge = ImageChops.multiply(ImageChops.subtract(dilate(box, 7), erode(box, 7)), arrow)
+    arrow_edge = ImageChops.multiply(ImageChops.subtract(dilate(arrow, 7), erode(arrow, 7)), ImageChops.multiply(lid, ImageChops.invert(box)))
+    icon.body = ImageChops.lighter(ImageChops.lighter(behind, arrow), box)
+    icon.ink = ImageChops.lighter(ImageChops.lighter(lid_shown_ink, arrow_shown_ink), ImageChops.lighter(box_ink, ImageChops.lighter(box_edge, arrow_edge)))
+    icon.body = rotate(icon.body, -6, (512, 512))
+    icon.ink = rotate(icon.ink, -6, (512, 512))
+    icon.drips = [(360, 120, 56), (700, 80, 44)]
+    return icon.render(light=(-0.6, -0.8), shade_from=0.42)
+
+
 def main():
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2] / 'assets' / 'animator_studio'
     out_dir.mkdir(parents=True, exist_ok=True)
-    for name, make in (('studio', camcorder), ('skater', shoe), ('tricks', board), ('packs', tape), ('bails', plasters)):
+    only = set(sys.argv[2:])
+    for name, make in (('studio', camcorder), ('skater', shoe), ('tricks', board), ('packs', tape), ('bails', plasters), ('updates', shoebox)):
+        if only and name not in only:
+            continue
         make().save(out_dir / f'icon_{name}.png', optimize=True)
         print('wrote', out_dir / f'icon_{name}.png')
 

@@ -2,6 +2,7 @@
 #include "skate_style.h"
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/studio_settings_rows.h"
+#include "Extension/AnimationStudio/studio_update.h"
 #include "Extension/AnimationStudio/anim_studio.h"
 
 #include <algorithm>
@@ -149,6 +150,17 @@ void banner(SkateMenu& menu, const anim_studio::MenuSummary& now, const anim_stu
              IM_COL32(40, 42, 48, 235));
     next(std::format("{} TRICKS IN PLAY", now.in_play), IM_COL32(40, 42, 48, 235));
     next(settings.smooth_transitions ? "SMOOTH" : "CLASSIC", IM_COL32(40, 42, 48, 235));
+    // The version, and a newer one when it is out (SETTINGS > UPDATES in the studio; the UPDATES card below).
+    {
+        namespace up = anim_studio::update;
+        const auto running = up::running_version();
+        const auto st = up::state();
+        const bool newer = st.step == up::Step::newer || st.step == up::Step::download_failed || st.step == up::Step::install_failed;
+        const bool installed = st.step == up::Step::installed || st.step == up::Step::restarting;
+        if (newer) next(st.latest + " IS OUT", skate_theme::blue);
+        else if (installed) next(st.latest + " INSTALLED - RESTART", skate_theme::blue);
+        else if (!running.empty()) next("V" + running, IM_COL32(40, 42, 48, 235));
+    }
     // The brush face's line at the right, when it fits beside the chips.
     const float size = px(20);
     auto* hand = marker(menu, size);
@@ -260,6 +272,67 @@ void last_tricks(SkateMenu& menu, const anim_studio::MenuSummary& now) {
         ImGui::Dummy(ImVec2(0, px(2)));
     }
 }
+
+// UPDATES: the version running, the newest on GitHub, and updating from here as from the studio's SETTINGS > UPDATES
+// (studio_update.h: UPDATE NOW downloads, checks and installs it; RESTART NOW starts the game again with it).
+void updates_card(SkateMenu& menu, const Model& model) {
+    namespace up = anim_studio::update;
+    const auto st = up::state();
+    const auto running = up::running_version(), base = up::reskate_base();
+    const bool newer = st.step == up::Step::newer || st.step == up::Step::download_failed || st.step == up::Step::install_failed;
+    const bool installed = st.step == up::Step::installed, restarting = st.step == up::Step::restarting;
+    const bool going = st.step == up::Step::downloading || st.step == up::Step::downloaded;
+    const auto c = studio_card_begin(menu, "updates", "UPDATES",
+                                     newer ? st.latest + " is out" : installed ? st.latest + " is installed" : "the version you have, and the newest");
+    info(menu, "You have", running.empty() ? std::string("not the studio's own build")
+                                           : "Animator Studio " + running + (base.empty() ? std::string{} : "  /  ReSkate " + base));
+    if (!up::available()) {
+        note("This ReSkate.dll is not one of the Animator Studio's own releases, so it does not look for its updates.");
+        studio_card_end(c);
+        return;
+    }
+    info(menu, "Newest on GitHub",
+         st.step == up::Step::checking ? std::string("checking...")
+         : st.step == up::Step::failed ? "could not check (" + st.error + ")"
+         : st.latest.empty()           ? std::string("not checked yet")
+         : newer                       ? st.latest + "  -  new"
+                                       : st.latest + "  -  up to date");
+    if (going) {
+        const double got = static_cast<double>(st.received) / (1024.0 * 1024.0), all = static_cast<double>(st.total) / (1024.0 * 1024.0);
+        note((st.step == up::Step::downloaded ? std::string("Checked. Putting it in place...")
+              : st.total                      ? std::format("Downloading {}: {:.1f} of {:.1f} MB. It installs itself when it is done.", st.latest, got, all)
+                                              : std::format("Downloading {}: {:.1f} MB", st.latest, got))
+                 .c_str());
+    }
+    if (restarting) note("Closing the game. It starts again by itself in a few seconds.");
+    if (installed)
+        note((st.can_restart ? "Installed. RESTART NOW closes the game and starts it again with " + st.latest + "."
+                             : "Installed. Close the game and start it with ReSkateLauncher to use " + st.latest + ".")
+                 .c_str());
+    if (st.step == up::Step::install_failed) warn(("It downloaded but could not be installed: " + st.error).c_str());
+    else if (st.step == up::Step::download_failed) warn(("The download did not work: " + st.error).c_str());
+    // What can be done now: the one to press as the studio's own big blue button, the rest under it.
+    if (newer) {
+        const auto label = "UPDATE TO " + st.latest + " NOW";
+        if (studio_button(menu, "##updatenow", label.c_str(), "DOWNLOAD + INSTALL", true, 10)) up::download();
+        ImGui::Dummy(ImVec2(0, px(6)));
+        if (button_row(menu, "##whatsnew", {{"WHAT'S NEW", animator_studio_openable(model), false, "Opens the studio with what the new version changes."}}) == 0) {
+            up::show_popup();
+            anim_studio::request_open(true);
+            menu.close_requested = true;
+        }
+    } else if (installed && st.can_restart) {
+        if (studio_button(menu, "##restartnow", "RESTART NOW", "STARTS AGAIN BY ITSELF", true, 10)) up::restart();
+    } else if (!going && !restarting) {
+        if (button_row(menu, "##checknow", {{st.step == up::Step::checking ? "CHECKING..." : "CHECK NOW", st.step != up::Step::checking, false,
+                                             "Asks GitHub for the newest release now."}}) == 0)
+            up::check_now();
+    }
+    bool every = up::checking();
+    if (toggle_row(menu, "Check at every start", "At each start the studio asks GitHub whether a newer version is out. Nothing is changed until you choose UPDATE NOW.", every))
+        up::set_checking(every);
+    studio_card_end(c);
+}
 }
 
 void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3&) {
@@ -286,6 +359,12 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     default: break;
     }
     ImGui::Dummy(ImVec2(0, px(12)));
+    // A newer version out, or one installed and waiting for a restart: UPDATES first. Otherwise at the foot of the page.
+    const auto update_step = anim_studio::update::state().step;
+    const bool update_first = update_step == anim_studio::update::Step::newer || update_step == anim_studio::update::Step::installed ||
+                              update_step == anim_studio::update::Step::downloading || update_step == anim_studio::update::Step::downloaded ||
+                              update_step == anim_studio::update::Step::install_failed || update_step == anim_studio::update::Step::download_failed;
+    if (update_first) updates_card(menu, model);
 
     // Nothing of yours plays: said, and put right in one press.
     if (settings.play_in_game && (now.playing.empty() || now.entries == 0) && !now.packs.empty()) {
@@ -352,6 +431,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
         }
         studio_card_end(c);
     }
+    if (!update_first) updates_card(menu, model);
     ImGui::EndChild();
 }
 }
