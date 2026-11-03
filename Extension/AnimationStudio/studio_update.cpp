@@ -41,12 +41,12 @@ Shared& shared() {
     return *value;
 }
 
-std::string running_version() {
+std::string running_version_of_build() {
     const std::string full(reskate_mod_version);
     return full.substr(0, full.find('+'));
 }
 // Only the Animator Studio's own builds ask its releases (a ReSkate release or another mod has its own).
-bool ours() noexcept { return reskate_modified_build && reskate_mod_id == "AnimatorStudio" && !running_version().empty(); }
+bool ours() noexcept { return reskate_modified_build && reskate_mod_id == "AnimatorStudio" && !running_version_of_build().empty(); }
 
 std::vector<int> numbers(std::string_view v) {
     while (!v.empty() && (v.front() == 'v' || v.front() == 'V')) v.remove_prefix(1);
@@ -185,7 +185,7 @@ void run_check() {
     set([](State& st) {
         st.step = Step::checking;
         st.error.clear();
-        st.running = running_version();
+        st.running = running_version_of_build();
     });
     https::Download result;
     const auto text = https::get_text(latest_url, 2 * 1024 * 1024, 20, agent, &result);
@@ -215,7 +215,7 @@ void run_check() {
                 if (name == "ReSkate.dll.sha256") sum_url = url;
             }
         }
-        const bool is_newer = !tag.empty() && newer(tag, running_version()) && !dll_url.empty();
+        const bool is_newer = !tag.empty() && newer(tag, running_version_of_build()) && !dll_url.empty();
         {
             std::lock_guard lock(s.mutex);
             s.dll_url = dll_url;
@@ -228,11 +228,11 @@ void run_check() {
             st.page = field("html_url");
             st.step = is_newer ? Step::newer : Step::current;
         }
-        logging::log(Level::info, Channel::runtime, "Animator Studio update check: running {}, newest release {}{}", running_version(), tag,
+        logging::log(Level::info, Channel::runtime, "Animator Studio update check: running {}, newest release {}{}", running_version_of_build(), tag,
                      is_newer ? " (newer)" : "");
         if (is_newer)
             overlay::notify(overlay::NoticeLevel::info, "Animator Studio " + tag + " is out",
-                            "You have " + running_version() + ". Open the studio (F8) to see what is new and update in one click.");
+                            "You have " + running_version_of_build() + ". Open the studio (F8) to see what is new and update in one click.");
     } catch (...) {
         set([](State& st) { st.step = Step::failed; st.error = "GitHub's answer could not be read"; });
     }
@@ -328,7 +328,7 @@ State state() {
         copy.received = s.watch.received.load();
         copy.total = s.watch.total.load();
     }
-    if (copy.running.empty()) copy.running = running_version();
+    if (copy.running.empty()) copy.running = running_version_of_build();
     return copy;
 }
 
@@ -435,6 +435,28 @@ void close_popup() noexcept {
     set([](State& st) { st.answered = true; });
     shared().popup_closed.store(true);
 }
+void show_popup() noexcept {
+    set([](State& st) { st.answered = false; });
+    shared().popup_closed.store(false);
+}
+std::string running_version() noexcept {
+    try {
+        return ours() ? running_version_of_build() : std::string{};
+    } catch (...) {
+        return {};
+    }
+}
+std::string reskate_base() noexcept {
+    try {
+        // "1.1.3+reskate.2.1.3": the ReSkate it is built on is after "reskate.".
+        const std::string full(reskate_mod_version);
+        const auto at = full.find("reskate.");
+        return at == std::string::npos ? std::string{} : full.substr(at + 8);
+    } catch (...) {
+        return {};
+    }
+}
+bool available() noexcept { return ours(); }
 bool checking() noexcept { return shared().checking.load(); }
 void set_checking(bool on) noexcept {
     shared().checking.store(on);

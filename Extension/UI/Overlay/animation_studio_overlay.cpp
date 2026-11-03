@@ -8196,12 +8196,78 @@ using studio::settings_rows::on_off;
 using studio::settings_rows::slider;
 using studio::settings_rows::button_row;
 using studio::settings_rows::info_setting;
-constexpr std::array<const char*, 5> settings_pages{"STUDIO", "SKATER", "TRICKS", "PACKS", "BAILS"};
-constexpr std::array<const char*, 5> settings_blurbs{"The room, the camera, playback and the studio's own tools.",
+constexpr std::array<const char*, 6> settings_pages{"STUDIO", "SKATER", "TRICKS", "PACKS", "BAILS", "UPDATES"};
+constexpr std::array<const char*, 6> settings_blurbs{"The room, the camera, playback and the studio's own tools.",
                                                      "How the skater is posed: limits, keeping clear, the ground, his stance.",
                                                      "How your tricks play in game: on or off, the crossfade, matching, your name.",
                                                      "Where packs are exported to and imported from, and bringing them in.",
-                                                     "How he falls: reaching out, his head, the board, what hurts, lying still."};
+                                                     "How he falls: reaching out, his head, the board, what hurts, lying still.",
+                                                     "The version you have, the newest one out, and updating in one click."};
+// SETTINGS > UPDATES: the version running, the newest on GitHub, and updating (studio_update.h: UPDATE NOW downloads,
+// checks and installs it; RESTART NOW starts the game again with it).
+std::vector<Setting> updates_settings() {
+    namespace up = studio::update;
+    std::vector<Setting> rows;
+    const auto st = up::state();
+    const auto running = up::running_version(), base = up::reskate_base();
+    rows.push_back(info_setting("You have", running.empty() ? std::string("NOT THE STUDIO'S OWN BUILD")
+                                                            : "ANIMATOR STUDIO " + running + (base.empty() ? "" : "  /  RESKATE " + base),
+                                "The Animator Studio running now, and the ReSkate it is built on."));
+    if (!up::available()) {
+        rows.push_back(info_setting("Updates", "NOT LOOKED FOR",
+                                    "This ReSkate.dll is not one of the Animator Studio's own releases, so it does not look for its updates."));
+        return rows;
+    }
+    const bool newer = st.step == up::Step::newer || st.step == up::Step::download_failed || st.step == up::Step::install_failed;
+    const bool installed = st.step == up::Step::installed || st.step == up::Step::restarting;
+    rows.push_back(info_setting("Newest on GitHub",
+                                st.step == up::Step::checking ? std::string("CHECKING...")
+                                : st.step == up::Step::failed ? std::string("COULD NOT CHECK")
+                                : st.latest.empty()           ? std::string("NOT CHECKED YET")
+                                : newer                       ? st.latest + "  -  NEW"
+                                                              : st.latest,
+                                "The newest release of the Animator Studio on GitHub (FourthStudio/ReSkate-Animator-Studio), not counting test "
+                                "builds." + std::string(st.step == up::Step::failed ? " It could not be asked: " + st.error + "." : "")));
+    {
+        Setting s = button_row("Update",
+                               "UPDATE NOW downloads the new ReSkate.dll, checks it against GitHub's SHA-256 and puts it in place of this one "
+                               "(kept as ReSkate.dll.previous). RESTART NOW then closes the game and starts it again with it.",
+                               [newer, installed, restart = st.can_restart] {
+                                   if (newer) up::download();
+                                   else if (installed && restart) up::restart();
+                                   else if (installed) up::show_popup();
+                                   else up::check_now();
+                               });
+        s.value = st.step == up::Step::checking                                                      ? std::string("CHECKING...")
+                  : newer                                                                            ? "UPDATE TO " + st.latest + " NOW"
+                  : st.step == up::Step::downloading || st.step == up::Step::downloaded              ? std::string("UPDATING...")
+                  : st.step == up::Step::restarting                                                  ? std::string("RESTARTING...")
+                  : installed                                                                        ? std::string(st.can_restart ? "RESTART NOW TO USE IT" : "INSTALLED  -  RESTART THE GAME")
+                  : st.step == up::Step::current                                                     ? std::string("UP TO DATE")
+                  : st.step == up::Step::failed                                                      ? std::string("COULD NOT CHECK  -  TRY AGAIN")
+                                                                                                     : std::string("CHECK NOW");
+        rows.push_back(std::move(s));
+    }
+    if (newer || installed) {
+        Setting s = button_row("What's new", "What the new version changes, as its release says, with UPDATE NOW or RESTART NOW under it.",
+                               [] { up::show_popup(); });
+        s.value = "SEE " + st.latest;
+        rows.push_back(std::move(s));
+    }
+    {
+        Setting s = button_row("Check now", "Asks GitHub for the newest release now.", [] { up::check_now(); });
+        s.value = st.step == up::Step::checking ? "CHECKING..." : "CHECK";
+        rows.push_back(std::move(s));
+    }
+    rows.push_back(on_off("Check at every start", up::checking(),
+                          "At each start the studio asks GitHub whether a newer Animator Studio is out, and a note says so in game. "
+                          "Nothing is downloaded or changed until you choose UPDATE NOW.",
+                          [](bool on) { up::set_checking(on); }));
+    rows.push_back(info_setting("Going back", "RESKATE.DLL.PREVIOUS",
+                                "Each update keeps the version it replaced beside ReSkate.dll, as ReSkate.dll.previous. To go back: close the "
+                                "game, delete ReSkate.dll and rename ReSkate.dll.previous to ReSkate.dll."));
+    return rows;
+}
 // SETTINGS > BAILS: Real Bails (Extension/Skater/real_bails.h), the muscles in the ragdoll, and how they are tuned.
 std::vector<Setting> bails_settings() {
     namespace rb = dingosdk::real_bails;
@@ -8322,25 +8388,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               [](bool on) { ui().controls_open = on; }));
         rows.push_back(studio::settings_rows::catch_marker(now));
         rows.push_back(studio::settings_rows::how_it_works());
-        {
-            namespace up = studio::update;
-            rows.push_back(on_off("Check for updates", up::checking(),
-                                  "At each start the studio asks GitHub whether a newer Animator Studio is out. When one is, a note "
-                                  "says so in game and the studio shows what changed: UPDATE NOW downloads it, checks it and puts "
-                                  "it in place, and RESTART NOW starts the game again with it. Nothing changes until you choose.",
-                                  [](bool on) { up::set_checking(on); }));
-            const auto st = up::state();
-            Setting s = button_row("Updates", "Asks GitHub now. A newer version brings up the update card.", [] { up::check_now(); });
-            s.value = st.step == up::Step::checking ? std::string("CHECKING...")
-                      : st.step == up::Step::current ? "UP TO DATE (" + st.running + ")  -  CHECK"
-                      : st.step == up::Step::newer || st.step == up::Step::download_failed || st.step == up::Step::install_failed
-                          ? st.latest + " IS OUT  -  CHECK AGAIN"
-                      : st.step == up::Step::downloading || st.step == up::Step::downloaded ? std::string("UPDATING...")
-                      : st.step == up::Step::installed || st.step == up::Step::restarting ? st.latest + " INSTALLED  -  RESTART TO USE"
-                      : st.step == up::Step::failed ? "COULD NOT CHECK  -  TRY AGAIN"
-                                                    : "YOU HAVE " + st.running + "  -  CHECK NOW";
-            rows.push_back(std::move(s));
-        }
+        // (Updates have a page of their own: SETTINGS > UPDATES.)
         {
             const auto market = studio::market::view();
             const int look = std::clamp(market.look, 0, static_cast<int>(front_looks.size()));
@@ -8475,6 +8523,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 4: rows = bails_settings(); break;
+    case 5: rows = updates_settings(); break;
     default: {
         rows.push_back(studio::settings_rows::pack_folder(now, true));
         rows.push_back(studio::settings_rows::pack_folder(now, false));
@@ -8555,6 +8604,16 @@ void tile_picture(ImDrawList* d, int which, ImVec2 a, ImVec2 b, bool lit) {
         const ImVec2 dir(std::cos(angle), std::sin(angle)), up(-dir.y, dir.x);
         const auto p = [&](float along, float across) { return at(-58 + dir.x * along + up.x * across, -52 + dir.y * along + up.y * across); };
         d->AddQuadFilled(p(-30, -6), p(30, -6), p(30, 6), p(-30, 6), accent);
+        break;
+    }
+    case 5: { // a new version coming down: an arrow into a tray, a ring going round it
+        d->PathArcTo(at(0, -8), 72 * s, -2.4f, 2.0f, 40);
+        d->PathStroke(IM_COL32(255, 255, 255, 110), 0, 4 * s);
+        d->AddLine(at(0, -62), at(0, 14), line, w * 1.4f);
+        d->AddTriangleFilled(at(-30, 6), at(30, 6), at(0, 40), accent);
+        d->AddLine(at(-52, 40), at(-52, 60), line, w);
+        d->AddLine(at(-52, 60), at(52, 60), line, w);
+        d->AddLine(at(52, 60), at(52, 40), line, w);
         break;
     }
     default: // packs, stacked

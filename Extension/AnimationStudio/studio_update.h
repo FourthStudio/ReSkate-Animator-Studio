@@ -39,6 +39,12 @@ void open_folder() noexcept; // where the download went, in Explorer
 // The studio's popup is up: a newer version not answered yet, or a download going, done or failed and not put away.
 bool popup_wanted() noexcept;
 void close_popup() noexcept;
+void show_popup() noexcept;  // SETTINGS > UPDATES > What's new: the card again (when there is a newer one or one installed)
+// The version as players read it ("1.1.3") and the ReSkate it is built on ("2.1.3"); empty in a build that is not the
+// studio's own (no updates are looked for then).
+std::string running_version() noexcept;
+std::string reskate_base() noexcept;
+bool available() noexcept;   // this build looks for its own updates (it is the Animator Studio's own)
 // SETTINGS > STUDIO > Check for updates, saved with the profile (on unless switched off).
 bool checking() noexcept;
 void set_checking(bool on) noexcept;
