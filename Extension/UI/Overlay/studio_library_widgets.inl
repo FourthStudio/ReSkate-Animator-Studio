@@ -39,16 +39,16 @@ void library_member_row(ImDrawList* d, const Fonts& f, const studio::View& v, co
         // Offscreen navigation still needs its targets for focus scrolling, without thousands of hidden text meshes.
         register_controls(false); ImGui::PopID(); return;
     }
-    flat_rect(d, a, b, have && !content ? IM_COL32(20, 40, 52, 240) : row_fill_alt, seed_of(a), k * 0.45f);
+    lib_row_box(d, a, b, have && !content ? lib_row_in : lib_row, k);
     const bool lit = register_controls(true);
     if (lit && nav().keys) chosen_outline(d, a, {action_x - 10 * k, b.y}, k);
-    text(d, f.bold, 17 * k, {a.x + 16 * k, a.y + 10 * k}, white, elide(f.bold, 17 * k, library_saved_name(index, p.name), text_w));
+    text(d, body(f, 17 * k), 17 * k, {a.x + 16 * k, a.y + 10 * k}, lib_ink, elide(body(f, 17 * k), 17 * k, library_saved_name(index, p.name), text_w));
     const auto properties = index.label(p.trick) + (p.trick.starts_with("native:") ? "" : " / " + (p.pop.empty() ? std::string("Any pop") : p.pop + " pop")) + " / " + library_stance(v, p) + (p.modifier_hint ? " / modifier hint" : "");
-    text(d, f.bold, 12 * k, {a.x + 16 * k, a.y + 35 * k}, soft, elide(f.bold, 12 * k, properties, text_w));
+    text(d, body(f, 12 * k), 12 * k, {a.x + 16 * k, a.y + 35 * k}, lib_ink_soft, elide(body(f, 12 * k), 12 * k, properties, text_w));
     const auto origin = !p.available ? "Clip missing / restore this animation to preview it" :
         (have && !content ? "In this playlist / " : "") + library_origin(index, p.name);
-    text(d, f.bold, 11 * k, {a.x + 16 * k, a.y + 57 * k}, !p.available ? IM_COL32(255, 159, 151, 255) : have && !content ? blue_light : faint,
-        elide(f.bold, 11 * k, origin, text_w));
+    text(d, body(f, 11 * k), 11 * k, {a.x + 16 * k, a.y + 57 * k}, !p.available ? lib_red : have && !content ? lib_blue : lib_ink_faint,
+        elide(body(f, 11 * k), 11 * k, origin, text_w));
     ImGui::PopID();
 }
 void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
@@ -59,17 +59,18 @@ void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     const float setup_w = 142 * k, half = (b.x - a.x - setup_w - resume_w - 24 * k) * 0.5f;
     // NOW PLAYING: what plays by default and what plays while the button is held, on a strip of grip tape, the default one
     // taped down with its name in the shop's capitals.
-    library_panel_box(d, f, a, b);
+    library_sheet(d, f, a, b, PaperKind::concrete);
+    const OnPaper on_paper;
     masking_tape(d, f, {a.x + 26 * k, a.y + 2 * k}, 52 * k, 15 * k, -7, 401);
-    const ImU32 paused = IM_COL32(244, 193, 99, 255);
-    lib_caps(d, f, {a.x + 14 * k, a.y + 10 * k}, 10 * k, v.play_in_game ? blue_light : paused, v.play_in_game ? "PLAYS BY DEFAULT" : "PAUSED / DEFAULT");
-    text(d, anton(f, 19 * k), 19 * k, {a.x + 14 * k, a.y + 25 * k}, white,
+    const ImU32 paused = lib_warn;
+    lib_caps(d, f, {a.x + 14 * k, a.y + 10 * k}, 10 * k, v.play_in_game ? lib_blue : paused, v.play_in_game ? "PLAYS BY DEFAULT" : "PAUSED / DEFAULT");
+    text(d, anton(f, 19 * k), 19 * k, {a.x + 14 * k, a.y + 25 * k}, lib_ink,
          elide(anton(f, 19 * k), 19 * k, upper(v.playlist_playing.empty() ? "the game's own animations" : v.playlist_playing), half - 24 * k));
-    d->AddLine({a.x + half, a.y + 10 * k}, {a.x + half, b.y - 10 * k}, IM_COL32(255, 255, 255, 40), 1.5f * k);
-    lib_caps(d, f, {a.x + half + 14 * k, a.y + 10 * k}, 10 * k, enabled && v.modifier_ready ? blue_light : faint,
+    d->AddLine({a.x + half, a.y + 10 * k}, {a.x + half, b.y - 10 * k}, IM_COL32(0, 0, 0, 70), 1.5f * k);
+    lib_caps(d, f, {a.x + half + 14 * k, a.y + 10 * k}, 10 * k, enabled && v.modifier_ready ? lib_blue : lib_ink_faint,
              enabled ? !v.play_in_game ? "ON THE BUTTON / PAUSED" : !v.modifier_ready ? "ON THE BUTTON / NOT READY"
                  : std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(bind.button)] : "ON THE BUTTON / OFF");
-    text(d, anton(f, 19 * k), 19 * k, {a.x + half + 14 * k, a.y + 25 * k}, bind.playlist.empty() ? faint : white,
+    text(d, anton(f, 19 * k), 19 * k, {a.x + half + 14 * k, a.y + 25 * k}, bind.playlist.empty() ? lib_ink_faint : lib_ink,
          elide(anton(f, 19 * k), 19 * k, upper(bind.playlist.empty() ? "nothing set" : bind.playlist), half - 24 * k));
     if (!v.play_in_game && lib_button(d, f, "##resumeplayback", {b.x - setup_w - resume_w, a.y + 9 * k}, {resume_w - 8 * k, 36 * k}, "RESUME", Look::blue))
         studio::set_play_in_game(true);
@@ -82,16 +83,17 @@ void library_step(ImDrawList* d, const Fonts& f, ImVec2 at, int number, std::str
     const float k = f.k;
     const auto n = std::to_string(number);
     const ImVec2 c(at.x + 14 * k, at.y + 12 * k);
-    marker_words(d, f, ImVec2(c.x - 7 * k, c.y - 17 * k), n, 28 * k, -6, blue_light);
-    marker_circle(d, c, 17 * k, 15 * k, 3 * k, blue_light, 500 + static_cast<std::uint32_t>(number));
-    lib_caps(d, f, ImVec2(at.x + 42 * k, at.y + 4 * k), 15 * k, white, words, 1.8f);
+    marker_words(d, f, ImVec2(c.x - 7 * k, c.y - 17 * k), n, 28 * k, -6, lib_blue);
+    marker_circle(d, c, 17 * k, 15 * k, 3 * k, lib_blue, 500 + static_cast<std::uint32_t>(number));
+    lib_caps(d, f, ImVec2(at.x + 42 * k, at.y + 4 * k), 15 * k, lib_ink, words, 1.8f);
 }
 void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& route = ui().library; const float k = f.k;
     const auto bind = studio::modifier_binding();
     const float x = a.x + 20 * k, w = b.x - a.x - 40 * k;
-    library_panel_box(d, f, a, b);
-    text(d, f.heading, 29 * k, {x, a.y + 18 * k}, white, route.choosing_modifier_playlist ? "CHOOSE A BUTTON PLAYLIST" : "ONE INPUT. TWO VERSIONS.");
+    library_sheet(d, f, a, b);
+    const OnPaper on_paper;
+    text(d, anton(f, 29 * k), 29 * k, {x, a.y + 18 * k}, lib_ink, route.choosing_modifier_playlist ? "CHOOSE A BUTTON PLAYLIST" : "ONE INPUT. TWO VERSIONS.");
     if (lib_button(d, f, "##closemodifierhelp", {b.x - 126 * k, a.y + 15 * k}, {106 * k, 36 * k}, route.choosing_modifier_playlist ? "< BACK" : "DONE", Look::paper)) {
         if (route.choosing_modifier_playlist) route.choosing_modifier_playlist = false;
         else route.modifier_setup = false;
@@ -115,15 +117,15 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     }
     begin_region(204, la, lb, route.settings_scroll, k);
     float y = la.y - route.settings_scroll;
-    y += paragraph(d, f.bold, 16 * k, {x, y}, w, soft,
+    y += paragraph(d, body(f, 16 * k), 16 * k, {x, y}, w, lib_ink_soft,
         "Keep your regular kickflip. Put a dolphin flip version of the same kickflip input in another playlist, then hold a button to use it. Grinds, manuals and grabs work the same way.") + 22 * k;
     const float half = (w - 16 * k) * 0.5f;
-    flat_rect(d, {x, y}, {x + half, y + 82 * k}, row_fill_alt, 38, k);
-    flat_rect(d, {x + half + 16 * k, y}, {x + w - 8 * k, y + 82 * k}, IM_COL32(18, 49, 76, 250), 39, k);
-    text(d, f.bold, 12 * k, {x + 16 * k, y + 14 * k}, soft, "KICKFLIP INPUT");
-    text(d, f.heading, 22 * k, {x + 16 * k, y + 38 * k}, white, "YOUR REGULAR KICKFLIP");
-    text(d, f.bold, 12 * k, {x + half + 32 * k, y + 14 * k}, blue_light, "BUTTON + KICKFLIP INPUT");
-    text(d, f.heading, 22 * k, {x + half + 32 * k, y + 38 * k}, white, "YOUR DOLPHIN FLIP");
+    lib_row_box(d, {x, y}, {x + half, y + 82 * k}, lib_row, k);
+    lib_row_box(d, {x + half + 16 * k, y}, {x + w - 8 * k, y + 82 * k}, lib_row_in, k);
+    text(d, body(f, 12 * k), 12 * k, {x + 16 * k, y + 14 * k}, lib_ink_soft, "KICKFLIP INPUT");
+    text(d, anton(f, 22 * k), 22 * k, {x + 16 * k, y + 38 * k}, lib_ink, "YOUR REGULAR KICKFLIP");
+    text(d, body(f, 12 * k), 12 * k, {x + half + 32 * k, y + 14 * k}, lib_blue, "BUTTON + KICKFLIP INPUT");
+    text(d, anton(f, 22 * k), 22 * k, {x + half + 32 * k, y + 38 * k}, lib_ink, "YOUR DOLPHIN FLIP");
     y += 106 * k;
     library_step(d, f, {x, y}, 1, "CHOOSE THE PLAYLIST FOR THE BUTTON"); y += 40 * k;
     if (lib_button(d, f, "##selectmodifierplaylist", {x, y}, {w - 8 * k, 42 * k}, bind.playlist.empty() ? "CHOOSE A PLAYLIST..." : bind.playlist + " / CHANGE...", Look::dark))
@@ -132,10 +134,10 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     if (!bind.playlist.empty() && lib_button(d, f, "##editmodifiercontent", {x, y}, {236 * k, 32 * k}, "EDIT THIS PLAYLIST", Look::ghost)) {
         studio::open_playlist(bind.playlist); route.select(bind.playlist); route.page = 0; route.modifier_setup = false;
     }
-    if (bind.playlist.empty()) y += paragraph(d, f.bold, 13 * k, {x, y}, w, faint, "Create a playlist in Library > Playlists first, then choose it here.");
+    if (bind.playlist.empty()) y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w, lib_ink_faint, "Create a playlist in Library > Playlists first, then choose it here.");
     y += 52 * k;
     if (studio::modifier_mask(bind) && !v.modifier_ready)
-        y += paragraph(d, f.bold, 13 * k, {x, y}, w - 8 * k, IM_COL32(244, 193, 99, 255),
+        y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w - 8 * k, lib_warn,
             "No alternate animations are ready. Add playable animations to this playlist and allow it to finish loading. While inactive, the button keeps its game action.") + 20 * k;
     library_step(d, f, {x, y}, 2, "CHOOSE A BUTTON TO HOLD"); y += 40 * k;
     const int columns = 3; const float cell = (w - 24 * k) / static_cast<float>(columns);
@@ -154,16 +156,16 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
         auto live = studio::modifier_binding(); live.block_native = !live.block_native; studio::set_modifier_binding(live);
     }
     y += 50 * k;
-    y += paragraph(d, f.bold, 13 * k, {x, y}, w - 8 * k, soft,
+    y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w - 8 * k, lib_ink_soft,
         "With RB / R1 this prevents the native darkcatch. Menus keep their normal controls. Hold before the move starts; releasing during the move keeps the animation you chose. A missing compatible version falls back to regular playback.") + 18 * k;
     if (bind.playlist == v.playlist_playing && !bind.playlist.empty())
-        y += paragraph(d, f.bold, 14 * k, {x, y}, w - 8 * k, IM_COL32(244, 193, 99, 255),
+        y += paragraph(d, body(f, 14 * k), 14 * k, {x, y}, w - 8 * k, lib_warn,
             "Both inputs currently use the same playlist. Choose a different one here to get different animations.") + 16 * k;
     if (lib_button(d, f, "##collectmodifierhints", {x, y}, {std::min(w - 8 * k, 460 * k), 38 * k}, "MAKE A PLAYLIST FROM MODIFIER TAGS", Look::paper)) {
         std::string m; studio::playlist_from_modifier_tags(m); say(m);
     }
     y += 50 * k;
-    y += paragraph(d, f.bold, 12 * k, {x, y}, w - 8 * k, faint,
+    y += paragraph(d, body(f, 12 * k), 12 * k, {x, y}, w - 8 * k, lib_ink_faint,
         "Tags are optional recommendations from animation makers. You can put any animation in either playlist. These settings are saved automatically. L3 / R3 may also be used by your Studio opening shortcut.") + 14 * k;
     end_region(d, la, lb, y + route.settings_scroll - la.y, route.settings_scroll, k);
 }

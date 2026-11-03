@@ -5260,13 +5260,17 @@ void rotate_since(ImDrawList* d, int start, float angle, ImVec2 centre) {
 }
 
 // ---- torn paper, drawn ----
-enum class PaperKind { blue, white, grip };
-MarketArt art_of(PaperKind kind) { return kind == PaperKind::blue ? MarketArt::paper_blue : kind == PaperKind::white ? MarketArt::paper_white : MarketArt::grip; }
+enum class PaperKind { blue, white, grip, concrete };
+MarketArt art_of(PaperKind kind) {
+    return kind == PaperKind::blue ? MarketArt::paper_blue : kind == PaperKind::white ? MarketArt::paper_white : kind == PaperKind::concrete ? MarketArt::concrete : MarketArt::grip;
+}
 ImU32 rim_colour(PaperKind kind) {
-    return kind == PaperKind::blue ? IM_COL32(231, 238, 251, 255) : kind == PaperKind::white ? IM_COL32(251, 250, 246, 255) : IM_COL32(142, 144, 151, 255);
+    return kind == PaperKind::blue ? IM_COL32(231, 238, 251, 255) : kind == PaperKind::white ? IM_COL32(251, 250, 246, 255)
+         : kind == PaperKind::concrete ? IM_COL32(196, 198, 202, 255) : IM_COL32(142, 144, 151, 255);
 }
 ImU32 plain_colour(PaperKind kind) { // the paper's colour, while its texture is still on its way
-    return kind == PaperKind::blue ? IM_COL32(4, 118, 236, 255) : kind == PaperKind::white ? IM_COL32(230, 227, 218, 255) : IM_COL32(22, 23, 26, 255);
+    return kind == PaperKind::blue ? IM_COL32(4, 118, 236, 255) : kind == PaperKind::white ? IM_COL32(230, 227, 218, 255)
+         : kind == PaperKind::concrete ? IM_COL32(122, 123, 127, 255) : IM_COL32(22, 23, 26, 255);
 }
 // Triangles gathered and handed to the draw list in one go.
 struct Mesh {
