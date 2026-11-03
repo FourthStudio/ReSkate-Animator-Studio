@@ -44,9 +44,65 @@ bool library_search(const LibraryIndex& index, const studio::Preset& p, const st
         library_saved_name(index, p.name) + " " + p.name + " " + index.label(p.trick) + " " + p.pop + " " + p.stance +
         (p.switch_stance.value_or(false) ? " switch" : " normal") + " " + p.made_by + " " + library_origin(index, p.name)), terms);
 }
+// ---- the LIBRARY in the MARKET's own look: sheets of grip tape torn at their edges, playlists on cream paper (the one
+// open on the studio's blue, taped down), notes in blue marker, and the shop's flat buttons ----
+// A button as the shop's: blue, outlined, cream paper or black (a red one stays the studio's own, for deleting).
+bool lib_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 a, ImVec2 size, const std::string& label, Look look = Look::dark,
+                bool enabled = true) {
+    if (look == Look::danger) return action(d, f, id, a, size, label, look, enabled);
+    const ShopLook shop = look == Look::blue ? ShopLook::blue : look == Look::paper ? ShopLook::paper : look == Look::dark ? ShopLook::black : ShopLook::line;
+    return shop_button(d, f, id, a, size, label, shop, enabled);
+}
+// A panel: a sheet of grip tape torn at its edges (darkened a little, so words read on it), as the MARKET's are cut.
 void library_panel_box(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
-    flat_rect(d, a, b, IM_COL32(15, 17, 21, 235), seed_of(a), f.k);
-    d->AddLine(a, ImVec2(b.x, a.y), IM_COL32(255, 255, 255, 38), f.k);
+    const float k = f.k, w = b.x - a.x, h = b.y - a.y;
+    if (w < 8 * k || h < 8 * k) return;
+    const std::uint32_t seed = seed_of(a);
+    const auto shape = torn::piece(w, h, seed, 2.2f * k, 6 * k, 9 * k);
+    draw_paper(d, f, shape, a, 0, ImVec2(0, 0), PaperKind::grip, seed, 0.38f, ImVec2(5, 7), 2.2f, IM_COL32(176, 178, 184, 255));
+}
+// A playlist's card: cream paper, or the studio's blue for the one open (taped down at its corner).
+void library_card(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b, bool chosen, bool lit, std::uint32_t seed) {
+    const float k = f.k;
+    const auto shape = torn::piece(b.x - a.x, b.y - a.y, seed, 1.6f * k, 5 * k, 7 * k);
+    draw_paper(d, f, shape, a, 0, ImVec2(0, 0), chosen ? PaperKind::blue : PaperKind::white, seed, 0.4f, ImVec2(4, 6), 2.0f,
+               chosen || lit ? IM_COL32_WHITE : IM_COL32(232, 230, 224, 255));
+    if (chosen) masking_tape(d, f, ImVec2(a.x + 34 * k, a.y + 1 * k), 58 * k, 17 * k, -9, seed + 5);
+}
+// Words in the shop's spaced capitals.
+void lib_caps(ImDrawList* d, const Fonts& f, ImVec2 at, float size, ImU32 colour, std::string_view words, float spacing = 1.6f) {
+    text_spaced(d, mont(f, size), size, at, colour, words, spacing * f.k);
+}
+
+// One click: a playlist with every pack and every trick of his own in it, playing in game by default.
+void library_use_everything(const studio::View& v) {
+    std::string name = "Everything";
+    const auto taken = [&](const std::string& n) { return std::any_of(v.playlists.begin(), v.playlists.end(), [&](const auto& l) { return l.name == n; }); };
+    for (int n = 2; taken(name); ++n) name = "Everything " + std::to_string(n);
+    std::string m;
+    if (!studio::new_playlist(name, m)) {
+        say(m);
+        return;
+    }
+    std::size_t packs = 0, own = 0;
+    for (const auto& p : v.packs) {
+        std::string pm;
+        if (studio::edit_playlist_pack(name, p.name, true, pm)) ++packs;
+    }
+    // His own saves that are in no pack (a pack's are in already, with its pack).
+    const LibraryIndex index(v);
+    for (const auto& p : v.presets) {
+        if (p.foreign || p.locked || !p.available || index.origins.contains(p.name)) continue;
+        std::string pm;
+        if (studio::edit_playlist_member(name, {"", p.name}, true, pm)) ++own;
+    }
+    studio::play_playlist(name, m);
+    studio::set_play_in_game(true);
+    auto& route = ui().library;
+    route.select(name);
+    route.page = 0;
+    say(std::format("\"{}\" made: {} {} and {} of your own {}, playing in game now.", name, packs, packs == 1 ? "pack" : "packs", own,
+                    own == 1 ? "trick" : "tricks"));
 }
 #include "studio_library_widgets.inl"
 #include "studio_library_browser.inl"

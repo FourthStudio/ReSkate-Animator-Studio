@@ -16,19 +16,19 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
         browse.source = source; browse.pack.clear(); browse.expanded.clear(); browse.scroll = 0;
     }
     field(f, "##librarysearch", browse.query, {x, a.y + 70 * k}, w - 84 * k, "Search animations, tricks, packs or creators...");
-    if (action(d, f, "##clearlibrarysearch", {b.x - 90 * k, a.y + 70 * k}, {74 * k, 34 * k}, "CLEAR", Look::ghost, browse.query[0] != 0)) browse.query.fill(0);
+    if (lib_button(d, f, "##clearlibrarysearch", {b.x - 90 * k, a.y + 70 * k}, {74 * k, 34 * k}, "CLEAR", Look::ghost, browse.query[0] != 0)) browse.query.fill(0);
     const auto terms = studio::native_search_terms(browse.query.data());
     const bool query_changed = browse.seen_query != browse.query.data();
     if (query_changed) { browse.seen_query = browse.query.data(); browse.scroll = 0; browse.expanded.clear(); }
     const auto* pack = pack_named(v, browse.pack);
     float y = a.y + 120 * k;
     if (browse.source == 0 && pack) {
-        if (action(d, f, "##librarypackback", {x, y}, {116 * k, 32 * k}, "< ALL PACKS", Look::ghost)) {
+        if (lib_button(d, f, "##librarypackback", {x, y}, {116 * k, 32 * k}, "< ALL PACKS", Look::ghost)) {
             browse.pack.clear(); browse.scroll = browse.pack_list_scroll;
         }
         text(d, f.heading, 23 * k, {x + 132 * k, y + 3 * k}, white, elide(f.heading, 23 * k, pack->name, w - 500 * k));
-        if (action(d, f, "##librarypacksettings", {b.x - 276 * k, y}, {110 * k, 32 * k}, "MANAGE PACK", Look::ghost)) open_pack_page(pack->name);
-        if (action(d, f, "##librarypackall", {b.x - 158 * k, y}, {142 * k, 32 * k}, target.empty() ? "ADD TO PLAYLIST..." : "ADD PACK", Look::blue)) {
+        if (lib_button(d, f, "##librarypacksettings", {b.x - 276 * k, y}, {110 * k, 32 * k}, "MANAGE PACK", Look::ghost)) open_pack_page(pack->name);
+        if (lib_button(d, f, "##librarypackall", {b.x - 158 * k, y}, {142 * k, 32 * k}, target.empty() ? "ADD TO PLAYLIST..." : "ADD PACK", Look::blue)) {
             if (target.empty()) library_choose_playlists({pack->name, ""}, pack->name);
             else { std::string m; studio::edit_playlist_pack(target, pack->name, true, m); say(m); }
         }
@@ -38,8 +38,8 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
         text(d, f.bold, 12 * k, {x, y + 8 * k}, faint, elide(f.bold, 12 * k,
             target.empty() ? "Open a group to preview, edit or add a variation to a playlist." : "Use + ADD or REMOVE on any variation. Changes are saved immediately.", w - 272 * k));
         const float bw = 124 * k;
-        if (action(d, f, "##expandall", {b.x - 16 * k - 2 * bw - 8 * k, y}, {bw, 28 * k}, "EXPAND ALL", Look::ghost)) browse.expand_all = true;
-        if (action(d, f, "##collapseall", {b.x - 16 * k - bw, y}, {bw, 28 * k}, "COLLAPSE ALL", Look::ghost)) browse.expanded.clear();
+        if (lib_button(d, f, "##expandall", {b.x - 16 * k - 2 * bw - 8 * k, y}, {bw, 28 * k}, "EXPAND ALL", Look::ghost)) browse.expand_all = true;
+        if (lib_button(d, f, "##collapseall", {b.x - 16 * k - bw, y}, {bw, 28 * k}, "COLLAPSE ALL", Look::ghost)) browse.expanded.clear();
         y += 42 * k;
     }
     const ImVec2 la(x, y), lb(b.x - 16 * k, b.y - 14 * k);
@@ -58,7 +58,7 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
             y += paragraph(d, f.heading, 25 * k, {x + 12 * k, y + 14 * k}, w - 24 * k, white, terms.empty() ? "YOUR PACK COLLECTION STARTS HERE" : "NO PACKS MATCH THIS SEARCH") + 30 * k;
             y += paragraph(d, f.bold, 15 * k, {x + 12 * k, y}, w - 24 * k, soft,
                 terms.empty() ? "Get animation packs from the Market, or use YOUR ANIMATIONS to find your own saves." : "Try a different name, or search ALL ANIMATIONS for individual tricks.") + 22 * k;
-            if (terms.empty() && action(d, f, "##librarymarket", {x + 12 * k, y}, {210 * k, 38 * k}, "BROWSE THE MARKET", Look::blue)) open_menu(2);
+            if (terms.empty() && lib_button(d, f, "##librarymarket", {x + 12 * k, y}, {210 * k, 38 * k}, "BROWSE THE MARKET", Look::blue)) open_menu(2);
             y += 58 * k;
         }
         for (const auto* p : shown) {
@@ -71,7 +71,7 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
             const float tx = ca.x + 151 * k, tw = cb.x - tx - 16 * k;
             const bool title_pressed = hit("##browsetitle", {tx, ca.y + 8 * k}, {cb.x - 126 * k, ca.y + 44 * k});
             text(d, f.heading, 24 * k, {tx, ca.y + 10 * k}, white, elide(f.heading, 24 * k, p->name, tw - 120 * k));
-            if (action(d, f, "##packfavorite", {cb.x - 116 * k, ca.y + 9 * k}, {102 * k, 28 * k}, p->favorite ? "FAVORITE" : "+ FAVORITE", p->favorite ? Look::blue : Look::ghost))
+            if (lib_button(d, f, "##packfavorite", {cb.x - 116 * k, ca.y + 9 * k}, {102 * k, 28 * k}, p->favorite ? "FAVORITE" : "+ FAVORITE", p->favorite ? Look::blue : Look::ghost))
                 studio::set_pack_favorite(p->name, !p->favorite);
             std::size_t have = 0;
             if (!target.empty()) for (const auto& member : p->members) have += index.member(member).included();
@@ -79,16 +79,16 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
                 (target.empty() ? "" : " / " + std::to_string(have) + " in this playlist");
             text(d, f.bold, 13 * k, {tx, ca.y + 45 * k}, soft, elide(f.bold, 13 * k, detail, tw));
             const float unit = std::min(240 * k, (tw - 16 * k) / 3);
-            if (action(d, f, "##browsepack", {tx, ca.y + 76 * k}, {unit, 36 * k}, "OPEN PACK", Look::paper) || cover_pressed || title_pressed)
+            if (lib_button(d, f, "##browsepack", {tx, ca.y + 76 * k}, {unit, 36 * k}, "OPEN PACK", Look::paper) || cover_pressed || title_pressed)
                 library_open_pack(browse, p->name);
             const auto whole = std::find_if(v.playlist.begin(), v.playlist.end(), [&](const auto& e) { return e.pack == p->name && e.animation.empty(); });
             const bool full = whole != v.playlist.end() && whole->omitted.empty();
             const std::string add = target.empty() ? "ADD TO PLAYLIST..." : full ? "REMOVE PACK" : have ? "ADD REMAINING" : "ADD PACK";
-            if (action(d, f, "##addwholepack", {tx + unit + 8 * k, ca.y + 76 * k}, {unit, 36 * k}, add, Look::ghost)) {
+            if (lib_button(d, f, "##addwholepack", {tx + unit + 8 * k, ca.y + 76 * k}, {unit, 36 * k}, add, Look::ghost)) {
                 if (target.empty()) library_choose_playlists({p->name, ""}, p->name);
                 else { std::string m; studio::edit_playlist_pack(target, p->name, !full, m); say(m); }
             }
-            if (action(d, f, "##managepack", {tx + 2 * (unit + 8 * k), ca.y + 76 * k}, {unit, 36 * k}, "MANAGE PACK", Look::ghost)) open_pack_page(p->name);
+            if (lib_button(d, f, "##managepack", {tx + 2 * (unit + 8 * k), ca.y + 76 * k}, {unit, 36 * k}, "MANAGE PACK", Look::ghost)) open_pack_page(p->name);
             text(d, f.bold, 11 * k, {tx, ca.y + 120 * k}, faint, "Open the pack to choose just one animation. Add pack follows its enabled variations.");
             ImGui::PopID(); y += 154 * k;
         }
@@ -107,7 +107,7 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
         for (const auto& [name, members] : groups) {
             ImGui::PushID(name.c_str());
             const bool expanded = browse.expanded.contains(name);
-            if (action(d, f, "##group", {x, y}, {w - 6 * k, 42 * k}, name + " / " + std::to_string(members.size()) +
+            if (lib_button(d, f, "##group", {x, y}, {w - 6 * k, 42 * k}, name + " / " + std::to_string(members.size()) +
                        (members.size() == 1 ? " variation / " : " variations / ") + (expanded ? "HIDE" : "SHOW"), Look::dark)) {
                 if (!browse.expanded.erase(name)) browse.expanded.insert(name);
             }

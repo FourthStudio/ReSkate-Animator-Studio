@@ -5223,7 +5223,6 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     const float h = pack_tricks(d, f, v, pack, ImVec2(x, la.y - u.pack_tricks_scroll), w - 14 * k);
     end_region(d, la, lb, h, u.pack_tricks_scroll, k);
 }
-#include "studio_library_workspace.inl"
 // ---- MARKET: the shop ----------------------------------------------------------------------------
 // The approved mockup (contrib/animator-studio/market_mockup) built into the studio: a landing page (a welcome, the top of
 // the month in a spotlight and a ranked row, the crew on worn paper, new releases, a call to share, the all-time
@@ -8174,6 +8173,8 @@ void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     }
 }
 
+// The LIBRARY's code (after the MARKET's drawings: it is drawn in the same look).
+#include "studio_library_workspace.inl"
 // The Library workspace separates destination editing, collection browsing and explicit playback roles.
 void packs_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
