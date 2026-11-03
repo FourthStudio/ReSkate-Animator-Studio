@@ -56,43 +56,126 @@ void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     const auto bind = studio::modifier_binding();
     const bool enabled = studio::modifier_mask(bind) != 0;
     const float resume_w = v.play_in_game ? 0.f : 102 * k;
-    const float setup_w = 142 * k, half = (b.x - a.x - setup_w - resume_w - 24 * k) * 0.5f;
+    const float setup_w = 142 * k, guide_w = 142 * k, half = (b.x - a.x - setup_w - guide_w - resume_w - 24 * k) * 0.5f;
     // NOW PLAYING: what plays by default and what plays while the button is held, on a strip of grip tape, the default one
     // taped down with its name in the shop's capitals.
-    library_sheet(d, f, a, b, PaperKind::concrete);
-    const OnPaper on_paper;
-    masking_tape(d, f, {a.x + 26 * k, a.y + 2 * k}, 52 * k, 15 * k, -7, 401);
+    library_sheet(d, f, a, b);
+    masking_tape(d, f, {a.x + 2 * k, a.y + 3 * k}, 38 * k, 13 * k, -38, 401); // over the corner, clear of the words
     const ImU32 paused = lib_warn;
-    lib_caps(d, f, {a.x + 14 * k, a.y + 10 * k}, 10 * k, v.play_in_game ? lib_blue : paused, v.play_in_game ? "PLAYS BY DEFAULT" : "PAUSED / DEFAULT");
-    text(d, anton(f, 19 * k), 19 * k, {a.x + 14 * k, a.y + 25 * k}, lib_ink,
-         elide(anton(f, 19 * k), 19 * k, upper(v.playlist_playing.empty() ? "the game's own animations" : v.playlist_playing), half - 24 * k));
-    d->AddLine({a.x + half, a.y + 10 * k}, {a.x + half, b.y - 10 * k}, IM_COL32(0, 0, 0, 70), 1.5f * k);
-    lib_caps(d, f, {a.x + half + 14 * k, a.y + 10 * k}, 10 * k, enabled && v.modifier_ready ? lib_blue : lib_ink_faint,
+    lib_caps(d, f, {a.x + 22 * k, a.y + 11 * k}, 10 * k, v.play_in_game ? lib_blue : paused, v.play_in_game ? "PLAYS BY DEFAULT" : "PAUSED / DEFAULT");
+    text(d, anton(f, 19 * k), 19 * k, {a.x + 22 * k, a.y + 26 * k}, lib_ink,
+         elide(anton(f, 19 * k), 19 * k, upper(v.playlist_playing.empty() ? "the game's own animations" : v.playlist_playing), half - 32 * k));
+    d->AddLine({a.x + half, a.y + 10 * k}, {a.x + half, b.y - 10 * k}, IM_COL32(255, 255, 255, 40), 1.5f * k);
+    lib_caps(d, f, {a.x + half + 14 * k, a.y + 11 * k}, 10 * k, enabled && v.modifier_ready ? lib_blue : lib_ink_faint,
              enabled ? !v.play_in_game ? "ON THE BUTTON / PAUSED" : !v.modifier_ready ? "ON THE BUTTON / NOT READY"
                  : std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(bind.button)] : "ON THE BUTTON / OFF");
-    text(d, anton(f, 19 * k), 19 * k, {a.x + half + 14 * k, a.y + 25 * k}, bind.playlist.empty() ? lib_ink_faint : lib_ink,
+    text(d, anton(f, 19 * k), 19 * k, {a.x + half + 14 * k, a.y + 26 * k}, bind.playlist.empty() ? lib_ink_faint : lib_ink,
          elide(anton(f, 19 * k), 19 * k, upper(bind.playlist.empty() ? "nothing set" : bind.playlist), half - 24 * k));
-    if (!v.play_in_game && lib_button(d, f, "##resumeplayback", {b.x - setup_w - resume_w, a.y + 9 * k}, {resume_w - 8 * k, 36 * k}, "RESUME", Look::blue))
+    if (!v.play_in_game && lib_button(d, f, "##resumeplayback", {b.x - setup_w - guide_w - resume_w, a.y + 9 * k}, {resume_w - 8 * k, 36 * k}, "RESUME", Look::blue))
         studio::set_play_in_game(true);
+    // The setup guide again, whenever it is wanted (it shows by itself only while something is not set up).
+    if (lib_button(d, f, "##showguide", {b.x - setup_w - guide_w, a.y + 9 * k}, {guide_w - 10 * k, 36 * k}, "SETUP GUIDE", Look::ghost)) {
+        auto& u = ui();
+        u.library_guide_hidden = u.library_guide_finished = false;
+        u.library_guide_started = true;
+    }
     if (lib_button(d, f, "##editmodifier", {b.x - setup_w, a.y + 9 * k}, {setup_w - 10 * k, 36 * k}, "BUTTON SETUP", Look::ghost)) {
         ui().library.modifier_setup = true; ui().library.settings_scroll = 0;
     }
 }
-// A step of a setup: its number circled in blue marker, its name in the shop's capitals.
+// A step's badge: a disc with its number in Anton, centred in it (done: the studio's blue with a tick; now: a blue ring;
+// still to come: a grey ring). Drawn whole, never cut.
+enum class StepState { done, now, later };
+void step_badge(ImDrawList* d, const Fonts& f, ImVec2 c, float r, int number, StepState state) {
+    const float k = f.k;
+    if (state == StepState::done) {
+        d->AddCircleFilled(c, r, blue, 28);
+        d->AddLine(ImVec2(c.x - r * 0.42f, c.y + r * 0.02f), ImVec2(c.x - r * 0.1f, c.y + r * 0.34f), IM_COL32_WHITE, 2.6f * k);
+        d->AddLine(ImVec2(c.x - r * 0.1f, c.y + r * 0.34f), ImVec2(c.x + r * 0.46f, c.y - r * 0.32f), IM_COL32_WHITE, 2.6f * k);
+        return;
+    }
+    const ImU32 ring = state == StepState::now ? blue : IM_COL32(110, 112, 118, 255);
+    d->AddCircleFilled(c, r, state == StepState::now ? IM_COL32(8, 34, 64, 255) : IM_COL32(24, 25, 28, 255), 28);
+    d->AddCircle(c, r, ring, 28, 2.4f * k);
+    const auto n = std::to_string(number);
+    const float size = r * 1.25f;
+    ImFont* font = anton(f, size);
+    const ImVec2 t = text_size(font, size, n.c_str());
+    text(d, font, size, ImVec2(c.x - t.x * 0.5f, c.y - t.y * 0.5f), state == StepState::now ? IM_COL32_WHITE : IM_COL32(150, 152, 158, 255), n);
+}
+// A step of a setup: its number on a blue disc, its name in the shop's capitals.
 void library_step(ImDrawList* d, const Fonts& f, ImVec2 at, int number, std::string_view words) {
     const float k = f.k;
-    const auto n = std::to_string(number);
-    const ImVec2 c(at.x + 14 * k, at.y + 12 * k);
-    marker_words(d, f, ImVec2(c.x - 7 * k, c.y - 17 * k), n, 28 * k, -6, lib_blue);
-    marker_circle(d, c, 17 * k, 15 * k, 3 * k, lib_blue, 500 + static_cast<std::uint32_t>(number));
-    lib_caps(d, f, ImVec2(at.x + 42 * k, at.y + 4 * k), 15 * k, lib_ink, words, 1.8f);
+    step_badge(d, f, ImVec2(at.x + 15 * k, at.y + 12 * k), 14 * k, number, StepState::now);
+    lib_caps(d, f, ImVec2(at.x + 40 * k, at.y + 5 * k), 15 * k, lib_ink, words, 1.8f);
+}
+// ---- the setup guide: a playlist made, animations in it, playing by default, tried in game ----
+// For a player new to it the LIBRARY's parts (playlists, packs, what plays by default, the button) are a lot at once, so
+// until his tricks play the strip at the top walks him through it: four steps, the ones done ticked, the next one's own
+// button doing it for him (the page's own buttons do the same). It shows only while something is not set up (no
+// playlist, nothing playing by default, or what plays is empty), and once begun stays till TRY IT or put away.
+bool lib_guide_on = false; // this frame (the create and add pages say which step they are)
+void library_start_create(); // studio_library_playlists.inl
+int library_guide_step(const studio::View& v) {
+    if (v.playlists.empty()) return 0;
+    if (v.playlist_open.empty() || v.playlist.empty()) return 1;
+    if (v.playlist_playing != v.playlist_open || !v.play_in_game) return 2;
+    return 3;
+}
+bool library_guide_wanted(const studio::View& v) {
+    auto& u = ui();
+    const bool unfinished = v.playlists.empty() || v.playlist_playing.empty() || !v.play_in_game ||
+                            (v.playlist_open == v.playlist_playing && v.playlist.empty());
+    if (unfinished && !u.library_guide_hidden) u.library_guide_started = true;
+    return u.library_guide_started && !u.library_guide_finished && !u.library_guide_hidden;
+}
+void library_guide_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
+    auto& u = ui(); auto& route = u.library; const float k = f.k;
+    library_sheet(d, f, a, b);
+    static constexpr std::array<const char*, 4> names{"MAKE A PLAYLIST", "ADD ANIMATIONS", "PLAY IT BY DEFAULT", "TRY IT IN GAME"};
+    static constexpr std::array<const char*, 4> next{"MAKE A PLAYLIST", "+ ADD ANIMATIONS", "PLAY IT BY DEFAULT", "CLOSE AND TRY IT"};
+    const int step = library_guide_step(v);
+    const float mid = (a.y + b.y) * 0.5f;
+    lib_caps(d, f, {a.x + 16 * k, mid - 6 * k}, 11 * k, lib_blue, "SET UP", 2.2f);
+    float x = a.x + 92 * k;
+    for (int i = 0; i < static_cast<int>(names.size()); ++i) {
+        const StepState state = i < step ? StepState::done : i == step ? StepState::now : StepState::later;
+        step_badge(d, f, {x + 13 * k, mid}, 13 * k, i + 1, state);
+        const float fs = 12 * k;
+        lib_caps(d, f, {x + 34 * k, mid - 7 * k}, fs, state == StepState::now ? lib_ink : state == StepState::done ? lib_ink_soft : lib_ink_faint,
+                 names[static_cast<std::size_t>(i)], 1.4f);
+        x += 34 * k + spaced_width(mont(f, fs), fs, names[static_cast<std::size_t>(i)], 1.4f * k) + 22 * k;
+        if (i + 1 < static_cast<int>(names.size())) d->AddLine({x - 14 * k, mid}, {x - 4 * k, mid}, IM_COL32(255, 255, 255, 60), 2 * k);
+    }
+    // The next step's own button, and a way to put the guide away.
+    const float hide_w = 44 * k, next_w = std::min(240 * k, std::max(160 * k, b.x - x - hide_w - 30 * k));
+    if (lib_button(d, f, "##guidenext", {b.x - hide_w - 14 * k - next_w, a.y + 9 * k}, {next_w, 38 * k}, next[static_cast<std::size_t>(step)], Look::blue)) {
+        std::string m;
+        switch (step) {
+        case 0: library_start_create(); break;
+        case 1:
+            if (v.playlist_open.empty() && !v.playlists.empty()) studio::open_playlist(v.playlists.front().name);
+            route.page = 0;
+            route.add_to(v.playlist_open.empty() ? v.playlists.front().name : v.playlist_open);
+            break;
+        case 2:
+            studio::play_playlist(v.playlist_open, m);
+            studio::set_play_in_game(true);
+            say(m);
+            break;
+        default:
+            u.library_guide_finished = true;
+            studio::request_close();
+            break;
+        }
+    }
+    if (lib_button(d, f, "##guidehide", {b.x - hide_w - 8 * k, a.y + 9 * k}, {hide_w, 38 * k}, "X", Look::ghost)) u.library_guide_hidden = true;
 }
 void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& route = ui().library; const float k = f.k;
     const auto bind = studio::modifier_binding();
     const float x = a.x + 20 * k, w = b.x - a.x - 40 * k;
     library_sheet(d, f, a, b);
-    const OnPaper on_paper;
     text(d, anton(f, 29 * k), 29 * k, {x, a.y + 18 * k}, lib_ink, route.choosing_modifier_playlist ? "CHOOSE A BUTTON PLAYLIST" : "ONE INPUT. TWO VERSIONS.");
     if (lib_button(d, f, "##closemodifierhelp", {b.x - 126 * k, a.y + 15 * k}, {106 * k, 36 * k}, route.choosing_modifier_playlist ? "< BACK" : "DONE", Look::paper)) {
         if (route.choosing_modifier_playlist) route.choosing_modifier_playlist = false;

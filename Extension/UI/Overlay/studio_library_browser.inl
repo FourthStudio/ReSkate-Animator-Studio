@@ -9,7 +9,6 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
     auto& route = ui().library; auto& browse = route.browse(); const float k = f.k;
     const float x = a.x + 16 * k, w = b.x - a.x - 32 * k;
     library_sheet(d, f, a, b);
-    const OnPaper on_paper;
     ImGui::PushID(target.empty() ? "collection" : "picker");
     const int source = segmented(d, f, "##librarysource", {x, a.y + 16 * k}, w, 38 * k,
         {"PACKS", "YOUR ANIMATIONS", "ALL ANIMATIONS"}, browse.source);

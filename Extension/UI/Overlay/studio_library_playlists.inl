@@ -8,13 +8,16 @@ void library_create_page(ImDrawList* d, const Fonts& f, const studio::View& v, I
     const float w = std::min(b.x - a.x - 80 * k, 750 * k);
     const ImVec2 ca((a.x + b.x - w) * 0.5f, a.y + 46 * k), cb(ca.x + w, ca.y + 326 * k);
     library_sheet(d, f, ca, cb);
-    const OnPaper on_paper;
     const float x = ca.x + 28 * k, iw = w - 56 * k;
     text(d, anton(f, 31 * k), 31 * k, {x, ca.y + 24 * k}, lib_ink, "MAKE A PLAYLIST");
     paragraph(d, body(f, 15 * k), 15 * k, {x, ca.y + 80 * k}, iw, lib_ink_soft,
         u.library_pending_source ? "Name your playlist. The animation or pack you chose will be added to it." : "Give it a name, then choose the animations you want in it.");
     const bool entered = field(f, "##newlibraryplaylistname", route.new_name, {x, ca.y + 134 * k}, iw, "e.g. Everyday, One foot tricks, Darkslides...");
-    text(d, body(f, 12 * k), 12 * k, {x, ca.y + 187 * k}, lib_ink_faint, "Creating a playlist does not change what plays in game.");
+    if (lib_guide_on)
+        paragraph(d, body(f, 13 * k), 13 * k, {x, ca.y + 187 * k}, iw, lib_blue,
+                  "STEP 1 OF 4 - name it (Everyday, Big flips, anything), then CREATE PLAYLIST. Next you put animations in it.");
+    else
+        text(d, body(f, 12 * k), 12 * k, {x, ca.y + 187 * k}, lib_ink_faint, "Creating a playlist does not change what plays in game.");
     const float half = (iw - 12 * k) * 0.5f;
     if (lib_button(d, f, "##cancelnewlibraryplaylist", {x, cb.y - 70 * k}, {half, 42 * k}, "CANCEL", Look::ghost)) {
         route.creating = false; u.library_pending_source.reset();
@@ -39,7 +42,6 @@ void library_confirm_page(ImDrawList* d, const Fonts& f, const studio::View& v, 
     const float w = std::min(b.x - a.x - 80 * k, 760 * k);
     const ImVec2 ca((a.x + b.x - w) * 0.5f, a.y + 46 * k), cb(ca.x + w, ca.y + 310 * k);
     library_sheet(d, f, ca, cb);
-    const OnPaper on_paper;
     const float x = ca.x + 28 * k, iw = w - 56 * k;
     text(d, anton(f, 30 * k), 30 * k, {x, ca.y + 24 * k}, lib_ink, clear ? "CLEAR THIS PLAYLIST?" : "DELETE THIS PLAYLIST?");
     paragraph(d, body(f, 17 * k), 17 * k, {x, ca.y + 84 * k}, iw, lib_ink, target);
@@ -61,7 +63,6 @@ void library_playlist_settings(ImDrawList* d, const Fonts& f, const studio::View
     auto& u = ui(); auto& route = u.library; const float k = f.k;
     const float x = a.x + 20 * k, w = b.x - a.x - 40 * k;
     library_sheet(d, f, a, b);
-    const OnPaper on_paper;
     text(d, anton(f, 28 * k), 28 * k, {x, a.y + 18 * k}, lib_ink, "PLAYLIST SETTINGS");
     if (lib_button(d, f, "##closelistsettings", {b.x - 120 * k, a.y + 15 * k}, {100 * k, 36 * k}, "DONE", Look::paper)) route.settings = false;
     const ImVec2 la(x, a.y + 74 * k), lb(b.x - 20 * k, b.y - 14 * k);
@@ -124,7 +125,6 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
         return;
     }
     library_sheet(d, f, a, b);
-    const OnPaper on_paper;
     if (v.playlist_open.empty()) {
         text(d, anton(f, 34 * k), 34 * k, {x + 22 * k, a.y + 42 * k}, lib_ink, "YOUR PLAYLISTS, YOUR STYLE");
         paragraph(d, body(f, 17 * k), 17 * k, {x + 22 * k, a.y + 106 * k}, std::min(w - 44 * k, 820 * k), lib_ink_soft,
@@ -288,10 +288,14 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
     library_head(d, f, a, page);
     if (!u.playlist_for.empty()) return; // the chooser owns input; its underlying page has no active controls
     const ImVec2 body_a(a.x, a.y + 148 * k);
+    // While it is not set up, the guide's strip in place of what plays (on every part of the page, so it is always there).
+    lib_guide_on = library_guide_wanted(v);
+    const ImVec2 strip_a(a.x + 376 * k, a.y + 72 * k), strip_b(b.x, a.y + 128 * k);
+    if (lib_guide_on) library_guide_strip(d, f, v, strip_a, strip_b);
     if (route.creating) { library_create_page(d, f, v, body_a, b); return; }
     if (!route.confirmation.empty()) { library_confirm_page(d, f, v, body_a, b); return; }
     if (page != route.page) route.show_page(page);
-    library_role_strip(d, f, v, {a.x + 376 * k, a.y + 72 * k}, {b.x, a.y + 128 * k});
+    if (!lib_guide_on) library_role_strip(d, f, v, strip_a, strip_b);
     if (route.modifier_setup) { library_modifier_setup(d, f, v, body_a, b); return; }
     if (route.adding()) {
         text(d, body(f, 12 * k), 12 * k, {body_a.x + 146 * k, body_a.y + 2 * k}, blue_light, "ADDING TO THIS PLAYLIST");
@@ -301,7 +305,11 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
             std::string m; studio::undo_playlist_entries(route.adding_to, m); say(m);
         }
         if (lib_button(d, f, "##doneadding", {b.x - 140 * k, body_a.y + 8 * k}, {140 * k, 38 * k}, "DONE", Look::blue)) { route.adding_to.clear(); return; }
-        text(d, body(f, 12 * k), 12 * k, {body_a.x + 146 * k, body_a.y + 60 * k}, soft, "Add only what you want. Every change is saved; Done returns to the playlist.");
+        if (lib_guide_on)
+            text(d, body(f, 13 * k), 13 * k, {body_a.x + 146 * k, body_a.y + 60 * k}, blue_light,
+                 "STEP 2 OF 4 - press ADD PACK for a whole pack, or open a pack and + ADD single tricks (PREVIEW plays one first). Then DONE.");
+        else
+            text(d, body(f, 12 * k), 12 * k, {body_a.x + 146 * k, body_a.y + 60 * k}, soft, "Add only what you want. Every change is saved; Done returns to the playlist.");
         library_browser(d, f, v, index, route.adding_to, {body_a.x, body_a.y + 88 * k}, b);
         return;
     }
@@ -330,9 +338,12 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
         lib_caps(d, f, {ta.x + 16 * k, ta.y + 14 * k}, 10 * k, sub, selected ? "EDITING" : "PLAYLIST");
         text(d, anton(f, 22 * k), 22 * k, {ta.x + 16 * k, ta.y + 30 * k}, ink, elide(anton(f, 22 * k), 22 * k, upper(list.name), nav_w - 52 * k));
         const bool normal = list.name == v.playlist_playing, held = list.name == binding.playlist;
-        const auto role = normal && held ? "plays by default + on the button" : normal ? "plays by default" : held ? "plays on the button" : "not playing";
-        // What it does, in marker: blue when it plays, grey when it is only saved.
-        marker_words(d, f, {ta.x + 16 * k, ta.y + 62 * k}, role, 20 * k, -1.5f,
+        const char* role = normal && held ? "default + button" : normal ? "plays by default" : held ? "on the button" : "not playing";
+        // What it does, in marker: blue when it plays, grey when it is only saved; smaller if it would run off the card.
+        float role_size = 20 * k;
+        while (role_size > 12 * k && sharp(marker(f, role_size), role_size)->CalcTextSizeA(role_size, FLT_MAX, 0, role).x > tb.x - ta.x - 30 * k)
+            role_size -= 1 * k;
+        marker_words(d, f, {ta.x + 16 * k, ta.y + 62 * k}, role, role_size, -1.5f,
                      normal || held ? (selected ? IM_COL32_WHITE : IM_COL32(0, 98, 214, 255)) : (selected ? IM_COL32(200, 216, 240, 255) : IM_COL32(120, 122, 128, 255)));
         if (lit && nav().keys) chosen_outline(d, ta, tb, k);
         if (pressed) { studio::open_playlist(list.name); route.select(list.name); }

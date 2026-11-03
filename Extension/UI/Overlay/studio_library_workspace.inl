@@ -44,47 +44,34 @@ bool library_search(const LibraryIndex& index, const studio::Preset& p, const st
         library_saved_name(index, p.name) + " " + p.name + " " + index.label(p.trick) + " " + p.pop + " " + p.stance +
         (p.switch_stance.value_or(false) ? " switch" : " normal") + " " + p.made_by + " " + library_origin(index, p.name)), terms);
 }
-// ---- the LIBRARY in the MARKET's own look: the list of playlists on a sheet of grip tape torn at its edges (the
-// playlists on cream paper, the one open on the studio's blue, taped down); everything there is to read on the MARKET's
-// crumpled cream paper (what plays on a strip of concrete) in its type - Anton, its spaced capitals, its body face - in
-// dark ink; notes in blue marker; and the shop's flat buttons ----
-// The ink on paper: words, quieter words, the quietest, the studio's blue as it reads on cream, a warning, a fault.
-constexpr ImU32 lib_ink = shop_ink, lib_ink_soft = IM_COL32(58, 60, 66, 255), lib_ink_faint = IM_COL32(104, 106, 112, 255),
-                lib_blue = IM_COL32(0, 98, 214, 255), lib_warn = IM_COL32(176, 100, 0, 255), lib_red = IM_COL32(184, 36, 36, 255);
-// A row or a box on paper: a shade of the paper, the studio's blue a little for one that is in, a fault's red.
-constexpr ImU32 lib_row = IM_COL32(0, 0, 0, 18), lib_row_in = IM_COL32(0, 98, 214, 34), lib_row_bad = IM_COL32(184, 36, 36, 34);
-// Whether what is drawn now sits on paper (the buttons outline in ink there, not in white).
-bool lib_on_paper = false;
-struct OnPaper {
-    bool was;
-    OnPaper() : was(lib_on_paper) { lib_on_paper = true; }
-    ~OnPaper() { lib_on_paper = was; }
-    OnPaper(const OnPaper&) = delete;
-    OnPaper& operator=(const OnPaper&) = delete;
-};
-// A button as the shop's: blue, outlined (in ink on paper), cream paper (black on paper) or black (a red one stays the
-// studio's own, for deleting).
+// ---- the LIBRARY in the studio's own look: its head as the MARKET's (LIBRARY on torn blue paper, a line in marker, the
+// shop's bar), the list of playlists on grip tape (the playlists on cream paper, the one open on the studio's blue, taped
+// down), and everything there is to read on dark sheets torn at their edges with rows as the SETTINGS page has them,
+// white words in the MARKET's type (Anton, its body face, its spaced capitals), the studio's blue for what is chosen ----
+// The ink: words, quieter words, the quietest, the studio's blue as it reads on the dark, a warning, a fault.
+constexpr ImU32 lib_ink = white, lib_ink_soft = soft, lib_ink_faint = faint, lib_blue = blue_light, lib_warn = IM_COL32(244, 193, 99, 255),
+                lib_red = IM_COL32(255, 159, 151, 255);
+// A row, as the SETTINGS page's: dark grey, the studio's blue for one that is in, a fault's red.
+constexpr ImU32 lib_row = IM_COL32(30, 31, 35, 246), lib_row_in = IM_COL32(17, 57, 91, 245), lib_row_bad = IM_COL32(66, 31, 33, 245);
+// A button as the shop's: blue, outlined, cream paper or black (a red one stays the studio's own, for deleting).
 bool lib_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 a, ImVec2 size, const std::string& label, Look look = Look::dark,
                 bool enabled = true) {
     if (look == Look::danger) return action(d, f, id, a, size, label, look, enabled);
-    const ShopLook shop = look == Look::blue    ? ShopLook::blue
-                          : look == Look::paper ? (lib_on_paper ? ShopLook::black : ShopLook::paper)
-                          : look == Look::dark  ? ShopLook::black
-                                                : (lib_on_paper ? ShopLook::ink : ShopLook::line);
+    const ShopLook shop = look == Look::blue ? ShopLook::blue : look == Look::paper ? ShopLook::paper : look == Look::dark ? ShopLook::black : ShopLook::line;
     return shop_button(d, f, id, a, size, label, shop, enabled);
 }
-// A sheet to read on: the MARKET's crumpled cream paper (or concrete), torn at its edges, its shadow under it.
-void library_sheet(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b, PaperKind kind = PaperKind::white) {
+// A sheet to read on: near black, torn at its edges (a little of the grip tape's grain, its light torn rim), its shadow
+// under it. (Cream paper read too bright over a whole page, and the grip tape itself too busy under words.)
+void library_sheet(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
     const float k = f.k, w = b.x - a.x, h = b.y - a.y;
     if (w < 8 * k || h < 8 * k) return;
     const std::uint32_t seed = seed_of(a) + 11;
-    const auto shape = torn::piece(w, h, seed, 2.4f * k, 7 * k, 9 * k);
-    draw_paper(d, f, shape, a, 0, ImVec2(0, 0), kind, seed, 0.5f, ImVec2(7, 9), 2.6f);
+    const auto shape = torn::piece(w, h, seed, 2.2f * k, 6 * k, 9 * k);
+    draw_paper(d, f, shape, a, 0, ImVec2(0, 0), PaperKind::grip, seed, 0.45f, ImVec2(6, 8), 2.0f, IM_COL32(112, 114, 120, 255));
 }
-// A row on paper: a shade of it, with a hairline under it.
+// A row: as the SETTINGS page's.
 void lib_row_box(ImDrawList* d, ImVec2 a, ImVec2 b, ImU32 fill, float k) {
-    d->AddRectFilled(a, b, fill);
-    d->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 46), 1.2f * k);
+    flat_rect(d, a, b, fill, seed_of(a), k * 0.45f);
 }
 // A panel: a sheet of grip tape torn at its edges (darkened a little), as the MARKET's are cut: the list of playlists.
 void library_panel_box(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {

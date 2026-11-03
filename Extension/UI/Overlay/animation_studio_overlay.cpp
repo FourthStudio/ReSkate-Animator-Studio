@@ -332,6 +332,8 @@ struct Ui {
     std::array<char, 64> asset_query{}; // the search box over TRICKS
     std::array<char, 64> pack_query{};  // the search box over MY PACKS
     float library_modal_scroll{}; // multi-playlist chooser, independent of the Library's own pages
+    // The LIBRARY's setup guide this session: begun (a step was not done when the page was seen), finished (TRY IT), put away.
+    bool library_guide_started{}, library_guide_finished{}, library_guide_hidden{};
     std::uint64_t library_request_seen{};
     studio::LibraryNavigation library;
     std::optional<studio::PlaylistEntry> library_pending_source;
