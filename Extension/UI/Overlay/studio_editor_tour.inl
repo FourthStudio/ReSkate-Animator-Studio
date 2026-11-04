@@ -75,8 +75,8 @@ void editor_tour(const Fonts& f, const studio::View& v, ImVec2 display) {
          "Press KEY: a diamond shows on the joint's row in the timeline."},
         {TourSpot::timeline, "THE TIMELINE",
          "A row for each joint, a diamond for each key: between two keys he moves from one pose to the next. Drag a diamond along "
-         "its row to move it in time, or drag a box with the right mouse button to choose many. The brackets mark where your "
-         "animation starts and ends.",
+         "its row to move it in time, or drag a box with the right mouse button to choose many. The START ANIM. and END ANIM. "
+         "flags mark where your animation starts and ends.",
          "Go ten frames on, turn the arm another way and press KEY again."},
         {TourSpot::scrub, "SCRUB AND PLAY",
          "Drag along the frame numbers to scrub: he moves through your keys. PLAY, LOOP and the speed are at the left, and < > step "
@@ -101,9 +101,12 @@ void editor_tour(const Fonts& f, const studio::View& v, ImVec2 display) {
     const float pad = 8 * k;
     sa = ImVec2(std::max(4 * k, sa.x - pad), std::max(4 * k, sa.y - pad));
     sb = ImVec2(std::min(display.x - 4 * k, sb.x + pad), std::min(display.y - 4 * k, sb.y + pad));
-    // The light slides from the last part to this one.
+    // The light slides from the last part to this one; the card goes straight to where it is going (sliding with the light
+    // it could change sides half way).
+    const ImVec2 to_a = sa, to_b = sb;
     const double now = ImGui::GetTime();
-    if (t.shown_step != t.step) {
+    const bool new_step = t.shown_step != t.step;
+    if (new_step) {
         t.from_a = t.shown_step < 0 ? sa : t.shown_a;
         t.from_b = t.shown_step < 0 ? sb : t.shown_b;
         t.shown_step = t.step;
@@ -119,6 +122,8 @@ void editor_tour(const Fonts& f, const studio::View& v, ImVec2 display) {
     }
     begin_card(display, false);
     auto* d = ImGui::GetWindowDrawList();
+    // A pad's A (Enter) goes on to the next step: NEXT is the one chosen as each step comes up.
+    if (new_step) nav().focus = ImGui::GetID("##tournext");
     const ImU32 dim = IM_COL32(0, 0, 0, 178);
     if (have) {
         d->AddRectFilled(ImVec2(0, 0), ImVec2(display.x, sa.y), dim);
@@ -140,13 +145,13 @@ void editor_tour(const Fonts& f, const studio::View& v, ImVec2 display) {
     ImVec2 ca((display.x - cw) * 0.5f, (display.y - ch) * 0.5f);
     int side = -1; // where the part is from the card: 0 left of it, 1 right, 2 above, 3 below
     if (have) {
-        const float mid_x = (sa.x + sb.x) * 0.5f, mid_y = (sa.y + sb.y) * 0.5f;
+        const float mid_x = (to_a.x + to_b.x) * 0.5f, mid_y = (to_a.y + to_b.y) * 0.5f;
         const auto clamp_x = [&](float x) { return std::clamp(x, edge, std::max(edge, display.x - cw - edge)); };
         const auto clamp_y = [&](float y) { return std::clamp(y, edge, std::max(edge, display.y - ch - edge)); };
-        if (sb.x + gap + cw <= display.x - edge) ca = ImVec2(sb.x + gap, clamp_y(mid_y - ch * 0.5f)), side = 0;
-        else if (sa.x - gap - cw >= edge) ca = ImVec2(sa.x - gap - cw, clamp_y(mid_y - ch * 0.5f)), side = 1;
-        else if (sb.y + gap + ch <= display.y - edge) ca = ImVec2(clamp_x(mid_x - cw * 0.5f), sb.y + gap), side = 2;
-        else if (sa.y - gap - ch >= edge) ca = ImVec2(clamp_x(mid_x - cw * 0.5f), sa.y - gap - ch), side = 3;
+        if (to_b.x + gap + cw <= display.x - edge) ca = ImVec2(to_b.x + gap, clamp_y(mid_y - ch * 0.5f)), side = 0;
+        else if (to_a.x - gap - cw >= edge) ca = ImVec2(to_a.x - gap - cw, clamp_y(mid_y - ch * 0.5f)), side = 1;
+        else if (to_b.y + gap + ch <= display.y - edge) ca = ImVec2(clamp_x(mid_x - cw * 0.5f), to_b.y + gap), side = 2;
+        else if (to_a.y - gap - ch >= edge) ca = ImVec2(clamp_x(mid_x - cw * 0.5f), to_a.y - gap - ch), side = 3;
     }
     const ImVec2 cb(ca.x + cw, ca.y + ch);
     d->AddRectFilled(ImVec2(ca.x + 10 * k, ca.y + 12 * k), ImVec2(cb.x + 10 * k, cb.y + 12 * k), IM_COL32(0, 0, 0, 130));
@@ -155,7 +160,7 @@ void editor_tour(const Fonts& f, const studio::View& v, ImVec2 display) {
     // A pointer from the card to the part.
     if (side >= 0) {
         const float s = 12 * k;
-        const float py = std::clamp((sa.y + sb.y) * 0.5f, ca.y + 30 * k, cb.y - 30 * k), px = std::clamp((sa.x + sb.x) * 0.5f, ca.x + 30 * k, cb.x - 30 * k);
+        const float py = std::clamp((to_a.y + to_b.y) * 0.5f, ca.y + 30 * k, cb.y - 30 * k), px = std::clamp((to_a.x + to_b.x) * 0.5f, ca.x + 30 * k, cb.x - 30 * k);
         if (side == 0) d->AddTriangleFilled(ImVec2(ca.x, py - s), ImVec2(ca.x - s, py), ImVec2(ca.x, py + s), IM_COL32(14, 15, 18, 252));
         else if (side == 1) d->AddTriangleFilled(ImVec2(cb.x, py - s), ImVec2(cb.x + s, py), ImVec2(cb.x, py + s), IM_COL32(14, 15, 18, 252));
         else if (side == 2) d->AddTriangleFilled(ImVec2(px - s, ca.y), ImVec2(px, ca.y - s), ImVec2(px + s, ca.y), blue);
