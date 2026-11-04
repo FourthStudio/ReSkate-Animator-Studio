@@ -203,6 +203,11 @@ struct Frame {
     std::uint8_t hurt{}, pain{}, down{}, board_live{};
     std::int8_t kick{};
     float flinch{}, hurt_amount{};
+    // Each hand's part in the reaction (real_bails_model.h's Reach by number) and how far its palm is from its spot (m),
+    // and the mean of what the joints' pushes were handed over scaled by (the game's share at their speed).
+    std::array<std::uint8_t, 2> reach{};
+    std::array<float, 2> reach_gap{};
+    float gain{};
 };
 constexpr std::size_t ring_size = 2048;
 struct Ring {
@@ -242,7 +247,7 @@ model::Input muscle_input(const Bodies& bodies, const skater_physics::Step& step
     model::Input in;
     in.dt = seconds;
     in.strength = strength;
-    in.in_game = true; // the game's joint solve takes part of each push back: the muscles make up for it
+    in.in_game = true; // the game keeps only a share of each push (by how fast the joint turns): the muscles make up for it
     in.tune = {t.reaction, t.head, t.tuck, t.lie_still, t.grip, t.catch_arms, t.catch_step, t.grab_hurt, t.hold_hurt, t.weight, t.kick_board};
     for (std::size_t i = 1; i < model::part_count; ++i) {
         const auto& b = bodies.body[i];
@@ -436,6 +441,9 @@ void on_physics(std::uintptr_t core) noexcept {
     fr.flinch = muscles ? driven.flinch : 0.0f;
     fr.board_live = board_live;
     fr.hurt_amount = muscles ? driven.hurt_amount : 0.0f;
+    fr.reach = muscles ? driven.reach : std::array<std::uint8_t, 2>{};
+    fr.reach_gap = muscles ? driven.reach_gap : std::array<float, 2>{};
+    fr.gain = muscles ? driven.gain : 0.0f;
     r.head.store(head + 1, std::memory_order_release);
 }
 
@@ -459,6 +467,7 @@ void write_row(std::FILE* out, const Frame& fr) {
     }
     for (std::size_t i = 0; i < skater_body::count; ++i) std::fprintf(out, ",%u,%.4g", fr.touching[i], fr.impact[i]);
     std::fprintf(out, ",%u,%u,%u,%d,%.3f,%u,%.3f", fr.hurt, fr.pain, fr.down, fr.kick, fr.flinch, fr.board_live, fr.hurt_amount);
+    std::fprintf(out, ",%u,%u,%.3f,%.3f,%.2f", fr.reach[0], fr.reach[1], fr.reach_gap[0], fr.reach_gap[1], fr.gain);
     std::fputc('\n', out);
 }
 void write_header(std::FILE* out) {
@@ -472,6 +481,9 @@ void write_header(std::FILE* out) {
     for (std::size_t i = 0; i < skater_body::count; ++i) std::fprintf(out, ",c%zu_touch,c%zu_imp", i, i);
     // b0: the board's root (its command: the kick's change of its velocity). hurt: real_bails_model.h's Hurt by number.
     std::fputs(",hurt,pain,down,kick,flinch,board_live,hurt_amount", out);
+    // reach_l/r: Reach by number (0 none, 1 going, 2 on the spot, 3 resting, 4 gave up); gap: palm to its spot, m; gain:
+    // the mean scale the joints' pushes were handed over with.
+    std::fputs(",reach_l,reach_r,gap_l,gap_r,gain", out);
     std::fputc('\n', out);
 }
 void close_file(Writer& w) {

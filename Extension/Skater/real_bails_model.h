@@ -7,18 +7,25 @@
 // velocity each body should have next. Testable without the game.
 //
 // The bail is the game's ragdoll: a heavy body falling, rolling and sliding as gravity, momentum, its joints and the
-// ground take it. The muscles add only what a falling person's add, on top:
-//  - tone: every joint resists being turned fast (damping, as tense muscle does; never a pose it is pulled towards), so
-//    the limbs do not flop like a rag, and less so once he is hit (stunned) and as he lies there;
-//  - the joints' ranges (real_bails_limits.h): no joint goes past where a person's goes;
+// ground take it. The muscles add only what a falling person's add:
+//  - tone: the arms and legs resist being flung about (a damper on each joint's own turning, never a pose) and land
+//    heavily; the joints' ranges (real_bails_limits.h) hold whatever the slam does;
 //  - the reflexes of a fall: from the moment the bail starts the arms reach the way his momentum takes him (forwards,
 //    back and down, or out to the side), one a moment before the other; the chin goes to the chest going over backwards,
-//    sideways or tumbling (going down face first the head turns the cheek to the ground instead); with his feet still on
-//    the board, the foot on it kicks it away; a body part that is hit flinches (tenses and pulls back from it, the chin
-//    comes in for a hit to the head or the upper body), briefly.
-// Once he is down and no longer tumbling or sliding fast, he reacts to what hurt most: the other hand to a hurt elbow,
-// both hands to a hurt knee (that knee drawn up to the chest) or to the head, a hand pressed to a hurt hip, back or ribs,
-// and, racked on a rail, both hands to the groin, curled up on his side. Moving fast again stops it at once.
+//    sideways or tumbling (face first the head turns the cheek to the ground); with his feet still on the board, the foot
+//    on it kicks it away; a body part that is hit flinches (tenses and pulls back from it), briefly;
+//  - once he is down and slow (still sliding is fine): what hurts most is brought to the hands and the hands go to it
+//    (the other hand to a hurt elbow or wrist, both to a knee drawn up, to the head or to the groin), he curls a little
+//    over it, and an arm or a leg left up in the air is put down on the ground or the body. Moving fast again stops it.
+//
+// The game decides what of each push stays (measured from the user's recordings for update 1.2): of a change to a
+// joint's turning it keeps a share that grows with how fast that joint already turns: 1-4% of any push, however large, on
+// a joint turning under about 0.6 rad/s (the game holds a still joint where it is: an arm left in the air stays there),
+// 8-13% at 1-2.5 rad/s, 30-45% over 4, in the air and on the ground alike; a joint's own motion it keeps (93-96% a step).
+// So every move here is made while the joints still move (the reach for what hurts starts as he slows, not once he lies
+// still), at a pace the game lets through until it arrives, where the game's hold then keeps it; and what the muscles
+// hand the game is scaled by the share it keeps at that joint's speed now, bounded (not by a running average of it,
+// which lagged behind and flicked the arms when a joint got going).
 //
 // A muscle is inside the body: each torque turns one side of its joint against the other through the linked bodies
 // (real_bails_body.h), so the body's momentum, linear and angular, stays exactly as the fall made it. The one outside
@@ -130,7 +137,14 @@ struct Output {
     std::array<bool, part_count> driven{};      // the joint has a goal (a reach, the chin, the kick, what hurts), not tone
     std::array<bool, part_count> reflex{};      // the joint is flinching from a hit (a brief push, never a pose)
     float work{};           // the kinetic energy the muscles added this step, J (negative: they took it out)
+    // Recorded: each hand's part in the reaction to what hurts (Reach by number) and how far its palm is from where it
+    // goes (m, 0 when it goes nowhere), and in the game the mean of what the joints' pushes were handed over scaled by.
+    std::array<std::uint8_t, 2> reach{};
+    std::array<float, 2> reach_gap{};
+    float gain{1.0f};
 };
+// A hand's part in the reaction to what hurts. Recorded by number: new ones only ever go at the end.
+enum class Reach : std::uint8_t { none, going, on_spot, resting, gave_up };
 // The most a joint's muscles turn its child body with at full activation, Nm.
 float torque_limit(Part child, float strength) noexcept;
 
@@ -178,11 +192,13 @@ private:
     bool ground_known_{};
     // The hits.
     std::array<double, part_count> landed_at_{}; // when each body last came down hard on something (a limb's thud)
-    // What the game keeps of what the muscles hand it (in the game): each joint's turn as last written and as it was
-    // before, and running sums of what came of it against what was asked (real_bails_model.cpp, the game's share).
-    std::array<V3, part_count> asked_{}, before_{};
-    std::array<float, part_count> kept_got_{}, kept_asked_{};
-    bool asked_known_{};
+    // What the game keeps of what the muscles hand it (in the game): each joint's last error to the turning it is pushed
+    // towards, and when it last overshot (the error came back the other way, more than half as large): a while after
+    // that it is handed over at half.
+    std::array<V3, part_count> error_{};
+    std::array<double, part_count> overshot_at_{};
+    std::array<double, part_count> goal_since_{}; // when each joint's move began (it builds up from there)
+    std::array<bool, part_count> was_goal_{};
     std::array<double, 4> limb_hit_at_{};        // each limb's last hit (left arm, right arm, left leg, right leg)
     std::array<float, 4> limb_hit_size_{};
     std::array<V3, 4> limb_hit_from_{};          // the way the hit pushed it (world, unit)
@@ -193,6 +209,9 @@ private:
     float startle_{1};                           // how big a startle is now: it halves on repeats, recovering over seconds
     double stun_until_{-1}, last_stun_{-10}, last_hard_{-10};
     float stun_depth_{};
+    double first_hit_at_{-1};                    // when he first came down (-1 not yet)
+    double weak_at_{-10};                        // a hit: his strength drops and comes back over 0.4 s from here
+    float weak_depth_{};
     std::array<double, 2> caught_at_{-1, -1};    // when each hand came down on the ground (-1 not yet)
     std::array<float, 2> caught_bend_{};         // its elbow's bend then
     std::array<double, 2> arm_hit_at_{-10, -10}; // when each arm itself took a hard hit
@@ -214,16 +233,24 @@ private:
     V3 hurt_local_{};                            // where it was hit, in the hurt body's axes from its joint
     bool hurt_local_known_{};
     double hurt_at_{-10};
-    float hurt_delay_{0.25f};
+    float hurt_delay_{0.2f};
     bool slow_{}, down_{};
     double down_for_{};
     bool pain_{};
     double held_{};
-    double pain_since_{-1};                      // when the reaction (re)started (each move eases from there)
-    double let_go_at_{-1};                       // when he let go of it (the reaction eases out from there; -1 not)
-    std::array<double, 2> gave_up_at_{-1, -1};   // a hand that cannot get to the spot is let down to rest
+    double pain_since_{-1};                      // when the reaction (re)started
+    double let_go_at_{-1};                       // when he stopped holding on (he lets the rhythm go from there; -1 not)
+    std::array<Reach, 2> reach_{};               // each hand's part in it
+    std::array<double, 2> on_spot_at_{-1, -1};   // when each hand got to its spot
+    std::array<double, 2> gave_up_at_{-1, -1};   // or gave up on it
+    std::array<float, 2> best_gap_{};            // the nearest each has got, and when it last got nearer
+    std::array<double, 2> nearer_at_{};
+    std::array<float, 2> hand_delay_{};          // when each hand sets off after the reaction starts (the nearer first)
+    std::array<double, 2> arm_down_at_{-1, -1};  // an arm left up in the air, being put down: since when
+    std::array<double, 2> leg_down_at_{-1, -1};  // and a leg
     int roll_side_{1};                           // racked: the side he curls over onto (+1 his left)
     float rock_phase_{};
+    float asym_{};                               // how much more one side curls than the other (-1..1, seeded)
     // The board.
     std::array<double, 2> board_at_{-10, -10};   // when each foot last touched the board
     float kick_onset_{0.2f};
