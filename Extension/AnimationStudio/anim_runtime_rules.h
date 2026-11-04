@@ -141,6 +141,15 @@ inline std::string flip_trick_key(std::string_view game_name) {
 // Where the game's trick clip is when the flick shows (TrickPhase 0.0246 of a 2 s clip): before it, even the game shows its
 // own blend from riding into the trick, never the clip.
 inline constexpr float flick_clip_time = 0.05f;
+// The trick's time by the game's own TrickPhase, before the pop: the phase times the length of the game's clip (the edit's
+// own, made on it), up to a little past the pop. Never later: past the catch the phase still runs where the game has left the
+// clip (the 1.0.19 phase line jumped tricks to their landing that way). Empty when it does not say.
+inline std::optional<float> trick_phase_time(std::optional<float> phase, float duration, float takeoff) noexcept {
+    if (!phase || !std::isfinite(*phase) || *phase < 0 || *phase >= 1 || !(duration > 0) || !std::isfinite(duration)) return std::nullopt;
+    const float t = *phase * duration;
+    if (!(takeoff > 0) || t > takeoff + 0.05f) return std::nullopt;
+    return t;
+}
 // How long a trick begun at the flick waits for the board to leave the ground (the clips' pops come 0.17 to 0.22 s in): a
 // flick that never pops (a trick input the game turned into something else on the ground) lets go after this.
 inline constexpr double before_pop_patience = 0.45;

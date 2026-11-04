@@ -604,6 +604,9 @@ public:
     // One animation update: the game's own pose and the seconds the game moved on since the last.
     Reading update(std::span<const Joint> pose, float step) noexcept;
     bool active() const noexcept { return static_cast<bool>(models_); }
+    // How far (degrees) the game's pose is from the edit's own clip at `edit_seconds`, either way round, without looking for
+    // or following it (180 when there is no own clip): a time told by the game itself (its trick phase) checked against the pose.
+    float own_error(std::span<const Joint> pose, float edit_seconds) const noexcept;
 
 private:
     float error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept;

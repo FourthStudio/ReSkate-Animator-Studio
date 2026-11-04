@@ -2127,6 +2127,18 @@ float NativeClock::error_at(const NativeModels::Model& model, std::size_t frame,
     for (std::size_t k = 0; k < n; ++k) sum += degrees_between(pose[model.joints[k]].rotation, frames[frame * n + k]);
     return sum / static_cast<float>(n);
 }
+float NativeClock::own_error(std::span<const Joint> pose, float edit_seconds) const noexcept {
+    float best = 180;
+    if (!models_ || pose.size() < native_body_joints || !std::isfinite(edit_seconds)) return best;
+    for (const auto& m : models_->models) {
+        if (!m.own || m.times.empty()) continue;
+        const auto it = std::lower_bound(m.times.begin(), m.times.end(), edit_seconds);
+        std::size_t f = it == m.times.end() ? m.times.size() - 1 : static_cast<std::size_t>(it - m.times.begin());
+        if (f > 0 && std::abs(m.times[f - 1] - edit_seconds) < std::abs(m.times[f] - edit_seconds)) --f;
+        best = std::min(best, error_at(m, f, pose));
+    }
+    return best;
+}
 NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step) noexcept {
     Reading out;
     if (!models_ || models_->models.empty() || pose.size() < native_body_joints) return out;

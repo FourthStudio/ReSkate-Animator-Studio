@@ -241,6 +241,12 @@ bool air_corrections = false; // (not constexpr: the code it gates is kept compi
 // BEFORE THE POP: a trick the game names at the flick (CurrentFlipTrick) starts there, so what was keyed before the pop plays
 // while the game plays its clip up to the pop (trick_flicked, PlaybackPhase::before_pop).
 constexpr bool play_before_the_pop = true;
+// ... and there its time is the game's own trick phase (TrickPhase times the clip's length: the bug reports have it within 1 to
+// 2% of the clip's time), while the game's pose is within before_pop_phase_degrees of the clip there - the game blends from
+// riding into its trick over 8 ticks, and the pose clock (4.5 degrees) found it only late in the 10 ticks before the pop.
+// Only for tricks made on the game's own clips (their length is the game's), and never after the pop.
+constexpr bool clock_before_the_pop_by_trick_phase = true;
+constexpr float before_pop_phase_degrees = 9.0f;
 // On a rail the body's feet go on the board as the board's pass draws it, board keys and all (a saved grind loop's tilted
 // board had the feet seated on the game's flat one).
 constexpr bool rail_feet_on_the_drawn_board = true;
@@ -4257,7 +4263,12 @@ void on_animation(std::uintptr_t component) noexcept {
                 // Its Crossfade: its own (THIS TRICK: OWN), which skips the main one for it, or the main one (SETTINGS).
                 l.crossfade_now = std::clamp(played.crossfade.value_or(snap->crossfade), 0.1f, 0.8f);
                 // Standing back after the trick changed: the whole layer, over the same 120 ms.
-                const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
+                // Eased, as every other fade: straight, it started and stopped with a kink.
+                const float give_way = [&] {
+                    if (l.gave_way_at < 0) return 1.0f;
+                    const float u = std::clamp(static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f);
+                    return 1 - u * u * (3 - 2 * u);
+                }();
                 const auto& clip = *trick->clip;
                 // The game leads. Its own pose says which of its clips it plays and how far into it it is
                 // (NativeClock); the edits are laid on its pose at that time, eased in as it is found and out
@@ -4265,6 +4276,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 PlaybackSample sampled;
                 NativeClock::Reading reading;
                 bool held_for_next_pop = false; // let go into the next pop: drawn as it was then (hand_back_at_the_flick)
+                bool phase_clock = false;       // timed by the game's trick phase before the pop (clock_before_the_pop_by_trick_phase)
                 // Fourth's source-time fix: no separate catch slowdown beside the native board's clock.
                 if (!l.clock_fallback) {
                     reading = l.native_clock.update(l.pose, 1.0f / 60); // the game's own pose, before any edit
@@ -4297,6 +4309,19 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (l.episode.contact.since) touch = *l.episode.contact.since;
                     else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch = l.episode.landing;
                     float time = reading.locked ? reading.time : -1.0f;
+                    // From the flick over the pop, until the pose clock has the clip: the game's own trick phase
+                    // (clock_before_the_pop_by_trick_phase; trick_phase_time says nothing much past the pop).
+                    const bool around_the_pop =
+                        before_pop || (l.episode.flicked >= 0 && l.episode.phase == PlaybackPhase::air && at - l.episode.takeoff < 0.1);
+                    if (!reading.locked && around_the_pop && clock_before_the_pop_by_trick_phase && played.source.kind == "native_asset")
+                        if (const auto by_phase = trick_phase_time(l.game.trick_phase, clip.duration(), clip.takeoff);
+                            by_phase && l.native_clock.own_error(l.pose, *by_phase) < before_pop_phase_degrees) {
+                            time = *by_phase;
+                            phase_clock = true;
+                        }
+                    // Timed before and not now (the pose a moment off the clip): on from there while its weight goes out, not
+                    // dropped for a frame (a frame with no packet starts a handover).
+                    if (time < 0 && l.clock_last_time >= 0 && around_the_pop) time = l.clock_last_time + 1.0f / 60;
                     const float up = clip.takeoff, down = clip.landing;
                     // On the game's clip of a higher pop than the trick was made on: from its catch (its own; else four fifths
                     // into its air, where a flip is done) the trick hands back to the game's own pose, crossfaded, and the game
@@ -4371,7 +4396,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (held_for_next_pop) time = l.clock_why_time;
                     // In over 0.1 s, out over 0.3 s, both eased, so handing over to the game's next move (a manual, the
                     // next trick) is a smooth crossfade rather than a snap. The trick's end is eased into before it comes.
-                    const float target = reading.locked && why.empty() ? 1.0f : 0.0f;
+                    const float target = (reading.locked || phase_clock) && why.empty() ? 1.0f : 0.0f;
                     constexpr float step = 1.0f / 60, fade_in = 0.1f;
                     // SETTINGS > Tricks: Crossfade, or the trick's own (THIS TRICK: OWN), which skips the main one for it.
                     const float fade_out = l.clock_why == higher_pop_hand_back ? std::max(l.crossfade_now, 0.3f) : l.crossfade_now;
@@ -4460,8 +4485,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
                 diagnostic.clock_error = reading.error;
                 diagnostic.clock_clip = l.clock_fallback ? -2 : reading.clip;
-                diagnostic.clock_state = l.clock_fallback ? "own clock" : !reading.locked ? "looking" : !l.clock_why.empty() ? "let go"
-                                       : reading.lost ? "own pace" : "following";
+                diagnostic.clock_state = l.clock_fallback ? "own clock" : phase_clock ? "trick phase" : !reading.locked ? "looking"
+                                       : !l.clock_why.empty() ? "let go" : reading.lost ? "own pace" : "following";
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time) * give_way;
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;

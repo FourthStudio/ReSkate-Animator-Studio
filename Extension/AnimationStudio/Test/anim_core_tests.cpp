@@ -1985,6 +1985,17 @@ void native_clock_follows_the_game() {
         check(on == 0 && moved && smooth && std::abs(last - (0.23f + 39.0f / 60)) < 0.01f,
               "A recording drifting off the game's clip hands over to the game's clip, in time and without a jump");
     }
+    {
+        // A time the game says (its trick phase) checked against its pose, without looking for the clip: right on its own clip
+        // either way round, far at another time, nothing when there is nothing to check against.
+        NativeClock clock;
+        clock.start(models);
+        check(clock.own_error(pose_of(*own, 0.1f, false), 0.1f) < 0.5f && clock.own_error(pose_of(*own, 0.1f, true), 0.1f) < 0.5f,
+              "The game's pose at the time its phase says is on the trick's own clip there, as made or mirrored");
+        check(clock.own_error(pose_of(*own, 0.6f, false), 0.1f) > 9.0f, "and well off it at another time");
+        NativeClock none;
+        check(none.own_error(pose_of(*own, 0.1f, false), 0.1f) >= 180 && !none.active(), "With no clip it says nothing");
+    }
 }
 void native_clips_pop_where_the_game_does() {
     // A library clip at 60 fps: the board flat, then from frame 8 (0.133 s) its tail goes down 8 degrees a
@@ -3301,6 +3312,12 @@ void tricks_begin_at_the_flick_and_hand_over_the_games_way() {
               flip_trick_key("LateFlipTrick").empty() && flip_trick_key("HeldFlipTrick").empty(),
           "No trick, a wallie and a late or held flip start nothing at the flick");
 
+    // Before the pop the trick's time is the game's trick phase times its clip's length (kickflip low: 1.97 s, its pop at 0.183):
+    // 0.0247 at the flick is 0.049 s in; past the pop it says nothing, and an idle 5 or a missing phase neither.
+    check(near(*trick_phase_time(0.0247f, 1.967f, 0.183f), 0.0486f) && near(*trick_phase_time(0.1055f, 1.967f, 0.183f), 0.2075f) &&
+              !trick_phase_time(0.2f, 1.967f, 0.183f) && !trick_phase_time(5.0f, 1.967f, 0.183f) &&
+              !trick_phase_time(std::nullopt, 1.967f, 0.183f) && !trick_phase_time(0.05f, 1.967f, -1) && !trick_phase_time(-0.1f, 1.967f, 0.183f),
+          "The game's trick phase times the trick before (and just over) its pop, and never later");
     // An attempt from the flick: rolling, the flick 0.17 s before the pop, the trick chosen there, the same attempt in the air.
     PlaybackEpisode e;
     e.observe(10.0, MotionState::riding);
