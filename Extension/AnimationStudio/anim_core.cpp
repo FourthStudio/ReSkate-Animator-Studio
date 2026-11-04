@@ -1555,24 +1555,52 @@ std::vector<HeldPose> held_pose_fits(std::span<const Clip* const> clips, std::sp
     std::sort(out.begin(), out.end(), [](const HeldPose& a, const HeldPose& b) { return a.score < b.score; });
     return out;
 }
+namespace {
+// What a clip holds, as a number: told apart from another clip given the same address after the first is gone.
+std::uint64_t clip_print(const Clip& clip) noexcept {
+    std::uint64_t hash = 1469598103934665603ull;
+    const auto add = [&](float value) {
+        std::uint32_t word{};
+        std::memcpy(&word, &value, sizeof(word));
+        hash = (hash ^ word) * 1099511628211ull;
+    };
+    const std::size_t frames = clip.times.size();
+    hash = (hash ^ clip.joints) * 1099511628211ull;
+    hash = (hash ^ frames) * 1099511628211ull;
+    for (const float t : clip.times) add(t);
+    for (const auto& joint : clip.frame(frames / 2))
+        for (const float v : joint.rotation) add(v);
+    return hash;
+}
+}
 void PieceTracker::set_pieces(const std::vector<const Clip*>& clips) {
     models_.clear();
     reset();
+    // Each clip's joints, as worked out the last time: the set is made again with the same clips whenever the modifier
+    // button is pressed or let go (play_pieces), and a reloaded playlist keeps most of its clips; working them out again
+    // took 57 ms on the game's thread with 100 pieces in the playlist (2026-11-04).
+    std::map<const Clip*, Picked> kept;
     for (std::size_t piece = 0; piece < clips.size(); ++piece) {
         const auto* clip = clips[piece];
         if (!clip || clip->empty() || clip->joints < piece_body_joints || clip->times.size() < 4) continue;
-        // The joints that say most about this piece: the twenty that move most over it.
-        const auto& mid = clip->frame(clip->times.size() / 2);
-        std::vector<std::pair<float, std::uint16_t>> moved;
-        for (std::uint16_t j = 2; j < piece_body_joints; ++j) {
-            float sum = 0;
-            for (std::size_t f = 0; f < clip->times.size(); ++f) sum += pose_distance(clip->frame(f)[j].rotation, mid[j].rotation);
-            moved.push_back({sum / static_cast<float>(clip->times.size()), j});
-        }
-        std::sort(moved.begin(), moved.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        const auto print = clip_print(*clip);
         std::vector<std::uint16_t> picked;
-        for (const auto& [amount, j] : moved)
-            if (picked.size() < 20 && amount > 0.0005f) picked.push_back(j);
+        if (const auto known = picked_.find(clip); known != picked_.end() && known->second.print == print) picked = known->second.joints;
+        else if (const auto again = kept.find(clip); again != kept.end() && again->second.print == print) picked = again->second.joints;
+        else {
+            // The joints that say most about this piece: the twenty that move most over it.
+            const auto& mid = clip->frame(clip->times.size() / 2);
+            std::vector<std::pair<float, std::uint16_t>> moved;
+            for (std::uint16_t j = 2; j < piece_body_joints; ++j) {
+                float sum = 0;
+                for (std::size_t f = 0; f < clip->times.size(); ++f) sum += pose_distance(clip->frame(f)[j].rotation, mid[j].rotation);
+                moved.push_back({sum / static_cast<float>(clip->times.size()), j});
+            }
+            std::sort(moved.begin(), moved.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            for (const auto& [amount, j] : moved)
+                if (picked.size() < 20 && amount > 0.0005f) picked.push_back(j);
+        }
+        kept[clip] = {print, picked};
         if (picked.size() < 6) continue;
         for (const bool mirrored : {false, true}) {
             Model model;
@@ -1590,6 +1618,14 @@ void PieceTracker::set_pieces(const std::vector<const Clip*>& clips) {
             models_.push_back(std::move(model));
         }
     }
+    picked_ = std::move(kept);
+    row_start_.clear();
+    row_frames_ = 0;
+    for (const auto& model : models_) {
+        row_start_.push_back(row_frames_);
+        row_frames_ += model.times.size();
+    }
+    spare_ = {};
 }
 void PieceTracker::reset() noexcept {
     history_.clear();
@@ -1597,21 +1633,30 @@ void PieceTracker::reset() noexcept {
     locked_ = candidate_ = -1;
     streak_ = 0;
 }
-PieceTracker::Fit PieceTracker::fit(const Model& m, const std::array<const Sample*, 8>& window, const std::array<float, 8>& ages) const {
-    Fit out;
+const float* PieceTracker::row(Sample& sample, std::size_t model) {
+    float* out = sample.rows.data() + row_start_[model];
+    if (sample.row_ready[model]) return out;
+    const auto& m = models_[model];
     const auto frames = m.times.size(), picked = m.joints.size();
-    // How far each sample of the window is from each frame of the piece.
-    std::vector<float> d(window.size() * frames);
-    for (std::size_t h = 0; h < window.size(); ++h)
-        for (std::size_t f = 0; f < frames; ++f) {
-            float sum = 0;
-            for (std::size_t j = 0; j < picked; ++j) sum += pose_distance(window[h]->rotation[m.joints[j]], m.frames[f * picked + j]);
-            d[h * frames + f] = sum / static_cast<float>(picked);
-        }
+    for (std::size_t f = 0; f < frames; ++f) {
+        float sum = 0;
+        for (std::size_t j = 0; j < picked; ++j) sum += pose_distance(sample.rotation[m.joints[j]], m.frames[f * picked + j]);
+        out[f] = sum / static_cast<float>(picked);
+    }
+    sample.row_ready[model] = 1;
+    return out;
+}
+PieceTracker::Fit PieceTracker::fit(std::size_t model, const std::array<Sample*, 8>& window, const std::array<float, 8>& ages) {
+    Fit out;
+    const auto& m = models_[model];
+    const auto frames = m.times.size(), picked = m.joints.size();
+    // How far each sample of the window is from each frame of the piece (each sample's row worked out once, then kept).
+    std::array<const float*, 8> d{};
+    for (std::size_t h = 0; h < window.size(); ++h) d[h] = row(*window[h], model);
     // Holding one frame still: what standing in a similar pose scores.
     for (std::size_t f = 0; f < frames; ++f) {
         float sum = 0;
-        for (std::size_t h = 0; h < window.size(); ++h) sum += d[h * frames + f];
+        for (std::size_t h = 0; h < window.size(); ++h) sum += d[h][f];
         out.still = std::min(out.still, sum / static_cast<float>(window.size()));
     }
     // Moving through it in step, at the game's speed or a little either side of it.
@@ -1621,18 +1666,28 @@ PieceTracker::Fit PieceTracker::fit(const Model& m, const std::array<const Sampl
         const auto i = static_cast<std::size_t>(it - m.times.begin());
         return i > 0 && t - m.times[i - 1] < *it - t ? i - 1 : i;
     };
-    for (const float speed : {0.85f, 1.0f, 1.15f})
+    // The frame nearest `end - speed * age` for each sample: as `end` only rises through the piece, each sample's place in
+    // it only moves on, so it is walked to rather than searched for (the same frame as at_time finds).
+    for (const float speed : {0.85f, 1.0f, 1.15f}) {
+        std::array<std::size_t, 8> below{}; // each sample's lower_bound so far
         for (std::size_t k = 0; k < frames; ++k) {
             const float end = m.times[k];
             if (end - speed * ages.back() < m.times.front()) continue;
             float sum = 0;
-            for (std::size_t h = 0; h < window.size(); ++h) sum += d[h * frames + at_time(end - speed * ages[h])];
+            for (std::size_t h = 0; h < window.size(); ++h) {
+                const float t = end - speed * ages[h];
+                auto& i = below[h];
+                while (i < frames && m.times[i] < t) ++i;
+                const auto f = i == frames ? frames - 1 : i > 0 && t - m.times[i - 1] < m.times[i] - t ? i - 1 : i;
+                sum += d[h][f];
+            }
             const float score = sum / static_cast<float>(window.size());
             if (score < out.score) {
                 out.score = score;
                 out.time = end;
             }
         }
+    }
     if (out.time >= 0) {
         // The stretch of the piece the window covered has to be one where it moves.
         const auto first = at_time(out.time - ages.back()), last = at_time(out.time);
@@ -1647,25 +1702,31 @@ std::optional<PieceMatch> PieceTracker::update(double at, std::span<const Joint>
     if (last_at_ >= 0 && (at - last_at_ > 0.2 || at < last_at_)) reset();
     const double step = last_at_ >= 0 ? at - last_at_ : 0;
     last_at_ = at;
-    Sample sample;
+    // The buffers of the sample let go last are used again: no allocation an update.
+    Sample sample = std::move(spare_);
     sample.at = at;
     sample.rotation.resize(piece_body_joints);
     for (std::uint16_t j = 0; j < piece_body_joints; ++j) sample.rotation[j] = pose[j].rotation;
+    sample.rows.resize(row_frames_);
+    sample.row_ready.assign(models_.size(), 0);
     history_.push_back(std::move(sample));
-    while (history_.size() > 2 && at - history_.front().at > piece_window + 0.15) history_.pop_front();
+    while (history_.size() > 2 && at - history_.front().at > piece_window + 0.15) {
+        spare_ = std::move(history_.front());
+        history_.pop_front();
+    }
     if (at - history_.front().at < piece_window) return std::nullopt;
     // Eight samples spread over the window, oldest first.
-    std::array<const Sample*, 8> window{};
+    std::array<Sample*, 8> window{};
     std::array<float, 8> ages{};
     for (std::size_t i = 0; i < window.size(); ++i) {
         const double want = at - piece_window * (1.0 - static_cast<double>(i) / 7.0);
-        const Sample* best = &history_.back();
-        for (const auto& s : history_)
+        Sample* best = &history_.back();
+        for (auto& s : history_)
             if (std::abs(s.at - want) < std::abs(best->at - want)) best = &s;
         window[i] = best;
     }
     // `fit` takes them newest first, each with how long ago it was.
-    std::array<const Sample*, 8> newest_first{};
+    std::array<Sample*, 8> newest_first{};
     for (std::size_t i = 0; i < window.size(); ++i) {
         newest_first[i] = window[window.size() - 1 - i];
         ages[i] = static_cast<float>(at - newest_first[i]->at);
@@ -1673,7 +1734,7 @@ std::optional<PieceMatch> PieceTracker::update(double at, std::span<const Joint>
     const auto good = [](const Fit& f) { return f.time >= 0 && f.score < piece_enter && f.score < f.still - piece_margin && f.moving; };
     if (locked_ >= 0) {
         const auto& m = models_[static_cast<std::size_t>(locked_)];
-        const auto f = fit(m, newest_first, ages);
+        const auto f = fit(static_cast<std::size_t>(locked_), newest_first, ages);
         if (f.time > last_fit_time_ + 0.005f) {
             advanced_at_ = at;
             last_fit_time_ = f.time;
@@ -1693,7 +1754,7 @@ std::optional<PieceMatch> PieceTracker::update(double at, std::span<const Joint>
     int best = -1;
     Fit best_fit;
     for (std::size_t i = 0; i < models_.size(); ++i) {
-        const auto f = fit(models_[i], newest_first, ages);
+        const auto f = fit(i, newest_first, ages);
         if (good(f) && f.score < best_fit.score) {
             best = static_cast<int>(i);
             best_fit = f;

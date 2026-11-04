@@ -11,6 +11,7 @@
 #include <vector>
 #include <optional>
 #include <limits>
+#include <map>
 #include <memory>
 #include "utf8_text.h"
 
@@ -502,14 +503,29 @@ private:
     struct Sample {
         double at{};
         std::vector<Quat> rotation; // the body joints, below Ground
+        // How far this sample is from each frame of each model (at row_start[model]), worked out the first time a fit
+        // needs it and kept: a sample stays in the window for about 20 updates, and working every row out again at every
+        // update cost 9 ms an update on the game's thread with 100 pieces in the playlist (2026-11-04).
+        std::vector<float> rows;
+        std::vector<std::uint8_t> row_ready;
     };
     struct Fit {
         float score{1}, still{1}, time{-1};
         bool moving{};
     };
-    Fit fit(const Model& model, const std::array<const Sample*, 8>& window, const std::array<float, 8>& ages) const;
+    const float* row(Sample& sample, std::size_t model);
+    Fit fit(std::size_t model, const std::array<Sample*, 8>& window, const std::array<float, 8>& ages);
     std::vector<Model> models_;
+    std::vector<std::size_t> row_start_; // each model's first frame in a sample's rows
+    std::size_t row_frames_{};           // every model's frames together
     std::deque<Sample> history_;
+    Sample spare_; // the last sample let go, its buffers used again for the next
+    // Each clip's telling joints from the last set_pieces, with what the clip held then (clip_print).
+    struct Picked {
+        std::uint64_t print{};
+        std::vector<std::uint16_t> joints;
+    };
+    std::map<const Clip*, Picked> picked_;
     double last_at_{-1};
     int locked_{-1}, candidate_{-1};
     int streak_{};
