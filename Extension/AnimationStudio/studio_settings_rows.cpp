@@ -86,6 +86,12 @@ Setting how_it_works() {
                       "tricks in a playlist, and pop heights.",
                       [] { studio::set_guide_seen(false); });
 }
+Setting editor_tour() {
+    return button_row("Editor tour",
+                      "The short tour of the editor from its first opening again: the skater and his joints, the joint card and "
+                      "KEY, the timeline, scrubbing and playing, the camera, SAVE and TEST IN GAME. It shows on the editor.",
+                      [] { studio::set_editor_tour_seen(false); });
+}
 Setting report_a_bug(Tell tell) {
     return button_row("Report a bug",
                       "Something went wrong? Press this afterwards, from the pause menu or the studio: the last 25 seconds of play "

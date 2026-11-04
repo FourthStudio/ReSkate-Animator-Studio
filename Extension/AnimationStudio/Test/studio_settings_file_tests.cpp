@@ -74,6 +74,24 @@ void a_file_from_before_shows_the_catch_tools_and_the_guide() {
     read_settings_file(Json::parse(R"({"catch_marker": false, "drop_preview": false})"), with_drop);
     check(!with_drop.catch_marker, "A file with the old drop_preview key did not load");
 }
+void the_editor_tour_and_the_tricks_view_survive_a_save_and_reload() {
+    SettingsFile saved;
+    saved.editor_tour_seen = true;
+    saved.tricks_view = {2, 3, 1, 6, true};
+    const auto read = reloaded(saved);
+    check(read.editor_tour_seen, "The editor tour shows again after it was gone through");
+    check(read.tricks_view == saved.tricks_view, "MY TRICKS' view, groups or order did not come back as saved");
+    // A file from before either: the tour shows once, MY TRICKS opens as a list grouped by trick (FROM PACKS by pack).
+    SettingsFile older;
+    read_settings_file(Json::parse(R"({"guide_read": 3})"), older);
+    check(!older.editor_tour_seen && older.guide_seen, "A file from before the tour does not show the tour, or lost the guide");
+    check(older.tricks_view == TricksView{}, "A file from before MY TRICKS' views does not open it as it always was");
+    // Numbers out of range are kept in it, never read as another view.
+    SettingsFile wild;
+    read_settings_file(Json::parse(R"({"my_tricks": {"view": 9, "group": -2, "group_packs": 8, "sort": 40}})"), wild);
+    check(wild.tricks_view.view == 2 && wild.tricks_view.group_mine == 0 && wild.tricks_view.group_packs == 3 && wild.tricks_view.sort == 7,
+          "A view, group or sort out of range was kept");
+}
 void values_out_of_range_are_kept_in_it() {
     SettingsFile read;
     read_settings_file(Json::parse(R"({"stance": 7, "crossfade": 3.0})"), read);
@@ -86,6 +104,7 @@ int main() {
         a_file_from_before_keeps_both_on();
         every_saved_setting_survives_a_save_and_reload();
         values_out_of_range_are_kept_in_it();
+        the_editor_tour_and_the_tricks_view_survive_a_save_and_reload();
         the_catch_tools_and_the_guide_survive_a_save_and_reload();
         a_file_from_before_shows_the_catch_tools_and_the_guide();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

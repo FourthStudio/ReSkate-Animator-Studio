@@ -388,6 +388,8 @@ struct State {
     int open_combo{};                              // SETTINGS > STUDIO > Controller combo (open_combo_names)
     bool catch_marker{true};                       // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                             // the first-start guide was read
+    bool editor_tour_seen{};                       // the editor's first-open tour was gone through or skipped
+    TricksView tricks_view;                        // TRICKS > MY TRICKS: how it is shown (View::tricks_view)
     bool smooth_handover{true};                    // SETTINGS > TRICKS > Transitions: SMOOTH (smooth_transitions) or CLASSIC
     std::map<std::string, std::string> keys;       // the editor's rebound keys (View::keys)
     bool playlist_on{};                            // the playlist that plays (Playlists::on), as last read
@@ -929,6 +931,8 @@ SettingsFile settings_file_of(const State& s) {
     f.play_in_game = s.test_playback.saved(s.play_in_game);
     f.catch_marker = s.catch_marker;
     f.guide_seen = s.guide_seen;
+    f.editor_tour_seen = s.editor_tour_seen;
+    f.tricks_view = s.tricks_view;
     f.smooth_transitions = s.smooth_handover;
     f.advanced_bones = s.advanced_bones;
     f.finger_bones = s.finger_bones;
@@ -988,6 +992,8 @@ void load_settings(State& s) {
         s.play_in_game = f.play_in_game;
         s.catch_marker = f.catch_marker;
         s.guide_seen = f.guide_seen;
+        s.editor_tour_seen = f.editor_tour_seen;
+        s.tricks_view = f.tricks_view;
         s.smooth_handover = f.smooth_transitions;
         smooth_transitions.store(f.smooth_transitions, std::memory_order_relaxed);
     } catch (...) {
@@ -7024,6 +7030,8 @@ View view() {
     v.modifier_ready = modifier_mask(s.loaded_modifier) != 0;
     v.catch_marker = s.catch_marker;
     v.guide_seen = s.guide_seen;
+    v.editor_tour_seen = s.editor_tour_seen;
+    v.tricks_view = s.tricks_view;
     v.keys = s.keys;
     v.export_folder = s.export_folder;
     v.import_folder = s.import_folder;
@@ -8670,6 +8678,16 @@ std::vector<std::string> playlists_containing(const std::string& animation) {
         if (playlist_membership(list.entries, s.packs, animation).included()) out.push_back(list.name);
     return out;
 }
+std::map<std::string, std::vector<std::string>> playlists_by_animation() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.library_read) read_library_locked(s);
+    std::map<std::string, std::vector<std::string>> out;
+    for (const auto& list : s.playlists.lists)
+        for (const auto& [animation, membership] : playlist_membership_index(list.entries, s.packs))
+            if (membership.included()) out[animation].push_back(list.name);
+    return out;
+}
 bool duplicate_playlist(const std::string& target, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -8913,6 +8931,22 @@ void set_guide_seen(bool seen) {
     std::lock_guard lock(s.mutex);
     if (s.guide_seen == seen) return;
     s.guide_seen = seen;
+    save_settings_locked(s);
+    publish_locked(s, false);
+}
+void set_editor_tour_seen(bool seen) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.editor_tour_seen == seen) return;
+    s.editor_tour_seen = seen;
+    save_settings_locked(s);
+    publish_locked(s, false);
+}
+void set_tricks_view(const TricksView& view) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.tricks_view == view) return;
+    s.tricks_view = view;
     save_settings_locked(s);
     publish_locked(s, false);
 }
