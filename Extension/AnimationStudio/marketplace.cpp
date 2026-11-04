@@ -477,9 +477,6 @@ struct Market {
     // cost a few milliseconds. The icon worker fills in the ones it downloads.
     std::map<std::string, std::string> icon_files;
     bool icon_worker{};
-    // Each pack version's icon file ("" none on the disk), asked of the disk once: view() is called several times a frame
-    // while the MARKET is open, and asking the disk for 50 icons cost 4.7 ms a call (2026-11-04).
-    std::map<std::string, std::string> icon_files;
     struct Readme {
         std::string version, about;
         std::vector<std::string> tricks;
