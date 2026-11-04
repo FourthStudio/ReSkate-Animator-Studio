@@ -395,9 +395,10 @@ struct Market {
     Detail detail;
     std::deque<std::string> icon_queue;
     std::set<std::string> icons_asked;
-    // Whether each pack's icon is on disk (by its file), looked at once and then kept: view() and want_icons() run every
-    // frame the MARKET is open, and a look at the disk for every pack each frame cost a few milliseconds.
-    std::map<std::filesystem::path, bool> icons_there;
+    // Each pack's icon on disk, by "Team-Name|version": its file (UTF-8), "" when it is not there. Looked at once and then
+    // kept: view() and want_icons() run every frame the MARKET is open, and a look at the disk for every pack each frame
+    // cost a few milliseconds. The icon worker fills in the ones it downloads.
+    std::map<std::string, std::string> icon_files;
     bool icon_worker{};
     struct Readme {
         std::string version, about;
@@ -653,7 +654,7 @@ std::filesystem::path icon_path(const Pack& p) { return folder() / L"icons" / wi
 void icon_worker() {
     auto& m = market();
     for (;;) {
-        std::string url;
+        std::string url, key;
         std::filesystem::path path;
         {
             std::lock_guard lock(m.mutex);
@@ -667,6 +668,7 @@ void icon_worker() {
             if (found == m.packs.end() || found->icon_url.empty()) continue;
             url = found->icon_url;
             path = icon_path(*found);
+            key = found->full_name + "|" + found->version;
         }
         std::error_code error;
         std::filesystem::create_directories(path.parent_path(), error);
@@ -678,17 +680,19 @@ void icon_worker() {
         else std::filesystem::remove(temporary, error);
         const bool there = got.ok && !error;
         std::lock_guard lock(m.mutex);
-        m.icons_there[path] = there;
+        m.icon_files[key] = there ? utf8(path) : std::string{};
     }
 }
-// Whether the icon is on disk: looked at the first time only (the icon worker says when it writes one).
-bool icon_there_locked(Market& m, const std::filesystem::path& path) {
-    const auto found = m.icons_there.find(path);
-    if (found != m.icons_there.end()) return found->second;
-    std::error_code error;
-    const bool there = std::filesystem::is_regular_file(path, error);
-    m.icons_there.emplace(path, there);
-    return there;
+// The pack's icon file, "" when it is not on disk: looked at the first time only (the icon worker says when it writes one).
+const std::string& icon_file_locked(Market& m, const Pack& p) {
+    const auto key = p.full_name + "|" + p.version;
+    auto found = m.icon_files.find(key);
+    if (found == m.icon_files.end()) {
+        std::error_code error;
+        const auto path = icon_path(p);
+        found = m.icon_files.emplace(key, std::filesystem::is_regular_file(path, error) ? utf8(path) : std::string{}).first;
+    }
+    return found->second;
 }
 // The READMEs, one after another: from disk when this version's was read before, else from Thunderstore.
 std::filesystem::path readme_path(const std::string& full_name, const std::string& version) {
@@ -938,7 +942,7 @@ View view() {
             if (found != m.counts.end())
                 for (const auto& version : found->second) p.versions.push_back({version.version, version.date, version.downloads});
         }
-        if (const auto path = icon_path(p); icon_there_locked(m, path)) p.icon_file = utf8(path);
+        p.icon_file = icon_file_locked(m, p);
     }
     return v;
 }
@@ -1054,7 +1058,7 @@ void want_icons(const std::vector<std::string>& full_names) {
         const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == name; });
         if (found == m.packs.end() || found->icon_url.empty()) continue;
         const auto key = name + "|" + found->version;
-        if (m.icons_asked.contains(key) || icon_there_locked(m, icon_path(*found))) continue;
+        if (m.icons_asked.contains(key) || !icon_file_locked(m, *found).empty()) continue;
         m.icons_asked.insert(key);
         m.icon_queue.push_back(name);
     }

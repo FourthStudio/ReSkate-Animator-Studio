@@ -2560,6 +2560,7 @@ void menu_back(const studio::View& v) {
         }
         if (!u.market_crew.empty()) {
             u.market_crew.clear();
+            if (u.market_list == "maker") u.market_list = "browse"; // a maker's own page: back to every pack
             u.market_scroll = 0;
             return;
         }
@@ -6068,6 +6069,7 @@ void open_market_pack(const MarketPack& p) {
     auto& u = ui();
     u.market_open = p.full_name;
     u.market_detail_scroll = 0;
+    u.market_all_tricks = false;
     studio::market::want_readmes({p.full_name});
 }
 // The heart: liked here (LIKED), and, once liked, the offer to like it on Thunderstore too.
@@ -6302,7 +6304,7 @@ float film_strip(ImDrawList* d, const Fonts& f, const PackList& packs, float wid
         // The frame's edge numbers, as printed on film.
         const auto age = days_old(p);
         const std::string edge = two_digits(static_cast<int>(i) + 1) + "  >  " + (age <= 7 ? std::string("NEW") : age_words(age, p.created.empty() ? p.updated : p.created));
-        text_spaced(d, mont(f, 11 * k), 11 * k, ImVec2(a.x, band + 27 * k), IM_COL32(222, 216, 202, 190), edge, 1.2f * k);
+        text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(a.x, band + 27 * k), IM_COL32(222, 216, 202, 190), edge, 1.2f * k);
         d->AddRectFilled(ImVec2(a.x - 3 * k, a.y - 3 * k), ImVec2(b.x + 3 * k, b.y + 3 * k), IM_COL32(4, 4, 6, 255));
         market_icon(d, f, p, a, b, IM_COL32_WHITE, 1 + 0.06f * hv);
         if (hv > 0.01f) d->AddRect(ImVec2(a.x - 3 * k, a.y - 3 * k), ImVec2(b.x + 3 * k, b.y + 3 * k), with_alpha(blue_light, static_cast<int>(255 * hv)), 0, 0, 3 * k);
@@ -7379,7 +7381,10 @@ float cover_section(ImDrawList* d, const Fonts& f, const studio::View& v, const 
         ty += look_heading(d, f, look, ImVec2(plan.words_x, ty), "WELCOME TO", 24 * k, 11, look.page == PaperKind::blue ? PaperKind::white : PaperKind::blue, -2).y + 26 * k;
         ty += set_cover_title(d, f, look.headline, ImVec2(plan.words_x, ty), {"THE MARKET"}, std::min(plan.title_max, 120 * k), plan.words_w, ink, page, 5) + 24 * k;
         lines_text(d, body(f, 17 * k), 17 * k, ImVec2(plan.words_x, ty), std::min(560 * k, plan.words_w), ink_soft,
-                   m.loading ? "Reading Thunderstore..." : "Animation packs made in the Animator Studio, by skaters, for skaters. Make one and put it on the shelf.", 3);
+                   m.loading          ? "Reading Thunderstore..."
+                   : !m.error.empty() ? "The shop could not be reached just now. The packs you have got stay in your LIBRARY."
+                                      : "Animation packs made in the Animator Studio, by skaters, for skaters. Make one and put it on the shelf.",
+                   3);
     } else {
         if (e < 1 && u.spotlight_prev >= 0 && u.spotlight_prev < n && u.spotlight_prev != u.spotlight) draw_pick(u.spotlight_prev, 1 - e, -36 * k * e);
         draw_pick(u.spotlight, e, 36 * k * (1 - e));
@@ -7473,15 +7478,15 @@ float cover_section(ImDrawList* d, const Fonts& f, const studio::View& v, const 
             (void)tb;
         }
     }
-    // NOVEMBER: this month's chart down the side.
-    if (plan.chart) {
+    // NOVEMBER: this month's chart down the side (none while the shop has nothing in it).
+    if (plan.chart && n > 0) {
         const float cx = plan.chart_x, cw = plan.chart_w;
         float cy = y + 56 * k;
         ImFont* hf = anton(f, 34 * k);
         const auto [ht, hb] = caps_of(hf, 34 * k);
         d->AddText(sharp(hf, 34 * k), 34 * k, ImVec2(cx, cy - ht), IM_COL32_WHITE, by_month ? "THIS MONTH" : "JUST DROPPED");
         marker_underline(d, ImVec2(cx, cy + (hb - ht) + 8 * k), 170 * k, 5 * k, blue, 91);
-        text_spaced(d, mont(f, 11 * k), 11 * k, ImVec2(cx + 190 * k, cy + 10 * k), soft, month_words(m.month), 2 * k);
+        text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(cx + 190 * k, cy + 10 * k), soft, month_words(m.month), 2 * k);
         cy += (hb - ht) + 34 * k;
         const float row_h = 112 * k;
         for (int i = 0; i < std::min(n, 4); ++i) {
@@ -7508,7 +7513,7 @@ float cover_section(ImDrawList* d, const Fonts& f, const studio::View& v, const 
             d->AddText(sharp(tf, 22 * k), 22 * k, ImVec2(tx, ra.y + 18 * k - tt), IM_COL32_WHITE, elide(tf, 22 * k, upper(p.title), tw).c_str());
             d->AddText(sharp(mont(f, 12 * k), 12 * k), 12 * k, ImVec2(tx, ra.y + 18 * k + (tb - tt) + 8 * k), blue_light,
                        elide(mont(f, 12 * k), 12 * k, "by " + maker_of(p), tw).c_str());
-            text_spaced(d, mont(f, 10 * k), 10 * k, ImVec2(tx, ra.y + 18 * k + (tb - tt) + 32 * k), soft,
+            text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(tx, ra.y + 18 * k + (tb - tt) + 32 * k), soft,
                         std::to_string(p.tricks.size()) + " TRICKS" + (by_month && p.month_counted ? "  /  +" + short_count(p.month_downloads) : std::string{}), 1.2f * k);
             if (lit && nav().keys) chosen_outline(d, ra, rb, k);
             if (pressed) open_market_pack(p);
@@ -7580,7 +7585,7 @@ void member_card(ImDrawList* d, const Fonts& f, const studio::market::CrewMember
         {{std::to_string(theirs.size()), "PACKS"}, {short_count(static_cast<std::uint64_t>(likes)), "LIKES"}, {short_count(downloads), "DOWNLOADS"}}};
     for (const auto& [value, word] : stats) {
         d->AddText(sharp(num, 22 * k), 22 * k, ImVec2(sx, y - st), IM_COL32_WHITE, value.c_str());
-        const float ww = text_spaced(d, mont(f, 10 * k), 10 * k, ImVec2(sx, y + (sb - st) + 6 * k), soft, word, 1.2f * k);
+        const float ww = text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(sx, y + (sb - st) + 6 * k), soft, word, 1.2f * k);
         sx += std::max(ww, text_size(num, 22 * k, value.c_str()).x) + 18 * k;
     }
     if (lit && nav().keys) chosen_outline(d, ca, cb, k);
@@ -8833,22 +8838,19 @@ const TrickTags& trick_tags(const Fonts& f, const MarketPack& p, float width, bo
     if (kept.key == key) return kept;
     kept = {};
     kept.key = key;
-    constexpr std::size_t shown_first = 48;
+    // Folded, a dozen of each kind: every kind shows, and SHOW ALL has the rest.
+    constexpr std::size_t shown_first = 12;
     std::array<std::vector<std::size_t>, studio::market::trick_kind_count> by_kind;
     for (std::size_t i = 0; i < p.tricks.size(); ++i) by_kind[static_cast<std::size_t>(studio::market::trick_kind(p.tricks[i]))].push_back(i);
     const float th = 36 * k, gap = 10 * k, head_h = 40 * k;
     ImFont* tf = mont(f, 13 * k);
     float y = 0;
-    std::size_t placed = 0;
     for (std::size_t kind = 0; kind < by_kind.size(); ++kind) {
         if (by_kind[kind].empty()) continue;
-        if (!everything && placed >= shown_first) {
-            kept.hidden += by_kind[kind].size();
-            continue;
-        }
         kept.heads.push_back({kind, by_kind[kind].size(), y});
         y += head_h;
         float x = 0;
+        std::size_t placed = 0;
         for (const auto i : by_kind[kind]) {
             if (!everything && placed >= shown_first) {
                 ++kept.hidden;
@@ -9055,10 +9057,10 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         if (!p.versions.empty()) stats.emplace_back(std::to_string(p.versions.size()), p.versions.size() == 1 ? "VERSION" : "VERSIONS");
         float sx = x;
         for (const auto& [value, word] : stats) {
-            const float vw = text_size(num, 40 * k, value.c_str()).x, lw = spaced_width(mont(f, 11 * k), 11 * k, word, 1.6f * k);
+            const float vw = text_size(num, 40 * k, value.c_str()).x, lw = spaced_width(mont(f, 12 * k), 12 * k, word, 1.6f * k);
             if (sx + std::max(vw, lw) > x + w) break;
             d->AddText(sharp(num, 40 * k), 40 * k, ImVec2(sx, ry - nt), IM_COL32_WHITE, value.c_str());
-            text_spaced(d, mont(f, 11 * k), 11 * k, ImVec2(sx, ry + (nb - nt) + 8 * k), soft, word, 1.6f * k);
+            text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(sx, ry + (nb - nt) + 8 * k), soft, word, 1.6f * k);
             sx += std::max(vw, lw) + 40 * k;
         }
         ry += (nb - nt) + 46 * k;
@@ -11432,7 +11434,10 @@ void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
     // How the upload is going, or how it went.
     if (market.job.running || !market.job.message.empty()) {
         const auto line = market.job.running ? upper(market.job.what) + "  " + std::to_string(static_cast<int>(market.job.fraction * 100)) + "%" : market.job.message;
-        paragraph(d, f.bold, 13 * k, ImVec2(x, y), w - 220 * k, market.job.failed ? skate_theme::warning : soft, line);
+        // As many lines as there is room for above DONE (a long Thunderstore error ran into it), the last cut short.
+        const float line_h = text_size(f.bold, 13 * k, "Ag").y;
+        const int room = std::max(1, static_cast<int>((b.y - 76 * k - y) / std::max(1.0f, line_h)));
+        lines_text(d, f.bold, 13 * k, ImVec2(x, y), w - 220 * k, market.job.failed ? skate_theme::warning : soft, line, room);
         if (market.job.running) {
             d->AddRectFilled(ImVec2(x, y + 22 * k), ImVec2(x + w - 220 * k, y + 28 * k), IM_COL32(255, 255, 255, 40), 3 * k);
             d->AddRectFilled(ImVec2(x, y + 22 * k), ImVec2(x + (w - 220 * k) * market.job.fraction, y + 28 * k), blue, 3 * k);
@@ -11632,7 +11637,7 @@ void market_preview_card(ImDrawList* d, const Fonts& f, const studio::View& v, f
         const bool installed = pack && !pack->installed.empty() && !removed_here(v, *pack);
         text(d, f.heading, 12 * k, ImVec2(px, y + 2 * k), blue_light, installed ? "PACK  -  INSTALLED" : "PACK  -  NOT INSTALLED");
         const auto title = pack ? pack->title : u.preview_market;
-        paragraph(d, f.title, 22 * k, ImVec2(px, y + 20 * k), pw, white, upper(elide(f.title, 22 * k, title, pw * 2)));
+        lines_text(d, f.title, 22 * k, ImVec2(px, y + 20 * k), pw, white, upper(title), 2); // two lines at most, over its maker
         if (pack) text(d, f.bold, 12 * k, ImVec2(px, y + cover - 16 * k), soft, elide(f.bold, 12 * k, "BY " + upper(maker_of(*pack)), pw));
         y += cover + 14 * k;
         if (pack) {
