@@ -129,6 +129,12 @@ bool lib_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 a, ImVec2 
     if (look == Look::dark && enabled) d->AddRect(a, {a.x + size.x, a.y + size.y}, IM_COL32(255, 255, 255, 70), 0, 0, 1 * f.k);
     return pressed;
 }
+// A LIBRARY button's width from its label, as the shop sizes its own (never less than `least`). Fixed widths cut labels
+// at 720p ("CLE..."), where the small sizes' rounded advances run a few per cent wider than at 1080p: a little over, for
+// that.
+float lib_w(const Fonts& f, std::string_view label, float height, float least = 0) {
+    return std::max(least, shop_button_width(f, label, height) + 6 * f.k);
+}
 // A sheet to read on: near black, torn at its edges (a little of the grip tape's grain, its light torn rim), its shadow
 // under it. (Cream paper read too bright over a whole page, and the grip tape itself too busy under words.)
 void library_sheet(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
@@ -270,6 +276,20 @@ void offer_new_playlist(const studio::View& v, const studio::PlaylistEntry& entr
     say(m);
 }
 void library_choose_playlists(const studio::PlaylistEntry& source, const std::string& name);  // studio_library_widgets.inl
+// The line under the answers: where ADD puts it.
+std::string offer_where(const studio::View& v) {
+    const auto names = library_playlist_names(v);
+    const auto target = studio::offer_target(names, v.playlist_playing, v.playlist_open);
+    return target.make ? "Nothing of yours plays yet: ADD makes a playlist, puts it in and sets it as default."
+           : target.play ? "No playlist plays by default yet: ADD puts it in " + target.name + " and sets that one as default."
+                         : "ADD puts it in " + target.name + ", the playlist that plays by default." + (v.play_in_game ? "" : " (Playback is off.)");
+}
+// How tall offer_block comes out at width `w`, before it is drawn (the card is sized by it).
+float offer_block_height(const Fonts& f, const studio::View& v, float w) {
+    const float k = f.k;
+    if (ui().offer_naming) return 70 * k;
+    return 52 * k + sharp(body(f, 13 * k), 13 * k)->CalcTextSizeA(13 * k, FLT_MAX, w, offer_where(v).c_str()).y;
+}
 // The question itself: what it is, where ADD puts it, and the four answers. Drawn on the "ADD IT TO A PLAYLIST?" card and
 // on the SAVED card. `name_for`: the name NEW PLAYLIST... suggests. Returns how tall it came out; `answered` is set when
 // a button closed the question.
@@ -283,14 +303,15 @@ float offer_block(ImDrawList* d, const Fonts& f, const studio::View& v, const st
     if (u.offer_naming) {
         text(d, body(f, 14 * k), 14 * k, {at.x, y}, lib_ink_soft, "Name the new playlist:");
         y += 26 * k;
-        const bool entered = field(f, "##offername", u.offer_name, {at.x, y}, w - 300 * k, "e.g. Everyday, Big flips...");
+        const float back_w = lib_w(f, "BACK", 34 * k, 100 * k), create_w = lib_w(f, "CREATE + ADD", 34 * k, 180 * k);
+        const bool entered = field(f, "##offername", u.offer_name, {at.x, y}, w - back_w - create_w - 20 * k, "e.g. Everyday, Big flips...");
         const bool named = std::any_of(u.offer_name.begin(), u.offer_name.end(), [](char c) { return c != 0 && c != ' '; });
-        if ((action(d, f, "##offercreate", {at.x + w - 290 * k, y}, {180 * k, 34 * k}, "CREATE + ADD", Look::blue, named) || entered) && named) {
+        if ((action(d, f, "##offercreate", {at.x + w - back_w - 10 * k - create_w, y}, {create_w, 34 * k}, "CREATE + ADD", Look::blue, named) || entered) && named) {
             offer_new_playlist(v, entry, u.offer_name.data());
             u.offer_naming = false;
             answered = true;
         }
-        if (action(d, f, "##offerbacknew", {at.x + w - 100 * k, y}, {100 * k, 34 * k}, "BACK", Look::ghost)) u.offer_naming = false;
+        if (action(d, f, "##offerbacknew", {at.x + w - back_w, y}, {back_w, 34 * k}, "BACK", Look::ghost)) u.offer_naming = false;
         y += 44 * k;
         ImGui::PopID();
         return y - at.y;
@@ -314,13 +335,7 @@ float offer_block(ImDrawList* d, const Fonts& f, const studio::View& v, const st
     x += rest + gap;
     if (action(d, f, "##offerlater", {x, y}, {rest, bh}, "NOT NOW", Look::ghost)) answered = true;
     y += bh + 10 * k;
-    const auto names = library_playlist_names(v);
-    const auto target = studio::offer_target(names, v.playlist_playing, v.playlist_open);
-    const std::string where = target.make ? "Nothing of yours plays yet: ADD makes a playlist, puts it in and plays it by default."
-                              : target.play ? "No playlist plays by default yet: ADD puts it in " + target.name + " and plays that one."
-                                            : "ADD puts it in " + target.name + ", the playlist that plays by default." +
-                                                  (v.play_in_game ? "" : " (Playback is paused.)");
-    y += paragraph(d, body(f, 13 * k), 13 * k, {at.x, y}, w, lib_ink_faint, where);
+    y += paragraph(d, body(f, 13 * k), 13 * k, {at.x, y}, w, lib_ink_faint, offer_where(v));
     ImGui::PopID();
     return y - at.y;
 }
@@ -353,12 +368,14 @@ void offer_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
         u.offer_pack.clear();
         return;
     }
-    const auto [a, b] = card_box(d, f, display, 940 * k, 420 * k, "ADD IT TO A PLAYLIST?", blue);
+    // As tall as what is on it: its head, the pack, the question, and a margin under it.
+    const float card_w = std::min(940 * k, display.x - 40 * k), cover = 96 * k;
+    const float card_h = 92 * k + cover + 26 * k + offer_block_height(f, v, card_w - 60 * k) + 34 * k;
+    const auto [a, b] = card_box(d, f, display, card_w, card_h, "ADD IT TO A PLAYLIST?", blue);
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 92 * k;
-    const float cover = 96 * k;
     pack_cover(d, f, *pack, {x, y}, {x + cover, y + cover});
-    lib_caps(d, f, {x + cover + 20 * k, y + 4 * k}, 11 * k, lib_blue, "JUST GOT IN THE MARKET");
+    lib_caps(d, f, {x + cover + 20 * k, y + 4 * k}, 13 * k, lib_blue, "JUST GOT IN THE MARKET");
     text(d, anton(f, 30 * k), 30 * k, {x + cover + 20 * k, y + 24 * k}, white, elide(anton(f, 30 * k), 30 * k, upper(pack->name), w - cover - 20 * k));
     text(d, body(f, 14 * k), 14 * k, {x + cover + 20 * k, y + 66 * k}, soft,
          elide(body(f, 14 * k), 14 * k, std::to_string(pack->members.size()) + (pack->members.size() == 1 ? " trick" : " tricks") +
