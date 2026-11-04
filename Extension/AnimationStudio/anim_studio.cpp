@@ -7377,6 +7377,7 @@ void set_solo(bool on) {
 void begin_change() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    if (s.previewing) return; // a preview is to watch only: nothing of it goes on the undo stack either
     s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade});
     if (s.undo.size() > 200) s.undo.pop_front();
     s.redo.clear();
