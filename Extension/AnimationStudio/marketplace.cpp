@@ -172,7 +172,8 @@ std::string said(const Answer& a) {
 // download fail with "it took too long" (1.1.x had one 30 minute limit and three tries, each from the start). A pack's
 // zip is checked whole (every file's CRC) before it takes its place.
 constexpr std::uint32_t stall_ms = 60000;
-constexpr std::uint64_t most_pack_bytes = 1024ull * 1024 * 1024; // packs are tens of MB now; hundreds are taken
+// Packs are tens of MB now; hundreds are taken, up to what the import takes (read_pack_zip: 512 MB).
+constexpr std::uint64_t most_pack_bytes = 512ull * 1024 * 1024;
 // Why a download failed, in words. Thunderstore says 200 before the body comes, so a body cut short (the connection
 // dropped, it stalled) needs its own words, not "the download failed (200)".
 std::string download_failure(const https::Download& got) {
@@ -185,7 +186,7 @@ std::string download_failure(const https::Download& got) {
         switch (got.error) {
         case ERROR_WINHTTP_TIMEOUT: why = "the connection stopped sending (nothing came for a minute)"; break;
         case ERROR_TIMEOUT: why = "it ran out of time"; break;
-        case ERROR_FILE_TOO_LARGE: why = "it is bigger than the studio takes (1 GB)"; break;
+        case ERROR_FILE_TOO_LARGE: why = "it is bigger than the studio takes (512 MB)"; break;
         case ERROR_CANCELLED: why = "it was stopped"; break;
         case ERROR_INVALID_DATA: why = "it arrived damaged twice (its zip did not check out)"; break;
         case ERROR_BAD_LENGTH: why = "it arrived another size than Thunderstore said"; break;
