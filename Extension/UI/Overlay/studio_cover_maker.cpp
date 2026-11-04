@@ -135,35 +135,66 @@ const wchar_t* font_resource(std::string_view font) {
     if (font == "marker") return L"FONT_BRUSH";
     return L"FONT_ANTON";
 }
+// The letters of `text` (UTF-8) as code points, each with the face that has it: the cover's own face, or Montserrat for
+// a letter it lacks (an accent or Cyrillic in a pack's name). Each byte was taken as a letter before, so "e-acute"
+// printed as two wrong ones on the saved cover.
+struct Letter {
+    const Face* face{};
+    int cp{};
+};
+std::vector<Letter> letters_of(const Face& f, std::string_view text) {
+    std::vector<Letter> out;
+    const Face& fallback = face(L"FONT_HEADING");
+    for (std::size_t i = 0; i < text.size();) {
+        const auto b = static_cast<unsigned char>(text[i]);
+        int cp = b, more = 0;
+        if (b >= 0xF0) cp = b & 0x07, more = 3;
+        else if (b >= 0xE0) cp = b & 0x0F, more = 2;
+        else if (b >= 0xC0) cp = b & 0x1F, more = 1;
+        else if (b >= 0x80) cp = '?'; // a stray continuation byte
+        ++i;
+        for (; more > 0 && i < text.size() && (static_cast<unsigned char>(text[i]) & 0xC0) == 0x80; --more, ++i)
+            cp = (cp << 6) | (static_cast<unsigned char>(text[i]) & 0x3F);
+        if (more > 0) cp = '?';
+        const Face* use = &f;
+        if (f.ok && !stbtt_FindGlyphIndex(&f.info, cp) && fallback.ok && stbtt_FindGlyphIndex(&fallback.info, cp)) use = &fallback;
+        out.push_back({use, cp});
+    }
+    return out;
+}
 float text_width(const Face& f, std::string_view text, float px) {
     if (!f.ok) return 0;
-    const float scale = stbtt_ScaleForMappingEmToPixels(&f.info, px);
+    const auto letters = letters_of(f, text);
     float w = 0;
-    for (std::size_t i = 0; i < text.size(); ++i) {
+    for (std::size_t i = 0; i < letters.size(); ++i) {
+        const auto& l = letters[i];
+        const float scale = stbtt_ScaleForMappingEmToPixels(&l.face->info, px);
         int advance = 0, bearing = 0;
-        stbtt_GetCodepointHMetrics(&f.info, static_cast<unsigned char>(text[i]), &advance, &bearing);
+        stbtt_GetCodepointHMetrics(&l.face->info, l.cp, &advance, &bearing);
         w += advance * scale;
-        if (i + 1 < text.size()) w += stbtt_GetCodepointKernAdvance(&f.info, static_cast<unsigned char>(text[i]), static_cast<unsigned char>(text[i + 1])) * scale;
+        if (i + 1 < letters.size() && letters[i + 1].face == l.face) w += stbtt_GetCodepointKernAdvance(&l.face->info, l.cp, letters[i + 1].cp) * scale;
     }
     return w;
 }
 // The words centred on `cx`, sitting on `baseline`, in colour c (straight).
 void draw_text(Layer& layer, const Face& f, std::string_view text, float px, float cx, float baseline, Rgba c) {
     if (!f.ok) return;
-    const float scale = stbtt_ScaleForMappingEmToPixels(&f.info, px);
     float x = cx - text_width(f, text, px) * 0.5f;
+    const auto letters = letters_of(f, text);
     std::vector<unsigned char> bitmap;
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        const int cp = static_cast<unsigned char>(text[i]);
+    for (std::size_t i = 0; i < letters.size(); ++i) {
+        const auto& info = letters[i].face->info;
+        const int cp = letters[i].cp;
+        const float scale = stbtt_ScaleForMappingEmToPixels(&info, px);
         int advance = 0, bearing = 0;
-        stbtt_GetCodepointHMetrics(&f.info, cp, &advance, &bearing);
+        stbtt_GetCodepointHMetrics(&info, cp, &advance, &bearing);
         const float shift = x - std::floor(x);
         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        stbtt_GetCodepointBitmapBoxSubpixel(&f.info, cp, scale, scale, shift, 0, &x0, &y0, &x1, &y1);
+        stbtt_GetCodepointBitmapBoxSubpixel(&info, cp, scale, scale, shift, 0, &x0, &y0, &x1, &y1);
         const int gw = x1 - x0, gh = y1 - y0;
         if (gw > 0 && gh > 0) {
             bitmap.assign(static_cast<std::size_t>(gw) * gh, 0);
-            stbtt_MakeCodepointBitmapSubpixel(&f.info, bitmap.data(), gw, gh, gw, scale, scale, shift, 0, cp);
+            stbtt_MakeCodepointBitmapSubpixel(&info, bitmap.data(), gw, gh, gw, scale, scale, shift, 0, cp);
             const int ox = static_cast<int>(std::floor(x)) + x0, oy = static_cast<int>(std::lround(baseline)) + y0;
             for (int yy = 0; yy < gh; ++yy)
                 for (int xx = 0; xx < gw; ++xx) {
@@ -172,7 +203,7 @@ void draw_text(Layer& layer, const Face& f, std::string_view text, float px, flo
                 }
         }
         x += advance * scale;
-        if (i + 1 < text.size()) x += stbtt_GetCodepointKernAdvance(&f.info, cp, static_cast<unsigned char>(text[i + 1])) * scale;
+        if (i + 1 < letters.size() && letters[i + 1].face == letters[i].face) x += stbtt_GetCodepointKernAdvance(&info, cp, letters[i + 1].cp) * scale;
     }
 }
 

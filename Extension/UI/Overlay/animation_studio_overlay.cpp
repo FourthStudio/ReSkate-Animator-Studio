@@ -54,7 +54,8 @@ constexpr ImU32 row_selected = IM_COL32(62, 66, 74, 236);
 // skate.'s look: rough-edged dark tiles, white type, grey labels, the game's blue for what is chosen.
 constexpr ImU32 white = skate_theme::white;
 constexpr ImU32 soft = IM_COL32(168, 170, 176, 255);
-constexpr ImU32 faint = IM_COL32(112, 114, 120, 255);
+// 142 rather than 112: the help text in this grey has to read on the dark tiles (about 5.4:1 against them).
+constexpr ImU32 faint = IM_COL32(142, 145, 152, 255);
 // The tools down the left: how wide (times the scale), and where they start from the left edge.
 constexpr float tool_strip_width = 148, tool_strip_margin = 20;
 constexpr ImU32 blue = skate_theme::blue;
@@ -1597,6 +1598,11 @@ struct Nav {
     bool clipped{};
     int top{};                     // the highest layer drawn last frame: only that one can be chosen
     std::unordered_map<int, float> region_end; // each scrolled list's furthest scroll, as it was last frame
+    // Where each draw list stood when the scrolled list began, so its edges can be faded once it is drawn.
+    struct RegionStart {
+        ImDrawList* list{};
+        int cmd{}, idx{}, vtx{};
+    } region_start[2]{};
 };
 Nav& nav() {
     static auto* n = new Nav;
@@ -1710,11 +1716,59 @@ void begin_region(int id, ImVec2 a, ImVec2 b, float& scroll, float k) {
     // back, which flickered and cut it off at the bottom.
     scroll = std::max(0.0f, scroll);
     if (const auto end = n.region_end.find(id); end != n.region_end.end()) scroll = std::min(scroll, end->second);
+    // The pages draw into the window's list or the foreground one; note both before the clip rect adds a command.
+    ImDrawList* lists[2] = {ImGui::GetWindowDrawList(), ImGui::GetForegroundDrawList()};
+    for (int i = 0; i < 2; ++i)
+        n.region_start[i] = {lists[i], std::max(0, lists[i]->CmdBuffer.Size - 1), lists[i]->IdxBuffer.Size, lists[i]->VtxBuffer.Size};
     n.region = id;
     n.clip_a = a;
     n.clip_b = b;
     n.clipped = true;
     ImGui::PushClipRect(a, b, true);
+}
+// Fades what was drawn into a scrolled list out towards an edge that has more beyond it, instead of slicing rows and
+// buttons in half there (users read a sliced button as broken). Only small shapes fade (text, buttons, rows, icons):
+// a big one such as a sheet behind the whole list has its corners far outside the box, and fading those would make it
+// vanish, so triangles taller than `big` are left as they are.
+void fade_region_edges(const Nav::RegionStart& from, ImDrawList* d, float top, float bottom, bool up, bool down, float k) {
+    if (!d || d != from.list || (!up && !down)) return;
+    const int count = d->VtxBuffer.Size - from.vtx;
+    if (count <= 0) return;
+    const float band = 18 * k, big = 100 * k;
+    static std::vector<std::uint8_t> mark; // 1: in a small triangle, 2: in a big one
+    mark.assign(static_cast<std::size_t>(count), 0);
+    for (int c = from.cmd; c < d->CmdBuffer.Size; ++c) {
+        const ImDrawCmd& cmd = d->CmdBuffer[c];
+        if (cmd.UserCallback) continue;
+        const unsigned first = std::max(cmd.IdxOffset, static_cast<unsigned>(from.idx)), last = cmd.IdxOffset + cmd.ElemCount;
+        for (unsigned i = first; i + 3 <= last; i += 3) {
+            int v[3];
+            float lo = FLT_MAX, hi = -FLT_MAX;
+            bool inside = true;
+            for (int j = 0; j < 3; ++j) {
+                v[j] = static_cast<int>(cmd.VtxOffset + d->IdxBuffer[static_cast<int>(i) + j]) - from.vtx;
+                if (v[j] < 0 || v[j] >= count) inside = false;
+                else {
+                    const float y = d->VtxBuffer[from.vtx + v[j]].pos.y;
+                    lo = std::min(lo, y), hi = std::max(hi, y);
+                }
+            }
+            if (!inside) continue;
+            const std::uint8_t m = hi - lo > big ? 2 : 1;
+            for (const int x : v) mark[static_cast<std::size_t>(x)] |= m;
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        if (mark[static_cast<std::size_t>(i)] != 1) continue;
+        auto& vx = d->VtxBuffer[from.vtx + i];
+        float t = 1;
+        if (up) t = std::min(t, (vx.pos.y - top) / band);
+        if (down) t = std::min(t, (bottom - vx.pos.y) / band);
+        if (t >= 1) continue;
+        t = std::clamp(t, 0.0f, 1.0f);
+        const auto alpha = static_cast<float>((vx.col >> IM_COL32_A_SHIFT) & 0xFF);
+        vx.col = (vx.col & ~IM_COL32_A_MASK) | (static_cast<ImU32>(alpha * t) << IM_COL32_A_SHIFT);
+    }
 }
 // Ends it: `content` is how tall what was in it came to. A thin bar shows where it is when it is longer than its box.
 void end_region(ImDrawList* d, ImVec2 a, ImVec2 b, float content, float& scroll, float k) {
@@ -1725,6 +1779,10 @@ void end_region(ImDrawList* d, ImVec2 a, ImVec2 b, float content, float& scroll,
     n.region = 0;
     n.clipped = false;
     scroll = std::clamp(scroll, 0.0f, std::max(0.0f, content - room));
+    if (content > room + 1) {
+        const bool up = scroll > 0.5f, down = scroll < content - room - 0.5f;
+        for (const auto& from : n.region_start) fade_region_edges(from, d, a.y, b.y, up, down, k);
+    }
     if (content > room + 1) {
         const float h = std::max(30 * k, room * room / content);
         const float y = a.y + (room - h) * (scroll / std::max(1.0f, content - room));
@@ -5839,9 +5897,30 @@ bool shop_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec
     if (look == ShopLook::line) d->AddRect(at, b, enabled ? IM_COL32(255, 255, 255, lit ? 230 : 190) : IM_COL32(255, 255, 255, 60), 0, 0, 2 * k);
     if (look == ShopLook::ink && enabled) d->AddRect(at, b, IM_COL32(11, 12, 15, lit ? 255 : 220), 0, 0, 2 * k);
     if (lit && nav().keys) chosen_outline(d, at, b, k);
-    const float fs = std::min(15 * k, size.y * 0.3f);
-    const float tw = spaced_width(mont(f, fs), fs, label, 0.5f * k);
-    const float iw = icon ? 26 * k : 0;
+    // Labels at 0.4 of the height like every other button (0.3 made the LIBRARY's small buttons read a size smaller
+    // than the rest), then fitted: shrunk a little when they run wide, and cut short with "..." past that, so a long
+    // name never spills out of its button.
+    const float iw = icon ? 26 * k : 0, room = size.x - 2 * (size.y > 48 * k ? 26 : 18) * k - iw - (icon == 3 ? 27 * k : 0);
+    float fs = std::min(15 * k, size.y * 0.4f), sp = 0.5f * k;
+    float tw = spaced_width(mont(f, fs), fs, label, sp);
+    std::string fitted;
+    if (room > 0 && tw > room) {
+        const float s = std::max(0.8f, room / tw);
+        fs *= s, sp *= s;
+        tw = spaced_width(mont(f, fs), fs, label, sp);
+        if (tw > room) {
+            // Whole characters only: a UTF-8 letter is never cut between its bytes.
+            fitted.assign(label);
+            do {
+                while (!fitted.empty() && (static_cast<unsigned char>(fitted.back()) & 0xC0) == 0x80) fitted.pop_back();
+                if (!fitted.empty()) fitted.pop_back();
+                while (!fitted.empty() && fitted.back() == ' ') fitted.pop_back();
+                tw = spaced_width(mont(f, fs), fs, fitted + "...", sp);
+            } while (!fitted.empty() && tw > room);
+            fitted += "...";
+            label = fitted;
+        }
+    }
     float x = at.x + (size.x - tw - iw) * 0.5f;
     if (icon == 1 || icon == 2) {
         heart_icon(d, ImVec2(x + 9 * k, at.y + size.y * 0.5f), 18 * k, ink, icon == 2);
@@ -5853,7 +5932,7 @@ bool shop_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec
         x += iw;
     }
     const auto [ct, cf] = caps_of(mont(f, fs), fs);
-    text_spaced(d, mont(f, fs), fs, ImVec2(x, at.y + (size.y - (cf - ct)) * 0.5f - ct), ink, label, 0.5f * k);
+    text_spaced(d, mont(f, fs), fs, ImVec2(x, at.y + (size.y - (cf - ct)) * 0.5f - ct), ink, label, sp);
     if (icon == 3) {
         const float ax = x + tw + 12 * k, ay = at.y + size.y * 0.5f;
         d->AddLine(ImVec2(ax, ay), ImVec2(ax + 12 * k, ay), ink, 2.2f * k);
@@ -5862,7 +5941,7 @@ bool shop_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec
     return pressed && enabled;
 }
 float shop_button_width(const Fonts& f, std::string_view label, float height, int icon = 0) {
-    const float k = f.k, fs = std::min(15 * k, height * 0.3f);
+    const float k = f.k, fs = std::min(15 * k, height * 0.4f);
     return spaced_width(mont(f, fs), fs, label, 0.5f * k) + (icon ? 26 * k : 0) + 2 * (height > 48 * k ? 26 : 18) * k;
 }
 
@@ -8679,7 +8758,10 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
         ImGui::PopClipRect();
         const ImU32 ink = lit ? IM_COL32(8, 8, 10, 255) : white;
         text(d, f.heading, 34 * k, ImVec2(ta.x + 26 * k, ta.y + 20 * k), ink, settings_pages[static_cast<std::size_t>(i)]);
-        paragraph(d, f.bold, 14 * k, ImVec2(ta.x + 28 * k, ta.y + 66 * k), tile_w * 0.48f, lit ? IM_COL32(8, 8, 10, 220) : soft,
+        // The words stop short of where the icon's white strokes begin (about a tenth into its box), so grey text never
+        // sits on white art on narrower screens.
+        const float text_w = std::min(tile_w * 0.48f, (tb.x - side * 0.72f) - (ta.x + 28 * k) - 12 * k);
+        paragraph(d, f.bold, 14 * k, ImVec2(ta.x + 28 * k, ta.y + 66 * k), text_w, lit ? IM_COL32(8, 8, 10, 220) : soft,
                   settings_blurbs[static_cast<std::size_t>(i)]);
         if (lit && nav().keys) chosen_outline(d, ta, tb, k);
     }
@@ -9385,7 +9467,7 @@ void cover_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
         text(d, mont(f, 15 * k), 15 * k, ImVec2(pa.x + 20 * k, pa.y + 20 * k), soft, "Making it...");
     }
     paragraph(d, body(f, 13 * k), 13 * k, ImVec2(pa.x, pb.y + 18 * k), side, soft,
-              "This is the picture people see on your pack: in the MARKET, on Thunderstore, and in PACKS. Pick what is behind it, put its name on a banner "
+              "This is the picture people see on your pack: in the MARKET, on Thunderstore, and in the LIBRARY. Pick what is behind it, put its name on a banner "
               "in one of the shop's fonts, and stick a tag on it. Or use a picture of your own, as it is.");
     // ---- the choices ----
     const float ox = pb.x + 44 * k, ow = b.x - 34 * k - ox;
@@ -10243,7 +10325,8 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
             const float cover = 120 * k;
             pack_cover(d, f, *pack, ImVec2(x, y), ImVec2(x + cover, y + cover));
             text(d, f.heading, 12 * k, ImVec2(x + cover + 16 * k, y + 4 * k), blue_light, "PACK");
-            paragraph(d, f.title, 24 * k, ImVec2(x + cover + 16 * k, y + 22 * k), iw - cover - 16 * k, white, upper(pack->name));
+            // Two lines at most: a long name wrapped to five, over BY MAKER and past the cover.
+            lines_text(d, f.title, 24 * k, ImVec2(x + cover + 16 * k, y + 22 * k), iw - cover - 16 * k, white, upper(pack->name), 2);
             if (!pack->made_by.empty())
                 text(d, f.bold, 12 * k, ImVec2(x + cover + 16 * k, y + cover - 18 * k), soft, elide(f.bold, 12 * k, "BY " + upper(pack->made_by), iw - cover - 16 * k));
             y += cover + 18 * k;
@@ -10471,7 +10554,7 @@ void conflicts_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
     float y = a.y + 96 * k;
     y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
                    "Packs you have on each have their own animation of these. Pick the pack that always plays it, or let them take "
-                   "turns at random, attempt by attempt. You can change this any time in PACKS.") + 16 * k;
+                   "turns at random, attempt by attempt. You can change this any time in the LIBRARY.") + 16 * k;
     const ImVec2 la(x, y), lb(b.x - 20 * k, b.y - 84 * k);
     begin_region(81, la, lb, u.conflicts_scroll, k);
     float ly = la.y - u.conflicts_scroll;
@@ -10964,16 +11047,25 @@ void joint_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at,
     }
 }
 // Over the timeline while keys are chosen: what can be done with them, in one place.
-void selection_bar(ImDrawList* d, const Fonts& f, const studio::View& v, float centre_x, float bottom) {
+// `left_limit` and `right_limit`: the free room between the tools and the shortcuts panel. On 16:10 and 4:3 screens the
+// bar was wider than that and ran under the open shortcuts, hiding LET GO; there it drops its hint, then narrows its
+// buttons, and is moved to stay in the room.
+void selection_bar(ImDrawList* d, const Fonts& f, const studio::View& v, float centre_x, float bottom, float left_limit, float right_limit) {
     auto& u = ui();
     if (u.picked.empty() || u.radial) return; // right-click's round menu is up: it has the bar's actions, one at a time
-    const float k = f.k, bh = 34 * k, bw = 96 * k, gap = 6 * k;
+    const float k = f.k, bh = 34 * k, gap = 6 * k;
+    float bw = 96 * k;
     const std::string count = std::to_string(u.picked.size()) + (u.picked.size() == 1 ? " KEY" : " KEYS");
     const float count_w = text_size(f.heading, 17 * k, count.c_str()).x + 20 * k;
-    const float hint_w = text_size(f.bold, 12 * k, "RIGHT-CLICK: MORE").x + 20 * k;
+    float hint_w = text_size(f.bold, 12 * k, "RIGHT-CLICK: MORE").x + 20 * k;
     const float slider_w = 150 * k;
-    const float w = count_w + 6 * (bw + gap) + 2 * (slider_w + gap) + hint_w + 20 * k;
-    const ImVec2 a(centre_x - w * 0.5f, bottom - bh - 22 * k), b(a.x + w, bottom - 10 * k);
+    const auto width = [&] { return count_w + 6 * (bw + gap) + 2 * (slider_w + gap) + hint_w + 20 * k; };
+    float w = width();
+    const float room = right_limit - left_limit;
+    if (w > room) hint_w = 0, w = width();
+    if (w > room) bw = 80 * k, w = width();
+    const float ax = std::max(left_limit, std::min(centre_x - w * 0.5f, right_limit - w));
+    const ImVec2 a(ax, bottom - bh - 22 * k), b(a.x + w, bottom - 10 * k);
     skate_theme::rough_rect(d, a, b, IM_COL32(12, 12, 14, 230), seed_of(a), k * 0.7f);
     float x = a.x + 14 * k;
     const float y = a.y + (b.y - a.y - bh) * 0.5f;
@@ -10994,7 +11086,7 @@ void selection_bar(ImDrawList* d, const Fonts& f, const studio::View& v, float c
     if (button("##selcopy", "COPY")) copy_keys(v);
     if (button("##seldelete", "DELETE", Look::danger)) delete_picked();
     if (button("##selclear", "LET GO", Look::ghost)) u.picked.clear();
-    text(d, f.bold, 12 * k, ImVec2(x + 8 * k, y + 11 * k), faint, "RIGHT-CLICK: MORE");
+    if (hint_w > 0) text(d, f.bold, 12 * k, ImVec2(x + 8 * k, y + 11 * k), faint, "RIGHT-CLICK: MORE");
 }
 // The round menu round the mouse: what can be done with the chosen keys, a slice each.
 void radial_menu(const Fonts& f, const studio::View& v, ImVec2 display) {
@@ -11122,7 +11214,11 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
                 {std::nullopt, "CTRL C/V", "Copy / paste"},
                 {std::nullopt, key_of("menu"), "Menu"},
                 {std::nullopt, "F8", "Back to skating"}};
-    const float col_w = 205 * k, row_h = 26 * k, pad = 12 * k;
+    // The words start past the widest key cap: a rebound key with a long name ("PG UP PG DN") covered them at a fixed 74.
+    float words_at = 74 * k;
+    for (const auto& [g, key, what] : list)
+        if (!g) words_at = std::max(words_at, text_size(f.bold, 11 * k, key.c_str()).x + 22 * k);
+    const float col_w = std::max(205 * k, words_at + 131 * k), row_h = 26 * k, pad = 12 * k;
     const int rows = static_cast<int>((list.size() + 1) / 2);
     const float panel_w = 2 * col_w + 2 * pad, panel_h = static_cast<float>(rows) * row_h + 2 * pad;
     const ImVec2 pb = corner, pa(pb.x - panel_w, pb.y - panel_h);
@@ -11154,7 +11250,7 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
             d->AddRectFilled(ImVec2(at.x, at.y + 2 * k), ImVec2(at.x + t.x + 12 * k, at.y + 20 * k), white, 3 * k);
             text(d, f.bold, 11 * k, ImVec2(at.x + 6 * k, at.y + 11 * k - t.y * 0.5f), skate_theme::black, key);
         }
-        text(d, f.bold, 13 * k, ImVec2(at.x + 74 * k, at.y + 11 * k - text_size(f.bold, 13 * k, what).y * 0.5f), white, what);
+        text(d, f.bold, 13 * k, ImVec2(at.x + words_at, at.y + 11 * k - text_size(f.bold, 13 * k, what).y * 0.5f), white, what);
     }
     d->PopClipRect();
 }
@@ -12613,7 +12709,7 @@ void draw_animation_studio_loading() {
             key_of("move") + " moves the hips or the board. " + key_of("axis_x") + ", " + key_of("axis_y") + " and " + key_of("axis_z") + " lock an axis.",
             "Save your trick and do it in game: your version plays on that trick.",
             "Right-click chosen keys in the timeline for copy, paste, smooth and more.",
-            "Packs group your tricks: switch any number on, and share them, in PACKS.",
+            "Packs group your tricks: switch any number on, and share them, in the LIBRARY.",
             "On a controller: the left stick turns, the D-pad steps frames, RT and LT scrub, A keys."};
         const auto tip = tips[static_cast<std::size_t>(l.seconds / 4.0f) % tips.size()];
         const ImVec2 ta(0.034f * display.x, H - 0.115f * H);
@@ -12798,10 +12894,15 @@ void draw_animation_studio() {
         joint_card(d, f, v, ImVec2(right - 20 * k - side_w, 98 * k), side_w);
         trick_panel(d, f, v, ImVec2(view_max.x - 16 * k, 98 * k));
         timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
-        selection_bar(d, f, v, (left + right) * 0.5f - side_w * 0.25f, display.y - timeline_h);
+        // The shortcuts panel, when open, is two 205-unit columns plus padding and its 30-unit tab, 20 in from the right.
+        selection_bar(d, f, v, (left + right) * 0.5f - side_w * 0.25f, display.y - timeline_h, left + 20 * k,
+                      ui().controls_open ? right - 20 * k - 464 * k - 12 * k : right - 40 * k);
         shortcuts(d, f, v, ImVec2(right - 20 * k, display.y - timeline_h - 14 * k), right);
+        // Kept left of THIS TRICK when it is open (420 wide from the view's right, 16 in): on 16:10 and 4:3 the box
+        // reached under it and hid its MODIFIER HINT.
+        const float status_right = ui().trick_panel ? view_max.x - 16 * k - 420 * k - 24 * k : view_max.x - 24 * k;
         if (!line.empty())
-            status_box(d, f, ImVec2(view_min.x + 24 * k, 100 * k), std::min(680 * k, view_max.x - view_min.x - 48 * k),
+            status_box(d, f, ImVec2(view_min.x + 24 * k, 100 * k), std::max(160 * k, std::min(680 * k, status_right - view_min.x - 24 * k)),
                        v.failure.empty() ? white : skate_theme::danger, line);
         if (!card && !menu_open_at_input) keyboard(v);
     }

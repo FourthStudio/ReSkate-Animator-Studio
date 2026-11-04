@@ -961,7 +961,7 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
 namespace {
 // The menu fonts are built into ReSkate.dll (External/fonts, shared with the
 // launcher); Windows fonts are the fallback.
-ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
+ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges, bool merge = false) {
     HMODULE module{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&embedded_font), &module)) return nullptr;
@@ -972,6 +972,7 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
     ImFontConfig config;
     config.FontDataOwnedByAtlas = false;  // the resource lives as long as the DLL
     config.OversampleH = size >= 32 ? 1 : 2;
+    config.MergeMode = merge;  // into the font added just before: only letters it does not have are taken from this one
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data, static_cast<int>(SizeofResource(module, resource)), size,
         &config, ranges);
 }
@@ -1045,6 +1046,12 @@ void load_skate_fonts(SkateMenu& menu, float studio_scale) {
     // punctuation (headlines are in capitals), so the atlas stays small.
     static const ImWchar plain[]{0x0020, 0x007E, 0};
     static const ImWchar capitals[]{0x0020, 0x0040, 0x0041, 0x005A, 0};
+    // The sizes that draw names people type (packs, playlists, makers) also get accented Latin, and Cyrillic and any
+    // letter the face lacks is merged in from Montserrat at the same size: those names showed "?" in Anton and the
+    // marker. Only up to 48 units, where names are drawn, so the atlas stays small on a 4K screen.
+    static const ImWchar names[]{0x0020, 0x007E, 0x00A0, 0x017F, 0};
+    static const ImWchar names_merged[]{0x00A0, 0x017F, 0x0400, 0x045F, 0};
+    constexpr float names_up_to = 48;
     const float scale = std::clamp(studio_scale, 0.45f, 3.0f);
     menu.studio_scale = scale;
     const auto face = [&](SkateMenu::StudioFace& out, const wchar_t* resource, const char* file, std::initializer_list<float> sizes,
@@ -1053,7 +1060,14 @@ void load_skate_fonts(SkateMenu& menu, float studio_scale) {
         for (const float size : sizes) {
             if (out.count >= static_cast<int>(out.fonts.size())) break;
             out.sizes[static_cast<std::size_t>(out.count)] = size;
-            out.fonts[static_cast<std::size_t>(out.count)] = font(resource, file, std::round(size * scale), size >= big_from ? big_glyphs : small_glyphs);
+            const bool with_names = small_glyphs == plain && size <= names_up_to;
+            ImFont* made = font(resource, file, std::round(size * scale), size >= big_from ? big_glyphs : with_names ? names : small_glyphs);
+            // Merged only when the face itself came from the DLL (its data is not the atlas's to free), and so it is the
+            // atlas's last font: a Windows or ImGui fallback face is left as it is.
+            if (with_names && made && !atlas->Sources.empty() && atlas->Sources.back().DstFont == made &&
+                !atlas->Sources.back().FontDataOwnedByAtlas)
+                embedded_font(L"FONT_HEADING", std::round(size * scale), names_merged, true);
+            out.fonts[static_cast<std::size_t>(out.count)] = made;
             ++out.count;
         }
     };

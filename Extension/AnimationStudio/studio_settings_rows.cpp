@@ -226,7 +226,7 @@ Setting modifier_playlist(const studio::PlaylistsNow& now, const ModifierBinding
         names.push_back(list.name);
     }
     return one_of("Modifier playlist", std::move(options), selected,
-        "Normal input keeps the regular playlist. Input + modifier uses an eligible animation from this playlist, falling back to normal when none fits. Editing a playlist never changes this assignment.",
+        "Normal input keeps the default playlist. Input + modifier uses an eligible animation from this playlist, falling back to normal when none fits. Editing a playlist never changes this assignment.",
         [names](int picked) {
             if (picked < 0 || static_cast<std::size_t>(picked) >= names.size()) return;
             auto live = studio::modifier_binding(); live.playlist = names[static_cast<std::size_t>(picked)]; studio::set_modifier_binding(live);
@@ -239,9 +239,9 @@ Setting modifier_native_button(const ModifierBinding& binding) {
 }
 Setting which_version_plays(const studio::PlaylistsNow& now, Tell tell) {
     const auto on = std::find_if(now.lists.begin(), now.lists.end(), [&](const auto& list) { return list.name == now.on; });
-    Setting s = one_of("Which version plays", {"FIXED", "IN TURNS", "SHUFFLE"},
+    Setting s = one_of("Which version plays", {"PRIORITY", "IN TURNS", "SHUFFLE"},
                        on == now.lists.end() ? 0 : static_cast<int>(on->mode),
-                       "When the playlist that plays has more than one version of a trick (the same trick, pop and stance). Fixed: "
+                       "When the playlist that plays has more than one version of a trick (the same trick, pop and stance). Priority: "
                        "the one highest in the playlist plays every time (a pack's slot on Alternate still takes turns). In turns: "
                        "one after another, top to bottom, attempt by attempt. Shuffle: any of them at random, never the same one "
                        "twice running.",
