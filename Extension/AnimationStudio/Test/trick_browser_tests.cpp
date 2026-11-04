@@ -181,14 +181,20 @@ void rows_lay_out_headings_lists_and_icons() {
     m.tile_h = 100;
     m.gap = 5;
     m.group_gap = 10;
-    m.columns = 3;
+    m.columns = 1;
     const auto list = lay_out(groups, {}, ViewMode::list, m);
     check(list.rows.size() == 9 && list.rows[0].header && !list.rows[1].header && list.rows[1].top == 35, "A list is a heading and a row an item");
     check(list.rows[6].header && list.rows[6].top == 35 + 5 * 45 + 10, "The next group does not start below the last row and the gap");
+    // On a wide screen a LIST goes two (or more) across; DETAILS stays a table, an item a row.
+    m.columns = 2;
+    const auto wide = lay_out(groups, {}, ViewMode::list, m);
+    check(wide.rows.size() == 6 && wide.rows[1].count == 2 && wide.rows[3].count == 1 && wide.rows[1].height == 40, "A wide LIST is not laid two across");
+    check(lay_out(groups, {}, ViewMode::details, m).rows.size() == 9, "DETAILS is laid more than one across");
+    m.columns = 3;
     const auto icons = lay_out(groups, {}, ViewMode::icons, m);
     check(icons.rows.size() == 5 && icons.rows[1].count == 3 && icons.rows[2].count == 2 && icons.rows[2].first == 3 && icons.rows[4].count == 2,
           "Icons are not laid three across");
-    const auto folded = lay_out(groups, {"a"}, ViewMode::list, m);
+    const auto folded = lay_out(groups, {"a"}, ViewMode::details, m);
     check(folded.rows.size() == 4 && folded.rows[1].header && folded.rows[1].group == 1, "A folded group still shows its items");
     check(shown_order(groups, {"a"}) == std::vector<std::size_t>{5, 6}, "A folded group's items are in a Shift + click's range");
     const std::vector<Group> plain{{"", "", {0, 1, 2}}};

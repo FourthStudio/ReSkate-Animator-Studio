@@ -148,10 +148,31 @@ void editor_tour(const Fonts& f, const studio::View& v, ImVec2 display) {
         const float mid_x = (to_a.x + to_b.x) * 0.5f, mid_y = (to_a.y + to_b.y) * 0.5f;
         const auto clamp_x = [&](float x) { return std::clamp(x, edge, std::max(edge, display.x - cw - edge)); };
         const auto clamp_y = [&](float y) { return std::clamp(y, edge, std::max(edge, display.y - ch - edge)); };
-        if (to_b.x + gap + cw <= display.x - edge) ca = ImVec2(to_b.x + gap, clamp_y(mid_y - ch * 0.5f)), side = 0;
-        else if (to_a.x - gap - cw >= edge) ca = ImVec2(to_a.x - gap - cw, clamp_y(mid_y - ch * 0.5f)), side = 1;
-        else if (to_b.y + gap + ch <= display.y - edge) ca = ImVec2(clamp_x(mid_x - cw * 0.5f), to_b.y + gap), side = 2;
-        else if (to_a.y - gap - ch >= edge) ca = ImVec2(clamp_x(mid_x - cw * 0.5f), to_a.y - gap - ch), side = 3;
+        // A part along the top (the camera, SAVE and TEST IN GAME) has the card under it: beside it, the card was pushed up
+        // against the top edge and lay over the top bar's other buttons.
+        const bool top = to_b.y < display.y * 0.2f;
+        const auto right_of = [&] {
+            if (to_b.x + gap + cw > display.x - edge) return false;
+            ca = ImVec2(to_b.x + gap, clamp_y(mid_y - ch * 0.5f)), side = 0;
+            return true;
+        };
+        const auto left_of = [&] {
+            if (to_a.x - gap - cw < edge) return false;
+            ca = ImVec2(to_a.x - gap - cw, clamp_y(mid_y - ch * 0.5f)), side = 1;
+            return true;
+        };
+        const auto below = [&] {
+            if (to_b.y + gap + ch > display.y - edge) return false;
+            ca = ImVec2(clamp_x(mid_x - cw * 0.5f), to_b.y + gap), side = 2;
+            return true;
+        };
+        const auto above = [&] {
+            if (to_a.y - gap - ch < edge) return false;
+            ca = ImVec2(clamp_x(mid_x - cw * 0.5f), to_a.y - gap - ch), side = 3;
+            return true;
+        };
+        if (top) (void)(below() || right_of() || left_of() || above());
+        else (void)(right_of() || left_of() || below() || above());
     }
     const ImVec2 cb(ca.x + cw, ca.y + ch);
     d->AddRectFilled(ImVec2(ca.x + 10 * k, ca.y + 12 * k), ImVec2(cb.x + 10 * k, cb.y + 12 * k), IM_COL32(0, 0, 0, 130));

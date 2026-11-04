@@ -4554,7 +4554,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     const auto terms = studio::native_search_terms(u.asset_filter);
     std::string title, about;
     if (u.trick_group == "*mine")
-        title = "MY TRICKS", about = own_count == 0 ? "Nothing saved yet: open one of the game's tricks, change it and save it."
+        title = "MY TRICKS", about = own_count == 0 ? "Where the tricks you make and save are kept."
                                                     : "Everything you made. Click one for its card, double click to open it in the editor.";
     else if (u.trick_group == "*packs")
         title = "FROM PACKS", about = "Tricks that came in packs you got from the MARKET or imported. Your own are in MY TRICKS.";

@@ -272,7 +272,8 @@ struct Row {
     std::size_t first{}, count{};  // items: from this place in its group, this many (a row of icons has more than one)
     float top{}, height{};
 };
-// How tall each row is (already scaled), and how many icons go across.
+// How tall each row is (already scaled), and how many items go across: icons, and a LIST's rows on a wide screen (one
+// long row each across 2000 units of a 21:9 screen left the name far from its tags); DETAILS is a table, one a row.
 struct Metrics {
     float header_h{36}, row_h{40}, tile_h{150}, gap{4}, group_gap{10};
     std::size_t columns{1};
@@ -285,7 +286,7 @@ struct Layout {
 inline Layout lay_out(const std::vector<Group>& groups, const std::set<std::string>& folded, ViewMode mode, const Metrics& m) {
     Layout out;
     float y = 0;
-    const std::size_t across = mode == ViewMode::icons ? std::max<std::size_t>(1, m.columns) : 1;
+    const std::size_t across = mode == ViewMode::details ? 1 : std::max<std::size_t>(1, m.columns);
     const float item_h = mode == ViewMode::icons ? m.tile_h : m.row_h;
     for (std::size_t g = 0; g < groups.size(); ++g) {
         const auto& group = groups[g];

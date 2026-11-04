@@ -819,6 +819,88 @@ void shelf_bulk(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
     end_region(d, ImVec2(a.x, top), ImVec2(b.x, b.y - 10 * k), y + s.bulk_scroll - top, s.bulk_scroll, k);
 }
 
+// ---- nothing to show ----
+// MY TRICKS with nothing saved (FROM PACKS with no pack tricks): a card on cream paper, as the LIBRARY's QUICK START, saying
+// how a trick gets here, with the way to the game's tricks and to the MARKET. The bars are left out: there is nothing to
+// sort or group. (It was one line and a button at the top of a big empty sheet, under bars that had nothing to work on.)
+void shelf_empty_card(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b, bool packs) {
+    auto& u = ui();
+    const float k = f.k;
+    const float w = std::min(b.x - a.x - 40 * k, 900 * k);
+    const ImVec2 ca(a.x + 20 * k, a.y + 22 * k);
+    const float x = ca.x + 40 * k, iw = w - 80 * k;
+    struct Step {
+        const char *title, *words;
+    };
+    static constexpr std::array<Step, 3> steps{{
+        {"OPEN ONE OF THE GAME'S TRICKS", "Flip tricks, nollie tricks, grinds, grabs, manuals: choose a kind on the left, then a trick and its pop."},
+        {"POSE HIM AND KEY IT", "Click a joint on him, turn it, and press KEY. Scrub the timeline to watch it move."},
+        {"SAVE IT", "SAVE puts it here, in MY TRICKS. TEST IN GAME lets you skate it straight away."},
+    }};
+    const char* intro = packs ? "Packs you get in the MARKET, or import, put their tricks here, each pack together. Those locked to their maker "
+                                "play and preview; the rest open to change like your own."
+                              : "Every trick you save lands here: a folder you can show as icons, a list or details, group and filter. It "
+                                "takes three steps.";
+    ImFont* intro_font = body(f, 17 * k);
+    ImFont* step_font = body(f, 15 * k);
+    const auto tall = [&](ImFont* font, float size, const char* words, float width) { return sharp(font, size)->CalcTextSizeA(size, FLT_MAX, width, words).y; };
+    const float bw = 300 * k, bh = 52 * k, gap = 16 * k;
+    const bool side_by_side = 2 * bw + gap <= iw;
+    float h = 40 * k + 26 * k + 64 * k + tall(intro_font, 17 * k, intro, iw) + 28 * k;
+    if (!packs)
+        for (const auto& step : steps) h += 28 * k + tall(step_font, 15 * k, step.words, iw - 44 * k) + 18 * k;
+    h += 8 * k + (packs || side_by_side ? bh : 2 * bh + 12 * k) + 40 * k;
+    h = std::min(h, b.y - ca.y - 10 * k);
+    const ImVec2 cb(ca.x + w, ca.y + h);
+    draw_paper(d, f, kept_piece(w, h, 91, 2.6f * k, 8 * k, 8 * k), ca, 0, ImVec2(0, 0), PaperKind::white, 91, 0.5f, ImVec2(8, 10), 3.0f);
+    masking_tape(d, f, ImVec2(ca.x + 70 * k, ca.y + 2 * k), 110 * k, 26 * k, -6, 92);
+    masking_tape(d, f, ImVec2(cb.x - 60 * k, ca.y + 4 * k), 96 * k, 24 * k, 7, 93);
+    float y = ca.y + 40 * k;
+    lib_caps(d, f, ImVec2(x, y), 13 * k, IM_COL32(80, 82, 88, 255), packs ? "FROM PACKS" : "MY TRICKS", 2.5f);
+    y += 26 * k;
+    const char* headline = packs ? "NO TRICKS FROM PACKS YET" : "MAKE YOUR FIRST TRICK";
+    text(d, anton(f, 46 * k), 46 * k, ImVec2(x, y), shop_ink, elide(anton(f, 46 * k), 46 * k, headline, iw));
+    y += 64 * k;
+    y += paragraph(d, intro_font, 17 * k, ImVec2(x, y), iw, IM_COL32(40, 42, 48, 255), intro) + 28 * k;
+    if (!packs)
+        for (std::size_t i = 0; i < steps.size(); ++i) {
+            step_badge(d, f, ImVec2(x + 15 * k, y + 11 * k), 14 * k, static_cast<int>(i) + 1, StepState::now);
+            lib_caps(d, f, ImVec2(x + 44 * k, y + 4 * k), 14 * k, shop_ink, steps[i].title, 1.6f);
+            y += 28 * k;
+            y += paragraph(d, step_font, 15 * k, ImVec2(x + 44 * k, y), iw - 44 * k, IM_COL32(60, 62, 68, 255), steps[i].words) + 18 * k;
+        }
+    y += 8 * k;
+    if (!packs && lib_button(d, f, "##tofliptricks", ImVec2(x, y), ImVec2(bw, bh), "OPEN FLIP TRICKS", Look::blue)) {
+        u.trick_group = "Flip tricks";
+        u.cards_scroll = 0;
+    }
+    const ImVec2 market_at = packs ? ImVec2(x, y) : side_by_side ? ImVec2(x + bw + gap, y) : ImVec2(x, y + bh + 12 * k);
+    if (shop_button(d, f, "##tomarket", market_at, ImVec2(bw, bh), "GET PACKS IN THE MARKET", packs ? ShopLook::blue : ShopLook::ink)) open_menu(2);
+}
+// A search or the filters let nothing through: a note in the list saying so, with the way back.
+void shelf_no_match(ImDrawList* d, const Fonts& f, ImVec2 a, float width) {
+    auto& u = ui();
+    auto& s = shelf();
+    const bool searched = !s.filter.terms.empty(), filtered = s.filter.active() > 0;
+    std::string words;
+    if (searched && filtered)
+        words = std::format("No trick here has \"{}\" in it and passes the filters that are on. Search for less, or take a filter off.", u.asset_filter);
+    else if (searched)
+        words = std::format("No trick here has \"{}\" in its name, its trick, its pack or its maker. Try fewer letters, or another word.", u.asset_filter);
+    else words = "No trick here passes all the filters that are on together. Take one off, or clear them.";
+    const char* button = searched && filtered ? "CLEAR SEARCH AND FILTERS" : searched ? "CLEAR THE SEARCH" : "CLEAR THE FILTERS";
+    const float w = std::min(width, 720 * f.k);
+    bool pressed = false;
+    empty_note(d, f, ImVec2(a.x + (width - w) * 0.5f, a.y), w, "nothing matches.", words, button, &pressed, 23);
+    if (pressed) {
+        if (filtered) s.filter.clear();
+        if (searched) {
+            u.asset_query.fill(0);
+            u.asset_filter.clear();
+        }
+    }
+}
+
 // ---- the page ----
 // `game_matches`: how many of the game's own tricks the search finds too (a way to them is offered under the list).
 void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b, std::size_t game_matches) {
@@ -873,6 +955,11 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
     const float drawer_w = 470 * k;
     const float right = drawer ? b.x - drawer_w - 24 * k : b.x;
     const float w = right - a.x;
+    if (s.counts.total == 0) {
+        shelf_empty_card(d, f, a, ImVec2(right, b.y), packs);
+        if (drawer && !several) trick_drawer(d, f, v, ImVec2(b.x - drawer_w, a.y), b);
+        return;
+    }
     // ---- the bar: how it is shown and grouped, then the order, SELECT and folding ----
     const float bar_h = 36 * k;
     float y = a.y;
@@ -969,22 +1056,8 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
     const float pad = 12 * k;
     ImVec2 la(sheet_a.x + pad, sheet_a.y + pad), lb(sheet_b.x - pad, sheet_b.y - pad);
     const float list_w = lb.x - la.x - 10 * k; // the scroll bar's room at the right
-    if (s.counts.total == 0 || s.counts.shown == 0) {
-        float ey = la.y + 14 * k;
-        const std::string said = s.counts.total == 0 ? (packs ? "No tricks from packs yet. Packs you get from the MARKET, or import, put theirs here."
-                                                              : "Nothing saved yet: open one of the game's tricks, change it and save it.")
-                                                       : "Nothing here matches. Take a filter off, or search for less.";
-        ey += paragraph(d, body(f, 16 * k), 16 * k, ImVec2(la.x + 6 * k, ey), list_w - 12 * k, IM_COL32(222, 222, 226, 255), said) + 16 * k;
-        if (s.counts.total == 0 && !packs) {
-            if (lib_button(d, f, "##tofliptricks", ImVec2(la.x + 6 * k, ey), ImVec2(260 * k, 44 * k), "OPEN FLIP TRICKS", Look::blue)) {
-                u.trick_group = "Flip tricks";
-                u.cards_scroll = 0;
-            }
-        } else if (s.counts.total == 0) {
-            if (lib_button(d, f, "##tomarket", ImVec2(la.x + 6 * k, ey), ImVec2(260 * k, 44 * k), "OPEN THE MARKET", Look::blue)) open_menu(2);
-        } else if (lib_button(d, f, "##emptyclear", ImVec2(la.x + 6 * k, ey), ImVec2(220 * k, 44 * k), "CLEAR FILTERS", Look::ghost, s.filter.active() > 0)) {
-            s.filter.clear();
-        }
+    if (s.counts.shown == 0) {
+        shelf_no_match(d, f, ImVec2(la.x, la.y + 30 * k), list_w);
     } else {
         // The columns of DETAILS, its heading kept at the top while the rows scroll under it.
         std::vector<std::pair<tb::Column, float>> cols;
@@ -994,8 +1067,11 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
             la.y += 36 * k;
         }
         // How it is laid out: again only when what is shown, the view, the folds or the width changed.
-        const float tile_min = 184 * k, tile_gap = 12 * k;
-        const std::size_t columns = s.mode == tb::ViewMode::icons ? static_cast<std::size_t>(std::max(1.0f, std::floor((list_w + tile_gap) / (tile_min + tile_gap)))) : 1;
+        // ICONS as many across as fit; LIST rows two or more across once there is room (one row 2000 units long on a 21:9
+        // screen left a name far from its tags); DETAILS a table, an item a row.
+        const float tile_min = s.mode == tb::ViewMode::list ? 600 * k : 184 * k, tile_gap = s.mode == tb::ViewMode::list ? 16 * k : 12 * k;
+        const std::size_t columns =
+            s.mode == tb::ViewMode::details ? 1 : static_cast<std::size_t>(std::max(1.0f, std::floor((list_w + tile_gap) / (tile_min + tile_gap))));
         tb::Metrics metrics;
         metrics.header_h = 40 * k;
         metrics.row_h = s.mode == tb::ViewMode::details ? 38 * k : 44 * k;
@@ -1053,7 +1129,9 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
         u.grid_gap = metrics.gap;
         begin_region(24, la, lb, s.scroll, k);
         const auto [from, to] = tb::visible(s.layout, s.scroll, s.scroll + (lb.y - la.y), 2);
-        const float tile_w = columns > 1 ? (list_w - tile_gap * static_cast<float>(columns - 1)) / static_cast<float>(columns) : std::min(list_w, 260 * k);
+        const float tile_w = columns > 1                       ? (list_w - tile_gap * static_cast<float>(columns - 1)) / static_cast<float>(columns)
+                             : s.mode == tb::ViewMode::list ? list_w
+                                                            : std::min(list_w, 260 * k);
         for (std::size_t r = from; r < to; ++r) {
             const auto& row = s.layout.rows[r];
             const float ry = la.y + row.top - s.scroll;
@@ -1066,8 +1144,9 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
             }
             for (std::size_t j = 0; j < row.count; ++j) {
                 const auto& it = s.items[g.items[row.first + j]];
-                const ImVec2 ia = s.mode == tb::ViewMode::icons ? ImVec2(la.x + static_cast<float>(j) * (tile_w + tile_gap), ry) : ImVec2(la.x, ry);
-                const ImVec2 ib = s.mode == tb::ViewMode::icons ? ImVec2(ia.x + tile_w, ry + row.height) : ImVec2(la.x + list_w, ry + row.height);
+                const bool across = s.mode != tb::ViewMode::details;
+                const ImVec2 ia = across ? ImVec2(la.x + static_cast<float>(j) * (tile_w + tile_gap), ry) : ImVec2(la.x, ry);
+                const ImVec2 ib = across ? ImVec2(ia.x + tile_w, ry + row.height) : ImVec2(la.x + list_w, ry + row.height);
                 ImGui::PushID(it.name.c_str());
                 if (s.mode == tb::ViewMode::icons && card_under_peek(ia, ib)) {
                     ImGui::PopID();
