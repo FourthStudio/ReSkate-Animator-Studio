@@ -333,12 +333,12 @@ void library_offers(const studio::View& v) {
             u.offer_packs.push_back(std::move(pack));
     if (!u.offer_pack.empty() || u.offer_packs.empty()) return;
     const auto next = u.offer_packs.front();
-    // Read into the library on the market's thread a moment ago; not in this frame's view yet: asked about next frame.
-    if (!pack_named(v, next)) {
-        static int waited = 0;
-        if (++waited < 600) return;
-        waited = 0;
-    } else if (studio::playlists_with_pack(next).empty()) {
+    // Read into the library on the market's thread a moment ago; not in this frame's view yet: asked about next frame (and
+    // given up after some ten seconds, so a pack that never shows cannot hold the others back).
+    static int waited = 0;
+    if (!pack_named(v, next) && ++waited < 600) return;
+    waited = 0;
+    if (pack_named(v, next) && studio::playlists_with_pack(next).empty()) {
         u.offer_pack = next;
         u.offer_naming = false;
     }
