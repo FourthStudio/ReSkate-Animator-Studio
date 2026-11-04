@@ -80,7 +80,7 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
         y += 46 * k;
     }
     if (browse.source != 0 || pack) {
-        text(d, body(f, 12 * k), 12 * k, {x, y + 8 * k}, lib_ink_faint, elide(f.bold, 12 * k,
+        text(d, body(f, 12 * k), 12 * k, {x, y + 8 * k}, lib_ink_faint, elide(body(f, 12 * k), 12 * k,
             target.empty() ? "Open a group to preview a trick, edit it or put it in a playlist." : "+ ADD or REMOVE any trick. Every change is saved at once.", w - 272 * k));
         const float bw = 124 * k;
         if (lib_button(d, f, "##expandall", {b.x - 16 * k - 2 * bw - 8 * k, y}, {bw, 28 * k}, "OPEN ALL", Look::ghost)) browse.expand_all = true;
@@ -162,10 +162,28 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
         for (const auto& [name, members] : found.groups) {
             ImGui::PushID(name.c_str());
             const bool expanded = browse.expanded.contains(name);
-            const std::string label = name + " / " + std::to_string(members.size()) + (members.size() == 1 ? " version / " : " versions / ") + (expanded ? "HIDE" : "SHOW");
-            const bool pressed = seen(y, y + 42 * k) ? lib_button(d, f, "##group", {x, y}, {w - 6 * k, 42 * k}, label, Look::dark)
-                                                     : hit("##group", {x, y}, {x + w - 6 * k, y + 42 * k});
+            // A trick's row: its name at the left with an arrow that says open or closed, how many versions at the right
+            // (and how many are in the playlist being added to); the whole row opens and closes it.
+            const ImVec2 ga(x, y), gb(x + w - 6 * k, y + 42 * k);
+            bool lit = false;
+            const bool pressed = hit("##group", ga, gb, &lit);
             if (pressed && !browse.expanded.erase(name)) browse.expanded.insert(name);
+            if (seen(ga.y, gb.y)) {
+                d->AddRectFilled(ga, gb, lit ? IM_COL32(44, 46, 52, 250) : expanded ? IM_COL32(30, 31, 35, 246) : IM_COL32(22, 23, 26, 240));
+                d->AddRect(ga, gb, IM_COL32(255, 255, 255, lit ? 120 : 52), 0, 0, 1 * k);
+                if (lit && nav().keys) chosen_outline(d, ga, gb, k);
+                const ImVec2 c(ga.x + 20 * k, (ga.y + gb.y) * 0.5f);
+                if (expanded) d->AddTriangleFilled({c.x - 6 * k, c.y - 3 * k}, {c.x + 6 * k, c.y - 3 * k}, {c.x, c.y + 4 * k}, lib_blue);
+                else d->AddTriangleFilled({c.x - 3 * k, c.y - 6 * k}, {c.x - 3 * k, c.y + 6 * k}, {c.x + 4 * k, c.y}, lib_ink_soft);
+                std::size_t in = 0;
+                if (!target.empty()) for (const auto at : members) in += index.member(v.presets[at].name).included();
+                const std::string count = std::to_string(members.size()) + (members.size() == 1 ? " VERSION" : " VERSIONS") +
+                                          (in ? " / " + std::to_string(in) + " IN IT" : "");
+                const float cw = spaced_width(mont(f, 11 * k), 11 * k, count, 1.4f * k);
+                lib_caps(d, f, {gb.x - 16 * k - cw, ga.y + 15 * k}, 11 * k, in ? lib_blue : lib_ink_soft, count, 1.4f);
+                text(d, anton(f, 20 * k), 20 * k, {ga.x + 38 * k, ga.y + 9 * k}, lib_ink,
+                     elide(anton(f, 20 * k), 20 * k, upper(name), gb.x - ga.x - cw - 72 * k));
+            }
             y += 50 * k;
             if (expanded) for (const auto at : members) {
                 const auto* p = &v.presets[at];

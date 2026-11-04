@@ -156,8 +156,8 @@ bool library_guide_wanted(const studio::View& v) {
 void library_guide_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui(); auto& route = u.library; const float k = f.k;
     library_sheet(d, f, a, b);
-    static constexpr std::array<const char*, 4> names{"MAKE A PLAYLIST", "ADD TRICKS", "PLAY IT BY DEFAULT", "TRY IT IN GAME"};
-    static constexpr std::array<const char*, 4> next{"MAKE A PLAYLIST", "+ ADD TRICKS", "PLAY IT BY DEFAULT", "CLOSE AND TRY IT"};
+    static constexpr std::array<const char*, 4> names{"MAKE A PLAYLIST", "ADD TRICKS", "SET AS DEFAULT", "TRY IT IN GAME"};
+    static constexpr std::array<const char*, 4> next{"MAKE A PLAYLIST", "+ ADD TRICKS", "SET AS DEFAULT", "CLOSE AND TRY IT"};
     const int step = library_guide_step(v);
     const float mid = (a.y + b.y) * 0.5f, fs = 12 * k;
     const float hide_w = 44 * k, next_w = 220 * k;

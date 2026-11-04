@@ -118,12 +118,16 @@ constexpr ImU32 lib_ink = white, lib_ink_soft = soft, lib_ink_faint = faint, lib
                 lib_red = IM_COL32(255, 159, 151, 255);
 // A row, as the SETTINGS page's: dark grey, the studio's blue for one that is in, a fault's red.
 constexpr ImU32 lib_row = IM_COL32(30, 31, 35, 246), lib_row_in = IM_COL32(17, 57, 91, 245), lib_row_bad = IM_COL32(66, 31, 33, 245);
-// A button as the shop's: blue, outlined, cream paper or black (a red one stays the studio's own, for deleting).
+// A button as the shop's: blue, outlined, cream paper or black (a red one stays the studio's own, for deleting). The
+// shop's black has no edge, and on the LIBRARY's near-black sheets it read as words, not a button: it gets the hairline
+// the studio's own dark buttons have.
 bool lib_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 a, ImVec2 size, const std::string& label, Look look = Look::dark,
                 bool enabled = true) {
     if (look == Look::danger) return action(d, f, id, a, size, label, look, enabled);
     const ShopLook shop = look == Look::blue ? ShopLook::blue : look == Look::paper ? ShopLook::paper : look == Look::dark ? ShopLook::black : ShopLook::line;
-    return shop_button(d, f, id, a, size, label, shop, enabled);
+    const bool pressed = shop_button(d, f, id, a, size, label, shop, enabled);
+    if (look == Look::dark && enabled) d->AddRect(a, {a.x + size.x, a.y + size.y}, IM_COL32(255, 255, 255, 70), 0, 0, 1 * f.k);
+    return pressed;
 }
 // A sheet to read on: near black, torn at its edges (a little of the grip tape's grain, its light torn rim), its shadow
 // under it. (Cream paper read too bright over a whole page, and the grip tape itself too busy under words.)
@@ -152,7 +156,8 @@ void library_card(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b, bool chosen
     const auto shape = torn::piece(b.x - a.x, b.y - a.y, seed, 1.6f * k, 5 * k, 7 * k);
     draw_paper(d, f, shape, a, 0, ImVec2(0, 0), chosen ? PaperKind::blue : PaperKind::white, seed, 0.4f, ImVec2(4, 6), 2.0f,
                chosen || lit ? IM_COL32_WHITE : IM_COL32(232, 230, 224, 255));
-    if (chosen) masking_tape(d, f, ImVec2(a.x + 34 * k, a.y + 1 * k), 58 * k, 17 * k, -9, seed + 5);
+    // Taped at its top right corner, clear of the words at its left.
+    if (chosen) masking_tape(d, f, ImVec2(b.x - 30 * k, a.y - 1 * k), 52 * k, 16 * k, 8, seed + 5);
 }
 // Words in the shop's spaced capitals.
 void lib_caps(ImDrawList* d, const Fonts& f, ImVec2 at, float size, ImU32 colour, std::string_view words, float spacing = 1.6f) {
@@ -238,7 +243,7 @@ void offer_add(const studio::View& v, const studio::PlaylistEntry& entry) {
         std::string pm;
         studio::play_playlist(name, pm);
         studio::set_play_in_game(true);
-        m += " It plays by default now.";
+        m = "Added to " + name + ": it plays by default now.";
     } else if (!v.play_in_game) {
         m += " Playback is paused: switch PLAYBACK on in the LIBRARY.";
     }
@@ -260,7 +265,7 @@ void offer_new_playlist(const studio::View& v, const studio::PlaylistEntry& entr
         std::string pm;
         studio::play_playlist(name, pm);
         studio::set_play_in_game(true);
-        m += " It plays by default now, as nothing else did.";
+        m = "Made " + name + " with it in, and set it as default (nothing else played by default).";
     }
     say(m);
 }

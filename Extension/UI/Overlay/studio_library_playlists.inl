@@ -294,7 +294,7 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     const bool normal = v.playlist_open == v.playlist_playing, modifier = v.playlist_open == binding.playlist;
     const float ry = a.y + 92 * k, rh = 36 * k;
     const ImVec2 default_a(x, ry);
-    if (lib_button(d, f, "##librarynormalrole", default_a, {214 * k, rh}, normal ? "PLAYS BY DEFAULT" : "PLAY BY DEFAULT", normal ? Look::paper : Look::ghost, !normal)) {
+    if (lib_button(d, f, "##librarynormalrole", default_a, {214 * k, rh}, normal ? "PLAYS BY DEFAULT" : "SET AS DEFAULT", normal ? Look::paper : Look::ghost, !normal)) {
         std::string m; studio::play_playlist(v.playlist_open, m); say(m);
     }
     if (lib_guide_on && lib_guide_now == 2 && !normal) lib_pulse(d, default_a, {default_a.x + 214 * k, default_a.y + rh}, k);
@@ -309,7 +309,7 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     {
         // What it does now, in words, beside the buttons that change it.
         const std::string role = normal && modifier ? "plays by default and on the button" : normal ? "plays by default" : modifier ? "plays while the button is held"
-                                 : v.playlist.empty() ? "empty" : "not playing yet - press PLAY BY DEFAULT";
+                                 : v.playlist.empty() ? "empty" : "not playing yet - press SET AS DEFAULT";
         const bool good = (normal || modifier) && v.play_in_game;
         const float room = b.x - 20 * k - 124 * k - (x + 452 * k);
         text(d, body(f, 13 * k), 13 * k, {x + 452 * k, ry + 10 * k}, good ? lib_blue : lib_warn,
@@ -509,8 +509,9 @@ void library_quick_start(ImDrawList* d, const Fonts& f, const studio::View& v, I
     } else if (lib_button(d, f, "##librarytomarket", ImVec2(x, y), ImVec2(bw, 56 * k), "GET PACKS IN THE MARKET", Look::blue)) {
         open_menu(2);
     }
-    marker_arrow(d, ImVec2(x + bw + 150 * k, y - 30 * k), ImVec2(x + bw + 18 * k, y + 22 * k), 0.35f, 4 * k, IM_COL32(0, 98, 214, 255), 94);
-    marker_words(d, f, ImVec2(x + bw + 60 * k, y - 76 * k), any ? "one click." : "start here.", 34 * k, -8, IM_COL32(0, 98, 214, 255));
+    // The note beside the button it points at (above it, it was drawn over the paragraph's words).
+    marker_words(d, f, ImVec2(x + bw + 70 * k, y + 8 * k), any ? "one click." : "start here.", 34 * k, -8, IM_COL32(0, 98, 214, 255));
+    marker_arrow(d, ImVec2(x + bw + 62 * k, y + 30 * k), ImVec2(x + bw + 14 * k, y + 28 * k), 0.2f, 4 * k, IM_COL32(0, 98, 214, 255), 94);
     y += 76 * k;
     lib_caps(d, f, ImVec2(x, y + 12 * k), 12 * k, IM_COL32(80, 82, 88, 255), "OR");
     if (shop_button(d, f, "##libraryemptyfirst", ImVec2(x + 44 * k, y), ImVec2(std::min(iw - 44 * k, 360 * k), 42 * k), "START WITH AN EMPTY PLAYLIST",
@@ -580,17 +581,21 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
         if (tb.y > la.y && ta.y < lb.y) {
             // Cream paper, the open one on blue and taped down; its words in black on cream, white on blue.
             library_card(d, f, ta, tb, selected, lit, 300 + static_cast<std::uint32_t>(std::hash<std::string>{}(list.name) % 997));
-            const ImU32 ink = selected ? IM_COL32_WHITE : shop_ink, sub = selected ? IM_COL32(214, 230, 255, 255) : IM_COL32(86, 88, 96, 255);
-            lib_caps(d, f, {ta.x + 16 * k, ta.y + 14 * k}, 10 * k, sub, (selected ? "OPEN / " : "") + std::to_string(list.size) + (list.size == 1 ? " ENTRY" : " ENTRIES"));
-            text(d, anton(f, 22 * k), 22 * k, {ta.x + 16 * k, ta.y + 30 * k}, ink, elide(anton(f, 22 * k), 22 * k, upper(list.name), nav_w - 52 * k));
+            // Words kept clear of the torn right edge (36 units in), dark grey on cream and white on blue (the pale ones did
+            // not read).
+            const float room = tb.x - ta.x - 36 * k;
+            const ImU32 ink = selected ? IM_COL32_WHITE : shop_ink, sub = selected ? IM_COL32_WHITE : IM_COL32(70, 72, 80, 255);
+            lib_caps(d, f, {ta.x + 16 * k, ta.y + 13 * k}, 11 * k, sub,
+                     lib_caps_fit(f, 11 * k, (selected ? "OPEN / " : "") + std::to_string(list.size) + (list.size == 1 ? " ENTRY" : " ENTRIES"), room - 50 * k));
+            text(d, anton(f, 22 * k), 22 * k, {ta.x + 16 * k, ta.y + 30 * k}, ink, elide(anton(f, 22 * k), 22 * k, upper(list.name), room));
             const bool normal = list.name == v.playlist_playing, held = list.name == binding.playlist;
             const char* role = normal && held ? "default + button" : normal ? "plays by default" : held ? "on the button" : "not playing";
             // What it does, in marker: blue when it plays, grey when it is only saved; smaller if it would run off the card.
             float role_size = 20 * k;
-            while (role_size > 12 * k && sharp(marker(f, role_size), role_size)->CalcTextSizeA(role_size, FLT_MAX, 0, role).x > tb.x - ta.x - 30 * k)
+            while (role_size > 12 * k && sharp(marker(f, role_size), role_size)->CalcTextSizeA(role_size, FLT_MAX, 0, role).x > room)
                 role_size -= 1 * k;
             marker_words(d, f, {ta.x + 16 * k, ta.y + 62 * k}, role, role_size, -1.5f,
-                         normal || held ? (selected ? IM_COL32_WHITE : IM_COL32(0, 98, 214, 255)) : (selected ? IM_COL32(200, 216, 240, 255) : IM_COL32(120, 122, 128, 255)));
+                         selected ? IM_COL32_WHITE : normal || held ? IM_COL32(0, 98, 214, 255) : IM_COL32(70, 72, 80, 255));
             if (lit && nav().keys) chosen_outline(d, ta, tb, k);
         }
         if (pressed) { studio::open_playlist(list.name); route.select(list.name); }
