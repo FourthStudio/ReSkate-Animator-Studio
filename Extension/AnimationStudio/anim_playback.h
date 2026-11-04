@@ -381,6 +381,38 @@ inline Joint foot_sliding_to_the_games(const Joint& at_the_lock, const Joint& ga
     for (std::size_t i = 0; i < 3; ++i) foot.position[i] = games.position[i] + (at_the_lock.position[i] - games.position[i]) * k;
     return foot;
 }
+// ---- the feet ride on the board (the game's own foot warp) --------------------------------------------------------------
+// The game holds the feet in the board's frame from the catch: in the user's own grinds (custom tricks off) each foot stayed
+// within 0.5 cm of one spot on the deck while the board turned 50 to 70 degrees under him into the lock, and its grind
+// entries warp the feet onto the board (MovableLimbFootWarp) across a pose gap of up to 20 cm. The studio's keys go on the
+// game's pose joint by joint, which puts a foot where the maker had it only while the game's pose is the trick's clip - and
+// it leaves that clip at the catch on most airs (36 of 47 tricks in a session of rails and ledges, 0.40 to 0.68 s in). From
+// there a knee keyed for the clip's landing, bent on the game's held catch, drew the foot through the deck or off it.
+// So where the studio shows a foot standing on the deck, it goes where the game has it on the game's board, moved as the
+// keys move it on the studio's board, onto the board drawn this frame (the transitions scout, C2). Where the studio's foot is
+// off the deck - a flick, a kick-out, a lifted foot - nothing changes. Not the "feet magnet" taken out on 2026-10-25: that
+// seated every foot near the board from the pop; this goes by the maker's own foot on the deck, frame by frame.
+// How much a foot stands on the deck in the studio, from its ankle in the board's frame: `height` over the deck's mount
+// along the board's up (standing, 0.104 m), how far `along` it and `across` it from its middle, and how far its sole is tipped
+// from the deck (degrees). 1 standing on it, 0 off it, eased between so it never steps.
+inline float foot_on_deck_share(float height, float along, float across, float tilt_degrees) noexcept {
+    if (!std::isfinite(height) || !std::isfinite(along) || !std::isfinite(across) || !std::isfinite(tilt_degrees)) return 0;
+    const auto band = [](float x, float full, float none) { // 1 up to `full`, 0 from `none`, eased
+        const float u = std::clamp((x - full) / (none - full), 0.0f, 1.0f);
+        return 1 - u * u * (3 - 2 * u);
+    };
+    const float h = height < 0.08f ? band(-height, -0.08f, -0.055f) : band(height, 0.13f, 0.16f);
+    return h * band(std::abs(along), 0.36f, 0.42f) * band(std::abs(across), 0.12f, 0.17f) * band(tilt_degrees, 25.0f, 40.0f);
+}
+// Where a foot goes, in the frame of the board drawn this frame: the game's foot in the game's board's frame (`game`), moved
+// and turned as the studio's keys move the studio's foot on the studio's board (`made`: the studio's foot without its keys on
+// the board without its keys; `keyed`: with them on the board with them).
+inline Joint foot_on_the_board(const Joint& game, const Joint& made, const Joint& keyed) noexcept {
+    Joint out = game;
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] = game.position[i] + keyed.position[i] - made.position[i];
+    out.rotation = normalised(multiply(game.rotation, multiply(conjugate(made.rotation), keyed.rotation)));
+    return out;
+}
 // ---- the board's keys ---------------------------------------------------------------------------------------------------
 // A trick's board keys turn the board about its own axes as it lay on the ground before the pop (the studio: start_frame).
 // In game that is the heading the board had under him while he rolled, kept for a second (seconds, heading relative to

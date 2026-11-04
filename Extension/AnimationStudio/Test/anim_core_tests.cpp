@@ -3377,6 +3377,60 @@ void tricks_begin_at_the_flick_and_hand_over_the_games_way() {
               release_at(0.15f, raised_lead_for(0.35f, 0.5f, 0.25f, true)) < release_at(0.15f, 0.25f) &&
               release_at(0.0f, raised_lead_for(0.45f, 0.5f, 0.25f, true)) == 1,
           "Before the catch the legs go over later, and are over at the contact");
+
+    // The feet ride on the board where the studio shows them standing on it.
+    check(foot_on_deck_share(0.104f, 0.15f, 0.02f, 5) == 1 && foot_on_deck_share(0.104f, -0.2f, -0.05f, 20) == 1,
+          "A foot standing on the deck (ankle 10.4 cm over the mount, sole flat) rides fully");
+    check(foot_on_deck_share(0.30f, 0.15f, 0, 0) == 0 && foot_on_deck_share(0.104f, 0.5f, 0, 0) == 0 &&
+              foot_on_deck_share(0.104f, 0.1f, 0.25f, 0) == 0 && foot_on_deck_share(0.104f, 0.1f, 0, 60) == 0 &&
+              foot_on_deck_share(0.02f, 0.1f, 0, 0) == 0 && foot_on_deck_share(std::nanf(""), 0, 0, 0) == 0,
+          "A foot lifted off it, past its nose or its edge, tipped off it, or through it, is the keys' alone");
+    {
+        float most = 0, last = foot_on_deck_share(0.03f, 0.1f, 0, 0);
+        for (int mm = 31; mm <= 200; ++mm) {
+            const float share = foot_on_deck_share(mm / 1000.0f, 0.1f, 0, 0);
+            most = std::max(most, std::abs(share - last));
+            last = share;
+        }
+        for (int d = 0; d <= 60; ++d) {
+            const float share = foot_on_deck_share(0.104f, 0.1f, 0, static_cast<float>(d)), before = foot_on_deck_share(0.104f, 0.1f, 0, d - 1.0f);
+            most = std::max(most, std::abs(share - before));
+        }
+        check(most < 0.12f, "and it comes and goes without a step, a millimetre or a degree at a time");
+    }
+    {
+        // On the game's board the game has the foot 15 cm along it; in the studio the keys move it 3 cm on towards the nose
+        // and turn it 10 degrees on the deck. On a board drawn turned 70 degrees from the game's, it stands 18 cm along it,
+        // turned 10 degrees more than the game has it.
+        const auto about_up = [](float degrees) { const float h = degrees * 3.14159265f / 360; return Quat{0, std::sin(h), 0, std::cos(h)}; };
+        Joint game; game.position = {0.0f, 0.104f, 0.15f}; game.rotation = about_up(5);
+        Joint made; made.position = {0.01f, 0.106f, 0.14f}; made.rotation = about_up(3);
+        Joint keyed = made; keyed.position[2] += 0.03f; keyed.rotation = normalised(multiply(made.rotation, about_up(10)));
+        Joint drawn; drawn.position = {1, 2, 3}; drawn.rotation = about_up(70);
+        // Onto the drawn board and back off it (the runtime's compose and relative, unit scale).
+        const auto onto = [](const Joint& parent, const Joint& child) {
+            Joint out = child;
+            const auto moved = rotate(parent.rotation, child.position);
+            for (std::size_t i = 0; i < 3; ++i) out.position[i] = parent.position[i] + moved[i];
+            out.rotation = normalised(multiply(parent.rotation, child.rotation));
+            return out;
+        };
+        const auto off = [](const Joint& parent, const Joint& world) {
+            Joint out = world;
+            out.position = rotate(conjugate(parent.rotation), Vec3{world.position[0] - parent.position[0], world.position[1] - parent.position[1],
+                                                                   world.position[2] - parent.position[2]});
+            out.rotation = normalised(multiply(conjugate(parent.rotation), world.rotation));
+            return out;
+        };
+        const auto world_foot = onto(drawn, foot_on_the_board(game, made, keyed));
+        const auto on_drawn = off(drawn, world_foot);
+        check(near(on_drawn.position[0], 0) && near(on_drawn.position[1], 0.104f) && near(on_drawn.position[2], 0.18f) &&
+                  same_turn(on_drawn.rotation, about_up(15)),
+              "A foot keyed 3 cm forward on the deck stands 3 cm forward of the game's, on the board as it is drawn, however it is turned");
+        check(same_turn(foot_on_the_board(game, made, made).rotation, game.rotation) &&
+                  near(foot_on_the_board(game, made, made).position[2], game.position[2]),
+              "With no keys on that foot it stands where the game has it on the board");
+    }
 }
 int main(int argc, char** argv) {
     try {
