@@ -3,6 +3,7 @@
 #include "trick_modifier.h"
 #include "anim_library.h"
 #include "anim_presets.h"
+#include "studio_settings_file.h"
 #include <array>
 #include <cstdint>
 #include <map>
@@ -160,6 +161,8 @@ struct View {
     // SETTINGS > STUDIO: the CATCH flag on the timeline shown or not; and whether the first-start guide has been read (it
     // opens by itself until it has).
     bool catch_marker{true}, guide_seen{true};
+    bool editor_tour_seen{true}; // the editor's first-open tour was gone through or skipped (it shows until it has)
+    TricksView tricks_view;      // TRICKS > MY TRICKS: icons, list or details, its groups and order, as last shown
     // The editor's keys rebound in SETTINGS > STUDIO > EDITOR KEYS: an action's name to its key's name (the overlay's
     // names). Only those not on their own key.
     std::map<std::string, std::string> keys;
@@ -476,6 +479,9 @@ bool duplicate_playlist(const std::string& target, std::string& message);
 std::vector<std::string> playlists_containing(const std::string& animation);
 // The playlists a whole pack is in (the "add it to a playlist?" card is not shown for a pack already linked).
 std::vector<std::string> playlists_with_pack(const std::string& pack);
+// Every saved animation's playlists at once (TRICKS' IN PLAYLISTS column and filter): one lock and one walk of the
+// playlists, where playlists_containing for each of hundreds would take the lock and walk them all once a trick.
+std::map<std::string, std::vector<std::string>> playlists_by_animation();
 void request_library(bool modifier_help = false);
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
@@ -500,6 +506,10 @@ void set_hover_preview(bool on);
 void set_catch_marker(bool on);
 // The first-start guide read (true), or to open again (false).
 void set_guide_seen(bool seen);
+// The editor's tour gone through or skipped (true), or to show again the next time the editor is up (false).
+void set_editor_tour_seen(bool seen);
+// How TRICKS > MY TRICKS is shown (icons, list, details; grouped; sorted), kept for the next time.
+void set_tricks_view(const TricksView& view);
 // The editor's rebound keys (View::keys), kept in studio-settings.json; empty puts every key back.
 void set_key_bindings(const std::map<std::string, std::string>& keys);
 std::map<std::string, std::string> key_bindings(); // the same, cheaply (the loading screen's tips name them)

@@ -42,6 +42,7 @@ Setting studio_room(const anim_studio::Settings&);
 Setting controller_combo(const anim_studio::Settings&); // what held on a controller opens the studio (open_combo_names)
 Setting catch_marker(const anim_studio::Settings&);
 Setting how_it_works(); // opens the first-start guide again
+Setting editor_tour();  // shows the editor's first-open tour again, the next time the editor is up
 Setting report_a_bug(Tell tell);
 // SKATER
 Setting editing_stance(const anim_studio::Settings&);
