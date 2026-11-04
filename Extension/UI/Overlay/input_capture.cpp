@@ -249,6 +249,21 @@ void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
             }
         }
     }
+    // A scripted press (the studio's room walk: RB from page to page) reaches a PlayStation pad the game reads itself too, as
+    // it reaches XInput, ahead of any hold: such a player's game never polls XInput, so the walk's presses went nowhere and
+    // the room did not open.
+    WORD scripted{};
+    if (!overlay_input_access && read.buffer && size <= read.capacity && scripted_buttons(scripted)) {
+        auto* bytes = static_cast<std::uint8_t*>(read.buffer);
+        const bool bluetooth = playstation_bluetooth(size);
+        if (auto pad = parse_playstation_report(read.kind, bluetooth, bytes, size)) {
+            pad->buttons = scripted;
+            if (replace_playstation_report(read.kind, bluetooth, bytes, size, *pad)) refresh_playstation_bluetooth_crc(bytes, size);
+            static std::atomic<bool> reported{};
+            if (!reported.exchange(true)) logging::write(logging::Level::info, logging::Channel::input,
+                "A scripted pad press reached a native PlayStation HID read.");
+        }
+    }
 }
 void complete_hid(OVERLAPPED* request, DWORD bytes, bool success, bool finished) {
     auto& h = input_hooks();
@@ -927,7 +942,9 @@ bool test_pad_connected() noexcept {
 template<std::size_t I>
 DWORD WINAPI captured_capabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIES* output) {
     const auto result = original<DWORD(WINAPI*)(DWORD, DWORD, XINPUT_CAPABILITIES*)>(input_hooks().xinput_capabilities[I])(user, flags, output);
-    if (result != ERROR_SUCCESS && user == 0 && output && test_pad_connected()) {
+    // The stand-in pad is connected while a script plays (the studio's room walk), as the test pad always is: a game that has
+    // no controller reads only pads it has seen arrive (scripted_pad.h, wake_controller_reads).
+    if (result != ERROR_SUCCESS && user == 0 && output && (test_pad_connected() || stand_in_connected())) {
         *output = {};
         output->Type = XINPUT_DEVTYPE_GAMEPAD;
         output->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
@@ -1246,8 +1263,12 @@ bool install_input_capture() {
         };
         if (!hook_export(h.xinput_state[i], "XInputGetState", states[i]) ||
             !hook_export(h.xinput_extended[i], MAKEINTRESOURCEA(100), extended[i]) ||
-            !hook_export(h.xinput_keystroke[i], "XInputGetKeystroke", strokes[i]) ||
-            (test_pad_connected() && !hook_export(h.xinput_capabilities[i], "XInputGetCapabilities", capabilities[i]))) return false;
+            !hook_export(h.xinput_keystroke[i], "XInputGetKeystroke", strokes[i])) return false;
+        // Answers as XInput does, except for the stand-in pad while a script plays (captured_capabilities). Not needed for
+        // the rest of the capture, so one that cannot be hooked is said and passed over.
+        if (!hook_export(h.xinput_capabilities[i], "XInputGetCapabilities", capabilities[i]))
+            dingosdk::logging::printf(dingosdk::logging::Level::warning, dingosdk::logging::Channel::input,
+                "XInputGetCapabilities is not hooked (module %zu): the studio's room walk may not reach a game with no controller.", i);
     }
     const auto direct = LoadLibraryExW(L"dinput8.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (direct) {

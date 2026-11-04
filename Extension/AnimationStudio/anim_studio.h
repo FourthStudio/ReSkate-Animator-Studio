@@ -69,6 +69,9 @@ struct View {
     std::size_t source_pose_count{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
+    // The trick previewed is locked by its creator (trick_lock.h): preview only. Its keys' values are not in `tracks` (their
+    // times are), so nothing on the screen can copy them.
+    bool locked{};
     // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
     // and its name. Opening another trick to edit drops it, so ask first.
     bool kept_dirty{};
@@ -206,6 +209,9 @@ Settings settings();
 bool room_wanted() noexcept;       // the Studio room row is on
 void watch_room(bool on) noexcept; // look for the menu's skater in the room
 bool room_skater_seen() noexcept;  // the menu's skater was drawn in the room just now
+// For the log when the walk to the room fails: " A skater was drawn ... from the room's spot ..." when one was drawn somewhere
+// else lately while the room was looked for (a map whose menu room is not where it is measured), else "".
+std::string room_skater_note();
 void set_in_room(bool on) noexcept; // the studio is open in the room: the skater is drawn there
 // The loading screen over the walk to the room and back. `seconds`: how long it stays at least (it is
 // set again while the walk goes on). Any thread.

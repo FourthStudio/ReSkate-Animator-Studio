@@ -44,6 +44,7 @@
 #include "grab_types.h"
 #include "studio_sound.h"
 #include "loop_copy.h"
+#include "trick_lock.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
@@ -299,6 +300,9 @@ struct State {
     std::string saved_as; // the library name it was loaded from or saved to
     bool dirty{};
     bool previewing{}; // open to watch only (preview_saved)
+    // The trick open to watch is locked by its creator: its keys are not handed to the screen (View::tracks) and nothing is
+    // copied from it while it is open.
+    bool open_locked{};
     // What was open when a preview started (the trick, its changes, its undo and redo), put back when the preview ends.
     struct Kept {
         std::shared_ptr<const Clip> clip;
@@ -1510,10 +1514,67 @@ bool made_here_locked(const std::string& name) {
         return false;
     }
 }
+// A recording (`bytes`, as read from its file or about to be written) that is a locked trick's remembered clip (clip_locks):
+// a copy of another maker's locked trick, whatever key its description has been given since.
+bool clip_locked_elsewhere(std::string_view bytes, const Animation& animation) {
+    if (bytes.empty() || animation.source.kind == "native_asset") return false;
+    const auto locked = read_locked_clips();
+    if (locked.empty()) return false;
+    const auto whose = locked.find(sha256_hex(bytes));
+    return whose != locked.end() &&
+           clip_locks(false, locked_key(whose->second), whose->second == animation.maker_key, animation.editable);
+}
+// Whose the saved trick `name` is (trick_lock.h), from its own file - its maker's key, whether he opened it to edit, its
+// recording - and from the packs that name it. Read from the files rather than from the presets, so a trick that is no
+// preset (one with no trick of the game's, a broken one) is judged the same way. `clip` is its recording when the caller has
+// read it already (it is read here when not, for `with_clip`).
+TrickOwner trick_owner_locked(State& s, const std::string& name, std::string_view clip = {}, bool with_clip = true) {
+    if (!s.library_read) read_library_locked(s);
+    TrickOwner owner;
+    const auto safe = file_safe(name);
+    bool keyless = true;
+    try {
+        std::ifstream json_in(saved_json(safe), std::ios::binary);
+        if (!json_in) throw std::runtime_error("no file");
+        const auto animation = from_json(std::string((std::istreambuf_iterator<char>(json_in)), {}));
+        keyless = animation.maker_key.empty();
+        owner.made_elsewhere = locked_key(animation.maker_key);
+        owner.editable = animation.editable;
+        if (!clip.empty()) owner.locked_clip = clip_locked_elsewhere(clip, animation);
+        else if (with_clip) {
+            std::ifstream in(saved_clip(safe), std::ios::binary);
+            if (in) owner.locked_clip = clip_locked_elsewhere(std::string((std::istreambuf_iterator<char>(in)), {}), animation);
+        }
+    } catch (...) {}
+    // The library's own reading (by_clip, a keyless trick of a pack from another PC) counts too.
+    if (const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return _stricmp(p.name.c_str(), safe.c_str()) == 0; });
+        found != s.presets.end() && found->locked && !locked_to_creator(owner))
+        owner.locked_clip = true;
+    bool foreign_pack = false, foreign_pack_editable = true;
+    for (const auto& pack : s.packs)
+        if (locked_key(pack.maker_key) && pack.has(safe)) {
+            foreign_pack = true;
+            foreign_pack_editable = foreign_pack_editable && pack.editable;
+        }
+    return owned_by_pack(owner, keyless, foreign_pack, foreign_pack_editable);
+}
+// The trick `name` may be used so; when not, `message` says why (and the status line shows it). Caller holds the mutex.
+bool trick_use_refused_locked(State& s, const std::string& name, TrickUse use, std::string& message, std::string_view clip = {},
+                              bool with_clip = true) {
+    const auto owner = trick_owner_locked(s, name, clip, with_clip);
+    if (trick_use_allowed(owner, use)) return false;
+    const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return _stricmp(p.name.c_str(), name.c_str()) == 0; });
+    const auto shown = found != s.presets.end() && !found->label.empty() ? found->label : name;
+    message = refused_use_message(shown, found != s.presets.end() ? found->made_by : std::string{}, use);
+    logging::log(Level::info, Channel::skater, "Animation Studio: refused for {}: {}", name, message);
+    return true;
+}
 bool locked_locked(State& s, const std::string& name) {
     if (!s.library_read) read_library_locked(s);
     const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return _stricmp(p.name.c_str(), name.c_str()) == 0; });
-    return found != s.presets.end() && found->locked;
+    if (found != s.presets.end() && found->locked) return true;
+    // Not a preset (no trick of the game's, a broken one), or one the library took for yours: its own file says.
+    return locked_to_creator(trick_owner_locked(s, name, {}, false));
 }
 // Another maker's trick: made on another PC (editable or not), or in a pack made on another PC (got from the MARKET or
 // imported). Only your own tricks go in your packs and are shared, so nobody reshares tricks that are not theirs.
@@ -1543,6 +1604,7 @@ void read_library_locked(State& s) {
         const auto playing = playing_names(s.library, !s.packs_on.empty());
         const auto locked_clips = read_locked_clips();
         std::vector<std::pair<std::string, std::string>> trick_teams; // (maker key, team it went out with), for claim_account_keys
+        std::set<std::string> keyless; // tricks with no maker's key: their pack's (owned_by_pack, below)
         for (const auto& name : s.library) {
             try {
                 std::ifstream in(saved_json(name), std::ios::binary);
@@ -1563,16 +1625,20 @@ void read_library_locked(State& s) {
                     // By its clip only for a clip that is its maker's own work: a clip of the game's (native_asset) is the same file
                     // for everyone who made a trick from it, so a trick of yours from the same game clip as one in a pack you
                     // got was taken for that pack's (your own tricks, said to be someone else's when you shared your pack).
+                    // (A trick with this PC's key is not hashed here: that is every trick of yours, read again on every change.
+                    // Opening, copying, saving and sharing check the recording itself: clip_locked_elsewhere.)
                     const auto by_clip = [&] {
                         if (locked_clips.empty() || animation.source.kind == "native_asset" ||
                             !(animation.maker_key.empty() || locked_key(animation.maker_key)))
                             return false;
                         const auto whose = locked_clips.find(clip_hash(saved_clip(name)));
-                        return whose != locked_clips.end() && locked_key(whose->second);
+                        return whose != locked_clips.end() &&
+                               clip_locks(false, locked_key(whose->second), whose->second == animation.maker_key, animation.editable);
                     };
                     s.presets.back().locked = (locked_key(animation.maker_key) && !animation.editable) || by_clip();
                     s.presets.back().foreign = locked_key(animation.maker_key) || s.presets.back().locked;
                     s.presets.back().playing = playing.contains(name);
+                    if (animation.maker_key.empty()) keyless.insert(name);
                 }
             } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
         }
@@ -1590,6 +1656,18 @@ void read_library_locked(State& s) {
                     }
                 }
         std::sort(s.packs.begin(), s.packs.end(), [](const PresetPack& a, const PresetPack& b) { return a.name < b.name; });
+        // A trick with no maker's key that a pack made on another PC names is that pack's maker's (a pack zipped by hand, or
+        // from a build that put no keys in its tricks): locked unless that pack is open to edit.
+        if (!keyless.empty())
+            for (auto& preset : s.presets) {
+                if (!keyless.contains(preset.name)) continue;
+                bool named = false, open = true;
+                for (const auto& pack : s.packs)
+                    if (locked_key(pack.maker_key) && pack.has(preset.name)) named = true, open = open && pack.editable;
+                const auto owner = owned_by_pack({false, false, preset.locked, false}, true, named, open);
+                preset.locked = locked_to_creator(owner);
+                preset.foreign = someone_elses(owner);
+            }
         // A pack naming tricks that are not here (its maker's export left them out): said once in the log, as those
         // stances and pops play the game's own trick. They are not shown as its tricks (view()).
         {
@@ -4644,6 +4722,15 @@ void saved_tricks_to_send(std::uintptr_t component, std::vector<multiplayer::Tra
 // shows in the room, given back after it. A skater is hidden by a tiny scale on its placement joint (a
 // move, or scale 0, can move the game's camera or hide the room), a board by scale 0 on every bone.
 // The game does not set the scale again, so it is given back here (PR #230 does the same).
+// While the room is looked for: the skater drawn nearest the room's spot that was not in it (another map's menu room, say),
+// for the log when the walk fails (room_skater_note).
+struct RoomMiss {
+    std::mutex mutex;
+    Vec3 at{};
+    float distance{-1};
+    double when{-1e9};
+};
+RoomMiss& room_miss() { static auto* value = new RoomMiss; return *value; }
 void hide_in_room(std::uintptr_t animation_interface, bool skater) noexcept {
     const bool hide = room_flag.load(std::memory_order_acquire), watch = room_watch.load(std::memory_order_acquire);
     if (!hide && !watch && now_seconds() > room_restore_until.load(std::memory_order_acquire)) return;
@@ -4655,7 +4742,17 @@ void hide_in_room(std::uintptr_t animation_interface, bool skater) noexcept {
     if (!peek(layout.buffer, b.data(), sizeof(b))) return;
     const auto at = compose(compose(joint_of(b[0]), joint_of(b[1])), skater ? Joint{} : joint_of(b[2])).position;
     for (std::size_t i = 0; i < 3; ++i)
-        if (!(std::abs(at[i] - room_spot[i]) < room_reach[i])) return;
+        if (!(std::abs(at[i] - room_spot[i]) < room_reach[i])) {
+            if (skater && watch && finite(Joint{{1, 1, 1}, {0, 0, 0, 1}, at})) {
+                const float dx = at[0] - room_spot[0], dy = at[1] - room_spot[1], dz = at[2] - room_spot[2];
+                const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+                auto& miss = room_miss();
+                const auto now = now_seconds();
+                std::lock_guard lock(miss.mutex);
+                if (now - miss.when > 3.0 || distance < miss.distance) miss.at = at, miss.distance = distance, miss.when = now;
+            }
+            return;
+        }
     if (skater) {
         room_seen_at.store(now_seconds(), std::memory_order_release);
         if (b[1].scale[0] >= 0.01f) {
@@ -6809,6 +6906,13 @@ Settings settings() {
     return out;
 }
 void watch_room(bool on) noexcept { room_watch.store(on, std::memory_order_release); }
+std::string room_skater_note() {
+    auto& miss = room_miss();
+    std::lock_guard lock(miss.mutex);
+    if (now_seconds() - miss.when > 5.0) return {};
+    return std::format(" A skater was drawn {:.1f} m from the room's spot, at {:.2f}, {:.2f}, {:.2f} (the room's spot is {:.2f}, {:.2f}, {:.2f}).",
+                       miss.distance, miss.at[0], miss.at[1], miss.at[2], room_spot[0], room_spot[1], room_spot[2]);
+}
 void set_in_room(bool on) noexcept { in_room_flag.store(on, std::memory_order_release); }
 bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std::memory_order_acquire) < 0.5; }
 // The game's own load is still going: the loading screen stays until the game has been quiet for a second.
@@ -6974,9 +7078,14 @@ View view() {
     v.time = s.time;
     v.speed = s.edits.speed;
     v.joints = s.joints;
+    // A trick locked by its creator, open to watch: its keys' times only. The screen copies keys from what it is handed
+    // (Ctrl + C, the round menu, the selection bar), so what it is never handed cannot be pasted into a trick of your own.
+    v.locked = s.previewing && s.open_locked;
     for (const auto& t : s.edits.tracks) {
         TrackView tv{t.joint, {}, t.hidden, t.locked};
-        for (const auto& k : t.keys) tv.keys.push_back({k.time, k.ease, k.smooth, k.rotation, k.offset, k.blend_out, k.blend_in});
+        for (const auto& k : t.keys)
+            if (v.locked) tv.keys.push_back({k.time, k.ease, k.smooth});
+            else tv.keys.push_back({k.time, k.ease, k.smooth, k.rotation, k.offset, k.blend_out, k.blend_in});
         v.tracks.push_back(std::move(tv));
     }
     v.library = s.library;
@@ -7364,6 +7473,7 @@ std::size_t limb_chain(std::uint16_t joint) noexcept {
 Offset offset_of(std::uint16_t joint) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    if (s.previewing && s.open_locked) return {}; // a locked trick's keys are not handed out (View::locked)
     const auto* t = s.edits.track(joint);
     return t ? evaluate(*t, s.time) : Offset{};
 }
@@ -7395,6 +7505,7 @@ namespace {
 Vec3 limb_position(std::uint16_t joint) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    if (s.previewing && s.open_locked) return {};
     if (!s.clip || s.clip->empty() || !editable(joint)) return {};
     const float at = key_time_locked(s);
     std::vector<Joint> native(skeleton_joints);
@@ -7672,6 +7783,14 @@ void set_track_flags(std::uint16_t joint, bool hidden, bool locked) {
 void copy_pose() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    // A preview is to watch only: a pose taken from it was pasted into a trick of your own, which copied a creator's locked
+    // trick key by key.
+    if (s.previewing) {
+        s.status = s.open_locked ? refused_use_message(s.edits.label.empty() ? s.edits.name : s.edits.label, s.edits.author, TrickUse::copy_keys)
+                                 : std::string("This is a preview: open the trick itself to copy its pose.");
+        publish_locked(s, false);
+        return;
+    }
     s.clipboard.clear();
     for (const auto& t : s.edits.tracks)
         if (!t.keys.empty()) s.clipboard.emplace_back(t.joint, evaluate(t, s.time));
@@ -7938,6 +8057,8 @@ bool set_label(const std::string& animation, const std::string& label_in, std::s
         while (!label.empty() && std::isspace(static_cast<unsigned char>(label.front()))) label.erase(label.begin());
         const auto safe = file_safe(animation);
         const auto path = saved_json(safe);
+        // A creator's locked trick keeps the name he gave it (trick_lock.h).
+        if (std::string why; trick_use_refused_locked(s, safe, TrickUse::relabel, why, {}, false)) throw std::runtime_error(why);
         std::string text;
         {
             std::ifstream in(path, std::ios::binary);
@@ -8095,15 +8216,15 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
         auto root = Json::parse(text);
         if (!root.is_object()) throw std::runtime_error(animation + " is not a saved animation.");
         if (root.value("trick", "").empty()) throw std::runtime_error(animation + " has no trick, so it has no pop to copy to.");
-        // Locked to its maker: copied all the same, each copy on its own pop and still the maker's (its key and its lock go
-        // with it: not opened, not shared). It keeps its own clip, so in game it plays as made on each pop (other_pop).
-        const bool locked = locked_locked(s, safe);
         std::string clip;
         {
             std::ifstream in(saved_clip(safe), std::ios::binary);
             if (!in) throw std::runtime_error(animation + "'s clip is missing.");
             clip.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         }
+        // Locked by its creator: never copied (it was, as copies still locked to him, until 1.2; a copy is a copy all the same).
+        // In game it plays on the other pops by itself (fill_pop_rank), so nothing is lost.
+        if (std::string why; trick_use_refused_locked(s, safe, TrickUse::copy, why, clip)) throw std::runtime_error(why);
         // "Kickflip high" copies to "Kickflip low", "Kickflip mid", "Kickflip high 2".
         std::string base = safe;
         for (const char* word : {" low", " mid", " high", " any"})
@@ -8141,7 +8262,7 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
             while (std::filesystem::exists(folder / name) || std::filesystem::exists(folder / (name + ".json")))
                 name = variation_name(stem, number++);
             std::filesystem::create_directories(folder / name);
-            if (auto moved = locked ? std::nullopt : onto_game_pop(anim, source_clip, pop)) {
+            if (auto moved = onto_game_pop(anim, source_clip, pop)) {
                 auto& [copy, game_clip] = *moved;
                 copy.name = name;
                 copy.pop = pop;
@@ -8167,13 +8288,12 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
         };
         if (copies.empty()) throw std::runtime_error(animation + " already has its " + pops_of(skipped) + ": nothing new to copy.");
         read_library_locked(s);
-        const int packs = locked ? 0 : add_copies_to_packs_locked(s, safe, copies); // not into its maker's pack
+        const int packs = add_copies_to_packs_locked(s, safe, copies);
         s.tricks_read = false;
         std::string made;
         for (std::size_t i = 0; i < copies.size(); ++i) made += (i == 0 ? "" : i + 1 == copies.size() ? " and " : ", ") + copies[i];
         message = "Made " + made + (packs ? ", in " + std::to_string(packs) + (packs == 1 ? " pack" : " packs") + " with it" : std::string{}) +
-                  (locked ? ". Each plays as made on its own pop, and stays its maker's: locked, not shared."
-                   : on_game_clips ? ". Each is on the game's own clip of its pop and plays on that pop." : ". Each plays on its own pop.") +
+                  (on_game_clips ? ". Each is on the game's own clip of its pop and plays on that pop." : ". Each plays on its own pop.") +
                   (skipped.empty() ? std::string{} : " Not " + pops_of(skipped) + ": it has that already.");
         s.status = message;
         publish_locked(s, false);
@@ -8190,30 +8310,28 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         if (anim.trick.empty()) throw std::runtime_error(animation + " is for none of the game's tricks.");
         if (!valid_stance_version(anim.trick, version))
             throw std::runtime_error("A native piece is normal or switch: its fakie way is a separate animation on the trick's card.");
-        if (locked_locked(s, safe)) throw std::runtime_error(animation + " is locked to its maker: it can be played, not copied.");
         std::string bytes;
         {
             std::ifstream in(saved_clip(safe), std::ios::binary);
             if (!in) throw std::runtime_error(animation + "'s clip is missing.");
             bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         }
+        if (std::string why; trick_use_refused_locked(s, safe, TrickUse::copy, why, bytes)) throw std::runtime_error(why);
         Clip clip = trick_clip_from_bytes(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
         if (anim.source.kind == "native_asset") place_native_marks(clip);
         const bool own_right = studio_goofy(s.stance_choice);
         auto copied = stance_copy(std::move(anim), std::move(clip), own_right, version);
         anim = std::move(copied.first);
         clip = std::move(copied.second);
-        // "Kickflip mid" makes "Kickflip mid switch"; a version of a version is named from the trick itself.
+        // "Kickflip mid" makes "Kickflip mid switch"; a version of a version is named from the trick itself; a name taken
+        // gets the next number (stance_copy_name): always a new trick, never one there was.
         static constexpr std::array<const char*, 4> suffix{" normal", " fakie", " switch", " switch fakie"};
-        std::string base = safe;
-        for (const char* word : {" switch fakie", " switch", " fakie", " normal"})
-            if (base.size() > std::strlen(word) && base.ends_with(word)) { base.resize(base.size() - std::strlen(word)); break; }
         const std::string end = suffix[static_cast<std::size_t>(version)];
-        const auto stem = utf8_prefix(base, 48 - end.size()) + end;
         const auto folder = library_folder();
-        std::string name = stem;
-        unsigned number = 2;
-        while (std::filesystem::exists(folder / name) || std::filesystem::exists(folder / (name + ".json"))) name = variation_name(stem, number++);
+        const auto name = stance_copy_name(safe, version, [&](const std::string& n) {
+            return std::filesystem::exists(folder / n) || std::filesystem::exists(folder / (n + ".json")) || reserved_name(n) ||
+                   std::any_of(s.library.begin(), s.library.end(), [&](const std::string& o) { return _stricmp(o.c_str(), n.c_str()) == 0; });
+        });
         anim.name = name;
         if (!anim.label.empty()) {
             std::string label = anim.label;
@@ -8284,6 +8402,11 @@ bool copy_saved(const std::vector<std::string>& animations, std::vector<std::str
                 if (!in) throw std::runtime_error("its clip is missing");
                 bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
             }
+            // Its recording is a locked trick's (its key taken out, or itself a copy): locked all the same (trick_lock.h).
+            if (clip_locked_elsewhere(bytes, anim)) {
+                locked.push_back(animation);
+                continue;
+            }
             const auto stem = unnumbered(safe);
             unsigned number = 2;
             std::string name = variation_name(stem, number);
@@ -8309,7 +8432,7 @@ bool copy_saved(const std::vector<std::string>& animations, std::vector<std::str
     message = made.empty() ? std::string("Nothing copied.")
                            : "Copied " + std::to_string(made.size()) + (made.size() == 1 ? " trick: " : " tricks: ") + listed(made) +
                                  ". They are in MY TRICKS, in no pack or playlist: change them as you like.";
-    if (!locked.empty()) message += " Not " + listed(locked) + ": locked to " + (locked.size() == 1 ? "its maker." : "their makers.");
+    if (!locked.empty()) message += " Not " + listed(locked) + ": " + std::string(locked_preview_only) + ", never copied.";
     if (!failed.empty()) message += " " + listed(failed) + " could not be copied (see the log).";
     if (!not_reached.empty()) message += " " + std::to_string(not_reached.size()) + " still ticked: press COPY again for them.";
     s.status = message;
@@ -9243,8 +9366,13 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
                 continue;
             }
             // Another maker's trick is not shared again (editable or not, or one that came in a pack): a pack with one is not
-            // exported, EXPORT ALL leaves it out.
-            if (someone_elses_locked(s, name)) {
+            // exported, EXPORT ALL leaves it out. Its recording counts too: a locked trick's clip under a key of yours (copied,
+            // or its key edited out of its file) is still its creator's (trick_lock.h).
+            auto text = read_whole(json);
+            auto recording = read_whole(clip);
+            bool elsewhere = someone_elses_locked(s, name);
+            if (!elsewhere) try { elsewhere = !trick_use_allowed(trick_owner_locked(s, name, recording), TrickUse::share); } catch (...) {}
+            if (elsewhere) {
                 if (!pack_name.empty())
                     throw std::runtime_error(name + " in this pack was made by someone else: it plays for you, but it is theirs to share. "
                                              "Take it out of the pack to export it.");
@@ -9252,7 +9380,6 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
                 continue;
             }
             // Made here: it goes with this PC's key, so it stays its maker's wherever it is installed.
-            auto text = read_whole(json);
             try {
                 auto root = Json::parse(text);
                 if (root.is_object()) {
@@ -9265,7 +9392,7 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
                 }
             } catch (...) {}
             files.emplace_back(name + "/" + name + ".json", std::move(text));
-            files.emplace_back(name + "/" + name + ".clip", read_whole(clip));
+            files.emplace_back(name + "/" + name + ".clip", std::move(recording));
             ++animations;
             // What it is, for whoever looks at the pack: its trick, its pop, its stance.
             if (const auto p = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& x) { return x.name == name; }); p != s.presets.end()) {
@@ -9768,7 +9895,17 @@ bool unpack_preview(const std::filesystem::path& zip, const std::filesystem::pat
             out.fakie = animation.fakie.value_or(false);
             out.json = into / (name + ".json");
             out.clip = into / (name + ".clip");
-            write_whole(out.json, pair.first);
+            // A trick with no maker's key is its pack's, as the import takes it in: so a locked pack's previews are locked too.
+            std::string text = pair.first;
+            if (animation.maker_key.empty() && pack && !pack->maker_key.empty()) try {
+                    auto root = Json::parse(text);
+                    if (root.is_object()) {
+                        root["maker_key"] = pack->maker_key;
+                        if (pack->editable) root["editable"] = true;
+                        text = root.dump(2);
+                    }
+                } catch (...) {}
+            write_whole(out.json, text);
             write_whole(out.clip, pair.second);
             tricks.push_back(std::move(out));
         }
@@ -9853,7 +9990,11 @@ void offer_loop_copy_locked(State& s, const std::string& saved) {
 bool save(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    if (s.previewing) { message = "This is a preview: open the trick itself to change it."; return false; }
+    if (s.previewing) {
+        message = s.open_locked ? refused_use_message(s.edits.label.empty() ? s.edits.name : s.edits.label, s.edits.author, TrickUse::edit)
+                                : std::string("This is a preview: open the trick itself to change it.");
+        return false;
+    }
     if (!s.clip || s.clip->empty()) {
         message = "Open a trick in TRICKS before saving.";
         return false;
@@ -9933,8 +10074,16 @@ bool save(std::string& message) {
         full.clip.landing = written->landing;
         const auto json = to_json(full);
         const auto bytes = clip_bytes(*written);
-        write_saved_trick_files(folder, name, json,
-                                std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+        const std::string_view recording(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        // Never another maker's locked recording saved as a trick of yours, however it got into the editor (trick_lock.h).
+        if (clip_locked_elsewhere(recording, full)) {
+            message = refused_use_message(full.label.empty() ? name : full.label, full.author, TrickUse::copy);
+            s.status = message;
+            logging::log(Level::warning, Channel::skater, "Animation Studio: not saved, {}: {}", name, message);
+            publish_locked(s, false);
+            return false;
+        }
+        write_saved_trick_files(folder, name, json, recording);
         s.edits.name = name;
         s.edits.changed_here = full.changed_here; // repeated SAVE must keep the local-edit protection
         s.saved_as = name;
@@ -10633,6 +10782,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.previewing = false;
+        s.open_locked = false;
         s.kept.reset(); // opened to edit: what a preview kept goes (the studio asks first when it has changes)
         s.edits = game_trick_edits(trick);
         s.clip = std::move(clip);
@@ -10695,6 +10845,11 @@ bool copy_loop_pose(const std::vector<std::string>& assets, std::string& message
             return false;
         }
         loop_name = s.loop_offer->loop;
+        // Its pose goes into copies: a creator's locked loop is never copied from (trick_lock.h).
+        if (std::string why; trick_use_refused_locked(s, loop_name, TrickUse::copy, why)) {
+            say_locked(s, message, why);
+            return false;
+        }
         for (const auto& part : s.loop_offer->parts)
             if (std::find(assets.begin(), assets.end(), part.asset) != assets.end()) parts.push_back(part);
     }
@@ -10815,6 +10970,7 @@ namespace {
 void end_preview_locked(State& s) {
     if (!s.previewing) return;
     s.previewing = false;
+    s.open_locked = false;
     ++s.clip_serial;
     s.playing = false;
     if (s.kept) {
@@ -10870,9 +11026,28 @@ bool open_trick_files(const std::string& safe, const std::filesystem::path& json
         auto& s = state();
         std::lock_guard lock(s.mutex);
         if (!s.library_read) read_library_locked(s);
-        if (library && !preview && locked_locked(s, safe))
-            throw std::runtime_error("it is locked to its maker" + (animation.author.empty() ? std::string{} : " (" + animation.author + ")") +
-                                     ": you can play it, test it and preview it, not open it to edit or copy it");
+        // Locked by its creator (trick_lock.h): judged from this very file and its recording, whatever list it was opened from
+        // (TRICKS, the LIBRARY, a playlist, a pack, the MARKET), so no way of opening it to edit is missed.
+        const std::string_view recording(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        TrickOwner owner{locked_key(animation.maker_key), animation.editable, clip_locked_elsewhere(recording, animation), false};
+        if (library) owner = trick_owner_locked(s, safe, recording);
+        const bool locked = locked_to_creator(owner);
+        // A locked trick of the library's seen here (one unzipped by hand into the tricks folder never went through the
+        // import, which remembers them): its recording is remembered now, so a copy of it, or the trick with its key taken
+        // out of its file later, is still known for its creator's.
+        if (locked && library && locked_key(animation.maker_key) && !animation.editable && animation.source.kind != "native_asset") try {
+                const auto hash = sha256_hex(recording);
+                if (const auto known = read_locked_clips(); !known.contains(hash)) remember_locked_clips({{hash, animation.maker_key}});
+            } catch (...) {}
+        if (!preview && locked) {
+            std::string why;
+            (void)trick_use_refused_locked(s, safe, TrickUse::edit, why, recording);
+            if (why.empty()) why = refused_use_message(animation.label.empty() ? safe : animation.label, animation.author, TrickUse::edit);
+            message = why;
+            s.status = message;
+            publish_locked(s);
+            return false;
+        }
         animation.name = safe;
         if (preview && !s.previewing && s.clip && !s.clip->empty())
             s.kept = State::Kept{s.clip, s.edits, std::move(s.undo), std::move(s.redo), s.saved_as, s.time, s.dirty};
@@ -10882,6 +11057,7 @@ bool open_trick_files(const std::string& safe, const std::filesystem::path& json
         s.clip = std::move(clip);
         ++s.clip_serial;
         s.previewing = preview;
+        s.open_locked = preview && locked;
         s.saved_as = library ? safe : std::string{}; // one not installed is no file of the library's
         s.undo.clear();
         s.redo.clear();
@@ -10890,6 +11066,7 @@ bool open_trick_files(const std::string& safe, const std::filesystem::path& json
         s.dirty = false;
         const auto shown = s.edits.label.empty() ? safe : s.edits.label;
         message = !library ? "Previewing " + shown + ". It is not installed: GET puts it in your library." : preview ? "Previewing " + safe + "." : "Opened " + safe + ".";
+        if (preview && locked) message += " " + std::string(locked_preview_only) + ".";
         s.play_after = -1;
         if (preview) {
             // Watched whole, from its start: it stands on its first frame a moment (the new clip comes up in the studio and
@@ -11295,6 +11472,7 @@ bool report_bug(std::string& message) {
 void rename(const std::string& name) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    if (s.previewing) return; // a preview is to watch only
     s.edits.name = name;
     s.dirty = true;
     ++s.revision;

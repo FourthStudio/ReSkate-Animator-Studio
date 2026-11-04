@@ -204,6 +204,14 @@ struct Ui {
     bool combo_armed{true}; // false while the hold that opened the studio is still on
     float stick_dx{}, stick_dy{};
     double stick_idle_since{};
+    // What a stick turn began on: its joint, frame, mode and trick. It ends when any of them changes under it, so its start
+    // values never land on another joint or frame. And the stick has to come back to rest before it turns anything (after the
+    // combo that opened the studio, the menu, a card, or a turn that ended so).
+    std::uint16_t stick_joint{};
+    float stick_frame{-1};
+    bool stick_move{}, stick_armed{};
+    int stick_axis{-2};
+    std::uint64_t stick_serial{};
 
     // ---- the screen ----
     // The full-screen menu (TRICKS, PACKS, SETTINGS), or the editor with the skater. The menu is up when the studio
@@ -803,6 +811,15 @@ float stick_response(float raw) {
     if (a <= dead) return 0.0f;
     const float n = std::min((a - dead) / (1.0f - dead), 1.0f);
     return std::copysign(n * n, raw);
+}
+// The left stick as it turns or moves a joint: a round dead zone, wider than the axis one. A worn stick rests 0.15 or more off
+// centre on one axis; past the axis dead zone that turned the chosen joint (a leg, often) by itself, keying it frame after frame.
+std::array<float, 2> turning_stick(float x, float y) {
+    constexpr float dead = 0.22f;
+    const float m = std::hypot(x, y);
+    if (!(m > dead)) return {0.0f, 0.0f};
+    const float n = std::min((m - dead) / (1.0f - dead), 1.0f);
+    return {x / m * n * n, y / m * n * n};
 }
 // The stick filtered towards its target over the frame time (about 1/20 s): removes the jitter of the pad.
 float smooth_stick(float& state, float target, float dt) {
@@ -1502,6 +1519,21 @@ void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
     }
     const auto placed = on_the_deck(v, ui().selected, target);
     studio::drag_limb(ui().selected, keep_clear(v, ui().selected, placed));
+}
+// The left stick in MOVE on a hand, a foot, a knee or an elbow: the joint is pulled across the screen from where the move began
+// and the limb above bends to reach it (the IK), as a mouse drag moves it (drag_limb_to), the deck and Keep clear the same.
+// It went through apply_turn, which put a position on the foot bone itself: the foot came off the leg, the controller's "leg
+// glitch" that mouse and keyboard never had (Heatz, 1.1). `dx`, `dy` as apply_turn's.
+void move_limb_by_stick(const studio::View& v, const Projector& p, float dx, float dy) {
+    auto& u = ui();
+    constexpr float metres = 1.0f / 400; // apply_turn's move: a stick held full moves it as far as a drag does
+    studio::Vec3 target{};
+    for (int i = 0; i < 3; ++i) target[i] = u.drag_point[i] + p.right[i] * dx * metres - p.up[i] * dy * metres;
+    if (u.axis >= 0)
+        for (int i = 0; i < 3; ++i)
+            if (i != u.axis) target[static_cast<std::size_t>(i)] = u.drag_point[static_cast<std::size_t>(i)];
+    const auto placed = on_the_deck(v, u.selected, target);
+    studio::drag_limb(u.selected, keep_clear(v, u.selected, placed));
 }
 // `dx`, `dy`: how far the turn has gone, in screen pixels at 1080 lines.
 void apply_turn(const studio::View& v, const Projector& p, float dx, float dy, bool move) {
@@ -2226,6 +2258,12 @@ void zoom_timeline(float factor);
 // ---- what is done with the chosen keys (the round menu, the selection bar, the keys) -----------------
 void copy_keys(const studio::View& v) {
     auto& u = ui();
+    // A preview is to watch only, and a locked trick's keys are not handed to the screen at all (View::locked).
+    if (v.previewing || v.locked) {
+        say(v.locked ? "Locked by its creator: preview only. Its keys and poses stay its creator's: nothing is copied from it."
+                     : "This is a preview: open the trick itself to copy its keys.");
+        return;
+    }
     u.copied_keys.clear();
     for (const auto& [joint, time] : u.picked)
         if (const auto* t = track_view(v, joint))
@@ -2632,6 +2670,7 @@ void controller(const studio::View& v, const Projector& p) {
     const unsigned combo = studio::open_combo_buttons[static_cast<std::size_t>(studio::open_combo())];
     if (combo && (buttons & combo) == combo) {
         u.l3_combo = true;
+        u.stick_armed = false; // L3 and R3 are the sticks: pushed while clicked, they must come back to rest first
         bool long_enough = true;
         for (unsigned bit = 1; bit < 0x10000; bit <<= 1)
             if ((combo & bit) && held_for(bit) <= 0.5) long_enough = false;
@@ -2666,6 +2705,7 @@ void controller(const studio::View& v, const Projector& p) {
         if (!card && (pressed & (pad_view | pad_menu)) && v.has_clip) u.menu = !u.menu;
         u.filtered[0] = u.filtered[1] = u.filtered[2] = u.filtered[3] = 0;
         u.stick_turning = false;
+        u.stick_armed = false; // a stick still pushed when the menu closes does not turn a joint
         u.shoulder_shifted = true; // a shoulder let go of here is not a tap for the editor
         return;
     }
@@ -2731,24 +2771,40 @@ void controller(const studio::View& v, const Projector& p) {
             u.bracket_at[which - 1] = std::clamp(u.bracket_at[which - 1] + raw * dt, 0.0f, v.duration);
             studio::move_bracket(which, std::round(u.bracket_at[which - 1] * fps) / fps);
         }
-        // The sticks are the brackets' while a shoulder is down: nothing is turned or orbited.
+        // The sticks are the brackets' while a shoulder is down: nothing is turned or orbited, nor after, until the stick rests.
         u.filtered[0] = u.filtered[1] = u.filtered[2] = u.filtered[3] = 0;
         u.stick_turning = false;
+        u.stick_armed = false;
         return;
     }
-    // Left stick turns the chosen joint; a turn is one undo step.
-    const float lx = smooth_stick(u.filtered[0], stick_response(pad.left_x), dt), ly = smooth_stick(u.filtered[1], stick_response(pad.left_y), dt);
-    if (lx != 0 || ly != 0) {
+    // Left stick turns the chosen joint (MOVE: moves it; a hand or a foot through the IK); a turn is one undo step. It starts
+    // only from a stick at rest, and ends when the joint, the frame, the mode or the trick changes under it.
+    const auto turning = turning_stick(pad.left_x, pad.left_y);
+    if (!u.stick_armed && turning[0] == 0 && turning[1] == 0) u.stick_armed = true;
+    if (u.stick_turning && (u.stick_joint != u.selected || u.stick_frame != std::round(v.time * fps) || u.stick_move != u.move_mode ||
+                            u.stick_axis != u.axis || u.stick_serial != v.clip_serial || !v.has_clip)) {
+        u.stick_turning = false;
+        u.stick_armed = false;
+    }
+    const float lx = smooth_stick(u.filtered[0], u.stick_armed ? turning[0] : 0.0f, dt),
+                ly = smooth_stick(u.filtered[1], u.stick_armed ? turning[1] : 0.0f, dt);
+    if (u.stick_armed && (lx != 0 || ly != 0)) {
         const auto* t = track_view(v, u.selected);
-        if (!u.stick_turning && v.has_clip && !(t && t->locked) && joint_view(v, u.selected)) {
+        if (!u.stick_turning && v.has_clip && !v.previewing && !(t && t->locked) && joint_view(v, u.selected)) {
             begin_turn(v);
             u.stick_turning = true;
             u.stick_dx = u.stick_dy = 0;
+            u.stick_joint = u.selected;
+            u.stick_frame = std::round(v.time * fps);
+            u.stick_move = u.move_mode;
+            u.stick_axis = u.axis;
+            u.stick_serial = v.clip_serial;
         }
         if (u.stick_turning && p.valid) {
             u.stick_dx += lx * 300.0f * dt;
             u.stick_dy -= ly * 300.0f * dt;
-            apply_turn(v, p, u.stick_dx, u.stick_dy, u.move_mode);
+            if (u.move_mode && limb_end(u.selected)) move_limb_by_stick(v, p, u.stick_dx, u.stick_dy);
+            else apply_turn(v, p, u.stick_dx, u.stick_dy, u.move_mode);
         }
         u.stick_idle_since = now;
     } else if (u.stick_turning && now - u.stick_idle_since > 0.25) u.stick_turning = false;
@@ -3881,18 +3937,23 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
     y -= u.drawer_scroll;
     heading(d, f, ImVec2(x, y), w, "Name it");
     y += 32 * k;
-    if (u.label_for != name && !ImGui::IsAnyItemActive()) {
-        std::snprintf(u.label.data(), u.label.size(), "%s", p ? p->label.c_str() : "");
-        u.label_for = name;
+    if (p && p->locked) {
+        // A creator's locked trick keeps his name for it (studio::set_label refuses it too).
+        y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint, "Locked by its creator: it keeps the name its creator gave it.") + 18 * k;
+    } else {
+        if (u.label_for != name && !ImGui::IsAnyItemActive()) {
+            std::snprintf(u.label.data(), u.label.size(), "%s", p ? p->label.c_str() : "");
+            u.label_for = name;
+        }
+        bool edited = false;
+        const bool entered = field(f, "##label", u.label, ImVec2(x, y), w - 96 * k, "e.g. Steezy kickflip", &edited);
+        if (action(d, f, "##setlabel", ImVec2(x + w - 86 * k, y), ImVec2(86 * k, 34 * k), "SET") || entered || edited) {
+            std::string m;
+            studio::set_label(name, u.label.data(), m);
+            say(m);
+        }
+        y += 50 * k;
     }
-    bool edited = false;
-    const bool entered = field(f, "##label", u.label, ImVec2(x, y), w - 96 * k, "e.g. Steezy kickflip", &edited);
-    if (action(d, f, "##setlabel", ImVec2(x + w - 86 * k, y), ImVec2(86 * k, 34 * k), "SET") || entered || edited) {
-        std::string m;
-        studio::set_label(name, u.label.data(), m);
-        say(m);
-    }
-    y += 50 * k;
     heading(d, f, ImVec2(x, y), w, "Plays on");
     y += 32 * k;
     if (p && p->trick.starts_with("native:")) {
@@ -3917,7 +3978,8 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
             say(m);
         }
         y += 44 * k;
-        if (action(d, f, "##copypops", ImVec2(x, y), ImVec2(w, 36 * k), "COPY TO LOW, MID AND HIGH", Look::dark, p != nullptr)) {
+        if (action(d, f, "##copypops", ImVec2(x, y), ImVec2(w, 36 * k), p && p->locked ? "LOCKED: NOT COPIED" : "COPY TO LOW, MID AND HIGH", Look::dark,
+                   p != nullptr && !p->locked)) {
             std::string m;
             studio::copy_saved_to_pops(name, m);
             say(m);
@@ -3973,8 +4035,8 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
     }
     if (p && p->locked) {
         y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, skate_theme::warning,
-                       "Locked to its maker" + (p->made_by.empty() ? std::string{} : " (" + p->made_by + ")") +
-                           ": it plays, tests and previews, but cannot be opened to edit, copied or shared again.") + 12 * k;
+                       "Locked by its creator" + (p->made_by.empty() ? std::string{} : " (" + p->made_by + ")") +
+                           ": preview only. It plays, tests and previews, and is never opened in the editor, copied, renamed or shared.") + 12 * k;
     }
     const float half = (w - 10 * k) / 2;
     if (p && p->locked) {
@@ -10265,8 +10327,10 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
             y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), iw, faint,
                            v.front_foot ? "In game: do this trick with its pop. Trick matching is on Front foot: it plays in any stance."
                                         : "In game: do this trick with its pop, in the stance on its tags (Trick matching is on Exact stance).") + 8 * k;
-            if (p->locked)
-                y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), iw, skate_theme::warning, "Locked by its maker: it plays and previews, it is not opened to edit.") + 8 * k;
+            if (p->locked || v.locked)
+                y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), iw, skate_theme::warning,
+                               "Locked by its creator: preview only. It plays in game, tests and previews; it is never opened in the "
+                               "editor, copied or shared.") + 8 * k;
         }
         d->ChannelsSetCurrent(0);
         skate_theme::rough_rect(d, a, ImVec2(a.x + w, y + 14 * k), IM_COL32(16, 17, 20, 236), seed_of(a), k);
@@ -10276,6 +10340,8 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
     // ---- the buttons ----
     const float bar_w = std::min(1320 * k, display.x - 80 * k), bar_h = 128 * k;
     const ImVec2 a((display.x - bar_w) * 0.5f, display.y - bar_h - 26 * k), b(a.x + bar_w, a.y + bar_h);
+    // Why there is nothing here to edit or copy with: said over the bar, for a MARKET preview too (its card is the MARKET's).
+    if (v.locked) tag(d, f, ImVec2(a.x, a.y - 34 * k), "LOCKED BY ITS CREATOR: PREVIEW ONLY", IM_COL32(120, 34, 36, 255));
     skate_theme::rough_rect(d, a, b, IM_COL32(14, 14, 16, 230), seed_of(a), k);
     {
         // Where it is: a bar to click or drag along.
@@ -11258,6 +11324,27 @@ float panel_slider(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, flo
     d->AddCircleFilled(ImVec2(at.x + width * shown, at.y), (hot ? 8.5f : 7.0f) * k, enabled ? white : IM_COL32(255, 255, 255, 50), 20);
     return out;
 }
+// THIS TRICK > COPY TO: the open trick, saved first when it has changes, copied into stance `version` as a new trick of its own
+// (make_stance_version names it after the trick and the stance, numbered when that name is taken), and the editor lands in
+// the copy. It never opens a version that is there already instead.
+void copy_open_trick_to_stance(const studio::View& v, int version) {
+    std::string m;
+    const bool known = !v.name.empty() && std::find(v.library.begin(), v.library.end(), v.name) != v.library.end();
+    if ((v.dirty || !known) && !studio::save(m)) {
+        say(m);
+        return;
+    }
+    std::string made;
+    if (!studio::make_stance_version(studio::view().name, version, made, m)) {
+        say(m);
+        return;
+    }
+    // Saved a moment ago, so there is nothing to ask about (ui().unsaved still says what it was at the frame's start): the
+    // copy opens at once.
+    std::string opened;
+    if (!studio::load(made, opened)) m = opened;
+    say(m);
+}
 // The pill at the top right of the view opens it: the trick's stance and its own Crossfade (OWN on: the main one in SETTINGS
 // is skipped for it). Closed, nothing of it covers the skater.
 void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corner) {
@@ -11320,7 +11407,10 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         y += row;
     }
     // A copy in another stance, keys and all, opened in that stance at once (make_stance_version: fakie mirrors it from the
-    // waist up, switch onto the other foot). Saved first, so the copy has what is open now. A lit one is yours: it opens.
+    // waist up, switch onto the other foot). Saved first, so the copy has what is open now. Always a NEW copy, beside the
+    // versions there are already, and the editor lands in it. (Until 1.2 a lit one opened the version there was: with a
+    // kickflip and a fakie kickflip saved, COPY TO FAKIE on a second kickflip opened the old fakie one, and the new copy to set
+    // up was never made. Heatz.) Lit: you have one in that stance already; the copy goes in beside it.
     {
         const bool can = v.trick_stance >= 0 && !v.previewing;
         const bool piece = v.trick.starts_with("native:");
@@ -11332,27 +11422,16 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         for (int i = 0; i < 4; ++i) {
             if (piece && i % 2 == 1) continue;
             const auto at = static_cast<std::size_t>(i);
-            const bool self = v.trick_stance == i, done = !self && !have[at].empty();
+            const bool self = v.trick_stance == i, have_one = !self && !have[at].empty();
             const ImVec2 ba(x + static_cast<float>(piece ? i / 2 : i) * (sw + gap), y + 22 * k);
             ImGui::PushID(i);
-            const std::string label = self || done ? std::string(names[at]) : std::string("+ ") + names[at];
-            if (action(d, f, "##stancecopy", ba, ImVec2(sw, 28 * k), label, done ? Look::ghost : Look::dark, can && !self && !(piece && i % 2 == 1), done)) {
-                std::string m;
-                if (done) open_or_preview(v, have[at], {});
-                else {
-                    const bool known = !v.name.empty() && std::find(v.library.begin(), v.library.end(), v.name) != v.library.end();
-                    if ((v.dirty || !known) && !studio::save(m)) say(m);
-                    else {
-                        std::string made;
-                        if (studio::make_stance_version(studio::view().name, i, made, m)) open_saved(made);
-                        say(m);
-                    }
-                }
-            }
+            const std::string label = self ? std::string(names[at]) : std::string("+ ") + names[at];
+            if (action(d, f, "##stancecopy", ba, ImVec2(sw, 28 * k), label, have_one ? Look::ghost : Look::dark, can && !self && !(piece && i % 2 == 1), have_one))
+                copy_open_trick_to_stance(v, i);
             ImGui::PopID();
         }
         text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint,
-             elide(f.bold, 11 * k, can ? "+ copies this trick, keys and all, into that stance and opens it. Lit: you have one."
+             elide(f.bold, 11 * k, can ? "+ makes a new copy, keys and all, in that stance and opens it. Lit: you have one already."
                                        : "Open a trick to copy it into another stance.", bw));
         y += row;
     }
