@@ -381,6 +381,203 @@ inline Joint foot_sliding_to_the_games(const Joint& at_the_lock, const Joint& ga
     for (std::size_t i = 0; i < 3; ++i) foot.position[i] = games.position[i] + (at_the_lock.position[i] - games.position[i]) * k;
     return foot;
 }
+// ---- inertialization from the pose that was shown ------------------------------------------------------------------------
+// A change of what plays (a trick into a grind, a manual, a landing, the next pop; a grind or a manual into a trick) used to
+// fade the trick's keys out over the game's pose as the game blended from its own trick pose into its grind: mid-way the
+// drawn pose was the game's in-between pose plus keys made for another one, and a foot went through the deck (a tweaked high
+// kickflip into a tailslide, 1.2 test). The game does its own changes by inertialization (InertializationBlendAsset, Team A
+// and the 1.2 scout; David Bollo, "Inertialization: High-Performance Animation Transitions in Gears of War", GDC 2018):
+// at the change it keeps how far the pose it showed is from the new pose, and how fast that was changing, and lets that
+// difference die away by a fifth-order curve over the blend - drawn = the new pose, live, plus what is left of the difference.
+// So does the studio now (inertialize_from_the_shown_pose): from the pose it drew, never from the game's pose under it.
+//
+// One number's way to nothing: `x0` how far off it is, `v0` how fast that is changing (per second), over `length` seconds.
+// Bollo's curve: it starts at x0 with v0, ends at 0 with no speed and no acceleration; a speed away from 0 is dropped, and one
+// towards it shortens the blend so it never overshoots.
+struct InertialCurve {
+    float x0{}, v0{}, a0{}, A{}, B{}, C{}, length{};
+    static InertialCurve make(float x0, float v0, float length) noexcept {
+        InertialCurve c;
+        if (!std::isfinite(x0) || !std::isfinite(v0) || !std::isfinite(length) || !(length > 1e-4f) || x0 == 0) return c;
+        if (x0 * v0 > 0) v0 = 0;
+        if (v0 != 0) length = std::min(length, -5 * x0 / v0);
+        if (!(length > 1e-4f)) return c;
+        const float t2 = length * length, t3 = t2 * length, t4 = t3 * length, t5 = t4 * length;
+        c.x0 = x0; c.v0 = v0; c.length = length;
+        c.a0 = (-8 * v0 * length - 20 * x0) / t2;
+        c.A = -(c.a0 * t2 + 6 * v0 * length + 12 * x0) / (2 * t5);
+        c.B = (3 * c.a0 * t2 + 16 * v0 * length + 30 * x0) / (2 * t4);
+        c.C = -(3 * c.a0 * t2 + 12 * v0 * length + 20 * x0) / (2 * t3);
+        return c;
+    }
+    float at(float t) const noexcept {
+        if (!(length > 0) || !std::isfinite(t)) return 0;
+        if (t <= 0) return x0;
+        if (t >= length) return 0;
+        return (((((A * t + B) * t + C) * t + a0 * 0.5f) * t + v0) * t) + x0;
+    }
+};
+// How much of a difference with no speed of its own is left `elapsed` into a blend of `length` (1 to 0, the same curve).
+inline float inertial_left(float elapsed, float length) noexcept {
+    if (!(length > 1e-4f)) return 0;
+    const float u = std::clamp(elapsed / length, 0.0f, 1.0f);
+    return 1 + u * u * (-10 + u * (20 + u * (-15 + u * 4)));
+}
+// A turn as an axis times its angle (radians), the short way, and back.
+inline Vec3 turn_vector(const Quat& q) noexcept {
+    Quat r = q[3] < 0 ? Quat{-q[0], -q[1], -q[2], -q[3]} : q;
+    const float s = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    if (!(s > 1e-7f)) return {r[0] * 2, r[1] * 2, r[2] * 2};
+    const float angle = 2 * std::atan2(s, r[3]);
+    return {r[0] / s * angle, r[1] / s * angle, r[2] / s * angle};
+}
+inline Quat turn_of(const Vec3& v) noexcept {
+    const float angle = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!(angle > 1e-7f)) return normalised(Quat{v[0] * 0.5f, v[1] * 0.5f, v[2] * 0.5f, 1});
+    const float s = std::sin(angle * 0.5f) / angle;
+    return {v[0] * s, v[1] * s, v[2] * s, std::cos(angle * 0.5f)};
+}
+// The pose's difference, joint by joint, dying away: each joint's turn about one axis and its move along one line, by
+// InertialCurve. Edits here are the studio's (pose_edit_deltas: a joint's turn after its own, a move added), so a drawn pose
+// is `target` with the offset after it: drawn = target * offset.
+struct PoseInertia {
+    static constexpr float fastest_turn = 25, fastest_move = 4; // rad/s and m/s a frame's change is believed up to
+    double started{-1};
+    float longest{};
+    std::vector<Vec3> axis, dir;
+    std::vector<InertialCurve> turn, move;
+    bool running(double now) const noexcept { return started >= 0 && now - started < longest; }
+    void stop() noexcept { started = -1; }
+    // From the deltas drawn on the last frame (`shown`, over the game's pose then) and the frame before (`before`, `step`
+    // seconds earlier; none or an old one: no speed), to `target` (the deltas wanted now), joint `i` over `length(i)` seconds.
+    template <class Length>
+    void begin(double now, std::span<const Offset> shown, std::span<const Offset> before, float step, std::span<const Offset> target,
+               Length&& length) {
+        const std::size_t n = std::min(shown.size(), target.size());
+        axis.assign(n, Vec3{}); dir.assign(n, Vec3{});
+        turn.assign(n, InertialCurve{}); move.assign(n, InertialCurve{});
+        longest = 0;
+        const bool speed = before.size() >= n && step > 1e-3f && step < 0.05f && std::isfinite(step);
+        for (std::size_t i = 0; i < n; ++i) {
+            const float t1 = length(i);
+            if (!(t1 > 1e-4f)) continue;
+            // Its turn: from the target to what was shown, about one axis.
+            const Vec3 r = turn_vector(multiply(conjugate(target[i].rotation), shown[i].rotation));
+            const float angle = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+            if (angle > 1e-5f) {
+                axis[i] = {r[0] / angle, r[1] / angle, r[2] / angle};
+                float v = 0;
+                if (speed) {
+                    const Vec3 w = turn_vector(multiply(conjugate(before[i].rotation), shown[i].rotation));
+                    v = (w[0] * axis[i][0] + w[1] * axis[i][1] + w[2] * axis[i][2]) / step;
+                    v = std::clamp(v, -fastest_turn, fastest_turn);
+                }
+                turn[i] = InertialCurve::make(angle, v, t1);
+            }
+            // Its move.
+            const Vec3 d{shown[i].offset[0] - target[i].offset[0], shown[i].offset[1] - target[i].offset[1], shown[i].offset[2] - target[i].offset[2]};
+            const float apart = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); // (not `far`: a Windows macro)
+            if (apart > 1e-6f) {
+                dir[i] = {d[0] / apart, d[1] / apart, d[2] / apart};
+                float v = 0;
+                if (speed) {
+                    const Vec3 m{shown[i].offset[0] - before[i].offset[0], shown[i].offset[1] - before[i].offset[1], shown[i].offset[2] - before[i].offset[2]};
+                    v = std::clamp((m[0] * dir[i][0] + m[1] * dir[i][1] + m[2] * dir[i][2]) / step, -fastest_move, fastest_move);
+                }
+                move[i] = InertialCurve::make(apart, v, t1);
+            }
+            longest = std::max({longest, turn[i].length, move[i].length});
+        }
+        started = longest > 0 ? now : -1;
+    }
+    // `deltas` (the target now) with what is left of the difference after them.
+    void apply(double now, std::span<Offset> deltas) const noexcept {
+        if (started < 0) return;
+        const float t = static_cast<float>(now - started);
+        for (std::size_t i = 0; i < deltas.size() && i < turn.size(); ++i) {
+            if (const float a = turn[i].at(t); a != 0)
+                deltas[i].rotation = normalised(multiply(deltas[i].rotation, turn_of({axis[i][0] * a, axis[i][1] * a, axis[i][2] * a})));
+            if (const float m = move[i].at(t); m != 0)
+                for (std::size_t k = 0; k < 3; ++k) deltas[i].offset[k] += dir[i][k] * m;
+        }
+    }
+    // The size of the difference it began with over `joints` (the largest turn, degrees, and the largest move, metres).
+    template <class Joints> std::pair<float, float> began_with(const Joints& joints) const noexcept {
+        float most_turn = 0, most_move = 0;
+        for (const auto j : joints)
+            if (static_cast<std::size_t>(j) < turn.size()) {
+                most_turn = std::max(most_turn, turn[j].x0 * 57.2957795f);
+                most_move = std::max(most_move, move[j].x0);
+            }
+        return {most_turn, most_move};
+    }
+};
+// ---- the deck under a foot ------------------------------------------------------------------------------------------------
+// The deck in its mount's frame (x across, y up, z along; deck_guard's numbers): the grip 1.9 cm over the mount, the kicks
+// rising 4.5 cm from 0.29 m out to the tips at 0.40 m, 10.5 cm either side, rounded from 0.30 m.
+inline constexpr float deck_grip = 0.019f, deck_tip = 0.40f, deck_half_width = 0.105f, deck_kick_from = 0.29f, deck_kick_rise = 0.045f,
+                       deck_round_from = 0.30f, deck_thickness = 0.016f;
+inline float deck_top_at(float along) noexcept {
+    const float x = std::clamp((std::abs(along) - deck_kick_from) / (deck_tip - deck_kick_from), 0.0f, 1.0f);
+    return deck_grip + deck_kick_rise * x * x;
+}
+inline float deck_half_width_at(float along) noexcept {
+    const float a = std::abs(along);
+    if (a <= deck_round_from) return deck_half_width;
+    if (a >= deck_tip) return 0;
+    const float x = (a - deck_round_from) / (deck_tip - deck_round_from);
+    return deck_half_width * std::sqrt(std::max(0.0f, 1 - x * x));
+}
+// The sole of a shoe in its foot joint's frame (deck_guard's shoe: the ankle 8.5 cm over the sole): heel, middle, ball and toe,
+// both edges.
+inline const std::array<Vec3, 11>& sole_points() noexcept {
+    static const std::array<Vec3, 11> points = [] {
+        constexpr Vec3 down{0.5408f, 0.8412f, 0}, forward{0.8412f, -0.5408f, 0};
+        const auto shoe = [&](float ahead, float side, float over_sole) {
+            const float d = 0.085f - over_sole;
+            return Vec3{down[0] * d + forward[0] * ahead, down[1] * d + forward[1] * ahead, side};
+        };
+        return std::array<Vec3, 11>{shoe(-0.07f, 0.035f, 0),     shoe(-0.07f, -0.035f, 0),   shoe(0.015f, 0.048f, 0),
+                                    shoe(0.015f, -0.048f, 0),    shoe(0.094f, 0.055f, 0),    shoe(0.094f, -0.055f, 0),
+                                    shoe(0.165f, 0.035f, 0.008f), shoe(0.165f, -0.035f, 0.008f), shoe(0.19f, 0.018f, 0.014f),
+                                    shoe(0.19f, -0.018f, 0.014f), shoe(-0.075f, 0, 0.004f)};
+    }();
+    return points;
+}
+// A foot (its joint, in the deck's mount frame) against the deck: how far its sole's lowest point over the deck is above the
+// grip there (below 0: in the deck; empty when no point of it is over the deck), and how far up along the deck's up it has to
+// go to be on it. Only a foot on top - its ankle over the deck's middle - is lifted: one under the board (a flip turning
+// under him) is never pulled up through it.
+struct SoleOnDeck {
+    std::optional<float> lowest; // metres over the grip, of the lowest sole point over the deck
+    float lift{};                // metres to move it up so none is in the deck
+};
+inline SoleOnDeck sole_on_deck(const Joint& foot) noexcept {
+    SoleOnDeck out;
+    if (!std::isfinite(foot.position[0]) || !std::isfinite(foot.position[1]) || !std::isfinite(foot.position[2])) return out;
+    for (const auto& p : sole_points()) {
+        const auto w = rotate(foot.rotation, p);
+        const Vec3 at{foot.position[0] + w[0], foot.position[1] + w[1], foot.position[2] + w[2]};
+        if (std::abs(at[2]) >= deck_tip || std::abs(at[0]) >= deck_half_width_at(at[2])) continue;
+        const float over = at[1] - deck_top_at(at[2]);
+        if (!out.lowest || over < *out.lowest) out.lowest = over;
+    }
+    const bool on_top = foot.position[1] > deck_top_at(foot.position[2]) - deck_thickness * 0.5f;
+    // (Not for a millimetre: a sole resting on the grip reads a hair either side of it.)
+    if (out.lowest && *out.lowest < -0.001f && on_top && *out.lowest > -0.12f) out.lift = -*out.lowest;
+    return out;
+}
+// ---- starting early: the game says what comes next ------------------------------------------------------------------------
+// The game says ahead of time what it does next: its time to land (Float.Physics.TimeToLand, landings and rails), the grind
+// probe, its aim at a grind. Over the last `lead` seconds before that contact the feet the game stands on its board go onto
+// the drawn board where the game has them (ride_feet_on_the_board), so what is left to blend at the contact is small. 0 far
+// off or not known, 1 at the contact, eased.
+inline constexpr float contact_lead = 0.2f;
+inline float contact_ahead(float seconds_to_contact, float lead = contact_lead) noexcept {
+    if (!std::isfinite(seconds_to_contact) || seconds_to_contact < 0 || !(lead > 0)) return 0;
+    const float u = std::clamp(1 - seconds_to_contact / lead, 0.0f, 1.0f);
+    return u * u * (3 - 2 * u);
+}
 // ---- a trick on its own clock, as far as the game is on its clip ---------------------------------------------------------
 // When the game's clip for a trick is not found (the pose clock had nothing within 4.5 degrees in a quarter of a second) the
 // trick plays on its own clock - and its keys went on whatever the game was doing in full: out of a grind (the game blends its
@@ -420,11 +617,21 @@ inline float foot_on_deck_share(float height, float along, float across, float t
 // Where a foot goes, in the frame of the board drawn this frame: the game's foot in the game's board's frame (`game`), moved
 // and turned as the studio's keys move the studio's foot on the studio's board (`made`: the studio's foot without its keys on
 // the board without its keys; `keyed`: with them on the board with them).
-inline Joint foot_on_the_board(const Joint& game, const Joint& made, const Joint& keyed) noexcept {
+// `keep`: how much of the keys' move it keeps (1 all of it; 0 the game's foot as it is, for a foot the game is about to stand on
+// the board that the studio does not have on it).
+inline Joint foot_on_the_board(const Joint& game, const Joint& made, const Joint& keyed, float keep = 1) noexcept {
     Joint out = game;
-    for (std::size_t i = 0; i < 3; ++i) out.position[i] = game.position[i] + keyed.position[i] - made.position[i];
-    out.rotation = normalised(multiply(game.rotation, multiply(conjugate(made.rotation), keyed.rotation)));
+    keep = std::clamp(keep, 0.0f, 1.0f);
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] = game.position[i] + (keyed.position[i] - made.position[i]) * keep;
+    out.rotation = normalised(multiply(game.rotation, slerp(Quat{0, 0, 0, 1}, normalised(multiply(conjugate(made.rotation), keyed.rotation)), keep)));
     return out;
+}
+// A foot (its joint in a deck's mount frame: x across, y up, z along) standing on that deck: foot_on_deck_share by its ankle and
+// its sole (deck_guard's down, 0.54 0.84 0 in the foot's frame, against the deck's).
+inline float foot_stands_on(const Joint& foot) noexcept {
+    const Vec3 sole = rotate(foot.rotation, Vec3{0.5408f, 0.8412f, 0});
+    const float tilt = std::acos(std::clamp(-sole[1], -1.0f, 1.0f)) * 57.2957795f;
+    return foot_on_deck_share(foot.position[1], foot.position[2], foot.position[0], tilt);
 }
 // ---- the board's keys ---------------------------------------------------------------------------------------------------
 // A trick's board keys turn the board about its own axes as it lay on the ground before the pop (the studio: start_frame).

@@ -269,6 +269,24 @@ constexpr bool let_go_into_a_manual = true;
 // OUT OF POSITIONS: a trick whose clip the game was not found playing (on its own clock: out of a grind or a manual, the game
 // still blending into its trick) has its keys only as far as the game's pose is near its clip (pose_fit_share).
 constexpr bool own_clock_follows_the_pose = true;
+// ---- 1.2 round 2: from the shown pose straight into the game's next (the user's test of 1.2: custom into a grind and out of
+// one still clipped a little; a tweaked high kickflip into a tailslide put a foot through the board) ---------------------------
+// FROM THE SHOWN POSE: every change of what plays - a trick into a grind, a manual, a landing, the next pop, its end; a grind,
+// a manual or nothing into a trick - goes from the pose drawn on the last frame to the new one by inertialization
+// (PoseInertia: Bollo's curve, the shown pose's speed kept), on the game's live pose, joint by joint: back to the game in the
+// SMOOTH handover's lengths (legs, arms, back) times the Crossfade's scale, into a trick over half the Crossfade.
+constexpr bool inertialize_from_the_shown_pose = true;
+// FEET IN THE BOARD'S FRAME through such a change: each foot that stands - the game's new pose stands it on its board, or the
+// trick had it on its own - goes from where it was on the board as drawn to where the new pose puts it, on the board as drawn
+// now, by the same curve in the legs' time (two-bone IK).
+constexpr bool feet_blend_on_the_board = true;
+// THE DECK: through such a change, and as a contact comes (start_before_the_contact), no sole is ever drawn into the deck: a
+// foot over the deck from above is lifted to it (sole_on_deck). Never one under the board, never one beside it.
+constexpr bool soles_never_in_the_deck = true;
+// START BEFORE THE CONTACT: over the last contact_lead before the game's next contact (its time to land, the grind probe), the
+// feet the game stands on its board go onto the board as drawn where the game has them (ride_feet_on_the_board), so what is
+// left to blend at the lock or the touchdown is small.
+constexpr bool start_before_the_contact = true;
 // Gameplay source time follows the native clip. Legacy drop-preview tools retain their own timing metadata.
 // Why a trick lets go at its catch on a higher pop than it was made on (and over at least 0.3 s, whatever the crossfade).
 constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it was made on: the game's own pose from here";
@@ -748,6 +766,9 @@ struct GameplayPacket {
     // Let go into the next pop (hand_back_at_the_flick): its time stands where it let go, and a handover after it holds the
     // trick as drawn rather than running it on.
     bool held{};
+    // How near the game's next contact is (contact_ahead: its time to land, the probe's rail or ledge; 0 far or not known, 1 at
+    // it): the feet the game stands on its board go onto the drawn board ahead of it (start_before_the_contact).
+    float contact_ahead{};
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
@@ -818,6 +839,17 @@ std::atomic<bool> targeting_seen{};
 std::atomic<double> last_flick_at{-1};
 // How far each foot (left, right) rode on the board on the last frame drawn (ride_feet_on_the_board), for the bug report.
 std::array<std::atomic<float>, 2> feet_ride_share{};
+// What the body's pass did from the shown pose (shown_pose_body), for the bug report: read, and its soles reset, by the
+// animation update's diagnostics.
+struct InertiaReport {
+    std::mutex mutex;
+    std::string kind;
+    double started{-1};
+    float legs{-1}, arms{-1}, torso{-1}, hips{-1};
+    bool sole_seen{};
+    float sole_raw{}, sole{}; // the lowest since last read, metres over the grip
+};
+InertiaReport& inertia_report() { static auto* r = new InertiaReport; return *r; }
 // The game aiming the board at a grind (Bool.Physics.IsTargetingGrind) and its time to land (Float.Physics.TimeToLand, -1
 // not known), this update: the lean onto a rail goes by them as well as by the board turning.
 std::atomic<bool> game_targeting_grind{};
@@ -3324,9 +3356,11 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
         play.time = match->time;
         play.weight = std::min(1.0f, play.weight + (dt > 0 ? dt / 0.12f : 0.25f));
     } else if (play.trick) {
-        // Let go over 150 ms, carrying on through the piece meanwhile.
+        // Let go over 150 ms, carrying on through the piece meanwhile - or, from the shown pose (SMOOTH), at once: the body's
+        // pass goes from the pose it drew into the game's (shown_pose_body), not the piece's keys faded over the game's next.
         play.time += dt;
-        play.weight -= dt > 0 ? dt / 0.15f : 0.25f;
+        play.weight -= inertialize_from_the_shown_pose && smooth_transitions.load(std::memory_order_relaxed) ? 1.0f
+                       : dt > 0 ? dt / 0.15f : 0.25f;
         if (play.weight <= 0 || play.time > play.trick->clip->duration()) {
             play = {};
             play.at = at;
@@ -4216,7 +4250,9 @@ void on_animation(std::uintptr_t component) noexcept {
                 logging::log(Level::info, Channel::skater, "Animation Studio: the game turned {} into {}; standing back.",
                              l.gave_way_from, name);
             }
-            if (l.gave_way_at >= 0 && at - l.gave_way_at >= 0.12) {
+            // (From the shown pose there is no standing back over the game's pose: the change is the body's inertialization.)
+            const double stand_back = inertialize_from_the_shown_pose && smooth_transitions.load(std::memory_order_relaxed) ? 0.0 : 0.12;
+            if (l.gave_way_at >= 0 && at - l.gave_way_at >= stand_back) {
                 l.game_trick = nullptr; // let it be chosen again, for whatever the game is doing now
                 l.gave_way_at = -1;
                 l.limbs = {};
@@ -4546,11 +4582,16 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float fade_out = l.clock_why == higher_pop_hand_back ? std::max(l.crossfade_now, 0.3f) : l.crossfade_now;
                     l.clock_weight = target > l.clock_weight ? std::min(target, l.clock_weight + step / fade_in)
                                                              : std::max(target, l.clock_weight - step / fade_out);
+                    // SMOOTH from the shown pose: letting go is not a fade of the keys over the game's next pose (the game's
+                    // in-between with keys made for another pose on it) - the trick stops here, and the body's pass goes from
+                    // the pose it drew into the game's (shown_pose_body), in the SMOOTH handover's lengths times the Crossfade.
+                    const bool let_go_at_once = inertialize_from_the_shown_pose && smooth_transitions.load(std::memory_order_relaxed);
+                    if (let_go_at_once && !why.empty()) l.clock_weight = 0;
                     const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
                     const float before_end = time >= 0 ? ease((edit_end - time) / fade_out) : 1.0f;
                     sampled.time = time;
                     sampled.weight = ease(l.clock_weight) * before_end;
-                    sampled.finished = reading.locked && !why.empty() && l.clock_weight <= 0;
+                    sampled.finished = (reading.locked || let_go_at_once) && !why.empty() && l.clock_weight <= 0;
                 } else {
                     // Always at x1 in game: the speed is the studio's, for watching a trick (it was the saved one, so a trick
                     // saved while watched at x.5 played at half speed on its own clock).
@@ -4665,6 +4706,16 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->motion = motion;
                     packet->caught = trick->caught;
                     packet->held = held_for_next_pop;
+                    // The game's next contact ahead: its own time to land, or the probe's rail or ledge, whichever is first.
+                    if (start_before_the_contact && motion == MotionState::air) {
+                        float to_contact = l.game.time_to_land && *l.game.time_to_land >= 0 ? *l.game.time_to_land : -1.0f;
+                        if (l.raised_contact_at >= 0) {
+                            const float probe = static_cast<float>(std::max(0.0, l.raised_contact_at - now_seconds()));
+                            to_contact = to_contact < 0 ? probe : std::min(to_contact, probe);
+                        }
+                        packet->contact_ahead = contact_ahead(to_contact);
+                    }
+                    diagnostic.contact_ahead = packet->contact_ahead;
                     // The board keys are authored in the board's own frame and played in it (nose-relative both
                     // times), so they need no turning for fakie. A deck turned round under him is the game's
                     // board-backwards flag, applied where the board is drawn.
@@ -4738,6 +4789,21 @@ void on_animation(std::uintptr_t component) noexcept {
             diagnostic.handover_kind = handover_kind_now.load(std::memory_order_relaxed);
             diagnostic.ride_left = feet_ride_share[0].load(std::memory_order_relaxed);
             diagnostic.ride_right = feet_ride_share[1].load(std::memory_order_relaxed);
+            {
+                auto& r = inertia_report();
+                std::lock_guard report_lock(r.mutex);
+                if (r.started >= 0) {
+                    diagnostic.inertia_kind = r.kind;
+                    diagnostic.inertia_s = static_cast<float>(now_seconds() - r.started);
+                    diagnostic.inertia_legs_deg = r.legs; diagnostic.inertia_arms_deg = r.arms;
+                    diagnostic.inertia_torso_deg = r.torso; diagnostic.inertia_hips_cm = r.hips;
+                }
+                if (r.sole_seen) {
+                    diagnostic.sole_raw_mm = r.sole_raw * 1000;
+                    diagnostic.sole_mm = r.sole * 1000;
+                    r.sole_seen = false;
+                }
+            }
             if (l.game.time_to_land) diagnostic.time_to_land = *l.game.time_to_land;
             if (l.game.trick_intent) diagnostic.trick_intent = *l.game.trick_intent ? 1 : 0;
             if (l.game.targeting_grind) diagnostic.targeting_grind = *l.game.targeting_grind ? 1 : 0;
@@ -4877,6 +4943,23 @@ struct BodyPublicationState {
     float guard_window{};
     bool guard_letting_go{}, guard_handing_back{};
     std::uint64_t guard_generation{~std::uint64_t{0}};
+    // From the shown pose (inertialize_from_the_shown_pose): what was drawn on the last two frames (edits over the game's pose
+    // then), the last pose and board drawn, what played then (a change of it starts a PoseInertia from what was drawn), and the
+    // feet's difference on the board as drawn at that change (feet_blend_on_the_board), dying away in the legs' time.
+    std::vector<Offset> drawn_last, drawn_before;
+    double drawn_last_at{-1}, drawn_before_at{-1};
+    std::vector<Joint> drawn_pose;
+    Joint drawn_board{};
+    bool drawn_board_ok{};
+    bool source_playing{};
+    std::uint64_t source_episode{}, inertia_generation{~std::uint64_t{0}};
+    std::uintptr_t source_keys{};
+    PoseInertia inertia;
+    std::string inertia_kind;
+    std::array<Joint, 2> feet_offset{};
+    std::array<float, 2> feet_ours{};
+    float feet_length{};
+    double feet_started{-1};
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 // While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
@@ -5384,6 +5467,179 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
         return false;
     }
 }
+// FROM THE SHOWN POSE (inertialize_from_the_shown_pose): the body this frame, from the edits wanted now (`desired`, over the
+// game's pose `native`; none when nothing plays) into `edited`. A change of what plays starts a PoseInertia from what was drawn
+// on the last frame; the feet go on the board as drawn through it (feet_blend_on_the_board), no sole into the deck
+// (soles_never_in_the_deck), and what is drawn is kept for the next change. Returns the edits drawn (for other players).
+std::vector<Offset> shown_pose_body(BodyPublicationState& body, const std::shared_ptr<const GameplayPacket>& packet, MotionState motion,
+                                    std::uint64_t generation, std::span<const Joint> native, std::span<const Offset> desired,
+                                    std::vector<Joint>& edited) {
+    const double now = now_seconds();
+    constexpr std::array<std::uint16_t, 2> feet{left_foot_joint, right_foot_joint};
+    if (body.inertia_generation != generation) {
+        body.inertia_generation = generation;
+        body.inertia.stop();
+        body.drawn_last.clear(); body.drawn_before.clear(); body.drawn_pose.clear();
+        body.drawn_last_at = body.drawn_before_at = body.feet_started = -1;
+        body.drawn_board_ok = false;
+        body.source_playing = false; body.source_episode = 0; body.source_keys = 0;
+    }
+    // The handover into the game's next (the board's pass draws the board by it too): its kind and lengths.
+    bool running = false, before_catch = false;
+    float scale = 1;
+    HandoverKind kind{};
+    Joint handed_board{};
+    double handed_at = -1;
+    {
+        auto& h = handover();
+        std::lock_guard hand_lock(h.mutex);
+        if (packet) {
+            h.outgoing = packet;
+            h.outgoing_seen = now;
+        }
+        running = handover_running(h, now, generation, motion, packet.get());
+        before_catch = h.before_catch; scale = h.scale; kind = h.kind; handed_board = h.board; handed_at = h.started;
+    }
+    // The board as it is drawn this frame: the trick's (drawn_board_now), the one handed over to the game's, or the game's.
+    const auto holder = packet ? packet->board_holder : live().board_holder.load(std::memory_order_acquire);
+    Joint board, games;
+    const bool games_ok = games_board_now(holder, games);
+    bool board_ok = false;
+    if (packet) board_ok = drawn_board_now(*packet, native, board);
+    else if (games_ok && running) {
+        board = compose(games, part_of(handed_board, inertial_left(static_cast<float>(now - handed_at), handover_legs * scale)));
+        board_ok = finite(board);
+    } else if (games_ok) {
+        board = games;
+        board_ok = true;
+    }
+    // A change of what plays: from what was drawn, inertialized onto what is wanted now.
+    const bool playing = packet != nullptr;
+    const auto keys = playing ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0;
+    const auto episode = playing ? packet->episode : 0;
+    const bool changed = playing != body.source_playing || (playing && (episode != body.source_episode || keys != body.source_keys));
+    std::vector<Joint> target(native.begin(), native.end());
+    apply_pose_deltas(desired, target);
+    if (changed) {
+        body.source_playing = playing; body.source_episode = episode; body.source_keys = keys;
+        const bool shown = body.drawn_last_at >= 0 && now - body.drawn_last_at < 0.1 && body.drawn_last.size() == desired.size();
+        if (shown) {
+            const float blend = trick_blend.load(std::memory_order_relaxed);
+            const bool rail = motion == MotionState::rail;
+            // Into a trick over half its Crossfade (on a rail, the grind's ease); back to the game in the SMOOTH handover's
+            // lengths - legs, then arms and hips, then the back and head - times the Crossfade's scale (the game's own on a rail).
+            const float into = rail ? std::clamp(blend, grind_ease_min, grind_ease_max) : blend;
+            const bool by_parts = !playing && running;
+            const float step = body.drawn_before_at >= 0 ? static_cast<float>(body.drawn_last_at - body.drawn_before_at) : 0.0f;
+            body.inertia.begin(now, body.drawn_last, body.drawn_before, step, desired, [&](std::size_t j) {
+                return by_parts ? handover_seconds(static_cast<std::uint16_t>(j), before_catch) * scale : into;
+            });
+            body.inertia_kind = playing ? "into" : by_parts ? handover_kind_name(kind) : "out";
+            // The feet: each one's difference from where the new pose puts it, on the board as drawn then and now.
+            body.feet_started = -1;
+            if (feet_blend_on_the_board && board_ok && body.drawn_board_ok && body.drawn_pose.size() >= skeleton_joints) {
+                bool ok = true;
+                for (std::size_t i = 0; i < feet.size(); ++i) {
+                    const auto was = relative(body.drawn_board, world(body.drawn_pose, feet[i]));
+                    const auto wants = relative(board, world(target, feet[i]));
+                    ok = ok && finite(was) && finite(wants);
+                    for (std::size_t k = 0; k < 3; ++k) body.feet_offset[i].position[k] = was.position[k] - wants.position[k];
+                    body.feet_offset[i].rotation = normalised(multiply(conjugate(wants.rotation), was.rotation));
+                    body.feet_ours[i] = foot_stands_on(was);
+                }
+                if (ok) {
+                    body.feet_length = by_parts ? handover_legs * scale : into;
+                    body.feet_started = now;
+                }
+            }
+            {
+                static constexpr std::array<std::uint16_t, 8> legs{8, 9, 10, 11, 341, 342, 343, 344};
+                static constexpr std::array<std::uint16_t, 8> arms{46, 47, 48, 49, 275, 276, 277, 278};
+                static constexpr std::array<std::uint16_t, 7> torso{42, 43, 44, 45, 101, 102, 103};
+                auto& r = inertia_report();
+                std::lock_guard report_lock(r.mutex);
+                r.kind = body.inertia.running(now) ? body.inertia_kind : std::string();
+                r.started = body.inertia.running(now) ? now : -1;
+                r.legs = body.inertia.began_with(legs).first;
+                r.arms = body.inertia.began_with(arms).first;
+                r.torso = body.inertia.began_with(torso).first;
+                r.hips = body.inertia.began_with(std::array<std::uint16_t, 1>{hips_joint}).second * 100;
+            }
+        } else {
+            body.inertia.stop();
+            body.feet_started = -1;
+        }
+    }
+    std::vector<Offset> deltas(desired.begin(), desired.end());
+    body.inertia.apply(now, deltas);
+    edited.assign(native.begin(), native.end());
+    apply_pose_deltas(deltas, edited);
+    const bool blending = body.inertia.running(now);
+    // The feet on the board as drawn: from where each stood on it at the change to where the new pose puts it - a foot the
+    // game's new pose stands on its board, or one the trick had standing on its own.
+    const bool feet_blending = body.feet_started >= 0 && now - body.feet_started < body.feet_length && board_ok;
+    if (feet_blending) {
+        const float left = inertial_left(static_cast<float>(now - body.feet_started), body.feet_length);
+        for (std::size_t i = 0; i < feet.size(); ++i) {
+            const float game = games_ok ? foot_stands_on(relative(games, world(native, feet[i]))) : 0.0f;
+            const float stand = std::max(game, body.feet_ours[i]);
+            if (!(stand > 0.001f)) continue;
+            auto rel = relative(board, world(target, feet[i]));
+            for (std::size_t k = 0; k < 3; ++k) rel.position[k] += body.feet_offset[i].position[k] * left;
+            rel.rotation = normalised(multiply(rel.rotation, slerp(Quat{0, 0, 0, 1}, body.feet_offset[i].rotation, left)));
+            const auto want = compose(board, rel);
+            if (finite(want)) place_foot(edited, feet[i], want.position, &want.rotation, stand);
+        }
+    }
+    // The deck: through the change, and as the game's next contact comes, no sole in it.
+    const bool contact_coming = packet && packet->contact_ahead > 0.001f;
+    if (soles_never_in_the_deck && board_ok && (blending || feet_blending || contact_coming)) {
+        const auto placement = compose(edited[0], edited[1]);
+        const Vec3 board_up = rotate(board.rotation, Vec3{0, 1, 0}), body_up = rotate(placement.rotation, Vec3{0, 1, 0});
+        if (board_up[0] * body_up[0] + board_up[1] * body_up[1] + board_up[2] * body_up[2] > 0.5f) {
+            bool seen = false;
+            float raw = 1, drawn = 1;
+            for (const auto foot : feet) {
+                const auto now_foot = world(edited, foot);
+                const auto on = sole_on_deck(relative(board, now_foot));
+                if (!on.lowest) continue;
+                seen = true;
+                raw = std::min(raw, *on.lowest);
+                float after = *on.lowest;
+                if (on.lift > 0) {
+                    const Vec3 to{now_foot.position[0] + board_up[0] * on.lift, now_foot.position[1] + board_up[1] * on.lift,
+                                  now_foot.position[2] + board_up[2] * on.lift};
+                    place_foot(edited, foot, to, &now_foot.rotation, 1.0f);
+                    if (const auto again = sole_on_deck(relative(board, world(edited, foot))); again.lowest) after = *again.lowest;
+                }
+                drawn = std::min(drawn, after);
+            }
+            if (seen) {
+                auto& r = inertia_report();
+                std::lock_guard report_lock(r.mutex);
+                r.sole_raw = r.sole_seen ? std::min(r.sole_raw, raw) : raw;
+                r.sole = r.sole_seen ? std::min(r.sole, drawn) : drawn;
+                r.sole_seen = true;
+            }
+        }
+    }
+    if (!blending) {
+        auto& r = inertia_report();
+        std::lock_guard report_lock(r.mutex);
+        r.kind.clear();
+        r.started = -1;
+    }
+    // What was drawn, for the next change.
+    auto drawn_now = pose_edit_deltas(native, edited);
+    body.drawn_before = std::move(body.drawn_last);
+    body.drawn_before_at = body.drawn_last_at;
+    body.drawn_last = drawn_now;
+    body.drawn_last_at = now;
+    body.drawn_pose = edited;
+    body.drawn_board = board;
+    body.drawn_board_ok = board_ok;
+    return drawn_now;
+}
 void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
     auto& l = live();
     auto& publication = body_publication_state(); std::lock_guard lock(publication.mutex);
@@ -5434,6 +5690,13 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
         edited = native;
         std::vector<Offset> applied_deltas;
         const auto motion = packet && packet->motion != MotionState::unknown ? packet->motion : l.render_motion.load(std::memory_order_acquire);
+        // SMOOTH, from the shown pose (inertialize_from_the_shown_pose): every change of what plays inertialized from what was
+        // drawn. CLASSIC, and with the switch off, as before.
+        if (inertialize_from_the_shown_pose && smooth_transitions.load(std::memory_order_relaxed) && overrides_allowed.load() &&
+            motion != MotionState::unknown && motion != MotionState::offboard) {
+            applied_deltas = shown_pose_body(publication, packet, motion, generation, native, desired_deltas, edited);
+            publication.transition.reset(); // (CLASSIC, chosen later, starts clean)
+        } else {
         // SMOOTH: the handover into a grind (Handover).
         bool handing = false;
         // SMOOTH: the board's force field's moment (guard_moment). The trick hands back to the game when its legs go over to
@@ -5514,6 +5777,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                 }
             }
         } else publication.transition.reset();
+        }
         if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
             (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) continue;
         for (const auto& joint : edited)
@@ -6126,7 +6390,10 @@ bool ride_feet_on_the_board(const GameplayPacket& packet, std::span<const Joint>
         const float t = std::clamp(packet.time, 0.0f, packet.clip->duration());
         const float share = std::min(packet.weight, 1.0f) * (1 - std::clamp(packet.lower_release, 0.0f, 1.0f)) *
                             (1 - std::clamp(packet.match_rest, 0.0f, 1.0f));
-        if (!(share > 0.001f)) return false;
+        // Before the game's next contact (start_before_the_contact): a foot the game stands on its board goes there on the board
+        // as drawn, as far as the contact has come - the game's own foot, never one pulled to the board by nearness.
+        const float ahead = start_before_the_contact ? std::clamp(packet.contact_ahead, 0.0f, 1.0f) * std::min(packet.weight, 1.0f) : 0.0f;
+        if (!(share > 0.001f) && !(ahead > 0.001f)) return false;
         Joint drawn, games;
         if (!drawn_board_now(packet, native, drawn) || !games_board_now(packet.board_holder, games)) return false;
         // The studio's skater and board at this time, as the studio shows them: the clip (mirrored with the keys when they are),
@@ -6163,10 +6430,13 @@ bool ride_feet_on_the_board(const GameplayPacket& packet, std::span<const Joint>
             const float tilt = std::acos(std::clamp(-(sole[0] * up[0] + sole[1] * up[1] + sole[2] * up[2]), -1.0f, 1.0f)) * 57.2957795f;
             const float stands = foot_on_deck_share(p[0] * up[0] + p[1] * up[1] + p[2] * up[2], p[0] * along[0] + p[1] * along[1] + p[2] * along[2],
                                                     p[0] * across[0] + p[1] * across[1] + p[2] * across[2], tilt);
-            const float k = share * stands * std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
+            const float limb = std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
+            const float by_keys = share * stands * limb, by_contact = ahead > 0 ? ahead * foot_stands_on(on_games) * limb : 0.0f;
+            const float k = std::max(by_keys, by_contact);
             feet_ride_share[i].store(k, std::memory_order_relaxed);
             if (!(k > 0.001f)) continue;
-            const auto want = compose(drawn, foot_on_the_board(on_games, on_made, on_keyed));
+            // The keys' move on the deck as far as it is the keys that put the foot there.
+            const auto want = compose(drawn, foot_on_the_board(on_games, on_made, on_keyed, by_keys / k));
             if (!finite(want)) continue;
             place_foot(edited, foot, want.position, &want.rotation, k);
             moved = true;
@@ -6359,7 +6629,12 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
             std::lock_guard hand_lock(h.mutex);
             const double now = now_seconds();
             if (handover_running(h, now, generation, motion, packet.get())) {
-                want = compose(native_mount, part_of(h.board, handover_left(right_foot_joint, static_cast<float>(now - h.started) / std::max(h.scale, 0.1f))));
+                // From the shown board by the same curve as the body's (inertialize_from_the_shown_pose; shown_pose_body draws
+                // the feet on this board), else eased as before.
+                const float left = inertialize_from_the_shown_pose
+                                       ? inertial_left(static_cast<float>(now - h.started), handover_legs * std::max(h.scale, 0.1f))
+                                       : handover_left(right_foot_joint, static_cast<float>(now - h.started) / std::max(h.scale, 0.1f));
+                want = compose(native_mount, part_of(h.board, left));
                 handing = true;
             }
         }
