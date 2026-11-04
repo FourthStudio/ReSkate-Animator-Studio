@@ -6,6 +6,7 @@
 #include "Extension/AnimationStudio/anim_studio.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <string>
@@ -273,17 +274,65 @@ void last_tricks(SkateMenu& menu, const anim_studio::MenuSummary& now) {
     }
 }
 
-// UPDATES: the version running, the newest on GitHub, and updating from here as from the studio's SETTINGS > UPDATES
-// (studio_update.h: UPDATE NOW downloads, checks and installs it; RESTART NOW starts the game again with it).
+// The installer's steps, as the studio's update card shows them: DOWNLOAD, VERIFY, INSTALL, DONE, each lit as it is
+// reached, the one going on in blue (its edge pulsing), a failed one in red.
+void install_steps(const SkateMenu& menu, const anim_studio::update::State& st) {
+    namespace up = anim_studio::update;
+    bool failed = false;
+    const int step = up::install_step(st, failed);
+    if (step < 0) return;
+    static constexpr std::array<const char*, 4> names{"DOWNLOAD", "VERIFY", "INSTALL", "DONE"};
+    auto* d = ImGui::GetWindowDrawList();
+    const auto a = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x - px(12), h = px(34), gap = px(8), sw = (w - 3 * gap) / 4, size = px(13);
+    ImGui::Dummy(ImVec2(w, h));
+    for (int i = 0; i < 4; ++i) {
+        const ImVec2 sa(a.x + static_cast<float>(i) * (sw + gap), a.y), sb(sa.x + sw, a.y + h);
+        const bool done = i < step || (i == 3 && step == 3), now = i == step && step < 3, bad = now && failed;
+        d->AddRectFilled(sa, sb, bad ? red : done ? skate_theme::blue : now ? IM_COL32(20, 60, 110, 248) : IM_COL32(26, 27, 30, 240));
+        if (now && !bad) {
+            const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 4.0f);
+            d->AddRect(sa, sb, IM_COL32(110, 190, 255, static_cast<int>(120 + 120 * pulse)), 0, 0, px(2));
+        }
+        // Its number and name, or the name alone when the tile is too narrow for both.
+        std::string label = std::format("{}  {}", i + 1, names[static_cast<std::size_t>(i)]);
+        if (menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label.c_str()).x > sw - px(12)) label = names[static_cast<std::size_t>(i)];
+        const auto t = menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label.c_str());
+        d->PushClipRect(sa, sb, true);
+        d->AddText(menu.bold, size, ImVec2(sa.x + std::max(px(4), (sw - t.x) * 0.5f), sa.y + (h - t.y) * 0.5f), done || now ? paper : muted, label.c_str());
+        d->PopClipRect();
+    }
+    ImGui::Dummy(ImVec2(0, px(4)));
+}
+// How far the download is, as a bar (a short piece running along when its size is not known).
+void download_bar(const anim_studio::update::State& st) {
+    auto* d = ImGui::GetWindowDrawList();
+    const auto a = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x - px(12), h = px(8);
+    ImGui::Dummy(ImVec2(w, h));
+    d->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(255, 255, 255, 30));
+    if (st.total) {
+        const float frac = std::clamp(static_cast<float>(static_cast<double>(st.received) / static_cast<double>(st.total)), 0.0f, 1.0f);
+        d->AddRectFilled(a, ImVec2(a.x + w * frac, a.y + h), st.retry_in ? IM_COL32(236, 214, 96, 255) : skate_theme::blue);
+    } else {
+        const float run = static_cast<float>(std::fmod(ImGui::GetTime() * 0.6, 1.0));
+        d->AddRectFilled(ImVec2(a.x + (w - px(80)) * run, a.y), ImVec2(a.x + (w - px(80)) * run + px(80), a.y + h), skate_theme::blue);
+    }
+    ImGui::Dummy(ImVec2(0, px(4)));
+}
+
+// UPDATES: the version running, the newest on GitHub, and updating from here as from the studio's installer card
+// (studio_update.h: DOWNLOAD, VERIFY, INSTALL, DONE; then KEEP PLAYING or RESTART NOW).
 void updates_card(SkateMenu& menu, const Model& model) {
     namespace up = anim_studio::update;
     const auto st = up::state();
     const auto running = up::running_version(), base = up::reskate_base();
     const bool newer = st.step == up::Step::newer || st.step == up::Step::download_failed || st.step == up::Step::install_failed;
     const bool installed = st.step == up::Step::installed, restarting = st.step == up::Step::restarting;
-    const bool going = st.step == up::Step::downloading || st.step == up::Step::downloaded;
+    const bool going = st.step == up::Step::downloading || st.step == up::Step::verifying || st.step == up::Step::installing;
     const auto c = studio_card_begin(menu, "updates", "UPDATES",
-                                     newer ? st.latest + " is out" : installed ? st.latest + " is installed" : "the version you have, and the newest");
+                                     going ? "installing " + st.latest : newer ? st.latest + " is out" : installed ? st.latest + " is installed"
+                                                                                                         : "the version you have, and the newest");
     info(menu, "You have", running.empty() ? std::string("not the studio's own build")
                                            : "Animator Studio " + running + (base.empty() ? std::string{} : "  /  ReSkate " + base));
     if (!up::available()) {
@@ -295,24 +344,36 @@ void updates_card(SkateMenu& menu, const Model& model) {
          st.step == up::Step::checking ? std::string("checking...")
          : st.step == up::Step::failed ? "could not check (" + st.error + ")"
          : st.latest.empty()           ? std::string("not checked yet")
-         : newer                       ? st.latest + "  -  new"
+         : newer || going              ? st.latest + "  -  new"
                                        : st.latest + "  -  up to date");
-    if (going) {
-        const double got = static_cast<double>(st.received) / (1024.0 * 1024.0), all = static_cast<double>(st.total) / (1024.0 * 1024.0);
-        note((st.step == up::Step::downloaded ? std::string("Checked. Putting it in place...")
-              : st.total                      ? std::format("Downloading {}: {:.1f} of {:.1f} MB. It installs itself when it is done.", st.latest, got, all)
-                                              : std::format("Downloading {}: {:.1f} MB", st.latest, got))
+    const auto mb = [](std::uint64_t bytes) { return std::format("{:.1f}", static_cast<double>(bytes) / (1024.0 * 1024.0)); };
+    install_steps(menu, st);
+    if (st.step == up::Step::downloading) {
+        note((st.retry_in  ? std::format("The connection dropped at {} MB. Trying again in {} s: it goes on from there.", mb(st.received), st.retry_in)
+              : st.total   ? std::format("Downloading {}: {} of {} MB{}", st.latest, mb(st.received), mb(st.total), st.attempt > 1 ? std::format(" (try {})", st.attempt) : std::string{})
+              : st.received ? std::format("Downloading {}: {} MB", st.latest, mb(st.received))
+                            : std::string("Connecting to GitHub..."))
                  .c_str());
+        download_bar(st);
     }
-    if (restarting) note("Closing the game. It starts again by itself in a few seconds.");
+    if (st.step == up::Step::verifying) note("Checking it against GitHub's SHA-256, and that it is a ReSkate runtime...");
+    if (st.step == up::Step::installing) note("Putting it in place. The version you have now is kept beside it as ReSkate.dll.previous.");
+    if ((going || installed || newer) && !st.installed_to.empty())
+        note(("Into the folder ReSkate runs from: " + st.installed_to.parent_path().string()).c_str());
+    if (st.step == up::Step::newer && !st.folder_writable)
+        warn("That folder cannot be written to (read-only, or a protected folder such as Program Files). UPDATE NOW still downloads and checks it; "
+             "you then copy it in yourself with the game closed, or move ReSkate to a folder of its own.");
+    if (restarting)
+        note(st.restarting_for < 12 ? "Closing the game. It starts again by itself in a few seconds."
+                                    : "Waiting for the game to close. If it asks whether to quit, say yes: it starts again by itself.");
     if (installed)
-        note((st.can_restart ? "Installed. RESTART NOW closes the game and starts it again with " + st.latest + "."
+        note((st.can_restart ? "Installed. KEEP PLAYING and it is there next time, or RESTART NOW to close the game and start it again with " + st.latest + "."
                              : "Installed. Close the game and start it with ReSkateLauncher to use " + st.latest + ".")
                  .c_str());
-    if (st.step == up::Step::install_failed) warn(("It downloaded but could not be installed: " + st.error).c_str());
-    else if (st.step == up::Step::download_failed) warn(("The download did not work: " + st.error).c_str());
+    if (st.step == up::Step::install_failed) warn(("It could not be installed: " + st.error + ". Nothing was changed.").c_str());
+    else if (st.step == up::Step::download_failed) warn(("The download did not work: " + st.error + ". TRY AGAIN goes on from where it stopped.").c_str());
     // What can be done now: the one to press as the studio's own big blue button, the rest under it.
-    if (newer) {
+    if (st.step == up::Step::newer) {
         const auto label = "UPDATE TO " + st.latest + " NOW";
         if (studio_button(menu, "##updatenow", label.c_str(), "DOWNLOAD + INSTALL", true, 10)) up::download();
         ImGui::Dummy(ImVec2(0, px(6)));
@@ -321,8 +382,22 @@ void updates_card(SkateMenu& menu, const Model& model) {
             anim_studio::request_open(true);
             menu.close_requested = true;
         }
-    } else if (installed && st.can_restart) {
-        if (studio_button(menu, "##restartnow", "RESTART NOW", "STARTS AGAIN BY ITSELF", true, 10)) up::restart();
+    } else if (st.step == up::Step::download_failed || st.step == up::Step::install_failed) {
+        const bool folder = st.step == up::Step::install_failed && !st.saved_to.empty();
+        const int pressed = folder ? button_row(menu, "##updatefailed", {{"TRY AGAIN", true, true, "Downloads and installs it again."},
+                                                                         {"OPEN FOLDER", true, false, "Where the new ReSkate.dll is, to copy in by hand."}})
+                                   : button_row(menu, "##updatefailed", {{"TRY AGAIN", true, true, "Goes on with the download from where it stopped."}});
+        if (pressed == 0) up::download();
+        if (pressed == 1) up::open_folder();
+    } else if (st.step == up::Step::downloading) {
+        if (button_row(menu, "##updatestop", {{"CANCEL", true, false, "Stops the download; UPDATE NOW goes on from where it stopped."}}) == 0) up::cancel();
+    } else if (installed) {
+        if (st.can_restart && studio_button(menu, "##restartnow", "RESTART NOW", "STARTS AGAIN BY ITSELF", true, 10)) up::restart();
+        ImGui::Dummy(ImVec2(0, px(6)));
+        if (button_row(menu, "##keepplaying", {{"KEEP PLAYING", true, !st.can_restart, "Back to the game; the new version runs from the next start."}}) == 0) {
+            up::close_popup();
+            menu.close_requested = true;
+        }
     } else if (!going && !restarting) {
         if (button_row(menu, "##checknow", {{st.step == up::Step::checking ? "CHECKING..." : "CHECK NOW", st.step != up::Step::checking, false,
                                              "Asks GitHub for the newest release now."}}) == 0)
@@ -360,10 +435,11 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     }
     ImGui::Dummy(ImVec2(0, px(12)));
     // A newer version out, or one installed and waiting for a restart: UPDATES first. Otherwise at the foot of the page.
-    const auto update_step = anim_studio::update::state().step;
-    const bool update_first = update_step == anim_studio::update::Step::newer || update_step == anim_studio::update::Step::installed ||
-                              update_step == anim_studio::update::Step::downloading || update_step == anim_studio::update::Step::downloaded ||
-                              update_step == anim_studio::update::Step::install_failed || update_step == anim_studio::update::Step::download_failed;
+    namespace up = anim_studio::update;
+    const auto update_step = up::state().step;
+    const bool update_first = update_step == up::Step::newer || update_step == up::Step::installed || update_step == up::Step::downloading ||
+                              update_step == up::Step::verifying || update_step == up::Step::installing || update_step == up::Step::restarting ||
+                              update_step == up::Step::install_failed || update_step == up::Step::download_failed;
     if (update_first) updates_card(menu, model);
 
     // Nothing of yours plays: said, and put right in one press.

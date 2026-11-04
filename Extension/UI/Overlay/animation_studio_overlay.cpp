@@ -8227,6 +8227,7 @@ std::vector<Setting> updates_settings() {
     }
     const bool newer = st.step == up::Step::newer || st.step == up::Step::download_failed || st.step == up::Step::install_failed;
     const bool installed = st.step == up::Step::installed || st.step == up::Step::restarting;
+    const bool going = st.step == up::Step::downloading || st.step == up::Step::verifying || st.step == up::Step::installing;
     rows.push_back(info_setting("Newest on GitHub",
                                 st.step == up::Step::checking ? std::string("CHECKING...")
                                 : st.step == up::Step::failed ? std::string("COULD NOT CHECK")
@@ -8238,16 +8239,21 @@ std::vector<Setting> updates_settings() {
     {
         Setting s = button_row("Update",
                                "UPDATE NOW downloads the new ReSkate.dll, checks it against GitHub's SHA-256 and puts it in place of this one "
-                               "(kept as ReSkate.dll.previous). RESTART NOW then closes the game and starts it again with it.",
-                               [newer, installed, restart = st.can_restart] {
+                               "(kept as ReSkate.dll.previous), in the folder ReSkate runs from, step by step in the installer. Then KEEP "
+                               "PLAYING, or RESTART NOW to close the game and start it again with it.",
+                               [newer, installed, going, restart = st.can_restart] {
                                    if (newer) up::download();
+                                   else if (going) up::show_popup();
                                    else if (installed && restart) up::restart();
                                    else if (installed) up::show_popup();
                                    else up::check_now();
                                });
         s.value = st.step == up::Step::checking                                                      ? std::string("CHECKING...")
                   : newer                                                                            ? "UPDATE TO " + st.latest + " NOW"
-                  : st.step == up::Step::downloading || st.step == up::Step::downloaded              ? std::string("UPDATING...")
+                  : st.step == up::Step::downloading && st.total                                     ? std::format("DOWNLOADING  {:.0f}%", 100.0 * static_cast<double>(st.received) / static_cast<double>(st.total))
+                  : st.step == up::Step::downloading                                                 ? std::string("DOWNLOADING...")
+                  : st.step == up::Step::verifying                                                   ? std::string("VERIFYING...")
+                  : st.step == up::Step::installing                                                  ? std::string("INSTALLING...")
                   : st.step == up::Step::restarting                                                  ? std::string("RESTARTING...")
                   : installed                                                                        ? std::string(st.can_restart ? "RESTART NOW TO USE IT" : "INSTALLED  -  RESTART THE GAME")
                   : st.step == up::Step::current                                                     ? std::string("UP TO DATE")
@@ -10575,26 +10581,84 @@ void adding_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
     if (action(d, f, "##addingdone", ImVec2(b.x - 30 * k - 200 * k, b.y - 66 * k), ImVec2(200 * k, 46 * k), "DONE", Look::blue)) u.pack_adding = false;
 }
 // Whichever card is up, over everything.
-// A newer Animator Studio on GitHub (Extension/AnimationStudio/studio_update.h): what it says about itself, and DOWNLOAD or
-// CANCEL; then the download going, done (where it went, OPEN FOLDER, and how to put it in) or failed.
+// A newer Animator Studio on GitHub (Extension/AnimationStudio/studio_update.h), as an installer: what it says about itself
+// and UPDATE NOW or LATER; then its steps - DOWNLOAD, VERIFY, INSTALL, DONE - with how far it is, where it goes (the
+// folder ReSkate runs from) and, done, KEEP PLAYING or RESTART NOW. Every message is wrapped inside the card and the
+// notes give way to it, so nothing runs into the buttons (the UI audit's #15).
 void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
     namespace up = studio::update;
     auto& u = ui();
     const float k = f.k;
     const auto st = up::state();
-    const bool installed = st.step == up::Step::installed, install_failed = st.step == up::Step::install_failed;
-    const bool restarting = st.step == up::Step::restarting;
-    const bool done = installed || restarting, failed = st.step == up::Step::download_failed || install_failed;
-    const bool going = st.step == up::Step::downloading || st.step == up::Step::downloaded;
+    bool step_failed = false;
+    const int step = up::install_step(st, step_failed);
+    const bool installed = st.step == up::Step::installed, restarting = st.step == up::Step::restarting;
+    const bool install_failed = st.step == up::Step::install_failed, failed = step_failed;
+    const bool going = st.step == up::Step::downloading || st.step == up::Step::verifying || st.step == up::Step::installing;
+    const bool installer = step >= 0;
+    const ImU32 red = IM_COL32(255, 140, 130, 255);
     const auto [a, b] = card_box(d, f, display, 1040 * k, 800 * k,
                                  restarting ? "RESTARTING" : installed ? "UPDATE INSTALLED" : install_failed ? "COULD NOT INSTALL" : failed ? "DOWNLOAD FAILED"
-                                 : going ? "UPDATING" : "UPDATE AVAILABLE");
+                                 : going ? "INSTALLING UPDATE" : "UPDATE AVAILABLE");
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 92 * k;
     y += paragraph(d, f.bold, 21 * k, ImVec2(x, y), w, white, "Animator Studio " + st.latest + " is out. You have " + st.running + ".") + 2 * k;
-    if (!st.title.empty()) y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, soft, st.title) + 12 * k;
+    if (!st.title.empty()) {
+        text(d, f.bold, 14 * k, ImVec2(x, y), soft, elide(f.bold, 14 * k, st.title, w));
+        y += 26 * k;
+    }
+    // The buttons along the foot, and above them what the installer says: measured first, so the notes take what is left.
+    const float bh = 50 * k, bw = 260 * k, row = b.y - 26 * k - bh;
+    const auto tall = [&](ImFont* font, float size, const std::string& value) {
+        return sharp(font, size)->CalcTextSizeA(size, FLT_MAX, w, value.c_str()).y;
+    };
+    const auto mb = [](std::uint64_t bytes) { return std::format("{:.1f}", static_cast<double>(bytes) / (1024.0 * 1024.0)); };
+    std::string say;     // what is happening, or what went wrong
+    ImU32 say_ink = white;
+    std::string where;   // where it goes
+    if (!st.installed_to.empty()) where = "Into the folder ReSkate runs from: " + st.installed_to.parent_path().string();
+    if (st.step == up::Step::newer) {
+        if (!st.folder_writable) {
+            say = "The folder ReSkate runs from cannot be written to (read-only, or a protected folder such as Program Files). UPDATE NOW still "
+                  "downloads and checks it; you then copy it in yourself with the game closed, or move ReSkate to a folder of its own.";
+            say_ink = red;
+        }
+    } else if (st.step == up::Step::downloading) {
+        say = st.retry_in    ? std::format("The connection dropped at {} MB. Trying again in {} s (try {}): it goes on from there.", mb(st.received), st.retry_in,
+                                           st.attempt + 1)
+              : st.total     ? std::format("Downloading ReSkate.dll: {} of {} MB{}", mb(st.received), mb(st.total),
+                                           st.attempt > 1 ? std::format(" (try {}, going on from where it stopped)", st.attempt) : std::string{})
+              : st.received ? std::format("Downloading ReSkate.dll: {} MB", mb(st.received))
+                             : std::string("Connecting to GitHub...");
+    } else if (st.step == up::Step::verifying) {
+        say = "Checking it against GitHub's SHA-256, and that it is a ReSkate runtime...";
+    } else if (st.step == up::Step::installing) {
+        say = "Putting it in place. The version you have now is kept beside it as ReSkate.dll.previous.";
+    } else if (installed) {
+        say = "Animator Studio " + st.latest + " is installed" + (st.checked ? " (checked against GitHub's SHA-256)" : "") +
+              " and runs from the next start. The old one is kept as ReSkate.dll.previous. " +
+              (st.can_restart ? "KEEP PLAYING and it is there next time, or RESTART NOW to close the game and start it again with it."
+                              : "Close the game and start it with ReSkateLauncher as usual to use it.");
+        if (!st.error.empty()) say += " " + st.error + ".";
+    } else if (restarting) {
+        say = st.restarting_for < 12 ? "Closing the game. It starts again by itself in a few seconds, with Animator Studio " + st.latest + "."
+                                     : "Waiting for the game to close. If it asks whether to quit, say yes: it starts again by itself. If it does not "
+                                       "close, close it and start it with ReSkateLauncher as usual.";
+    } else if (failed) {
+        say = (install_failed ? "It could not be installed: " + st.error + "." +
+                                    (st.saved_to.empty() ? std::string{}
+                                                         : " Nothing was changed. OPEN FOLDER shows the new ReSkate.dll to copy over ReSkate.dll yourself "
+                                                           "with the game closed.")
+                              : "The download did not work: " + st.error + ". TRY AGAIN goes on from where it stopped.");
+        say_ink = red;
+    }
+    // At most a handful of lines: a longer message is cut at the panel's foot rather than drawn over the buttons.
+    const float say_h = say.empty() ? 0.0f : std::min(tall(f.bold, 16 * k, say), 4 * 22 * k);
+    const float steps_h = installer ? 54 * k : 0.0f, bar_h = st.step == up::Step::downloading ? 22 * k : 0.0f;
+    const float where_h = installer && !where.empty() ? 24 * k : 0.0f;
+    const float panel_h = steps_h + say_h + (say_h > 0 ? 10 * k : 0.0f) + bar_h + where_h;
     // What changed, as the release says it (its Markdown read plainly: headings in blue, bullets, no stars or backticks).
-    const ImVec2 la(x, y), lb(x + w, b.y - (done || failed || going ? 170 : 96) * k);
+    const ImVec2 la(x, y), lb(x + w, std::max(y + 60 * k, row - 18 * k - panel_h - (panel_h > 0 ? 12 * k : 0.0f)));
     d->AddRectFilled(la, lb, IM_COL32(8, 9, 11, 200));
     begin_region(240, ImVec2(la.x + 14 * k, la.y + 10 * k), ImVec2(lb.x - 8 * k, lb.y - 10 * k), u.update_scroll, k);
     float ny = la.y + 10 * k - u.update_scroll;
@@ -10629,36 +10693,47 @@ void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
     }
     if (notes.empty()) ny += paragraph(d, f.body, 15 * k, ImVec2(nx, ny), nw, soft, "The release says nothing about what changed. Its page: " + st.page);
     end_region(d, ImVec2(la.x + 14 * k, la.y + 10 * k), ImVec2(lb.x - 8 * k, lb.y - 10 * k), ny + u.update_scroll - (la.y + 10 * k), u.update_scroll, k);
-    // What happens next.
-    float by = lb.y + 16 * k;
-    if (going) {
-        const double got = static_cast<double>(st.received) / (1024.0 * 1024.0), all = static_cast<double>(st.total) / (1024.0 * 1024.0);
-        paragraph(d, f.bold, 16 * k, ImVec2(x, by), w, white,
-                  st.step == up::Step::downloaded ? std::string("Checked. Putting it in place...")
-                  : st.total ? std::format("Downloading ReSkate.dll: {:.1f} of {:.1f} MB. It installs itself when it is done.", got, all)
-                             : std::format("Downloading ReSkate.dll: {:.1f} MB", got));
-        const float bar_y = by + 34 * k,
-                    frac = st.step == up::Step::downloaded ? 1.0f : st.total ? std::clamp(static_cast<float>(got / std::max(all, 0.001)), 0.0f, 1.0f) : 0.0f;
-        d->AddRectFilled(ImVec2(x, bar_y), ImVec2(x + w, bar_y + 10 * k), IM_COL32(255, 255, 255, 30));
-        d->AddRectFilled(ImVec2(x, bar_y), ImVec2(x + w * frac, bar_y + 10 * k), blue);
-    } else if (restarting) {
-        paragraph(d, f.bold, 17 * k, ImVec2(x, by), w, white,
-                  "Closing the game. It starts again by itself in a few seconds, with Animator Studio " + st.latest + ".");
-    } else if (installed) {
-        paragraph(d, f.bold, 16 * k, ImVec2(x, by), w, white,
-                  "Animator Studio " + st.latest + " is installed (checked against GitHub's SHA-256). It runs from the next start; the old one is "
-                  "kept beside it as ReSkate.dll.previous." +
-                      std::string(st.can_restart ? " RESTART NOW closes the game and starts it again for you."
-                                                 : " Close the game and start it with ReSkateLauncher as usual."));
-        if (!st.error.empty()) paragraph(d, f.bold, 14 * k, ImVec2(x, by + 52 * k), w, IM_COL32(255, 140, 130, 255), st.error);
-    } else if (failed) {
-        paragraph(d, f.bold, 16 * k, ImVec2(x, by), w, IM_COL32(255, 140, 130, 255),
-                  install_failed ? "It downloaded, but could not be installed: " + st.error + ". OPEN FOLDER shows the new ReSkate.dll to put in "
-                                                                                   "your Skate folder yourself with the game closed."
-                                 : "The download did not work: " + st.error);
+    // The installer: its four steps, each lit as it is reached, the one going on in blue, a failed one in red.
+    float py = lb.y + 12 * k;
+    if (installer) {
+        static constexpr std::array<const char*, 4> names{"DOWNLOAD", "VERIFY", "INSTALL", "DONE"};
+        const float gap = 10 * k, sw = (w - 3 * gap) / 4;
+        for (int i = 0; i < 4; ++i) {
+            const ImVec2 sa(x + static_cast<float>(i) * (sw + gap), py), sb(sa.x + sw, py + 40 * k);
+            const bool done = i < step || (i == 3 && step == 3), now = i == step && step < 3, bad = now && failed;
+            const ImU32 fill = bad ? IM_COL32(150, 38, 40, 245) : done ? blue : now ? IM_COL32(20, 60, 110, 248) : IM_COL32(26, 27, 30, 240);
+            d->AddRectFilled(sa, sb, fill);
+            if (now && !bad) {
+                // The step going on: its edge pulses, so a step that takes a while still shows it is at work.
+                const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 4.0f);
+                d->AddRect(sa, sb, IM_COL32(110, 190, 255, static_cast<int>(120 + 120 * pulse)), 0, 0, 2 * k);
+            }
+            const std::string label = std::format("{}  {}", i + 1, names[static_cast<std::size_t>(i)]) + (done && i < 3 ? "  OK" : bad ? "  FAILED" : "");
+            const auto shown = elide(f.bold, 15 * k, label, sw - 20 * k);
+            const auto t = text_size(f.bold, 15 * k, shown.c_str());
+            text(d, f.bold, 15 * k, ImVec2(sa.x + (sw - t.x) * 0.5f, sa.y + (40 * k - t.y) * 0.5f), done || now ? white : soft, shown);
+        }
+        py += steps_h;
     }
-    const float bh = 50 * k, bw = 260 * k, row = b.y - 26 * k - bh;
-    const ImVec2 right_button(b.x - 30 * k - bw, row), left_button(b.x - 30 * k - 2 * bw - 14 * k, row);
+    if (!say.empty()) {
+        d->PushClipRect(ImVec2(x, py), ImVec2(x + w, py + say_h), true);
+        paragraph(d, f.bold, 16 * k, ImVec2(x, py), w, say_ink, say);
+        d->PopClipRect();
+        py += say_h + 10 * k;
+    }
+    if (st.step == up::Step::downloading) {
+        const float frac = st.total ? std::clamp(static_cast<float>(static_cast<double>(st.received) / static_cast<double>(st.total)), 0.0f, 1.0f) : 0.0f;
+        d->AddRectFilled(ImVec2(x, py), ImVec2(x + w, py + 10 * k), IM_COL32(255, 255, 255, 30));
+        if (st.total) d->AddRectFilled(ImVec2(x, py), ImVec2(x + w * frac, py + 10 * k), st.retry_in ? IM_COL32(236, 214, 96, 255) : blue);
+        else {
+            // No size given: a short piece runs along, so it still shows it is at work.
+            const float run = static_cast<float>(std::fmod(ImGui::GetTime() * 0.6, 1.0));
+            d->AddRectFilled(ImVec2(x + (w - 120 * k) * run, py), ImVec2(x + (w - 120 * k) * run + 120 * k, py + 10 * k), blue);
+        }
+        py += bar_h;
+    }
+    if (where_h > 0) text(d, f.bold, 13 * k, ImVec2(x, py), soft, elide(f.bold, 13 * k, where, w));
+    const ImVec2 right_button(b.x - 30 * k - bw, row), left_button(b.x - 30 * k - 2 * bw - 14 * k, row), third_button(b.x - 30 * k - 3 * bw - 28 * k, row);
     if (st.step == up::Step::newer) {
         if (action(d, f, "##updatedownload", right_button, ImVec2(bw, bh), "UPDATE NOW", Look::blue)) up::download();
         if (action(d, f, "##updatecancel", left_button, ImVec2(bw, bh), "LATER", Look::ghost)) up::cancel();
@@ -10667,10 +10742,11 @@ void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
         if (action(d, f, "##updatestop", right_button, ImVec2(bw, bh), "CANCEL", Look::ghost)) up::cancel();
     } else if (installed) {
         if (st.can_restart && action(d, f, "##updaterestart", right_button, ImVec2(bw, bh), "RESTART NOW", Look::blue)) up::restart();
-        if (action(d, f, "##updatelater", st.can_restart ? left_button : right_button, ImVec2(bw, bh), st.can_restart ? "RESTART LATER" : "DONE", Look::ghost))
+        if (action(d, f, "##updatelater", st.can_restart ? left_button : right_button, ImVec2(bw, bh), "KEEP PLAYING", st.can_restart ? Look::ghost : Look::blue))
             up::close_popup();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) up::close_popup();
     } else if (failed) {
-        if (install_failed && action(d, f, "##updatefolder", ImVec2(left_button.x - bw - 14 * k, row), ImVec2(bw, bh), "OPEN FOLDER", Look::ghost))
+        if (install_failed && !st.saved_to.empty() && action(d, f, "##updatefolder", third_button, ImVec2(bw, bh), "OPEN FOLDER", Look::ghost))
             up::open_folder();
         if (action(d, f, "##updateagain", left_button, ImVec2(bw, bh), "TRY AGAIN", Look::blue)) up::download();
         if (action(d, f, "##updateclose", right_button, ImVec2(bw, bh), "CLOSE", Look::ghost)) up::close_popup();
