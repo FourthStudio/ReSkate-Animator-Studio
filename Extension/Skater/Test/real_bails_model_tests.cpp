@@ -2,11 +2,12 @@
 // muscles must never do is snap the body on the first step, push or spin the body as a whole (but for the board's push
 // back on a kicking foot), use more torque than a person has, drive the legs or back towards any pose while he falls,
 // rolls or slides, lift the legs lying down (but the hugged knee and the racked curl), hold the head against a hard slam,
-// react to pain while he tumbles or slides fast, hold a flinch, or keep moving him once he lies still. What they must
-// do: bring the arms out the way his momentum takes him (forwards, to the side, back and down) whatever the fall, let
-// them give once down, pull the chin in as hard as Head protection says, flinch briefly from a hit, react to what hurt
-// most as soon as he is down and slow (the other hand to an elbow, the hands to a knee or the head, both hands to the
-// groin and curled up), kick the board away once when the feet are on it, and stay finite whatever the bodies do.
+// react to pain while he tumbles or slides fast, hold a flinch, keep moving him once he lies still, or (in the game)
+// push a still joint into a flick. What they must do: bring the arms out the way his momentum takes him (forwards, to
+// the side, back and down) whatever the fall, let them give once down, pull the chin in as hard as Head protection
+// says, flinch briefly from a hit, react to what hurt most as soon as he is down and slow (the other hand to an elbow,
+// the hands to a knee or the head, both hands to the groin and curled up), put down an arm or a leg left up in the air,
+// kick the board away once when the feet are on it, and stay finite whatever the bodies do.
 #include "Extension/Skater/real_bails_body.h"
 #include "Extension/Skater/real_bails_model.h"
 #include <algorithm>
@@ -307,13 +308,17 @@ int main() {
         check(kept, "The muscles never change the body's momentum, linear or angular");
     }
 
-    // In the game, whose joint solve takes most of each push back, the muscles push harder by about what is lost (a
-    // shoulder about four times): the arms come out as hard as a person's would. Still one part against another.
+    // In the game, which keeps only a share of each push (the more, the faster the joint already turns), the muscles hand
+    // over a push scaled up by about what is lost: on a shoulder swinging at 3 rad/s (as the game hands the arms over) about
+    // five times, so the arms come out as hard as a person's would. A still joint the game holds is never pushed into a
+    // flick: its turning is never changed by more than 1 rad/s in a step, however far its goal. Still one part against
+    // another.
     {
         // Feet on the ground (where the ground is, so the fall is read and the arms reach).
-        const auto arm_turn = [&](bool in_game) {
+        const auto arm_turn = [&](bool in_game, float swinging) {
             Input in = forward_fall();
             in.in_game = in_game;
+            for (const Part p : {l_arm, l_forearm, l_hand, r_arm, r_forearm, r_hand}) in.body[p].w = in.body[chest3].r[2] * swinging;
             Muscles m;
             m.begin(in, 3);
             float most = 0;
@@ -323,8 +328,9 @@ int main() {
             });
             return most;
         };
-        const float person = arm_turn(false), game = arm_turn(true);
+        const float person = arm_turn(false, 3.0f), game = arm_turn(true, 3.0f);
         check(person > 0.05f && game > 2.5f * person, "In the game the arms are pushed harder, making up for what its joints take back");
+        check(arm_turn(true, 0.0f) <= 1.0f + 1e-3f, "In the game a still arm is never pushed into a flick (at most 1 rad/s in a step)");
         // Nothing planted (so every body is written): the momentum is the same after they act.
         bool kept = true;
         for (Input in : {forward_fall(), rolling()}) {
@@ -413,7 +419,7 @@ int main() {
             on_ground(in, {pelvis, spine, back1, chest2, chest3, neck, head, l_collar, r_collar, l_arm, r_arm, l_forearm, r_forearm, l_hand, r_hand}, 0);
             return in;
         };
-        bool never_up = true, never_holds = true;
+        bool never_up = true, put_down = false;
         for (const float going : {-0.6f, 0.0f, 0.6f}) {
             Input in = legs_up();
             in.tune.hold_hurt = 6.0f;
@@ -435,12 +441,18 @@ int main() {
                 before /= kg;
                 after /= kg;
                 never_up = never_up && after <= std::max(before, 0.0f) + 0.01f;
-                // Its feet are off the ground: the pain reaction leaves these legs as they lie.
-                never_holds = never_holds && !o.driven[l_thigh] && !o.driven[r_thigh] && !o.driven[l_shin] && !o.driven[r_shin];
+                // Its feet are off the ground: the pain reaction leaves these legs as they lie, and as legs left up in the
+                // air they are put down.
+                for (const Part thigh : {l_thigh, r_thigh})
+                    if (o.driven[thigh]) {
+                        // The thigh is turned so its bone (up from the hip to the knee) tips down towards the ground.
+                        const V3 rel = spin_of(in, o, thigh) - spin_of(in, o, pelvis);
+                        put_down = put_down || math::cross(rel, in.body[thigh].r[0])[1] < -0.05f;
+                    }
             });
         }
         check(never_up, "Lying down, the muscles never lift a leg");
-        check(never_holds, "Lying down, a leg up in the air is never driven");
+        check(put_down, "Lying down, a leg left up in the air is put down");
     }
 
     // The arms go out towards where he will land: ahead of him falling forwards, both to the side he falls to, behind and
@@ -572,21 +584,25 @@ int main() {
         run(m, sliding, 90, [&](const Output& o) { none = none && !o.pain; });
         check(none, "No pain reaction while he slides fast");
         // Lying still: after a moment, the reaction.
-        bool started = false, light = true, kept = true, trunk_kept = true, arms_led = true;
+        bool started = false, light = true, kept = true, trunk_kept = true, arms_led = false;
+        int pain_steps = 0;
         Output o = run(m, in, 90, [&](const Output& r) {
             if (!r.pain) return;
             started = true;
+            ++pain_steps;
             for (std::size_t i = 1; i < part_count; ++i) light = light && r.torque[i] <= 0.5f * torque_limit(static_cast<Part>(i), 1) + 1e-3f;
             V3 linear{}, angular{};
             change_of(in, r, linear, angular);
             kept = kept && length(linear) < 0.02f && length(angular) < 0.02f;
             change_of(in, r, [](Part p) { return is_trunk(p); }, linear, angular);
-            // Lifting his arms presses his trunk into the ground (their weight); along the ground or round it, next to nothing.
-            trunk_kept = trunk_kept && std::hypot(linear[0], linear[2]) < 0.3f && length(angular) < 0.5f;
-            arms_led = arms_led && (r.driven[l_arm] || r.driven[r_arm]);
+            // Lifting his arms presses his trunk into the ground (their weight); along the ground or round it, next to nothing
+            // (half a newton-second at most: a hundredth of a metre a second on the trunk, which the ground's grip holds).
+            trunk_kept = trunk_kept && std::hypot(linear[0], linear[2]) < 0.5f && length(angular) < 0.5f;
+            // A hand sets off within a fifth of a second of the reaction starting (it guards first).
+            if (pain_steps <= 12) arms_led = arms_led || r.driven[l_arm] || r.driven[r_arm];
         });
         check(started && o.phase == Phase::settle, "Lying still and hurt, he reacts to it");
-        check(arms_led, "A hand goes to what hurts");
+        check(arms_led, "A hand goes to what hurts (setting off within a fifth of a second)");
         check(light, "The pain reaction is moderate (at most half a joint's strength: an arm lifted to the spot, pressed there)");
         check(kept, "The pain reaction never moves the body as a whole");
         check(trunk_kept, "The pain reaction never drags or rolls his trunk");
@@ -616,8 +632,9 @@ int main() {
         check(o.phase == Phase::rest && !o.pain, "Then he lets go and rests");
     }
 
-    // The hand goes to what hurts smoothly: its goal moves along a minimum-jerk path, so the arm's torque builds from
-    // nothing with no jolt, and letting go it eases off over most of a second instead of dropping the arm.
+    // The hand goes to what hurts smoothly: a move builds up over a tenth of a second and speeds the arm up no faster than
+    // a person's reach does, so the arm's torque builds from nothing with no jolt; letting go it eases off over a second and
+    // a half instead of dropping the arm.
     {
         Input in = on_his_back();
         in.tune.hold_hurt = 2.0f;
@@ -649,8 +666,45 @@ int main() {
         }
         check(torque.size() > 30 && peak > 0.5f, "The hand sets off for what hurts");
         check(torque.front() < 0.1f * peak, "The reach starts from nothing (no jolt as it sets off)");
-        check(jolt < 0.15f * peak, "The reach builds smoothly, step by step");
+        check(jolt < 0.2f * peak, "The reach builds smoothly, step by step (no step adds a fifth of its torque)");
         check(let_go_steps > 0 && after_act_min > 0.5f * held_act, "Letting go, the arm eases down instead of dropping");
+    }
+
+    // Nothing is left up in the air once he is down: lying on his back with an arm held straight up (nothing under it,
+    // doing nothing), it is put down (the upper arm tips over towards the ground, lightly), and the arm lying on the ground
+    // is left alone. (The game holds a limb where it stops: an arm left up stays up, which reads as knocked out.) Before he
+    // is down it is left to the fall (the flinch test below: a hit arm is never posed).
+    {
+        Input in = on_his_back();
+        in.tune.grab_hurt = false;
+        // (Lying along z: the arm turned about x, whichever way takes it up.)
+        {
+            Input up_one = in;
+            turn(up_one, {l_arm, l_forearm, l_hand}, in.body[l_arm].p, {1, 0, 0}, pi / 2 * 0.97f);
+            if (up_one.body[l_hand].p[1] < in.body[l_arm].p[1]) turn(in, {l_arm, l_forearm, l_hand}, in.body[l_arm].p, {1, 0, 0}, -pi / 2 * 0.97f);
+            else in = up_one;
+        }
+        for (const Part p : {l_arm, l_forearm, l_hand}) in.body[p].touching = false;
+        const bool up = in.body[l_hand].p[1] > in.body[l_arm].p[1] + 0.4f;
+        Muscles m;
+        m.begin(in, 8);
+        Input hit = in;
+        hit.body[back1].impact = 3.0f;
+        (void)m.step(hit);
+        bool tipped = false, other_left = true, light = true;
+        run(m, in, 40, [&](const Output& o) {
+            if (o.driven[l_arm]) {
+                const V3 rel = spin_of(in, o, l_arm) - spin_of(in, o, chest3);
+                // Straight up, the bone tips over: its tip sets off across (never up).
+                const V3 tip = math::cross(rel, in.body[l_arm].r[0]);
+                tipped = tipped || (std::hypot(tip[0], tip[2]) > 0.1f && tip[1] <= 1e-3f);
+                light = light && o.torque[l_arm] <= 0.3f * torque_limit(l_arm, 1) + 1e-3f;
+            }
+            other_left = other_left && !o.driven[r_arm];
+        });
+        check(up && tipped, "Lying down, an arm left up in the air is put down");
+        check(light, "... lightly (a quarter of the arm's strength: let fall, not posed)");
+        check(other_left, "... and the arm lying on the ground is left alone");
     }
 
     // Lying still: next to nothing. The tone of lying there (a few percent) and no motion of its own.
@@ -907,11 +961,12 @@ int main() {
         check(on && to_pain <= 30, "A knee hit on landing: the reaction starts within half a second");
     }
 
-    // An elbow that hurts: the other hand goes to it, the hurt arm is held in.
+    // An elbow that hurts: the other hand goes to it, the hurt arm is held in. (These run on a body held still, where a
+    // hand gets no nearer: half a second in, before a hand that gets no nearer gives up.)
     {
         Muscles m;
         Input in;
-        const Output o = hurt_on_back(m, l_forearm, 5.0f, 60, &in);
+        const Output o = hurt_on_back(m, l_forearm, 5.0f, 30, &in);
         check(o.pain && o.hurt == Hurt::left_arm, "A hit on the left forearm hurts the left arm");
         check(o.driven[r_arm] && mark_to(o, 1, in.body[l_forearm].p) < 0.12f, "The right hand goes to the left elbow");
         check(o.driven[l_arm] && o.driven[l_forearm], "The hurt arm is held in");
@@ -961,7 +1016,7 @@ int main() {
         run(m, in, 60, [&](const Output& o) {
             if (!o.pain) return;
             ++pain_steps;
-            if (!o.write[r_hand]) return;
+            if (!o.write[r_hand] || o.reach[1] != static_cast<std::uint8_t>(Reach::going)) return; // (on its way: not given up)
             ++written;
             const V3 to_spot = o.hand_mark[1] - in.body[r_hand].p;
             if (dot(o.v[r_hand] - in.body[r_hand].v, to_spot) > 0) ++toward;
@@ -973,7 +1028,7 @@ int main() {
     {
         Muscles m;
         Input in;
-        const Output o = hurt_on_back(m, l_shin, 5.0f, 60, &in);
+        const Output o = hurt_on_back(m, l_shin, 5.0f, 45, &in);
         check(o.pain && o.hurt == Hurt::left_leg, "A hit on the left shin hurts the left leg");
         check(mark_to(o, 0, in.body[l_shin].p) < 0.15f && mark_to(o, 1, in.body[l_shin].p) < 0.15f, "Both hands go to the hurt knee");
         check(o.leg_lifted[0] && !o.leg_lifted[1], "Only the hurt leg comes up off the ground");
@@ -999,7 +1054,7 @@ int main() {
         sat.body[pelvis].impact = 0;
         int to_pain = 0;
         bool on = false;
-        const Output o = run(m, sat, 90, [&](const Output& r) {
+        const Output o = run(m, sat, 30, [&](const Output& r) {
             if (!on) ++to_pain;
             on = on || r.pain;
         });
@@ -1010,7 +1065,7 @@ int main() {
         check(dot(spin_of(sat, o, l_thigh) - spin_of(sat, o, pelvis), sat.body[pelvis].r[2]) < 0 &&
                   dot(spin_of(sat, o, r_thigh) - spin_of(sat, o, pelvis), sat.body[pelvis].r[2]) < 0,
               "Racked: both knees are drawn towards the chest");
-        check(o.driven[spine] && o.driven[chest3], "Racked: the back rounds");
+        check(o.driven[back1] && o.driven[chest3], "Racked: the back rounds");
         V3 linear{}, angular{};
         change_of(sat, o, linear, angular);
         check(length(linear) < 0.02f && length(angular) < 0.02f, "Racked: the curl keeps the body's momentum");

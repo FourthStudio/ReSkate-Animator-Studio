@@ -7,8 +7,8 @@
 // (Engine/Game/Skater/skater_body.h) that fall like a rag doll. Real Bails reads them on every physics
 // step and adds what a falling person's muscles add (real_bails_model.h): tone in every joint (so the limbs
 // do not flop), a person's joint ranges, the arms reaching the way his momentum takes him, the chin tucked,
-// a flinch at every hit and the board kicked away; once he is down, his hands to what hurts and a curl. The
-// fall itself stays the ragdoll's. Each step it sets the bodies' spin and velocity
+// a flinch at every hit and the board kicked away; once he is down, his hands to what hurts and a curl, and no
+// arm or leg left up in the air. The fall itself stays the ragdoll's. Each step it sets the bodies' spin and velocity
 // through the physics world's own bodies (Engine/Game/Build/20260929/ragdoll_bodies.h: the rig's body
 // records are only the game's mirror of them in a bail). Every muscle torque turns one side of its joint
 // against the other through the linked bodies, so the body as a whole keeps its momentum. The game's
