@@ -37,6 +37,38 @@ void versions_are_read_for_the_studios_packs_only() {
     const auto again = read_version_counts_json(version_counts_json(counts));
     check(again.size() == 2 && again.at("Heatz-Versace")[1].downloads == 21000 && again.at("Zest-Zestpack")[0].date == "2026-10-28",
           "the counts come back as they were kept");
+    check(counts.at("Heatz-Versace")[0].version == "1.1.1" && again.at("Heatz-Versace")[1].version == "1.1.0", "each version keeps its number");
+    // What an older studio kept (no numbers) still reads.
+    const auto old = read_version_counts_json(R"({"Heatz-Versace": [["2026-11-01", 1788], ["2026-10-30", 21000]]})");
+    check(old.at("Heatz-Versace").size() == 2 && old.at("Heatz-Versace")[0].version.empty() && old.at("Heatz-Versace")[1].downloads == 21000,
+          "counts kept without numbers are read");
+}
+// The shelves by trick type: each README line's kind, from its name and the game's trick it plays on.
+void tricks_are_sorted_by_kind() {
+    const std::pair<const char*, TrickKind> lines[]{
+        {"Kickflip (mid pop)", TrickKind::flip},
+        {"Steezy Flip - Kickflip (mid pop, fakie)", TrickKind::flip},
+        {"FF Impossible high switch fakie 3 (high pop)", TrickKind::flip},
+        {"mid steez tre (mid pop)", TrickKind::flip},
+        {"nollie heel low sketch landing - Nollie Heelflip (low pop)", TrickKind::flip},
+        {"Rocket Shuv - Pop Shuv-it (any pop)", TrickKind::shuvit},
+        {"Nollie BS Bigspin Shuv (mid pop)", TrickKind::shuvit},
+        {"Ollie HIGH fakie (high pop, fakie)", TrickKind::ollie},
+        {"Grind BF FS Feeble BS Smith Rail Entry (any pop)", TrickKind::grind},
+        {"Cross Lock 5050 (any pop)", TrickKind::grind},
+        {"Grind BS Noseslide Rail Entry (any pop)", TrickKind::grind},
+        {"Manual N Entry (any pop)", TrickKind::manual},
+        {"Land Fakie Revert 45 BS Medium (any pop)", TrickKind::landing},
+        {"Powerslide BS Fast Loop (any pop)", TrickKind::landing},
+        {"In Air FS Grab Entry (any pop)", TrickKind::grab},
+        {"Leg extend (any pop)", TrickKind::other},
+        {"Block party (any pop)", TrickKind::other}, // "lock" inside a word is not a lock
+    };
+    for (const auto& [line, kind] : lines) check(trick_kind(line) == kind, line);
+    const auto counts = trick_kinds({"Kickflip (mid pop)", "Heelflip (low pop)", "Manual (any pop)"});
+    check(counts[static_cast<std::size_t>(TrickKind::flip)] == 2 && counts[static_cast<std::size_t>(TrickKind::manual)] == 1 &&
+              counts[static_cast<std::size_t>(TrickKind::grind)] == 0,
+          "a pack's tricks are counted by kind");
 }
 // The all-time biggest is not the month's biggest: only what was downloaded this month counts.
 void the_month_counts_this_months_downloads_not_all_time() {
@@ -109,6 +141,7 @@ void base64_goes_both_ways() {
 int main() {
     try {
         versions_are_read_for_the_studios_packs_only();
+        tricks_are_sorted_by_kind();
         the_month_counts_this_months_downloads_not_all_time();
         a_pack_new_this_month_counts_everything();
         a_new_month_starts_again();

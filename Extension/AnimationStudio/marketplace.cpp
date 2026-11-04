@@ -395,10 +395,14 @@ struct Market {
     Detail detail;
     std::deque<std::string> icon_queue;
     std::set<std::string> icons_asked;
+    // Whether each pack's icon is on disk (by its file), looked at once and then kept: view() and want_icons() run every
+    // frame the MARKET is open, and a look at the disk for every pack each frame cost a few milliseconds.
+    std::map<std::filesystem::path, bool> icons_there;
     bool icon_worker{};
     struct Readme {
         std::string version, about;
         std::vector<std::string> tricks;
+        KindCounts kinds{}; // its tricks by kind, worked out once as it is read (a pack can list hundreds)
         int state{}; // 1 being read, 2 read, 3 could not be read
     };
     std::map<std::string, Readme> readmes; // full name -> its README, for the version read
@@ -672,7 +676,19 @@ void icon_worker() {
         const auto got = download_file(url, temporary, 2 * 1024 * 1024, 90, nullptr);
         if (got.ok) std::filesystem::rename(temporary, path, error);
         else std::filesystem::remove(temporary, error);
+        const bool there = got.ok && !error;
+        std::lock_guard lock(m.mutex);
+        m.icons_there[path] = there;
     }
+}
+// Whether the icon is on disk: looked at the first time only (the icon worker says when it writes one).
+bool icon_there_locked(Market& m, const std::filesystem::path& path) {
+    const auto found = m.icons_there.find(path);
+    if (found != m.icons_there.end()) return found->second;
+    std::error_code error;
+    const bool there = std::filesystem::is_regular_file(path, error);
+    m.icons_there.emplace(path, there);
+    return there;
 }
 // The READMEs, one after another: from disk when this version's was read before, else from Thunderstore.
 std::filesystem::path readme_path(const std::string& full_name, const std::string& version) {
@@ -709,6 +725,7 @@ void readme_worker() {
         if (markdown.empty()) readme.state = 3;
         else {
             read_readme(markdown, readme.about, readme.tricks);
+            readme.kinds = trick_kinds(readme.tricks);
             readme.state = 2;
         }
         std::lock_guard lock(m.mutex);
@@ -898,7 +915,6 @@ View view() {
     v.detail = m.detail;
     v.preview = m.preview;
     v.packs = m.packs;
-    std::error_code error;
     for (auto& p : v.packs) {
         p.favorite = m.favorites.contains(p.full_name);
         p.mine = !m.team.empty() && _stricmp(p.owner.c_str(), m.team.c_str()) == 0;
@@ -907,6 +923,7 @@ View view() {
         if (const auto found = m.readmes.find(p.full_name); found != m.readmes.end() && found->second.version == p.version) {
             p.about = found->second.about;
             p.tricks = found->second.tricks;
+            p.kinds = found->second.kinds;
             p.readme = found->second.state;
         }
         p.dev = builder_of(p.owner) != nullptr;                // BUILT BY, with a team: DEV
@@ -918,8 +935,10 @@ View view() {
             p.month_downloads = n.downloads;
             p.month_likes = n.likes;
             p.month_counted = n.counted;
+            if (found != m.counts.end())
+                for (const auto& version : found->second) p.versions.push_back({version.version, version.date, version.downloads});
         }
-        if (const auto path = icon_path(p); std::filesystem::is_regular_file(path, error)) p.icon_file = utf8(path);
+        if (const auto path = icon_path(p); icon_there_locked(m, path)) p.icon_file = utf8(path);
     }
     return v;
 }
@@ -941,6 +960,7 @@ void refresh(bool force) {
                 readme.version = p.version;
                 if (const auto markdown = read_file(readme_path(p.full_name, p.version)); !markdown.empty()) {
                     read_readme(markdown, readme.about, readme.tricks);
+                    readme.kinds = trick_kinds(readme.tricks);
                     readme.state = 2;
                     m.readmes[p.full_name] = std::move(readme);
                 }
@@ -1030,12 +1050,11 @@ void refresh(bool force) {
 void want_icons(const std::vector<std::string>& full_names) {
     auto& m = market();
     std::lock_guard lock(m.mutex);
-    std::error_code error;
     for (const auto& name : full_names) {
         const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == name; });
         if (found == m.packs.end() || found->icon_url.empty()) continue;
         const auto key = name + "|" + found->version;
-        if (m.icons_asked.contains(key) || std::filesystem::is_regular_file(icon_path(*found), error)) continue;
+        if (m.icons_asked.contains(key) || icon_there_locked(m, icon_path(*found))) continue;
         m.icons_asked.insert(key);
         m.icon_queue.push_back(name);
     }
