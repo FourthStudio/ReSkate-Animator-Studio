@@ -659,11 +659,15 @@ int main() {
             }
             was_pain = was_pain || r.pain;
         });
+        // (The build-up: up to where the torque first peaks. A hand that gives up eases off on its own, checked below.)
         float peak = 0, jolt = 0;
-        for (std::size_t i = 0; i < torque.size(); ++i) {
-            peak = std::max(peak, torque[i]);
-            if (i) jolt = std::max(jolt, std::abs(torque[i] - torque[i - 1]));
-        }
+        std::size_t top = 0;
+        for (std::size_t i = 0; i < torque.size(); ++i)
+            if (torque[i] > peak) {
+                peak = torque[i];
+                top = i;
+            }
+        for (std::size_t i = 1; i <= top; ++i) jolt = std::max(jolt, std::abs(torque[i] - torque[i - 1]));
         check(torque.size() > 30 && peak > 0.5f, "The hand sets off for what hurts");
         check(torque.front() < 0.1f * peak, "The reach starts from nothing (no jolt as it sets off)");
         check(jolt < 0.2f * peak, "The reach builds smoothly, step by step (no step adds a fifth of its torque)");

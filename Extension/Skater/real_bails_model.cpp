@@ -848,8 +848,8 @@ Output Muscles::step(const Input& in) noexcept {
     const auto turning = [&](Part c) { return b[c].w - b[ranges()[index_of()[c]].frame].w; };
     // A move: the joint pushed along its way to a goal (`target`, its turning: world), firmly (`share` of the gap a step),
     // with up to `u` of its strength, holding up `carry` of the weight beyond it.
-    // A reflex speeds a joint up as fast as muscle can (a shoulder about 80 rad/s^2); a move he means, lying there, about a
-    // third of that (a reach to one's own body peaks at 1.5-2 m/s at the hand about 0.2 s in).
+    // A reflex speeds a joint up as fast as muscle can (a shoulder about 80 rad/s^2); a move he means, lying there, about
+    // half of that (a reach to one's own body peaks at 1.5-2 m/s at the hand about 0.2 s in).
     float voluntary = 0;
     float easing = 1; // letting go of what hurts: the moves' strength easing off
     const auto move = [&](Part c, const V3& target, float share, float u, float carry = 0.0f) {
@@ -1159,8 +1159,7 @@ Output Muscles::step(const Input& in) noexcept {
     std::array<bool, 2> lifted{}, reaching{}, arm_busy{}, leg_busy{};
     for (int s = 0; s < 2; ++s) arm_busy[static_cast<std::size_t>(s)] = (phase_ == Phase::brace || phase_ == Phase::impact) && !fell;
     if (kicking) leg_busy[kick_leg_ > 0 ? 1 : 0] = true;
-    float most_gap = 0;
-    voluntary = 30.0f * reaction;
+    voluntary = 40.0f * reaction;
     easing = fade;
     if (pain || letting) {
         const float since = static_cast<float>(t_ - pain_since_);
@@ -1212,12 +1211,11 @@ Output Muscles::step(const Input& in) noexcept {
             arm_busy[i] = true;
             const V3 palm = b[hand].p + b[hand].r[0] * 0.07f;
             const float gap = length(palm - spot.at);
-            most_gap = std::max(most_gap, gap);
             out.reach_gap[i] = gap;
             out.hand_mark[i] = spot.at;
             // Where it stands: on its way, there (within 4 cm; it lets go of the spot again past 8 cm: a re-grip), or
             // given up (no nearer by a centimetre for 0.6 s, and still 6 cm or more off).
-            if (reach_[i] == Reach::none) {
+            if (reach_[i] == Reach::none || reach_[i] == Reach::resting) {
                 reach_[i] = Reach::going;
                 best_gap_[i] = gap;
                 nearer_at_[i] = t_;
@@ -1260,7 +1258,9 @@ Output Muscles::step(const Input& in) noexcept {
             }
             const V3 shoulder = b[upper].p;
             const float a = length(b[fore].p - shoulder), c = length(b[hand].p - b[fore].p) + 0.07f;
-            const V3 pole = chest[2] * (s == 0 ? 1.0f : -1.0f) - world_up * 0.7f;
+            // The elbow out to his side and down along his body (towards his hips, a little towards the ground): lying
+            // there it rests by his side, and a hand to his face folds up in front of him instead of sweeping round.
+            const V3 pole = chest[2] * (s == 0 ? 0.8f : -0.8f) - chest[0] * 0.8f - world_up * 0.3f;
             const V3 elbow_at = reach_middle(shoulder, aim, a, c, pole);
             const float d = std::clamp(length(aim - shoulder), std::abs(a - c) + 0.02f, (a + c) * 0.98f);
             const float bend = pi - std::acos(std::clamp((a * a + c * c - d * d) / (2 * a * c), -1.0f, 1.0f));
@@ -1469,6 +1469,7 @@ Output Muscles::step(const Input& in) noexcept {
     // there with a limb held up against gravity reads as knocked out (the fencing response), and the game holds a limb
     // where it stops. While it still moves, it is turned down onto the ground or his body, with no more than a quarter of
     // the arm's strength (it is let fall, not posed).
+    easing = 1;
     if (fell && phase_ != Phase::brace && (torso_off_for_ < 0.25 || down_)) {
         const auto resting_on_him = [&](const V3& at) {
             for (const Part p : {pelvis, spine, back1, chest2, chest3, head, l_thigh, r_thigh})
@@ -1489,7 +1490,7 @@ Output Muscles::step(const Input& in) noexcept {
                 continue;
             }
             if (arm_down_at_[i] < 0) arm_down_at_[i] = t_;
-            if (reach_[i] == Reach::none) reach_[i] = Reach::resting;
+            if (reach_[i] == Reach::none && !pain) reach_[i] = Reach::resting;
             // Down along the ground at his side: the upper arm kept pointing where it points across the ground, tipped
             // down to it (straight up: out to his side); the forearm follows as it falls (straightening it would lift the
             // hand).
@@ -1523,7 +1524,6 @@ Output Muscles::step(const Input& in) noexcept {
     voluntary = 0;
     easing = 1;
     for (int s = 0; s < 2; ++s) out.reach[static_cast<std::size_t>(s)] = static_cast<std::uint8_t>(reach_[static_cast<std::size_t>(s)]);
-    (void)most_gap;
 
     // ---- the muscles ---------------------------------------------------------------------------------------------
     // Each joint's activation follows what it is asked (40 ms to tense, 100 ms to let go). Each joint's push towards its
@@ -1555,7 +1555,8 @@ Output Muscles::step(const Input& in) noexcept {
         for (const Part p : s ? std::array<Part, 3>{r_arm, r_forearm, r_hand} : std::array<Part, 3>{l_arm, l_forearm, l_hand}) weak[p] = keep;
     }
     const float after_hit = 1.0f - weak_depth_ * (1.0f - smooth(static_cast<float>(t_ - weak_at_) / 0.4f));
-    for (auto& w : weak) w *= after_hit;
+    std::array<float, part_count> weak_tone = weak;
+    for (auto& w : weak_tone) w *= after_hit;
     std::array<V3, part_count> push{}, held{}, no_push{};
     std::array<M3, part_count> armature{};
     std::array<float, part_count> cap{};
@@ -1568,7 +1569,8 @@ Output Muscles::step(const Input& in) noexcept {
         act_[k] += (u - act_[k]) * (1.0f - std::exp(-dt / (u > act_[k] ? 0.04f : 0.1f)));
         out.activation[c] = act_[k];
         out.driven[c] = d.goal;
-        cap[c] = std::max(act_[k], 0.02f) * body::shapes[c].torque * strength * weak[c];
+        // (The weakness at a hit is the tone's and the reflexes': a move he makes comes after it, at his strength.)
+        cap[c] = std::max(act_[k], 0.02f) * body::shapes[c].torque * strength * (d.goal ? weak[c] : weak_tone[c]);
         no_push[c] = d.no_push;
         if (body::weld(c) || planted[c]) continue;
         const V3 rate = turning(c);
