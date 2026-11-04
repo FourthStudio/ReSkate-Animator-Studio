@@ -80,6 +80,19 @@ void words(ImDrawList* d, ImFont* font, float size, ImVec2 at, ImU32 ink, const 
     d->AddText(font, size, ImVec2(at.x + px(2), at.y + px(2)), fade(shadow), text.c_str());
     d->AddText(font, size, at, fade(ink), text.c_str());
 }
+// `text` cut short with "..." to fit `width` drawn in `font` at `size`, whole characters only (a name with an accent is
+// never cut between the bytes of one letter). The menu can be a narrow window, and names are as long as people make them.
+std::string fit(ImFont* font, float size, const std::string& text, float width) {
+    if (width <= 0) return {};
+    if (font->CalcTextSizeA(size, FLT_MAX, 0, text.c_str()).x <= width) return text;
+    std::string cut = text;
+    while (!cut.empty()) {
+        while (!cut.empty() && (static_cast<unsigned char>(cut.back()) & 0xC0) == 0x80) cut.pop_back();
+        if (!cut.empty()) cut.pop_back();
+        if (font->CalcTextSizeA(size, FLT_MAX, 0, (cut + "...").c_str()).x <= width) break;
+    }
+    return cut + "...";
+}
 // A chip: a little label on a colour, `alpha` of the way in. Returns its width.
 float chip(ImDrawList* d, const SkateMenu& menu, ImVec2 at, const std::string& label, ImU32 fill, float alpha) {
     const float size = px(13);
@@ -137,16 +150,24 @@ void banner(SkateMenu& menu, const anim_studio::MenuSummary& now, const anim_stu
     ImGui::Dummy(ImVec2(w, row_h));
     float x = row.x;
     int i = 0;
+    bool full = false;
+    // Chips stop at the page's edge rather than running past it (a long playlist name in a narrow window).
     const auto next = [&](const std::string& label, ImU32 fill) {
+        if (full) return;
+        if (x + menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, label.c_str()).x + px(18) > row.x + w) {
+            full = true;
+            return;
+        }
         const float alpha = ease((t - 0.45f - 0.07f * static_cast<float>(i++)) / 0.25f);
         if (alpha > 0) x += chip(d, menu, ImVec2(x, row.y), label, fill, alpha) + px(8);
     };
+    const std::string playing = fit(menu.bold, px(13), now.playing, w * 0.4f);
     if (!settings.play_in_game) next("YOUR TRICKS ARE OFF IN GAME", red);
     else if (now.playing.empty()) next("NO PLAYLIST IS ON", red);
-    else if (now.entries == 0) next(now.playing + " IS EMPTY", red);
-    else next("PLAYING  " + now.playing, skate_theme::blue);
+    else if (now.entries == 0) next(playing + " IS EMPTY", red);
+    else next("PLAYING  " + playing, skate_theme::blue);
     if (!now.playing.empty())
-        next(now.mode == anim_studio::PlaylistMode::shuffle ? "SHUFFLE" : now.mode == anim_studio::PlaylistMode::turns ? "IN TURNS" : "FIXED",
+        next(now.mode == anim_studio::PlaylistMode::shuffle ? "SHUFFLE" : now.mode == anim_studio::PlaylistMode::turns ? "IN TURNS" : "PRIORITY",
              IM_COL32(40, 42, 48, 235));
     next(std::format("{} TRICKS IN PLAY", now.in_play), IM_COL32(40, 42, 48, 235));
     next(settings.smooth_transitions ? "SMOOTH" : "CLASSIC", IM_COL32(40, 42, 48, 235));
@@ -222,7 +243,8 @@ StudioCard studio_card_begin(SkateMenu& menu, const char* id, const char* title,
     d->AddRectFilled(ta, tb, skate_theme::blue);
     d->AddRectFilled(ImVec2(ta.x, tb.y - px(3)), tb, IM_COL32(0, 90, 190, 255));
     d->AddText(font, size, ImVec2(ta.x + px(12), ta.y + (px(30) - tw.y) * 0.5f), paper, title);
-    if (!aside.empty()) d->AddText(menu.bold, px(13), ImVec2(tb.x + px(12), ta.y + px(8)), muted, aside.c_str());
+    if (!aside.empty())
+        d->AddText(menu.bold, px(13), ImVec2(tb.x + px(12), ta.y + px(8)), muted, fit(menu.bold, px(13), aside, a.x + w - px(12) - (tb.x + px(12))).c_str());
     ImGui::BeginGroup();
     ImGui::Dummy(ImVec2(w, px(46)));
     ImGui::Indent(px(12));
@@ -256,7 +278,7 @@ void last_tricks(SkateMenu& menu, const anim_studio::MenuSummary& now) {
         float x = a.x + px(12);
         if (!r.pop.empty()) x += chip(d, menu, ImVec2(x, a.y + px(4)), r.pop == "low" ? "LOW" : r.pop == "mid" ? "MID" : r.pop == "high" ? "HIGH" : r.pop, IM_COL32(50, 52, 60, 255), 1) + px(10);
         const std::string& title = r.played.empty() ? r.label : r.played;
-        d->AddText(menu.bold, px(15), ImVec2(x, a.y + px(8)), paper, title.c_str());
+        d->AddText(menu.bold, px(15), ImVec2(x, a.y + px(8)), paper, fit(menu.bold, px(15), title, b.x - px(140) - x).c_str());
         // Who played it, at the right.
         const std::string who = r.played.empty() ? std::string("THE GAME'S OWN")
                                                  : std::string(r.modifier ? "MODIFIER, FOR " : "NORMAL, FOR ") + r.label + (r.choices > 1 ? std::format("  ({} TO CHOOSE FROM)", r.choices) : std::string{});
@@ -368,8 +390,8 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
 
     // Nothing of yours plays: said, and put right in one press.
     if (settings.play_in_game && (now.playing.empty() || now.entries == 0) && !now.packs.empty()) {
-        const auto c = studio_card_begin(menu, "nothing", "NORMAL PLAYLIST IS EMPTY");
-        note("Normal input uses the game's own animations. An assigned modifier playlist can still play while its button is held. Choose a normal playlist below, or add packs to one.");
+        const auto c = studio_card_begin(menu, "nothing", "DEFAULT PLAYLIST IS EMPTY");
+        note("Normal input uses the game's own animations. An assigned modifier playlist can still play while its button is held. Choose a default playlist below, or add packs to one.");
         if (button_row(menu, "##allpacks", {{"PLAY ALL MY PACKS", true, true, "Every pack goes in the playlist that is on (or a new one)."}}) == 0) {
             for (const auto& pack : now.packs)
                 if (!pack.in) {
@@ -396,7 +418,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     }
     {
         const auto playlists = anim_studio::playlists_now();
-        const auto c = studio_card_begin(menu, "playlist", "NORMAL PLAYLIST",
+        const auto c = studio_card_begin(menu, "playlist", "DEFAULT PLAYLIST",
                                          now.playing.empty() ? std::string("none on") : std::format("{}: {} in it", now.playing, now.entries));
         setting_row(menu, anim_studio::settings_rows::playing_playlist(playlists, tell));
         setting_row(menu, anim_studio::settings_rows::which_version_plays(playlists, tell));
