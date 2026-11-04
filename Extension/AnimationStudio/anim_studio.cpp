@@ -1523,6 +1523,39 @@ bool someone_elses_locked(State& s, const std::string& name) {
     if (found != s.presets.end() && (found->foreign || found->locked)) return true;
     return std::any_of(s.packs.begin(), s.packs.end(), [&](const PresetPack& pack) { return locked_key(pack.maker_key) && pack.has(name); });
 }
+// A saved trick's .json as the listing below reads it, parsed again only when the file changed (its time or its size), its
+// keys and clip left out (a few KB a trick). The listing is made again at every playlist edit, save and import, and
+// reading and parsing every trick's .json twice (once for its upgrade, once for its preset) took 2 ms a trick: 270 ms
+// for 135 tricks with the files in Windows' cache, 2 s without (measured 2026-11-04), under the studio's lock, which
+// the game's own thread takes every tick. Used under the studio's lock only.
+struct ListedFile {
+    std::int64_t written{};
+    std::uintmax_t size{};
+    Animation animation;
+};
+std::map<std::filesystem::path, ListedFile>& listed_files() {
+    static auto* files = new std::map<std::filesystem::path, ListedFile>;
+    return *files;
+}
+const Animation& listed_animation(const std::filesystem::path& json) {
+    // Its time and size in one look at the disk (each look costs about 0.1 ms on a PC with an antivirus watching).
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    const bool there = GetFileAttributesExW(json.c_str(), GetFileExInfoStandard, &data);
+    const std::int64_t written = there ? static_cast<std::int64_t>((static_cast<std::uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |
+                                                                   data.ftLastWriteTime.dwLowDateTime)
+                                       : 0;
+    const std::uintmax_t bytes = there ? (static_cast<std::uintmax_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow : 0;
+    auto& files = listed_files();
+    if (const auto kept = files.find(json); kept != files.end() && written && kept->second.written == written && kept->second.size == bytes)
+        return kept->second.animation;
+    files.erase(json);
+    std::ifstream in(json, std::ios::binary);
+    auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+    animation.tracks.clear();
+    animation.tracks.shrink_to_fit();
+    animation.clip = {};
+    return files.insert_or_assign(json, ListedFile{written, bytes, std::move(animation)}).first->second.animation;
+}
 void read_library_locked(State& s) {
     s.library.clear();
     s.presets.clear();
@@ -1537,7 +1570,14 @@ void read_library_locked(State& s) {
     for (const auto& path : saved_jsons(folder)) s.library.push_back(path.stem().string());
     std::sort(s.library.begin(), s.library.end());
     s.library.erase(std::unique(s.library.begin(), s.library.end()), s.library.end());
-    for (const auto& name : s.library) upgrade_saved(saved_json(name));
+    for (const auto& name : s.library) {
+        // Brought up to date once: a file read before at this upgrade is not read again for it.
+        const auto json = saved_json(name);
+        try {
+            if (listed_animation(json).upgraded == current_upgrade) continue;
+        } catch (...) {}
+        upgrade_saved(json);
+    }
     try {
         s.packs_on = packs_on();
         const auto playing = playing_names(s.library, !s.packs_on.empty());
@@ -1545,8 +1585,8 @@ void read_library_locked(State& s) {
         std::vector<std::pair<std::string, std::string>> trick_teams; // (maker key, team it went out with), for claim_account_keys
         for (const auto& name : s.library) {
             try {
-                std::ifstream in(saved_json(name), std::ios::binary);
-                auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+                const auto json = saved_json(name);
+                const auto& animation = listed_animation(json);
                 if (!animation.trick.empty()) {
                     s.presets.push_back({name, trick_key(animation.trick), animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
                     s.presets.back().fakie = animation.fakie;
@@ -1557,7 +1597,7 @@ void read_library_locked(State& s) {
                     if (!animation.maker_team.empty() && !animation.maker_key.empty())
                         trick_teams.emplace_back(animation.maker_key, animation.maker_team);
                     s.presets.back().label = animation.label;
-                    s.presets.back().saved_at = saved_time(saved_json(name));
+                    s.presets.back().saved_at = saved_time(json);
                     // By its clip as well, for one whose key was taken out; never one with this PC's key (made or saved
                     // here: a trick of yours from the same game clip as an installed one stays yours).
                     // By its clip only for a clip that is its maker's own work: a clip of the game's (native_asset) is the same file
