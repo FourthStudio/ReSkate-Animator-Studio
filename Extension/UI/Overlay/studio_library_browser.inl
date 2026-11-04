@@ -51,7 +51,9 @@ const LibraryFound& library_found(const studio::View& v, const LibraryIndex& ind
 void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const LibraryIndex& index,
                      const std::string& target, ImVec2 a, ImVec2 b) {
     auto& route = ui().library; auto& browse = route.browse(); const float k = f.k;
-    const float x = a.x + 16 * k, w = b.x - a.x - 32 * k;
+    // One column of at most 1640 units in the middle of the sheet: on 21:9 the rows ran some 2400 units, the name at one
+    // end and its buttons at the other.
+    const float w = std::min(b.x - a.x - 32 * k, 1640 * k), x = (a.x + b.x - w) * 0.5f, r = x + w;
     library_sheet(d, f, a, b);
     ImGui::PushID(target.empty() ? "collection" : "picker");
     const int source = segmented(d, f, "##librarysource", {x, a.y + 16 * k}, w, 38 * k,
@@ -59,21 +61,26 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
     if (source >= 0 && source != browse.source) {
         browse.source = source; browse.pack.clear(); browse.expanded.clear(); browse.scroll = 0;
     }
-    field(f, "##librarysearch", browse.query, {x, a.y + 70 * k}, w - 84 * k, "Search tricks, packs or makers...");
-    if (lib_button(d, f, "##clearlibrarysearch", {b.x - 90 * k, a.y + 70 * k}, {74 * k, 34 * k}, "CLEAR", Look::ghost, browse.query[0] != 0)) browse.query.fill(0);
+    const float clear_w = lib_w(f, "CLEAR", 34 * k, 74 * k);
+    field(f, "##librarysearch", browse.query, {x, a.y + 70 * k}, w - clear_w - 10 * k, "Search tricks, packs or makers...");
+    if (lib_button(d, f, "##clearlibrarysearch", {r - clear_w, a.y + 70 * k}, {clear_w, 34 * k}, "CLEAR", Look::ghost, browse.query[0] != 0)) browse.query.fill(0);
     const auto terms = studio::native_search_terms(browse.query.data());
     const bool query_changed = browse.seen_query != browse.query.data();
     if (query_changed) { browse.seen_query = browse.query.data(); browse.scroll = 0; browse.expanded.clear(); }
     const auto* pack = pack_named(v, browse.pack);
     float y = a.y + 120 * k;
     if (browse.source == 0 && pack) {
-        if (lib_button(d, f, "##librarypackback", {x, y}, {116 * k, 32 * k}, "< ALL PACKS", Look::ghost)) {
+        const float back_w = lib_w(f, "< ALL PACKS", 32 * k, 116 * k);
+        if (lib_button(d, f, "##librarypackback", {x, y}, {back_w, 32 * k}, "< ALL PACKS", Look::ghost)) {
             browse.pack.clear(); browse.scroll = browse.pack_list_scroll;
         }
-        text(d, anton(f, 23 * k), 23 * k, {x + 132 * k, y + 3 * k}, lib_ink, elide(anton(f, 23 * k), 23 * k, pack->name, w - 470 * k));
-        if (target.empty() && lib_button(d, f, "##librarypacksettings", {b.x - 296 * k, y}, {130 * k, 32 * k}, "MANAGE PACK", Look::ghost))
+        const char* all_label = target.empty() ? "ADD TO PLAYLIST..." : "ADD WHOLE PACK";
+        const float all_w = lib_w(f, all_label, 32 * k, 142 * k), manage_w = target.empty() ? lib_w(f, "MANAGE PACK", 32 * k, 130 * k) : 0;
+        text(d, anton(f, 23 * k), 23 * k, {x + back_w + 16 * k, y + 3 * k}, lib_ink,
+             elide(anton(f, 23 * k), 23 * k, pack->name, w - back_w - all_w - manage_w - 50 * k));
+        if (target.empty() && lib_button(d, f, "##librarypacksettings", {r - all_w - 8 * k - manage_w, y}, {manage_w, 32 * k}, "MANAGE PACK", Look::ghost))
             open_pack_page(pack->name);
-        if (lib_button(d, f, "##librarypackall", {b.x - 158 * k, y}, {142 * k, 32 * k}, target.empty() ? "ADD TO PLAYLIST..." : "ADD WHOLE PACK", Look::blue)) {
+        if (lib_button(d, f, "##librarypackall", {r - all_w, y}, {all_w, 32 * k}, all_label, Look::blue)) {
             if (target.empty()) library_choose_playlists({pack->name, ""}, pack->name);
             else { std::string m; studio::edit_playlist_pack(target, pack->name, true, m); say(m); }
         }
@@ -82,12 +89,12 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
     if (browse.source != 0 || pack) {
         text(d, body(f, 12 * k), 12 * k, {x, y + 8 * k}, lib_ink_faint, elide(body(f, 12 * k), 12 * k,
             target.empty() ? "Open a group to preview a trick, edit it or put it in a playlist." : "+ ADD or REMOVE any trick. Every change is saved at once.", w - 272 * k));
-        const float bw = 124 * k;
-        if (lib_button(d, f, "##expandall", {b.x - 16 * k - 2 * bw - 8 * k, y}, {bw, 28 * k}, "OPEN ALL", Look::ghost)) browse.expand_all = true;
-        if (lib_button(d, f, "##collapseall", {b.x - 16 * k - bw, y}, {bw, 28 * k}, "CLOSE ALL", Look::ghost)) browse.expanded.clear();
+        const float bw = std::max(lib_w(f, "OPEN ALL", 28 * k, 124 * k), lib_w(f, "CLOSE ALL", 28 * k, 124 * k));
+        if (lib_button(d, f, "##expandall", {r - 2 * bw - 8 * k, y}, {bw, 28 * k}, "OPEN ALL", Look::ghost)) browse.expand_all = true;
+        if (lib_button(d, f, "##collapseall", {r - bw, y}, {bw, 28 * k}, "CLOSE ALL", Look::ghost)) browse.expanded.clear();
         y += 42 * k;
     }
-    const ImVec2 la(x, y), lb(b.x - 16 * k, b.y - 14 * k);
+    const ImVec2 la(x, y), lb(r, b.y - 14 * k);
     begin_region(203, la, lb, browse.scroll, k);
     y = la.y - browse.scroll;
     const auto& found = library_found(v, index, browse, terms, pack);
@@ -98,13 +105,20 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
             y += paragraph(d, anton(f, 25 * k), 25 * k, {x + 12 * k, y + 14 * k}, w - 24 * k, lib_ink, terms.empty() ? "YOUR PACK COLLECTION STARTS HERE" : "NO PACKS MATCH THIS SEARCH") + 30 * k;
             y += paragraph(d, body(f, 15 * k), 15 * k, {x + 12 * k, y}, w - 24 * k, lib_ink_soft,
                 terms.empty() ? "Get trick packs from the MARKET, or use YOUR TRICKS to find your own saves." : "Try another name, or search ALL TRICKS for single tricks.") + 22 * k;
-            if (terms.empty() && lib_button(d, f, "##librarymarket", {x + 12 * k, y}, {210 * k, 38 * k}, "BROWSE THE MARKET", Look::blue)) open_menu(2);
+            if (terms.empty() && lib_button(d, f, "##librarymarket", {x + 12 * k, y}, {lib_w(f, "BROWSE THE MARKET", 38 * k, 210 * k), 38 * k}, "BROWSE THE MARKET", Look::blue))
+                open_menu(2);
             y += 58 * k;
         }
+        // Packs side by side, two to a row on a 16:9 page (one long row each left most of it empty), each at least 740 wide.
+        const float pack_gap = 14 * k, list_w = lb.x - 6 * k - x;
+        const int columns = std::max(1, static_cast<int>((list_w + pack_gap) / (740 * k + pack_gap)));
+        const float card_w = (list_w - pack_gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+        int column = 0;
         for (const auto at : found.packs) {
             const auto* p = &v.packs[at];
             ImGui::PushID(p->name.c_str());
-            const ImVec2 ca(x, y), cb(lb.x - 6 * k, y + 142 * k);
+            const float cx = x + static_cast<float>(column) * (card_w + pack_gap);
+            const ImVec2 ca(cx, y), cb(cx + card_w, y + 142 * k);
             const bool shown = seen(ca.y, cb.y);
             const auto button = [&](const char* id, ImVec2 ba, ImVec2 size, const std::string& label, Look look, bool enabled = true) {
                 return shown ? lib_button(d, f, id, ba, size, label, look, enabled) : hit(id, ba, {ba.x + size.x, ba.y + size.y}, nullptr, enabled);
@@ -116,15 +130,16 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
                 pack_cover(d, f, *p, cover_a, cover_b);
             }
             const bool cover_pressed = hit("##browsecover", cover_a, cover_b);
-            const bool title_pressed = hit("##browsetitle", {tx, ca.y + 8 * k}, {cb.x - 126 * k, ca.y + 44 * k});
-            if (button("##packfavorite", {cb.x - 116 * k, ca.y + 9 * k}, {102 * k, 28 * k}, p->favorite ? "FAVORITE" : "+ FAVORITE", p->favorite ? Look::blue : Look::ghost))
+            const float fav_w = lib_w(f, "+ FAVORITE", 28 * k, 102 * k);
+            const bool title_pressed = hit("##browsetitle", {tx, ca.y + 8 * k}, {cb.x - fav_w - 24 * k, ca.y + 44 * k});
+            if (button("##packfavorite", {cb.x - 14 * k - fav_w, ca.y + 9 * k}, {fav_w, 28 * k}, p->favorite ? "FAVORITE" : "+ FAVORITE", p->favorite ? Look::blue : Look::ghost))
                 studio::set_pack_favorite(p->name, !p->favorite);
             std::size_t have = 0;
             if (!target.empty()) for (const auto& member : p->members) have += index.member(member).included();
             const auto whole = std::find_if(v.playlist.begin(), v.playlist.end(), [&](const auto& e) { return e.pack == p->name && e.animation.empty(); });
             const bool full = whole != v.playlist.end() && whole->omitted.empty();
             if (shown) {
-                text(d, anton(f, 24 * k), 24 * k, {tx, ca.y + 10 * k}, lib_ink, elide(anton(f, 24 * k), 24 * k, p->name, tw - 120 * k));
+                text(d, anton(f, 24 * k), 24 * k, {tx, ca.y + 10 * k}, lib_ink, elide(anton(f, 24 * k), 24 * k, p->name, tw - fav_w - 16 * k));
                 const auto detail = std::to_string(p->members.size()) + (p->members.size() == 1 ? " trick" : " tricks") +
                     (p->made_by.empty() ? "" : " / by " + p->made_by) +
                     (target.empty() ? "" : full ? " / all in this playlist" : have ? " / " + std::to_string(have) + " in this playlist" : "");
@@ -132,16 +147,20 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
             }
             if (target.empty()) {
                 // The collection: look inside, link it to playlists, or edit the pack itself.
-                const float unit = std::min(240 * k, (tw - 16 * k) / 3);
-                if (button("##browsepack", {tx, ca.y + 76 * k}, {unit, 36 * k}, "OPEN PACK", Look::paper) || cover_pressed || title_pressed)
+                const float open_w = lib_w(f, "OPEN PACK", 36 * k), add_w = lib_w(f, "ADD TO PLAYLIST...", 36 * k), manage_w = lib_w(f, "MANAGE PACK", 36 * k);
+                const float spare = std::max(0.0f, (tw - open_w - add_w - manage_w - 16 * k) / 3), unit = std::min(spare, 60 * k);
+                float bx = tx;
+                if (button("##browsepack", {bx, ca.y + 76 * k}, {open_w + unit, 36 * k}, "OPEN PACK", Look::paper) || cover_pressed || title_pressed)
                     library_open_pack(browse, p->name);
-                if (button("##addwholepack", {tx + unit + 8 * k, ca.y + 76 * k}, {unit, 36 * k}, "ADD TO PLAYLIST...", Look::ghost))
+                bx += open_w + unit + 8 * k;
+                if (button("##addwholepack", {bx, ca.y + 76 * k}, {add_w + unit, 36 * k}, "ADD TO PLAYLIST...", Look::ghost))
                     library_choose_playlists({p->name, ""}, p->name);
-                if (button("##managepack", {tx + 2 * (unit + 8 * k), ca.y + 76 * k}, {unit, 36 * k}, "MANAGE PACK", Look::ghost)) open_pack_page(p->name);
+                bx += add_w + unit + 8 * k;
+                if (button("##managepack", {bx, ca.y + 76 * k}, {manage_w + unit, 36 * k}, "MANAGE PACK", Look::ghost)) open_pack_page(p->name);
             } else {
                 // Adding to a playlist: the whole pack in one press, or into it to pick single tricks.
-                const float unit = std::min(260 * k, (tw - 8 * k) / 2);
                 const std::string add = full ? "REMOVE PACK" : have ? "ADD THE REST" : "ADD WHOLE PACK";
+                const float unit = std::clamp((tw - 8 * k) / 2, std::max(lib_w(f, "ADD WHOLE PACK", 36 * k), lib_w(f, "PICK SINGLE TRICKS", 36 * k)), 300 * k);
                 if (button("##addwholepack", {tx, ca.y + 76 * k}, {unit, 36 * k}, add, full ? Look::ghost : Look::blue)) {
                     std::string m; studio::edit_playlist_pack(target, p->name, !full, m); say(m);
                 }
@@ -151,8 +170,10 @@ void library_browser(ImDrawList* d, const Fonts& f, const studio::View& v, const
             if (shown)
                 text(d, body(f, 11 * k), 11 * k, {tx, ca.y + 120 * k}, lib_ink_faint,
                      elide(body(f, 11 * k), 11 * k, "A whole pack follows the pack: tricks its maker adds later play too.", tw));
-            ImGui::PopID(); y += 154 * k;
+            ImGui::PopID();
+            if (++column == columns) column = 0, y += 154 * k;
         }
+        if (column) y += 154 * k;
     } else {
         if ((query_changed && !terms.empty()) || browse.expand_all)
             for (const auto& [name, members] : found.groups) { (void)members; browse.expanded.insert(name); }

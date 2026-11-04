@@ -63,13 +63,14 @@ void library_confirm_page(ImDrawList* d, const Fonts& f, const studio::View& v, 
 // game's own tricks).
 void library_default_chooser(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& route = ui().library; const float k = f.k;
-    const float x = a.x + 20 * k, w = b.x - a.x - 40 * k;
+    const float x = a.x + 20 * k, w = std::min(b.x - a.x - 40 * k, 1200 * k);
     library_sheet(d, f, a, b);
     text(d, anton(f, 29 * k), 29 * k, {x, a.y + 18 * k}, lib_ink, "WHAT PLAYS BY DEFAULT");
-    if (lib_button(d, f, "##closedefaultchooser", {b.x - 126 * k, a.y + 15 * k}, {106 * k, 36 * k}, "< BACK", Look::paper)) route.choosing_default = false;
+    const float back_w = lib_w(f, "< BACK", 36 * k, 106 * k);
+    if (lib_button(d, f, "##closedefaultchooser", {x + w - back_w, a.y + 15 * k}, {back_w, 36 * k}, "< BACK", Look::paper)) route.choosing_default = false;
     paragraph(d, body(f, 15 * k), 15 * k, {x, a.y + 62 * k}, w - 140 * k, lib_ink_soft,
               "The playlist that plays whenever you do a trick without holding a button. One plays at a time; the others wait.");
-    const ImVec2 la(x, a.y + 112 * k), lb(b.x - 20 * k, b.y - 16 * k);
+    const ImVec2 la(x, a.y + 112 * k), lb(x + w, b.y - 16 * k);
     begin_region(209, la, lb, route.modifier_lists_scroll, k);
     float y = la.y - route.modifier_lists_scroll;
     const auto choose = [&](const std::string& name, const std::string& label, const std::string& about) {
@@ -87,25 +88,27 @@ void library_default_chooser(ImDrawList* d, const Fonts& f, const studio::View& 
         y += 56 * k;
     };
     for (const auto& list : v.playlists)
-        choose(list.name, upper(list.name), std::to_string(list.size) + (list.size == 1 ? " pack or trick in it" : " packs and tricks in it"));
+        choose(list.name, upper(list.name), std::to_string(list.size) + (list.size == 1 ? " entry" : " entries")); // as its card says
     choose({}, "NONE / THE GAME'S OWN TRICKS", "nothing of yours plays without a button");
     end_region(d, la, lb, y + route.modifier_lists_scroll - la.y, route.modifier_lists_scroll, k);
 }
 void library_playlist_settings(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui(); auto& route = u.library; const float k = f.k;
-    const float x = a.x + 20 * k, w = b.x - a.x - 40 * k;
+    const float x = a.x + 20 * k, w = std::min(b.x - a.x - 40 * k, 1200 * k);
     library_sheet(d, f, a, b);
     text(d, anton(f, 28 * k), 28 * k, {x, a.y + 18 * k}, lib_ink, "PLAYLIST SETTINGS");
-    if (lib_button(d, f, "##closelistsettings", {b.x - 120 * k, a.y + 15 * k}, {100 * k, 36 * k}, "DONE", Look::paper)) route.settings = false;
-    const ImVec2 la(x, a.y + 74 * k), lb(b.x - 20 * k, b.y - 14 * k);
+    const float done_w = lib_w(f, "DONE", 36 * k, 100 * k);
+    if (lib_button(d, f, "##closelistsettings", {x + w - done_w, a.y + 15 * k}, {done_w, 36 * k}, "DONE", Look::paper)) route.settings = false;
+    const ImVec2 la(x, a.y + 74 * k), lb(x + w, b.y - 14 * k);
     begin_region(208, la, lb, route.settings_scroll, k);
     float y = la.y - route.settings_scroll;
     text(d, anton(f, 19 * k), 19 * k, {x, y}, lib_ink, "NAME"); y += 30 * k;
     if (u.playlist_name_for != v.playlist_open && !ImGui::IsAnyItemActive()) {
         std::snprintf(u.playlist_name.data(), u.playlist_name.size(), "%s", v.playlist_open.c_str()); u.playlist_name_for = v.playlist_open;
     }
-    const bool entered = field(f, "##librarylistname", u.playlist_name, {x, y}, w - 118 * k, "Playlist name");
-    if (lib_button(d, f, "##libraryrenamelist", {b.x - 128 * k, y}, {108 * k, 34 * k}, "RENAME", Look::ghost) || entered) {
+    const float rename_w = lib_w(f, "RENAME", 34 * k, 108 * k);
+    const bool entered = field(f, "##librarylistname", u.playlist_name, {x, y}, w - rename_w - 10 * k, "Playlist name");
+    if (lib_button(d, f, "##libraryrenamelist", {x + w - rename_w, y}, {rename_w, 34 * k}, "RENAME", Look::ghost) || entered) {
         std::string m; studio::rename_playlist(u.playlist_name.data(), m); say(m); u.playlist_name_for.clear();
     }
     y += 64 * k;
@@ -124,7 +127,7 @@ void library_playlist_settings(ImDrawList* d, const Fonts& f, const studio::View
         "The order is on the playlist itself: drag a row by its grip (the dots by its number) to another place, and the ones between "
         "shift by one. With a pad or the keys, choose the grip, press A / Enter, move it with up and down, and press A / Enter again. "
         "A trick in a playlist twice (alone and in a pack) plays once, by its first place.") + 20 * k;
-    if (lib_button(d, f, "##librarycopy", {x, y}, {std::min(340 * k, w - 8 * k), 38 * k}, "DUPLICATE THIS PLAYLIST", Look::ghost)) {
+    if (lib_button(d, f, "##librarycopy", {x, y}, {std::min(lib_w(f, "DUPLICATE THIS PLAYLIST", 38 * k, 340 * k), w - 8 * k), 38 * k}, "DUPLICATE THIS PLAYLIST", Look::ghost)) {
         std::string m; studio::duplicate_playlist(v.playlist_open, m); say(m); route.settings = false;
     }
     y += 58 * k;
@@ -197,30 +200,30 @@ Grip library_entry_row(ImDrawList* d, const Fonts& f, const studio::View& v, con
     const auto place = [&](float bw) { bx -= bw; const float at = bx; bx -= 8 * k; return at; };
     if (whole) {
         {
-            const float rx = place(104 * k);
-            if (button("##removepack", rx, 104 * k, "REMOVE", Look::ghost)) {
+            const float rw = lib_w(f, "REMOVE", 36 * k, 104 * k), rx = place(rw);
+            if (button("##removepack", rx, rw, "REMOVE", Look::ghost)) {
                 std::string m; studio::edit_playlist_pack(v.playlist_open, e.pack, false, m); say(m);
             }
         }
         if (pack) {
-            const float cx = place(132 * k);
-            if (button("##choosepackmembers", cx, 132 * k, "PICK TRICKS", Look::ghost)) route.add_to(v.playlist_open, e.pack);
-            const float sx = place(112 * k);
+            const float cw = lib_w(f, "PICK TRICKS", 36 * k, 132 * k), cx = place(cw);
+            if (button("##choosepackmembers", cx, cw, "PICK TRICKS", Look::ghost)) route.add_to(v.playlist_open, e.pack);
             const auto count = i < index.entry_members.size() ? index.entry_members[i].size() : 0;
-            if (button("##expandqueue", sx, 112 * k, open ? "HIDE" : "SHOW " + std::to_string(count), open ? Look::paper : Look::ghost) &&
-                !route.open_packs.erase(e.pack))
+            const std::string show = open ? "HIDE" : "SHOW " + std::to_string(count);
+            const float sw = lib_w(f, "SHOW " + std::to_string(count), 36 * k, 112 * k), sx = place(sw);
+            if (button("##expandqueue", sx, sw, show, open ? Look::paper : Look::ghost) && !route.open_packs.erase(e.pack))
                 route.open_packs.insert(e.pack);
         }
     } else {
         // This row out of the list (a pack further down may still hold the trick: its row says so when opened). The studio
         // says what it did on its own line, with UNDO.
-        const float rx = place(104 * k);
-        if (button("##removemember", rx, 104 * k, "REMOVE", Look::ghost)) studio::playlist_remove(i);
+        const float rw = lib_w(f, "REMOVE", 36 * k, 104 * k), rx = place(rw);
+        if (button("##removemember", rx, rw, "REMOVE", Look::ghost)) studio::playlist_remove(i);
         if (p) {
-            const float ex = place(80 * k);
-            if (button("##edit", ex, 80 * k, p->locked ? "VIEW" : "EDIT", Look::ghost, p->available)) open_or_preview(v, p->name, e.pack);
-            const float px = place(104 * k);
-            if (button("##preview", px, 104 * k, "PREVIEW", Look::ghost, p->available)) preview_trick(e.pack, p->name, !e.pack.empty());
+            const float ew = lib_w(f, "VIEW", 36 * k, 80 * k), ex = place(ew);
+            if (button("##edit", ex, ew, p->locked ? "VIEW" : "EDIT", Look::ghost, p->available)) open_or_preview(v, p->name, e.pack);
+            const float pw = lib_w(f, "PREVIEW", 36 * k, 104 * k), px = place(pw);
+            if (button("##preview", px, pw, "PREVIEW", Look::ghost, p->available)) preview_trick(e.pack, p->name, !e.pack.empty());
         }
     }
     // The rest of the row: a pack's opens it, a trick's previews it.
@@ -257,22 +260,52 @@ Grip library_entry_row(ImDrawList* d, const Fonts& f, const studio::View& v, con
 }
 void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View& v, const LibraryIndex& index, ImVec2 a, ImVec2 b) {
     auto& u = ui(); auto& route = u.library; const float k = f.k;
-    const float x = a.x + 20 * k, w = b.x - a.x - 40 * k;
+    // One column of at most 1500 units in the middle of the sheet: on 21:9 a row ran some 2000 units, its name far from
+    // its buttons. (At 16:9 the sheet is that wide anyway.)
+    const float w = std::min(b.x - a.x - 40 * k, 1500 * k), x = (a.x + b.x - w) * 0.5f, r = x + w;
     if (v.playlists.empty()) {
         library_quick_start(d, f, v, a, b);
         return;
     }
     library_sheet(d, f, a, b);
     if (v.playlist_open.empty()) {
-        text(d, anton(f, 34 * k), 34 * k, {x + 22 * k, a.y + 42 * k}, lib_ink, "YOUR PLAYLISTS, YOUR STYLE");
-        paragraph(d, body(f, 17 * k), 17 * k, {x + 22 * k, a.y + 106 * k}, std::min(w - 44 * k, 820 * k), lib_ink_soft,
-            "Open a playlist on the left, or make another. One plays by default; another can play while you hold a button.");
-        if (lib_button(d, f, "##firstplaylist", {x + 22 * k, a.y + 210 * k}, {310 * k, 46 * k}, "+ NEW PLAYLIST", Look::blue)) library_start_create();
-        if (lib_button(d, f, "##browsecollectionfirst", {x + 22 * k, a.y + 274 * k}, {310 * k, 38 * k}, "LOOK THROUGH YOUR COLLECTION", Look::ghost)) route.show_page(1);
+        // None open (the workspace opens the default one, so this is a moment at most): the playlists themselves, to open.
+        text(d, anton(f, 34 * k), 34 * k, {x, a.y + 24 * k}, lib_ink, "OPEN A PLAYLIST");
+        paragraph(d, body(f, 16 * k), 16 * k, {x, a.y + 74 * k}, w, lib_ink_soft,
+                  "One plays by default; another can play while you hold a button. Open one to change what is in it.");
+        const auto binding = studio::modifier_binding();
+        const float gap = 16 * k;
+        const int columns = std::max(1, static_cast<int>((w + gap) / (340 * k + gap)));
+        const float cw = (w - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+        const ImVec2 la(x, a.y + 116 * k), lb(r, b.y - 14 * k);
+        begin_region(210, la, lb, route.content_scroll, k);
+        float y = la.y - route.content_scroll;
+        int column = 0;
+        for (const auto& list : v.playlists) {
+            ImGui::PushID(list.name.c_str());
+            const ImVec2 ta(x + static_cast<float>(column) * (cw + gap), y), tb(ta.x + cw, y + 132 * k);
+            bool lit = false;
+            if (hit("##openplaylistcard", ta, tb, &lit)) { studio::open_playlist(list.name); route.select(list.name); }
+            if (tb.y > la.y && ta.y < lb.y) {
+                library_card(d, f, ta, tb, false, lit, 500 + static_cast<std::uint32_t>(std::hash<std::string>{}(list.name) % 997));
+                const float room = cw - 40 * k;
+                lib_caps(d, f, {ta.x + 18 * k, ta.y + 16 * k}, 12 * k, IM_COL32(70, 72, 80, 255),
+                         lib_caps_fit(f, 12 * k, std::to_string(list.size) + (list.size == 1 ? " ENTRY" : " ENTRIES"), room));
+                text(d, anton(f, 30 * k), 30 * k, {ta.x + 18 * k, ta.y + 36 * k}, shop_ink, elide(anton(f, 30 * k), 30 * k, upper(list.name), room));
+                const bool normal = list.name == v.playlist_playing, held = list.name == binding.playlist;
+                const char* role = normal && held ? "plays by default + on the button" : normal ? "plays by default" : held ? "on the button" : "not playing";
+                marker_words(d, f, {ta.x + 18 * k, ta.y + 86 * k}, role, 20 * k, -1.5f, normal || held ? IM_COL32(0, 98, 214, 255) : IM_COL32(70, 72, 80, 255));
+                if (lit && nav().keys) chosen_outline(d, ta, tb, k);
+            }
+            ImGui::PopID();
+            if (++column == columns) column = 0, y += 148 * k;
+        }
+        if (column) y += 148 * k;
+        end_region(d, la, lb, y + route.content_scroll - la.y, route.content_scroll, k);
         return;
     }
     // The head: its name, + ADD TRICKS and SETTINGS; what it plays as, and the buttons that make it play.
-    const float add_w = 196 * k, set_w = 116 * k;
+    const float add_w = lib_w(f, "+ ADD TRICKS", 42 * k, 196 * k), set_w = lib_w(f, "SETTINGS", 42 * k, 116 * k);
     lib_caps(d, f, {x, a.y + 16 * k}, 11 * k, lib_ink_soft, "PLAYLIST");
     {
         const float room = w - add_w - set_w - 30 * k;
@@ -281,26 +314,34 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
         marker_underline(d, {x, a.y + 74 * k}, std::min(text_size(anton(f, 34 * k), 34 * k, name.c_str()).x + 20 * k, room), 4 * k, blue,
                          static_cast<std::uint32_t>(std::hash<std::string>{}(v.playlist_open) % 991));
     }
-    const ImVec2 add_a(b.x - 20 * k - set_w - 10 * k - add_w, a.y + 24 * k);
+    // The guide rings + ADD TRICKS only on the playlist it means (the default one when one plays).
+    const bool guide_here = lib_guide_on && library_guide_list(v) == v.playlist_open;
+    const ImVec2 add_a(r - set_w - 10 * k - add_w, a.y + 24 * k);
     if (lib_button(d, f, "##libraryaddanimations", add_a, {add_w, 42 * k}, "+ ADD TRICKS", Look::blue)) route.add_to(v.playlist_open);
-    if (lib_guide_on && lib_guide_now == 1) lib_pulse(d, add_a, {add_a.x + add_w, add_a.y + 42 * k}, k);
-    if (lib_button(d, f, "##librarysettings", {b.x - 20 * k - set_w, a.y + 24 * k}, {set_w, 42 * k}, "SETTINGS", Look::ghost)) {
+    if (guide_here && lib_guide_now == 1) lib_pulse(d, add_a, {add_a.x + add_w, add_a.y + 42 * k}, k);
+    if (lib_button(d, f, "##librarysettings", {r - set_w, a.y + 24 * k}, {set_w, 42 * k}, "SETTINGS", Look::ghost)) {
         route.settings = true; route.settings_scroll = 0;
     }
     const auto binding = studio::modifier_binding();
     const bool normal = v.playlist_open == v.playlist_playing, modifier = v.playlist_open == binding.playlist;
     const float ry = a.y + 92 * k, rh = 36 * k;
     const ImVec2 default_a(x, ry);
-    if (lib_button(d, f, "##librarynormalrole", default_a, {214 * k, rh}, normal ? "PLAYS BY DEFAULT" : "SET AS DEFAULT", normal ? Look::paper : Look::ghost, !normal)) {
+    const char* default_label = normal ? "PLAYS BY DEFAULT" : "SET AS DEFAULT";
+    const float default_w = lib_w(f, "PLAYS BY DEFAULT", rh, 214 * k);
+    if (lib_button(d, f, "##librarynormalrole", default_a, {default_w, rh}, default_label, normal ? Look::paper : Look::ghost, !normal)) {
         std::string m; studio::play_playlist(v.playlist_open, m); say(m);
     }
-    if (lib_guide_on && lib_guide_now == 2 && !normal) lib_pulse(d, default_a, {default_a.x + 214 * k, default_a.y + rh}, k);
+    // Rung only while nothing plays by default: with a default playing, the guide's step is playback, not this list.
+    if (lib_guide_on && lib_guide_now == 2 && v.playlist_playing.empty()) lib_pulse(d, default_a, {default_a.x + default_w, default_a.y + rh}, k);
     const std::string held = std::string("ON ") + studio::modifier_button_names[static_cast<std::size_t>(binding.button)];
-    if (lib_button(d, f, "##librarymodifierrole", {x + 224 * k, ry}, {214 * k, rh}, modifier ? held + " / SET UP" : "PLAY ON A BUTTON...", modifier ? Look::paper : Look::ghost)) {
+    const std::string button_label = modifier ? held + " / SET UP" : "PLAY ON A BUTTON...";
+    const float button_x = x + default_w + 10 * k, button_w = lib_w(f, button_label, rh, 214 * k);
+    if (lib_button(d, f, "##librarymodifierrole", {button_x, ry}, {button_w, rh}, button_label, modifier ? Look::paper : Look::ghost)) {
         if (!modifier) { auto live = studio::modifier_binding(); live.playlist = v.playlist_open; studio::set_modifier_binding(live); }
         route.modifier_setup = true; route.settings_scroll = 0;
     }
-    if (lib_button(d, f, "##libraryundo", {b.x - 20 * k - 112 * k, ry}, {112 * k, rh}, v.playlist_redo ? "REDO" : "UNDO", Look::ghost, v.playlist_can_undo)) {
+    const float undo_w = lib_w(f, "UNDO", rh, 112 * k);
+    if (lib_button(d, f, "##libraryundo", {r - undo_w, ry}, {undo_w, rh}, v.playlist_redo ? "REDO" : "UNDO", Look::ghost, v.playlist_can_undo)) {
         std::string m; studio::undo_playlist_entries(v.playlist_open, m); say(m);
     }
     {
@@ -308,12 +349,13 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
         const std::string role = normal && modifier ? "plays by default and on the button" : normal ? "plays by default" : modifier ? "plays while the button is held"
                                  : v.playlist.empty() ? "empty" : "not playing yet - press SET AS DEFAULT";
         const bool good = (normal || modifier) && v.play_in_game;
-        const float room = b.x - 20 * k - 124 * k - (x + 452 * k);
-        text(d, body(f, 13 * k), 13 * k, {x + 452 * k, ry + 10 * k}, good ? lib_blue : lib_warn,
+        const float role_x = button_x + button_w + 14 * k, room = r - undo_w - 12 * k - role_x;
+        text(d, body(f, 13 * k), 13 * k, {role_x, ry + 10 * k}, good ? lib_blue : lib_warn,
              elide(body(f, 13 * k), 13 * k, (good || v.play_in_game || !(normal || modifier) ? role : role + " / playback is off"), room));
     }
-    field(f, "##playlistcontentsearch", route.content_query, {x, a.y + 142 * k}, w - 84 * k, "Search inside this playlist...");
-    if (lib_button(d, f, "##clearcontentsearch", {b.x - 94 * k, a.y + 142 * k}, {74 * k, 34 * k}, "CLEAR", Look::ghost, route.content_query[0] != 0)) route.content_query.fill(0);
+    const float clear_w = lib_w(f, "CLEAR", 34 * k, 74 * k);
+    field(f, "##playlistcontentsearch", route.content_query, {x, a.y + 142 * k}, w - clear_w - 10 * k, "Search inside this playlist...");
+    if (lib_button(d, f, "##clearcontentsearch", {r - clear_w, a.y + 142 * k}, {clear_w, 34 * k}, "CLEAR", Look::ghost, route.content_query[0] != 0)) route.content_query.fill(0);
     if (route.seen_content_query != route.content_query.data()) { route.seen_content_query = route.content_query.data(); route.content_scroll = 0; }
     const auto terms = studio::native_search_terms(route.content_query.data());
     const char* mode = v.playlist_mode == studio::PlaylistMode::fixed ? "PRIORITY" : v.playlist_mode == studio::PlaylistMode::turns ? "IN TURNS" : "SHUFFLE";
@@ -321,7 +363,7 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
         (!terms.empty() ? " / clear the search to change the order" : v.playlist.size() > 1 ? " / drag the dots by a number to change the order" : "") +
         " / saved as you go";
     text(d, body(f, 12 * k), 12 * k, {x, a.y + 188 * k}, lib_ink_faint, elide(body(f, 12 * k), 12 * k, line, w));
-    const ImVec2 la(x, a.y + 212 * k), lb(b.x - 20 * k, b.y - 14 * k);
+    const ImVec2 la(x, a.y + 212 * k), lb(r, b.y - 14 * k);
     // ---- the reorder: where a carried entry is going ----
     auto& carry = u.library_carry;
     auto& n = nav();
@@ -355,8 +397,9 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
         y += paragraph(d, body(f, 16 * k), 16 * k, {x + 14 * k, y}, w - 28 * k, lib_ink_soft,
                        "Add a whole pack in one press, or single tricks. You can preview each one first.") + 24 * k;
         const ImVec2 ea(x + 14 * k, y);
-        if (lib_button(d, f, "##emptyaddanimations", ea, {260 * k, 42 * k}, "+ ADD TRICKS", Look::blue)) route.add_to(v.playlist_open);
-        if (lib_guide_on && lib_guide_now == 1) lib_pulse(d, ea, {ea.x + 260 * k, ea.y + 42 * k}, k);
+        const float ew = lib_w(f, "+ ADD TRICKS", 42 * k, 260 * k);
+        if (lib_button(d, f, "##emptyaddanimations", ea, {ew, 42 * k}, "+ ADD TRICKS", Look::blue)) route.add_to(v.playlist_open);
+        if (guide_here && lib_guide_now == 1) lib_pulse(d, ea, {ea.x + ew, ea.y + 42 * k}, k);
         y += 64 * k;
     }
     // Where each entry's row and block (with its open pack) were drawn this frame: the drag finds its gap in them.
@@ -508,7 +551,7 @@ void library_quick_start(ImDrawList* d, const Fonts& f, const studio::View& v, I
                        : std::string("You have no packs or saved tricks yet. Get a pack in the MARKET (it asks where to put it), or make a "
                                      "trick in TRICKS and save it.")) +
          26 * k;
-    const float bw = std::min(iw, 420 * k);
+    const float bw = std::min(iw, std::max(lib_w(f, "USE EVERYTHING I HAVE", 56 * k, 420 * k), lib_w(f, "GET PACKS IN THE MARKET", 56 * k, 420 * k)));
     if (any) {
         if (lib_button(d, f, "##libraryeverything", ImVec2(x, y), ImVec2(bw, 56 * k), "USE EVERYTHING I HAVE", Look::blue)) library_use_everything(v);
     } else if (lib_button(d, f, "##librarytomarket", ImVec2(x, y), ImVec2(bw, 56 * k), "GET PACKS IN THE MARKET", Look::blue)) {
@@ -519,13 +562,16 @@ void library_quick_start(ImDrawList* d, const Fonts& f, const studio::View& v, I
     marker_arrow(d, ImVec2(x + bw + 62 * k, y + 30 * k), ImVec2(x + bw + 14 * k, y + 28 * k), 0.2f, 4 * k, IM_COL32(0, 98, 214, 255), 94);
     y += 76 * k;
     lib_caps(d, f, ImVec2(x, y + 12 * k), 12 * k, IM_COL32(80, 82, 88, 255), "OR");
-    if (shop_button(d, f, "##libraryemptyfirst", ImVec2(x + 44 * k, y), ImVec2(std::min(iw - 44 * k, 360 * k), 42 * k), "START WITH AN EMPTY PLAYLIST",
+    if (shop_button(d, f, "##libraryemptyfirst", ImVec2(x + 44 * k, y), ImVec2(std::min(iw - 44 * k, lib_w(f, "START WITH AN EMPTY PLAYLIST", 42 * k, 360 * k)), 42 * k),
+                    "START WITH AN EMPTY PLAYLIST",
                     ShopLook::ink))
         library_start_create();
 }
 void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui(); auto& route = u.library; const float k = f.k;
     want_market_art(); // the paper and the grip tape the page is drawn on
+    // Never an empty page for want of an open playlist: the default one opens (else the first).
+    if (v.playlist_open.empty() && !v.playlists.empty()) studio::open_playlist(!v.playlist_playing.empty() ? v.playlist_playing : v.playlists.front().name);
     route.select(v.playlist_open);
     const auto& index = library_index(v);
     int page = route.page;
@@ -535,7 +581,7 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
     // While it is not set up, the guide's strip in place of what plays (on every part of the page, so it is always there).
     lib_guide_on = library_guide_wanted(v);
     lib_guide_now = lib_guide_on ? library_guide_step(v) : -1;
-    const ImVec2 strip_a(a.x + 376 * k, a.y + 72 * k), strip_b(b.x, a.y + 128 * k);
+    const ImVec2 strip_a(a.x + 376 * k, a.y + 64 * k), strip_b(b.x, a.y + 136 * k); // 13-unit words and Anton 24 names
     if (lib_guide_on) library_guide_strip(d, f, v, strip_a, strip_b);
     if (route.creating) { library_create_page(d, f, v, body_a, b); return; }
     if (!route.confirmation.empty()) { library_confirm_page(d, f, v, body_a, b); return; }
@@ -544,28 +590,35 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
     if (route.choosing_default) { library_default_chooser(d, f, v, body_a, b); return; }
     if (route.modifier_setup) { library_modifier_setup(d, f, v, body_a, b); return; }
     if (route.adding()) {
-        text(d, body(f, 12 * k), 12 * k, {body_a.x + 146 * k, body_a.y + 2 * k}, blue_light, "ADDING TO THIS PLAYLIST");
-        text(d, anton(f, 27 * k), 27 * k, {body_a.x + 146 * k, body_a.y + 25 * k}, white, elide(anton(f, 27 * k), 27 * k, upper(route.adding_to), b.x - body_a.x - 440 * k));
-        if (lib_button(d, f, "##backtoplaylist", {body_a.x, body_a.y + 8 * k}, {130 * k, 38 * k}, "< PLAYLIST", Look::ghost)) { route.adding_to.clear(); return; }
-        if (lib_button(d, f, "##pickerundo", {b.x - 264 * k, body_a.y + 8 * k}, {112 * k, 38 * k}, v.playlist_redo ? "REDO" : "UNDO", Look::ghost, v.playlist_can_undo)) {
+        text(d, body(f, 12 * k), 12 * k, {body_a.x + lib_w(f, "< PLAYLIST", 38 * k, 130 * k) + 16 * k, body_a.y + 2 * k}, blue_light, "ADDING TO THIS PLAYLIST");
+        const float back_w = lib_w(f, "< PLAYLIST", 38 * k, 130 * k), undo_w = lib_w(f, "UNDO", 38 * k, 112 * k), done_w = lib_w(f, "DONE", 38 * k, 140 * k);
+        text(d, anton(f, 27 * k), 27 * k, {body_a.x + back_w + 16 * k, body_a.y + 25 * k}, white,
+             elide(anton(f, 27 * k), 27 * k, upper(route.adding_to), b.x - body_a.x - back_w - undo_w - done_w - 60 * k));
+        if (lib_button(d, f, "##backtoplaylist", {body_a.x, body_a.y + 8 * k}, {back_w, 38 * k}, "< PLAYLIST", Look::ghost)) { route.adding_to.clear(); return; }
+        if (lib_button(d, f, "##pickerundo", {b.x - done_w - 12 * k - undo_w, body_a.y + 8 * k}, {undo_w, 38 * k}, v.playlist_redo ? "REDO" : "UNDO", Look::ghost, v.playlist_can_undo)) {
             std::string m; studio::undo_playlist_entries(route.adding_to, m); say(m);
         }
-        const ImVec2 done_a(b.x - 140 * k, body_a.y + 8 * k);
-        if (lib_button(d, f, "##doneadding", done_a, {140 * k, 38 * k}, "DONE", Look::blue)) { route.adding_to.clear(); return; }
-        if (lib_guide_on && lib_guide_now >= 2) lib_pulse(d, done_a, {done_a.x + 140 * k, done_a.y + 38 * k}, k);
+        const ImVec2 done_a(b.x - done_w, body_a.y + 8 * k);
+        if (lib_button(d, f, "##doneadding", done_a, {done_w, 38 * k}, "DONE", Look::blue)) { route.adding_to.clear(); return; }
+        if (lib_guide_on && lib_guide_now >= 2) lib_pulse(d, done_a, {done_a.x + done_w, done_a.y + 38 * k}, k);
+        const float note_x = body_a.x + lib_w(f, "< PLAYLIST", 38 * k, 130 * k) + 16 * k;
         if (lib_guide_on)
-            text(d, body(f, 13 * k), 13 * k, {body_a.x + 146 * k, body_a.y + 60 * k}, blue_light,
+            text(d, body(f, 13 * k), 13 * k, {note_x, body_a.y + 60 * k}, blue_light,
                  elide(body(f, 13 * k), 13 * k, "STEP 2 OF 4 - ADD WHOLE PACK puts a whole pack in; PICK SINGLE TRICKS to choose some (PREVIEW plays one first). Then DONE.",
-                       b.x - body_a.x - 150 * k));
+                       b.x - note_x - 8 * k));
         else
-            text(d, body(f, 12 * k), 12 * k, {body_a.x + 146 * k, body_a.y + 60 * k}, soft, "Add only what you want. Every change is saved; DONE goes back to the playlist.");
+            text(d, body(f, 13 * k), 13 * k, {note_x, body_a.y + 60 * k}, soft, "Add only what you want. Every change is saved; DONE goes back to the playlist.");
         library_browser(d, f, v, index, route.adding_to, {body_a.x, body_a.y + 88 * k}, b);
         return;
     }
     if (route.page == 1) {
-        text(d, anton(f, 23 * k), 23 * k, {body_a.x + 4 * k, body_a.y + 7 * k}, white, "YOUR COLLECTION");
-        if (lib_button(d, f, "##librarynewpack", {b.x - 162 * k, body_a.y}, {162 * k, 36 * k}, "+ MAKE A PACK", Look::ghost)) { make_pack(v); u.pack_page = true; }
-        library_browser(d, f, v, index, {}, {body_a.x, body_a.y + 54 * k}, b); return;
+        // Its head as the playlist page's: the part in capitals, its name in Anton 34 with a line of marker under it.
+        lib_caps(d, f, {body_a.x + 4 * k, body_a.y}, 11 * k, lib_ink_soft, "EVERY PACK AND TRICK YOU HAVE");
+        text(d, anton(f, 34 * k), 34 * k, {body_a.x + 4 * k, body_a.y + 14 * k}, white, "YOUR COLLECTION");
+        marker_underline(d, {body_a.x + 4 * k, body_a.y + 58 * k}, text_size(anton(f, 34 * k), 34 * k, "YOUR COLLECTION").x + 20 * k, 4 * k, blue, 377);
+        const float pack_w = lib_w(f, "+ MAKE A PACK", 38 * k, 162 * k);
+        if (lib_button(d, f, "##librarynewpack", {b.x - pack_w, body_a.y + 14 * k}, {pack_w, 38 * k}, "+ MAKE A PACK", Look::ghost)) { make_pack(v); u.pack_page = true; }
+        library_browser(d, f, v, index, {}, {body_a.x, body_a.y + 78 * k}, b); return;
     }
     const float nav_w = 266 * k, gap = 18 * k;
     const ImVec2 na(body_a.x, body_a.y), nb(na.x + nav_w, b.y), ca(nb.x + gap, body_a.y);
@@ -606,7 +659,10 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
         if (pressed) { studio::open_playlist(list.name); route.select(list.name); }
         ImGui::PopID(); y += 104 * k;
     }
-    if (v.playlists.empty()) y += paragraph(d, body(f, 14 * k), 14 * k, {la.x + 8 * k, y}, nav_w - 36 * k, soft, "No playlists yet: QUICK START makes one for you.") + 22 * k;
+    if (v.playlists.empty())
+        y += paragraph(d, body(f, 14 * k), 14 * k, {la.x + 8 * k, y}, nav_w - 36 * k, soft,
+                       v.packs.empty() && index.own == 0 ? "No playlists yet: get a pack in the MARKET, or make one here."
+                                                         : "No playlists yet: QUICK START makes one for you.") + 22 * k;
     end_region(d, la, lb, y + route.playlists_scroll - la.y, route.playlists_scroll, k);
     if (route.settings) library_playlist_settings(d, f, v, ca, b);
     else library_playlist_content(d, f, v, index, ca, b);
