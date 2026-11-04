@@ -9031,8 +9031,8 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         if (!m.job.message.empty() && m.job.what.find(p.title) != std::string::npos) notes.emplace_back(m.job.message, m.job.failed ? skate_theme::warning : soft);
         const bool here = !p.installed.empty() && !removed_here(v, p);
         if (here)
-            notes.emplace_back("In " + (p.installed_as.empty() ? std::string("your LIBRARY") : p.installed_as) +
-                                   ": add it to a playlist, or preview its tricks, in the LIBRARY.",
+            notes.emplace_back("In your LIBRARY" + (p.installed_as.empty() ? std::string{} : " as " + p.installed_as) +
+                                   ": add it to a playlist there, or preview its tricks.",
                                blue_light);
         else if (removed_here(v, p)) notes.emplace_back("It was installed here, and its pack has been deleted since: REINSTALL puts it back.", skate_theme::warning);
         float notes_h = 0;
