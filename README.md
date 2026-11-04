@@ -12,9 +12,9 @@ Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio,
 
 **For now, the Animator Studio is one file: a `ReSkate.dll` that takes the place of ReSkate's own.** You swap the DLL and turn ReSkate's updates off. Once the ReSkate team brings the studio into ReSkate itself, none of this is needed: you will just update ReSkate.
 
-You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.3** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
+You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.4** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
 
-1. Install **ReSkate 2.1.3** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.3) and start it once the normal way, so it is set up and up to date.
+1. Install **ReSkate 2.1.4** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.4) and start it once the normal way, so it is set up and up to date.
 2. In the launcher, open **Settings > LAUNCHER** and turn **Install ReSkate updates** off. While it is on, the launcher puts the official `ReSkate.dll` back.
 3. Close the launcher and the game.
 4. Open your ReSkate folder (the one with `Skate.exe` and `ReSkateLauncher.exe`). Back up `ReSkate.dll`, and your `ReSkate.Tricks` folder if you already have one.
