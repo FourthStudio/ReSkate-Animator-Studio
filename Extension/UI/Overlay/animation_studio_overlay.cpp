@@ -10616,7 +10616,10 @@ void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
     std::string say;     // what is happening, or what went wrong
     ImU32 say_ink = white;
     std::string where;   // where it goes
-    if (!st.installed_to.empty()) where = "Into the folder ReSkate runs from: " + st.installed_to.parent_path().string();
+    if (!st.installed_to.empty()) {
+        const auto folder = st.installed_to.parent_path().u8string();
+        where = "Into the folder ReSkate runs from: " + std::string(folder.begin(), folder.end());
+    }
     if (st.step == up::Step::newer) {
         if (!st.folder_writable) {
             say = "The folder ReSkate runs from cannot be written to (read-only, or a protected folder such as Program Files). UPDATE NOW still "

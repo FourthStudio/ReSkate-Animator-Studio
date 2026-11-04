@@ -358,8 +358,10 @@ void updates_card(SkateMenu& menu, const Model& model) {
     }
     if (st.step == up::Step::verifying) note("Checking it against GitHub's SHA-256, and that it is a ReSkate runtime...");
     if (st.step == up::Step::installing) note("Putting it in place. The version you have now is kept beside it as ReSkate.dll.previous.");
-    if ((going || installed || newer) && !st.installed_to.empty())
-        note(("Into the folder ReSkate runs from: " + st.installed_to.parent_path().string()).c_str());
+    if ((going || installed || newer) && !st.installed_to.empty()) {
+        const auto folder = st.installed_to.parent_path().u8string();
+        note(("Into the folder ReSkate runs from: " + std::string(folder.begin(), folder.end())).c_str());
+    }
     if (st.step == up::Step::newer && !st.folder_writable)
         warn("That folder cannot be written to (read-only, or a protected folder such as Program Files). UPDATE NOW still downloads and checks it; "
              "you then copy it in yourself with the game closed, or move ReSkate to a folder of its own.");
