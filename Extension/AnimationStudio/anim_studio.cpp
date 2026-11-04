@@ -236,9 +236,44 @@ constexpr bool fit_keys_to_air = true; // the trick's own clock, when the game's
 // snapped and stuck to the board after the catch, the catch struggled: off until they are right. Rolling on the ground a
 // foot is still never drawn into the deck or the ground.
 bool air_corrections = false; // (not constexpr: the code it gates is kept compiled)
+// ---- the 1.2 transitions, each on its own switch (the scout's report, update12\transitions_scout.md) ----------------------
+// Each changes one thing and can be put back alone: seven changes tried together on 2026-10-28 made it worse than before, and
+// none of these has been seen in game yet. The bug report's timeline says which one acted (flick, handover_kind, raised).
+// BEFORE THE POP: a trick the game names at the flick (CurrentFlipTrick) starts there, so what was keyed before the pop plays
+// while the game plays its clip up to the pop (trick_flicked, PlaybackPhase::before_pop).
+constexpr bool play_before_the_pop = true;
+// ... and there its time is the game's own trick phase (TrickPhase times the clip's length: the bug reports have it within 1 to
+// 2% of the clip's time), while the game's pose is within before_pop_phase_degrees of the clip there - the game blends from
+// riding into its trick over 8 ticks, and the pose clock (4.5 degrees) found it only late in the 10 ticks before the pop.
+// Only for tricks made on the game's own clips (their length is the game's), and never after the pop.
+constexpr bool clock_before_the_pop_by_trick_phase = true;
+constexpr float before_pop_phase_degrees = 9.0f;
+// On a rail the body's feet go on the board as the board's pass draws it, board keys and all (a saved grind loop's tilted
+// board had the feet seated on the game's flat one).
+constexpr bool rail_feet_on_the_drawn_board = true;
+// Into the next pop: a trick lets go at the game's flick (not 0.1 s later at the crouch), and what it hands back is held as it
+// was drawn, not run on into its landing keys under the new pop's crouch.
+constexpr bool hand_back_at_the_flick = true;
+// Onto a rail or a ledge: the board, hips and legs go to the game's no sooner than the trick's catch (unless the board meets it
+// first), the lean onto a rail waits for the game's own word that it aims at one (IsTargetingGrind, where it can be read), and
+// a board that locks on before the catch hands the arms and the back over as the game does then (its 30-tick pivot blend).
+constexpr bool rail_entry_after_the_catch = true;
+// THE FEET RIDE ON THE BOARD: a foot the studio shows standing on the deck goes where the game has it on its board, moved as
+// the keys move it in the studio, onto the board drawn this frame (ride_feet_on_the_board) - after the catch, when the game has
+// left the trick's clip for its in-air hold, its landing or a grind, the keys bent the legs of a pose they were not made on.
+constexpr bool feet_ride_the_board = true;
+// INTO A MANUAL: a trick landing into a manual (Enum.Intent.Manual on at the touchdown) lets go there, over its Crossfade, as
+// the game goes from its trick into its manual - not after its landing keys were laid on the manual's pose until the pose
+// drift noticed (0.1 to 0.3 s later).
+constexpr bool let_go_into_a_manual = true;
+// OUT OF POSITIONS: a trick whose clip the game was not found playing (on its own clock: out of a grind or a manual, the game
+// still blending into its trick) has its keys only as far as the game's pose is near its clip (pose_fit_share).
+constexpr bool own_clock_follows_the_pose = true;
 // Gameplay source time follows the native clip. Legacy drop-preview tools retain their own timing metadata.
 // Why a trick lets go at its catch on a higher pop than it was made on (and over at least 0.3 s, whatever the crossfade).
 constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it was made on: the game's own pose from here";
+// Why a trick lets go when the next one is popped (hand_back_at_the_flick holds it as drawn then).
+constexpr const char* next_pop_why = "the next pop";
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
@@ -555,6 +590,8 @@ struct Live {
     float drift_base{};
     int drift_count{};
     std::string clock_why;       // why it let go, said once
+    float clock_why_time{-1};    // where the trick was when it let go
+    float own_clock_fit{-1};     // on its own clock: how far the game is on its clip (pose_fit_share, eased; -1 not yet)
     std::uint64_t finished_episode{~std::uint64_t{0}}; // a trick let go is not taken up again in its air
     std::string finished_trick;
     // Board edit axes at takeoff, relative to actor placement. No recorded board pose is replayed.
@@ -581,6 +618,16 @@ struct Live {
     std::uint64_t recent_episode{~std::uint64_t{0}}; // the trick last told to the menu's feed (remember_trick_done)
     // What the game's animation is doing (trainer::read_studio_states), this update; found in memory once a level.
     trainer::StudioStates game{};
+    // The flick (trick_flicked): the game's trick phase and trick input on the update before, its CurrentFlipTrick now (empty
+    // while not found), whether this update is a flick, and the trick it named at the flick for the attempt begun there.
+    std::optional<float> phase_before;
+    std::optional<bool> intent_before;
+    std::optional<std::uint32_t> flip_trick;
+    bool flicked{};
+    std::string flick_name;
+    bool chosen_ungraded{}; // chosen before the game graded the pop: chosen again once it has
+    bool flick_said{};      // the first attempt played from the flick was logged
+    std::string flick_checked; // the name at the flick, until the game's name in the air was compared with it
     std::uint64_t states_generation{~std::uint64_t{0}};
     double states_search_at{-1};
     int states_searches{};
@@ -698,6 +745,9 @@ struct GameplayPacket {
     // packet, which could draw a frame of the air's trick on a board already on the rail.
     MotionState motion{MotionState::unknown};
     float caught{-1}; // the trick's catch, on its own clock (-1 none): the lean onto a rail waits for it
+    // Let go into the next pop (hand_back_at_the_flick): its time stands where it let go, and a handover after it holds the
+    // trick as drawn rather than running it on.
+    bool held{};
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
@@ -757,11 +807,21 @@ PropLink& ramp_link() {
 // and legs have leaned over to the game's, and for which trick (episode).
 std::atomic<float> rail_lean{0};
 std::atomic<std::uint64_t> rail_lean_episode{~std::uint64_t{0}};
-// When the handover running now started (Handover::started), for the bug report; -1 none.
+// When the handover running now started (Handover::started), for the bug report; -1 none. And which one (handover_kind_name).
 std::atomic<double> handover_at{-1};
+std::atomic<const char*> handover_kind_now{""};
+// IsTargetingGrind has been seen on at least once this session: the state is read right, so the lean onto a rail may wait for
+// it (rail_entry_after_the_catch). Until then the board's turn alone says, as before.
+std::atomic<bool> targeting_seen{};
+// When the game last started a trick (its flick, trick_flicked; now_seconds, -1 none): a handover that starts just after one
+// is into the next pop, and holds what it hands back as drawn (hand_back_at_the_flick).
+std::atomic<double> last_flick_at{-1};
+// How far each foot (left, right) rode on the board on the last frame drawn (ride_feet_on_the_board), for the bug report.
+std::array<std::atomic<float>, 2> feet_ride_share{};
 // The game aiming the board at a grind (Bool.Physics.IsTargetingGrind) and its time to land (Float.Physics.TimeToLand, -1
 // not known), this update: the lean onto a rail goes by them as well as by the board turning.
 std::atomic<bool> game_targeting_grind{};
+std::atomic<bool> game_targeting_known{}; // and whether that could be read at all (the level's state objects found)
 std::atomic<float> game_time_to_land{-1};
 // SMOOTH: the next trick asked for while ours plays on the board or a rail leans its legs and board over in the Crossfade
 // (the trick's own or the main one), never less than 0.2 s. It was 0.1 s whatever the Crossfade: the hand-back to the game's
@@ -3694,7 +3754,17 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             game_targeting_grind.store(l.game.targeting_grind.value_or(false), std::memory_order_release);
+            game_targeting_known.store(l.game.targeting_grind.has_value(), std::memory_order_release);
+            if (l.game.targeting_grind.value_or(false)) targeting_seen.store(true, std::memory_order_relaxed);
             game_time_to_land.store(l.game.time_to_land.value_or(-1.0f), std::memory_order_release);
+            // The trick the game picked its clip by (EnumGS.Anim.CurrentFlipTrick, found by the same memory search), and
+            // whether it started one this update (trick_flicked).
+            if (const auto flip = entity ? trainer::read_flip_state(base, entity) : trainer::FlipState{}; flip) l.flip_trick = flip.trick;
+            else l.flip_trick.reset();
+            l.flicked = trick_flicked(l.phase_before, l.game.trick_phase, l.intent_before, l.game.trick_intent);
+            if (l.flicked) last_flick_at.store(at, std::memory_order_relaxed);
+            l.phase_before = l.game.trick_phase;
+            l.intent_before = l.game.trick_intent;
         }
         const auto air = in_the_air(base, component);
         // Rolling fakie or not, kept from riding: in the air the game's own number swings about.
@@ -3976,7 +4046,19 @@ void on_animation(std::uintptr_t component) noexcept {
             first = in_room ? placement_joint : 2;
             last = layout.count;
         } else if (snap->play_in_game && !bailing && snap->tricks && !snap->tricks->empty()) {
-            const bool began = l.episode.observe(at, motion);
+            bool began = l.episode.observe(at, motion);
+            // The game named its trick at the flick, rolling on the ground (not in a manual, not on a rail: the game plays its
+            // flips from those another way): the attempt begins now, before the pop, when a saved trick of it is there to play.
+            std::string flick_name;
+            if (play_before_the_pop && !began && l.flicked && motion == MotionState::riding && l.manual_now <= 0 && l.flip_trick &&
+                snap->tricks) {
+                flick_name = flip_trick_key(trainer::flip_trick_name(*l.flip_trick));
+                const bool saved = !flick_name.empty() && std::any_of(snap->tricks->begin(), snap->tricks->end(),
+                                                                      [&](const CustomTrick& t) { return t.trick == flick_name; });
+                if (saved && l.episode.begin_before_pop(at, motion)) began = true;
+                else flick_name.clear();
+            }
+            if (l.flicked) l.flick_checked = l.flip_trick ? flip_trick_key(trainer::flip_trick_name(*l.flip_trick)) : std::string("?");
             // Handoffs begin at the actual move boundary and use the last drawn pose.
             // Rolling: the board's heading under him, kept a second (for the board's keys of the next trick).
             if (motion == MotionState::riding && l.board_ok && !began) {
@@ -4017,6 +4099,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.raised_contact_at = -1; l.raised_last = -1;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
+                l.flick_name = flick_name; l.chosen_ungraded = false;
                 if (l.board_ok) {
                     const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
                     if (finite(mount)) {
@@ -4035,6 +4118,16 @@ void on_animation(std::uintptr_t component) noexcept {
                     }
                 }
             }
+            // An attempt begun at the flick leaves the ground: the same attempt, its trick kept. Its own clock (when the game's
+            // clip is not found) waits from here, as for a trick named in the air.
+            if (l.episode.took_off) {
+                if (l.clock_locked_at < 0) l.clock_selected_at = at;
+                if (l.game_trick && !l.flick_said) {
+                    l.flick_said = true;
+                    logging::log(Level::info, Channel::skater, "Animation Studio: {} began at the game's flick, {:.2f} s before the pop: "
+                                 "what was keyed before the pop plays.", l.game_trick->name, at - l.episode.flicked);
+                }
+            }
             if (l.episode.phase == PlaybackPhase::idle) l.game_trick = nullptr;
             if (!l.game_trick && l.native_clock.active()) { l.native_clock.reset(); l.clock_weight = 0; }
             if (l.episode.phase == PlaybackPhase::air && l.predicted_air == 0 && at - l.episode.takeoff >= 0.03) {
@@ -4049,7 +4142,23 @@ void on_animation(std::uintptr_t component) noexcept {
             // name arriving late is taken up, so a trick that turns into another one does not keep the first
             // one's keys all the way down.
             const bool airborne = l.episode.phase == PlaybackPhase::air || l.episode.phase == PlaybackPhase::landing;
-            const auto name = airborne ? current_trick(component) : std::string{};
+            const bool before_pop = l.episode.phase == PlaybackPhase::before_pop;
+            auto name = airborne ? current_trick(component) : std::string{};
+            // Whether the trick the game named at the flick is the one it names in the air: said once for each pair (the first
+            // time they agree, every time they do not), so a report shows whether CurrentFlipTrick is right at the flick.
+            if (airborne && !name.empty() && !l.flick_checked.empty()) {
+                static std::set<std::string> said;
+                const auto pair = l.flick_checked + "|" + name;
+                if (said.size() < 64 && (l.flick_checked != name || said.empty()) && said.insert(pair).second)
+                    logging::log(Level::info, Channel::skater, "Animation Studio: at the flick the game named {}; in the air it says {}{}.",
+                                 l.flick_checked == "?" ? std::string("nothing (CurrentFlipTrick not found)") : l.flick_checked.empty() ? std::string("no trick") : l.flick_checked,
+                                 name, l.flick_checked == name ? " (the same)" : "");
+                l.flick_checked.clear();
+            }
+            // Before the pop, and in the air until the game says its name there, the trick it named at the flick.
+            if (name.empty() && !l.flick_name.empty() &&
+                (before_pop || (l.episode.phase == PlaybackPhase::air && at - l.episode.takeoff < 0.1)))
+                name = l.flick_name;
             // A change after we had settled on one is the game doing something else: the layer stands back
             // over 120 ms, and only then takes up the new trick, so nothing jumps between the two.
             if (!name.empty() && l.game_trick && l.episode.phase == PlaybackPhase::air && !l.episode.selection_open(at) &&
@@ -4076,7 +4185,8 @@ void on_animation(std::uintptr_t component) noexcept {
                                     : 0;
             const auto graded_name = graded_pop_name(graded);
             const auto pop = !graded_name.empty() ? std::string(graded_name) : pop_of(l.predicted_air);
-            if (airborne) {
+            diagnostic.pop_grade = graded;
+            if (airborne || before_pop) {
                 l.used_pop = pop;
                 l.used_pop_source = !graded_name.empty() ? "grade" : pop.empty() ? "" : "air";
             }
@@ -4087,9 +4197,13 @@ void on_animation(std::uintptr_t component) noexcept {
             // Once the trick plays on the game's clip, a refined grade of the same trick keeps it: choosing again dropped it in
             // one frame (nothing for the new pop) or faded it out and in again (a new clock).
             const bool settled = l.game_trick && l.game_trick->trick == name && l.clock_locked_at >= 0;
-            if (!let_go && !settled && l.gave_way_at < 0 && l.game_tricks &&
-                episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name,
-                                          l.game_trick ? l.game_trick->edits->pop : std::string_view{}, pop)) {
+            // Chosen at the flick before the game graded the pop (an ANY-pop trick): chosen again once it has, as it would
+            // have been chosen in the air, so a version made for this pop still comes first.
+            const bool regrade = l.chosen_ungraded && !graded_name.empty();
+            if (regrade) l.chosen_ungraded = false;
+            if (!let_go && (!settled || regrade) && l.gave_way_at < 0 && l.game_tricks &&
+                (regrade || episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name,
+                                                      l.game_trick ? l.game_trick->edits->pop : std::string_view{}, pop))) {
                 const CustomTrick* found = nullptr;
                 // Exact pop first; cycle eligible variants once per named trick in this attempt.
                 // By front foot: a trick is the same trick whichever way round the skater stands, and the
@@ -4144,7 +4258,7 @@ void on_animation(std::uintptr_t component) noexcept {
                         choice = l.attempt_variants.emplace(pick_key, pick).first;
                     }
                     found = variants[choice->second % variants.size()];
-                } else if (!name.empty() && l.stance_fallback_trick != name &&
+                } else if (!name.empty() && l.stance_fallback_trick != name && !(before_pop && pop.empty()) &&
                            std::any_of(l.game_tricks->begin(), l.game_tricks->end(), [&](const CustomTrick& t) {
                                return t.trick == name;
                            })) {
@@ -4183,6 +4297,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 if (found != l.game_trick) {
                     if (found) l.episode.select(at);
                     l.game_trick = found;
+                    l.chosen_ungraded = found && before_pop && graded_name.empty();
                     // Its clock starts looking for the game's clip of it.
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
@@ -4195,7 +4310,8 @@ void on_animation(std::uintptr_t component) noexcept {
                         l.latch_shape_ok = true;
                     }
                     l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1;
-                    l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear();
+                    l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear(); l.clock_why_time = -1;
+                    l.own_clock_fit = -1;
                     l.clock_fallback = !found || !found->native || found->native->models.empty();
                     if (found) {
                         const bool lead_matches = found->leads_right == live.leads_right;
@@ -4207,8 +4323,9 @@ void on_animation(std::uintptr_t component) noexcept {
                                      l.playback_front_foot ? "front foot" : "exact stance");
                     }
                     if (found)
-                        logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
-                                     pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air,
+                        logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {}), playing your {} ({}).", name,
+                                     pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time",
+                                     before_pop ? std::string("at the flick, before the pop") : std::format("{:.2f} s in the air", l.predicted_air),
                                      found->height.empty() ? found->name
                                                            : found->name + " as made for the " + found->height + " pop" +
                                                                  (found->any_pop || found->edits->pop.empty() ? " (it is on ANY pop)" : ""),
@@ -4239,17 +4356,32 @@ void on_animation(std::uintptr_t component) noexcept {
                 // Its Crossfade: its own (THIS TRICK: OWN), which skips the main one for it, or the main one (SETTINGS).
                 l.crossfade_now = std::clamp(played.crossfade.value_or(snap->crossfade), 0.1f, 0.8f);
                 // Standing back after the trick changed: the whole layer, over the same 120 ms.
-                const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
+                // Eased, as every other fade: straight, it started and stopped with a kink.
+                const float give_way = [&] {
+                    if (l.gave_way_at < 0) return 1.0f;
+                    const float u = std::clamp(static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f);
+                    return 1 - u * u * (3 - 2 * u);
+                }();
                 const auto& clip = *trick->clip;
                 // The game leads. Its own pose says which of its clips it plays and how far into it it is
                 // (NativeClock); the edits are laid on its pose at that time, eased in as it is found and out
                 // as the game moves into anything else. The brackets only mask the edits, as in the studio.
                 PlaybackSample sampled;
                 NativeClock::Reading reading;
+                bool held_for_next_pop = false; // let go into the next pop: drawn as it was then (hand_back_at_the_flick)
+                bool phase_clock = false;       // timed by the game's trick phase before the pop (clock_before_the_pop_by_trick_phase)
                 // Fourth's source-time fix: no separate catch slowdown beside the native board's clock.
                 if (!l.clock_fallback) {
                     reading = l.native_clock.update(l.pose, 1.0f / 60); // the game's own pose, before any edit
-                    if (!reading.locked && at - l.clock_selected_at > 0.25) {
+                    // Before the pop the game's pose leaving the clip is the game doing something else with the flick: the trick
+                    // looks for its clip again (its weight goes out meanwhile), rather than running on to its pop on its own.
+                    if (before_pop && reading.locked && reading.lost) {
+                        l.native_clock.start(trick->native);
+                        l.clock_locked_at = -1;
+                        reading = {};
+                    }
+                    // Its own clock only from the takeoff: before the pop nothing else says where the trick is.
+                    if (!reading.locked && !before_pop && at - l.clock_selected_at > 0.25) {
                         l.clock_fallback = true;
                         logging::log(Level::info, Channel::skater, "Animation Studio: the game's clip for {} was not found ({:.1f} degrees off); "
                                      "it plays on its own clock.", trick->name, reading.error);
@@ -4270,6 +4402,19 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (l.episode.contact.since) touch = *l.episode.contact.since;
                     else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch = l.episode.landing;
                     float time = reading.locked ? reading.time : -1.0f;
+                    // From the flick over the pop, until the pose clock has the clip: the game's own trick phase
+                    // (clock_before_the_pop_by_trick_phase; trick_phase_time says nothing much past the pop).
+                    const bool around_the_pop =
+                        before_pop || (l.episode.flicked >= 0 && l.episode.phase == PlaybackPhase::air && at - l.episode.takeoff < 0.1);
+                    if (!reading.locked && around_the_pop && clock_before_the_pop_by_trick_phase && played.source.kind == "native_asset")
+                        if (const auto by_phase = trick_phase_time(l.game.trick_phase, clip.duration(), clip.takeoff);
+                            by_phase && l.native_clock.own_error(l.pose, *by_phase) < before_pop_phase_degrees) {
+                            time = *by_phase;
+                            phase_clock = true;
+                        }
+                    // Timed before and not now (the pose a moment off the clip): on from there while its weight goes out, not
+                    // dropped for a frame (a frame with no packet starts a handover).
+                    if (time < 0 && l.clock_last_time >= 0 && around_the_pop) time = l.clock_last_time + 1.0f / 60;
                     const float up = clip.takeoff, down = clip.landing;
                     // On the game's clip of a higher pop than the trick was made on: from its catch (its own; else four fifths
                     // into its air, where a flip is done) the trick hands back to the game's own pose, crossfaded, and the game
@@ -4295,7 +4440,7 @@ void on_animation(std::uintptr_t component) noexcept {
                         }
                         if (up >= 0 && down > up && hand_back < 0) { // (on a higher pop it keeps its own pace to its catch)
                             // Fourth's high-pop fix: source seconds keep advancing after pose matching is lost.
-                            if (!touch) time = continued_air_time(time, up, down);
+                            if (!touch && !before_pop) time = continued_air_time(time, up, down);
                             else if (l.clock_touch_from >= 0 && l.clock_touch_from < down)
                                 time = std::max(time, landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from));
                         }
@@ -4308,7 +4453,12 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float edit_end = played.end >= 0 ? played.end : clip.duration();
                     std::string why;
                     if (l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail) why = "a grind";
-                    else if (touch && current_state && *current_state == 103) why = "the next pop";
+                    // The next pop: at the game's flick (its trick clip starts there, a tenth of a second before the crouch the
+                    // physics shows as 103).
+                    else if (touch && ((current_state && *current_state == 103) || (hand_back_at_the_flick && l.flicked))) why = next_pop_why;
+                    // Landing into a manual (the game's manual input on at the touchdown): straight into it, as the game goes
+                    // from its trick into its manual (10 ticks), never the trick's landing keys on the manual's pose first.
+                    else if (let_go_into_a_manual && touch && l.manual_now > 0) why = "a manual";
                     else if (time >= 0 && time >= edit_end - 0.5f / 60) why = "its end";
                     // Rolling after the touchdown looks like the end of every trick, so the clock holds its time there (a held
                     // pose): a trick with keys after its landing then held its last pose until the pose drifted away, seconds
@@ -4332,12 +4482,17 @@ void on_animation(std::uintptr_t component) noexcept {
                     }
                     if (!why.empty() && l.clock_why.empty()) {
                         l.clock_why = why;
+                        l.clock_why_time = time;
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go at {:.2f} s: {}.", trick->name, time, why);
                     }
                     if (!l.clock_why.empty()) why = l.clock_why; // once let go, it stays let go
+                    // Into the next pop what it hands back stays as it was drawn as the new pop began: run on, its landing keys
+                    // (a knee bending for the touchdown) went on into the new pop's crouch, the feet into the deck.
+                    held_for_next_pop = hand_back_at_the_flick && l.clock_why == next_pop_why && l.clock_why_time >= 0;
+                    if (held_for_next_pop) time = l.clock_why_time;
                     // In over 0.1 s, out over 0.3 s, both eased, so handing over to the game's next move (a manual, the
                     // next trick) is a smooth crossfade rather than a snap. The trick's end is eased into before it comes.
-                    const float target = reading.locked && why.empty() ? 1.0f : 0.0f;
+                    const float target = (reading.locked || phase_clock) && why.empty() ? 1.0f : 0.0f;
                     constexpr float step = 1.0f / 60, fade_in = 0.1f;
                     // SETTINGS > Tricks: Crossfade, or the trick's own (THIS TRICK: OWN), which skips the main one for it.
                     const float fade_out = l.clock_why == higher_pop_hand_back ? std::max(l.crossfade_now, 0.3f) : l.crossfade_now;
@@ -4353,6 +4508,14 @@ void on_animation(std::uintptr_t component) noexcept {
                     // saved while watched at x.5 played at half speed on its own clock).
                     sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), 1.0f, l.predicted_air, true, fit_keys_to_air);
                     if (sampled.time >= 0) sampled.time = std::min(clip.duration(), sampled.time);
+                    // As far as the game's pose is on the trick's own clip there (own_clock_follows_the_pose), eased so one odd
+                    // pose does not flicker it.
+                    if (own_clock_follows_the_pose && sampled.time >= 0) {
+                        const float fit = pose_fit_share(l.native_clock.own_error(l.pose, sampled.time));
+                        l.own_clock_fit = l.own_clock_fit < 0 ? fit : l.own_clock_fit + (fit - l.own_clock_fit) * 0.25f;
+                        sampled.weight *= l.own_clock_fit;
+                        diagnostic.own_clock_fit = l.own_clock_fit;
+                    }
                 }
                 // A trick made on one pop, on the game's clip of another (its pack says any pop): the keys laid on that clip's
                 // body - tucked otherwise on a higher pop - drew the legs through the board (renztre, low, on a high pop). It
@@ -4361,7 +4524,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 // the air is the game's.
                 {
                     const auto* pops = trick->native ? &trick->native->other_pop : nullptr;
-                    const bool other = pops && !l.clock_fallback && reading.locked && reading.clip > 0 &&
+                    // (Not before the pop: there the pops' clips are alike, and only the grade says which one the game plays.)
+                    const bool other = pops && !l.clock_fallback && !before_pop && reading.locked && reading.clip > 0 &&
                                        static_cast<std::size_t>(reading.clip) < pops->size() && (*pops)[static_cast<std::size_t>(reading.clip)];
                     constexpr float other_step = (1.0f / 60) / 0.15f;
                     l.other_pop = other ? std::min(1.0f, l.other_pop + other_step) : std::max(0.0f, l.other_pop - other_step);
@@ -4414,7 +4578,9 @@ void on_animation(std::uintptr_t component) noexcept {
                         // Towards the game's pose by the contact, eased; and never faster than raised_min_ease from where it
                         // is, so a rail seen late still eases in.
                         const float in = static_cast<float>(std::max(0.0, l.raised_contact_at - t_now));
-                        const float u = std::clamp(1 - in / raised_lead, 0.0f, 1.0f);
+                        // No sooner than the trick's catch (raised_lead_for): before it, only the game's own 8 ticks ahead.
+                        const float lead = raised_lead_for(sampled.time, trick->caught, raised_lead, rail_entry_after_the_catch);
+                        const float u = std::clamp(1 - in / lead, 0.0f, 1.0f);
                         const float target = u * u * (3 - 2 * u);
                         const float dt = l.raised_last >= 0 ? static_cast<float>(std::clamp(t_now - l.raised_last, 0.0, 0.05)) : 1.0f / 60;
                         if (target > l.raised_release) l.raised_release = std::min(target, l.raised_release + dt / raised_min_ease);
@@ -4423,8 +4589,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
                 diagnostic.clock_error = reading.error;
                 diagnostic.clock_clip = l.clock_fallback ? -2 : reading.clip;
-                diagnostic.clock_state = l.clock_fallback ? "own clock" : !reading.locked ? "looking" : !l.clock_why.empty() ? "let go"
-                                       : reading.lost ? "own pace" : "following";
+                diagnostic.clock_state = l.clock_fallback ? "own clock" : phase_clock ? "trick phase" : !reading.locked ? "looking"
+                                       : !l.clock_why.empty() ? "let go" : reading.lost ? "own pace" : "following";
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time) * give_way;
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
@@ -4450,6 +4616,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->lower_release = l.raised_release;
                     packet->motion = motion;
                     packet->caught = trick->caught;
+                    packet->held = held_for_next_pop;
                     // The board keys are authored in the board's own frame and played in it (nose-relative both
                     // times), so they need no turning for fakie. A deck turned round under him is the game's
                     // board-backwards flag, applied where the board is drawn.
@@ -4517,6 +4684,12 @@ void on_animation(std::uintptr_t component) noexcept {
             if (const double started = handover_at.load(std::memory_order_relaxed); started >= 0)
                 diagnostic.handover = static_cast<float>(now_seconds() - started);
             if (l.game.trick_phase) diagnostic.game_phase = *l.game.trick_phase;
+            if (l.flip_trick) diagnostic.flip_trick = trainer::flip_trick_name(*l.flip_trick);
+            diagnostic.flick = l.flicked;
+            diagnostic.raised = l.raised_release;
+            diagnostic.handover_kind = handover_kind_now.load(std::memory_order_relaxed);
+            diagnostic.ride_left = feet_ride_share[0].load(std::memory_order_relaxed);
+            diagnostic.ride_right = feet_ride_share[1].load(std::memory_order_relaxed);
             if (l.game.time_to_land) diagnostic.time_to_land = *l.game.time_to_land;
             if (l.game.trick_intent) diagnostic.trick_intent = *l.game.trick_intent ? 1 : 0;
             if (l.game.targeting_grind) diagnostic.targeting_grind = *l.game.targeting_grind ? 1 : 0;
@@ -4929,6 +5102,7 @@ void idle(double now) {
 } // namespace playback_verify
 
 void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept; // below
+bool ride_feet_on_the_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept; // below
 bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motion, bool playing, std::span<const Joint> native,
                                    std::vector<Joint>& edited) noexcept; // below
 bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept;
@@ -5001,6 +5175,9 @@ struct Handover {
     double started{-1}; // the lock the handover runs from; -1 none
     Joint board{};      // air_board at the lock: what is left of it goes as the legs go
     float scale{1};     // how much slower than the game's grind lock it goes (the Crossfade, off a rail)
+    HandoverKind kind{};  // what it hands over into (the bug report's handover_kind)
+    bool held{};          // into the next pop: the trick it leaves stays where it was (hand_back_at_the_flick)
+    bool before_catch{};  // onto a rail before the trick's catch: the arms and the back go over the game's 30 ticks
     std::array<Joint, 2> feet{}; // each foot on the board as drawn at the lock
     bool feet_ok{}, feet_taken{};
     // The lean onto a rail (board pass): the game's board's heading under him, frame to frame.
@@ -5024,9 +5201,10 @@ bool handover_running(Handover& h, double now, std::uint64_t generation, MotionS
     if (packet || motion == MotionState::unknown || motion == MotionState::offboard) {
         h.started = -1; // a trick plays, or he is off the board (a bail): no handover
         handover_at.store(-1, std::memory_order_relaxed);
+        handover_kind_now.store("", std::memory_order_relaxed);
         return false;
     }
-    if (h.started >= 0 && now - h.started > handover_torso * h.scale + 0.02) {
+    if (h.started >= 0 && now - h.started > handover_longest(h.before_catch) * h.scale + 0.02) {
         h.started = -1;
         h.outgoing.reset();
     }
@@ -5039,8 +5217,16 @@ bool handover_running(Handover& h, double now, std::uint64_t generation, MotionS
         h.scale = motion == MotionState::rail ? 1.0f : std::clamp(trick_blend.load(std::memory_order_relaxed) / 0.1f, 1.0f, 4.0f);
         h.board = now - h.air_board_at < 0.15 ? h.air_board : Joint{};
         h.feet_taken = h.feet_ok = false;
+        // Into the next pop - the trick let go at the flick, or was cut off by the next trick starting there - what it hands
+        // back is held as drawn.
+        const double flick = last_flick_at.load(std::memory_order_relaxed);
+        h.held = hand_back_at_the_flick && motion != MotionState::rail &&
+                 (h.outgoing->held || (flick >= 0 && now - flick >= -0.05 && now - flick < 0.3));
+        h.kind = handover_kind(motion == MotionState::rail, h.outgoing->time, h.outgoing->caught, h.held);
+        h.before_catch = rail_entry_after_the_catch && h.kind == HandoverKind::rail_before_catch;
     }
     handover_at.store(h.started, std::memory_order_relaxed);
+    handover_kind_now.store(h.started >= 0 ? handover_kind_name(h.kind) : "", std::memory_order_relaxed);
     return h.started >= 0;
 }
 // `k` of a joint's change: its turn (short way: a pose's joints) and its move.
@@ -5086,8 +5272,8 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
         if (!h.outgoing || !h.outgoing->edits || native.size() < skeleton_joints || edited.size() < skeleton_joints) return false;
         const auto& out = *h.outgoing;
         const float elapsed = static_cast<float>(now - h.started) / std::max(h.scale, 0.1f);
-        // The trick it leaves, on at its own pace.
-        float t = out.time + static_cast<float>(std::max(0.0, now - out.at));
+        // The trick it leaves, on at its own pace; into the next pop as it was drawn when it let go (Handover::held).
+        float t = h.held ? out.time : out.time + static_cast<float>(std::max(0.0, now - out.at));
         if (out.clip) t = std::min(t, out.clip->duration());
         std::vector<Joint> leaving(native.begin(), native.end());
         const auto studio = fakie_upper_base(out, t, out.weight, leaving, out.match > 0);
@@ -5100,7 +5286,7 @@ bool hand_over_body(Handover& h, double now, std::span<const Joint> native, std:
         for (const auto& joint : editable_joints()) {
             const auto j = joint.index;
             if (j >= left.size()) continue;
-            float k = handover_left(j, elapsed);
+            float k = handover_left(j, elapsed, h.before_catch);
             if (std::find(grind_lower_body.begin(), grind_lower_body.end(), j) != grind_lower_body.end()) k *= 1 - released;
             left[j].rotation = slerp(Quat{0, 0, 0, 1}, left[j].rotation, k);
             for (std::size_t c = 0; c < 3; ++c) left[j].offset[c] *= k;
@@ -5168,6 +5354,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
         if (packet) playback_verify::stash(*packet, presentation, native, now_seconds());
         else playback_verify::idle(now_seconds());
         auto edited = native;
+        if (!packet) for (auto& share : feet_ride_share) share.store(0, std::memory_order_relaxed);
         if (packet) {
             // A trick set to fakie or switch fakie: its upper body mirrored in first (fakie_upper_base).
             const auto studio = fakie_upper_base(*packet, packet->time, packet->weight, edited, packet->match > 0);
@@ -5191,6 +5378,8 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                 edited.assign(native.begin(), native.end());
                 apply_pose_deltas(lower, edited);
             }
+            // The feet ride on the board where the studio has them standing on it (feet_ride_the_board); then the floor.
+            (void)ride_feet_on_the_board(*packet, native, edited);
             seat_feet_on_board(*packet, native, edited);
         }
         const auto desired_deltas = pose_edit_deltas(native, edited);
@@ -5774,9 +5963,13 @@ bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater
         if (!packet.board_holder || !packet.board_owned || !packet.board_frame_valid || !packet.clip || !packet.edits || skater.size() < 2) return false;
         Joint native_mount;
         if (!games_board_now(packet.board_holder, native_mount)) return false;
-        // On a rail (and off the board) its pass leaves the game's board as it is.
+        // Off the board its pass leaves the game's board as it is. On a rail too, unless rail_feet_on_the_drawn_board: there the
+        // board pass draws a saved grind loop's board keys (apply_gameplay_board), and the feet were seated on the game's flat
+        // board under a tilted one drawn over it.
         const auto motion = packet.motion != MotionState::unknown ? packet.motion : l.render_motion.load(std::memory_order_acquire);
-        if (!overrides_allowed.load() || motion == MotionState::rail || motion == MotionState::unknown || motion == MotionState::offboard) {
+        const bool rail = motion == MotionState::rail;
+        if (!overrides_allowed.load() || (rail && !rail_feet_on_the_drawn_board) || motion == MotionState::unknown ||
+            motion == MotionState::offboard) {
             out = native_mount;
             return finite(out);
         }
@@ -5784,10 +5977,8 @@ bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater
         Joint frame;
         frame.rotation = normalised(multiply(placement.rotation, packet.board_frame_local));
         auto target = board_edited(native_mount, *packet.edits, packet.time, ground_turn(frame));
-        if (motion == MotionState::riding) {
-            const auto shape = board_shape(*packet.clip);
-            (void)keep_board_above(target, shape, lowest_point(native_mount, shape));
-        }
+        const auto shape = board_shape(*packet.clip);
+        if (motion == MotionState::riding) (void)keep_board_above(target, shape, lowest_point(native_mount, shape));
         // Ahead of a rail or a ledge the board goes to the game's with the legs (lower_release, raised_lead), and as far as it
         // leans over to the game's turning it to a rail (rail_lean): the board as apply_gameplay_board draws it.
         const bool smooth = smooth_transitions.load(std::memory_order_relaxed);
@@ -5801,6 +5992,8 @@ bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater
             if (auto raw = board_key(*packet.edits, packet.time)) key = key_its_own_way(h, *raw, packet.episode, false);
         }
         out = part_of_the_trick_board(native_mount, native_mount, target, key, ground_turn(frame), w, smooth);
+        // As the board's pass leaves it after its fade: on a rail (and rolling) never lower than the game's board.
+        if (rail) (void)keep_board_above(out, shape, lowest_point(native_mount, shape));
         return finite(out);
     } catch (...) {
         return false;
@@ -5865,6 +6058,69 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
             if (!finite(games)) continue;
             const auto want = compose(board, foot_sliding_to_the_games(body.feet_on_board_at_lock[i], games, fade_left));
             place_foot(edited, feet[i], want.position, &want.rotation, 1.0f);
+            moved = true;
+        }
+        return moved;
+    } catch (...) {
+        return false;
+    }
+}
+// The feet ride on the board (foot_on_deck_share, foot_on_the_board, feet_ride_the_board): each foot the studio shows standing
+// on the deck at the trick's time goes where the game has it on the game's board, moved as the keys move it on the studio's
+// board, onto the board drawn this frame - as far as the studio's foot stands on its deck, the trick is in, the leg is the
+// trick's (limbs) and its legs have not gone to the game's ahead of a rail (lower_release). Returns whether a foot moved.
+bool ride_feet_on_the_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept {
+    for (auto& share : feet_ride_share) share.store(0, std::memory_order_relaxed);
+    try {
+        if (!feet_ride_the_board || !(packet.weight > 0) || !packet.clip || !packet.edits || packet.clip->joints != skeleton_joints ||
+            packet.clip->board.empty() || edited.size() < skeleton_joints || native.size() < skeleton_joints)
+            return false;
+        const float t = std::clamp(packet.time, 0.0f, packet.clip->duration());
+        const float share = std::min(packet.weight, 1.0f) * (1 - std::clamp(packet.lower_release, 0.0f, 1.0f)) *
+                            (1 - std::clamp(packet.match_rest, 0.0f, 1.0f));
+        if (!(share > 0.001f)) return false;
+        Joint drawn, games;
+        if (!drawn_board_now(packet, native, drawn) || !games_board_now(packet.board_holder, games)) return false;
+        // The studio's skater and board at this time, as the studio shows them: the clip (mirrored with the keys when they are),
+        // its board nose forward as the game draws it (turned round when the deck was), without and with the keys.
+        thread_local std::vector<Joint> made, keyed;
+        made = studio_pose(*packet.clip, t, packet.mirrored);
+        Joint rel;
+        if (made.size() < skeleton_joints || !packet.clip->sample_board(t, rel)) return false;
+        rel = nose_forward(*packet.clip, rel);
+        if (packet.mirrored) rel = mirror_board_pose(rel);
+        if (packet.board_backwards) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
+        const auto placement = world(made, placement_joint);
+        const auto board_made = compose(placement, rel);
+        keyed = made;
+        apply_edits(*packet.edits, t, keyed);
+        if (packet.limits) limit_keyed_joints(*packet.edits, t, keyed);
+        Joint frame;
+        frame.rotation = normalised(multiply(placement.rotation, packet.board_frame_local));
+        const auto board_keyed = board_edited(board_made, *packet.edits, t, ground_turn(frame));
+        if (!finite(board_made) || !finite(board_keyed)) return false;
+        const auto shape = board_shape(*packet.clip);
+        const Vec3 up = unit(shape.up);
+        const Vec3 along = unit(Vec3{shape.points[0][0] - shape.points[1][0], shape.points[0][1] - shape.points[1][1], shape.points[0][2] - shape.points[1][2]});
+        const Vec3 across = unit(cross(up, along));
+        constexpr std::array<std::pair<std::uint16_t, std::uint16_t>, 2> legs{{{left_foot_joint, 341}, {right_foot_joint, 8}}};
+        bool moved = false;
+        for (std::size_t i = 0; i < legs.size(); ++i) {
+            const auto [foot, thigh] = legs[i];
+            const auto on_made = relative(board_made, world(made, foot)), on_keyed = relative(board_keyed, world(keyed, foot));
+            const auto on_games = relative(games, world(native, foot));
+            if (!finite(on_made) || !finite(on_keyed) || !finite(on_games)) continue;
+            const auto& p = on_keyed.position;
+            const Vec3 sole = rotate(on_keyed.rotation, deck_guard::down);
+            const float tilt = std::acos(std::clamp(-(sole[0] * up[0] + sole[1] * up[1] + sole[2] * up[2]), -1.0f, 1.0f)) * 57.2957795f;
+            const float stands = foot_on_deck_share(p[0] * up[0] + p[1] * up[1] + p[2] * up[2], p[0] * along[0] + p[1] * along[1] + p[2] * along[2],
+                                                    p[0] * across[0] + p[1] * across[1] + p[2] * across[2], tilt);
+            const float k = share * stands * std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
+            feet_ride_share[i].store(k, std::memory_order_relaxed);
+            if (!(k > 0.001f)) continue;
+            const auto want = compose(drawn, foot_on_the_board(on_games, on_made, on_keyed));
+            if (!finite(want)) continue;
+            place_foot(edited, foot, want.position, &want.rotation, k);
             moved = true;
         }
         return moved;
@@ -6005,7 +6261,14 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
                                 const float rate = std::abs(step) / static_cast<float>(now - h.heading_at);
                                 const bool flat = rotate(native_mount.rotation, Vec3{0, 1, 0})[1] > 0.9f;
                                 const bool caught = packet->caught >= 0 && packet->time >= packet->caught;
-                                h.turning = flat && caught && rate > rail_turn_degrees_per_second ? h.turning + 1 : 0;
+                                // A board turning that fast is the game lining it up with a rail - when the game says it aims at
+                                // one (once that state has been seen to work): a board turned in a trick that lands on flat ground
+                                // took the trick's legs and board away for the rest of it (leans with no grind after them, the
+                                // 2026-11-03 session).
+                                const bool aiming = !rail_entry_after_the_catch || !targeting_seen.load(std::memory_order_relaxed) ||
+                                                    !game_targeting_known.load(std::memory_order_acquire) ||
+                                                    game_targeting_grind.load(std::memory_order_acquire);
+                                h.turning = flat && caught && aiming && rate > rail_turn_degrees_per_second ? h.turning + 1 : 0;
                             }
                             h.heading = heading;
                             h.heading_at = now;
@@ -9047,6 +9310,9 @@ void set_hover_preview(bool on) {
     s.hover_preview = on;
     save_settings_locked(s);
     publish_locked(s, false);
+}
+float shown_in_game_from(float takeoff) noexcept {
+    return play_before_the_pop && takeoff > flick_clip_time ? flick_clip_time : takeoff;
 }
 void set_smooth_transitions(bool on) {
     auto& s = state();

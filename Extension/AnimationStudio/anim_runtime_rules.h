@@ -109,6 +109,51 @@ inline std::string trick_key(std::string_view name) {
     if (!nollie) return word;
     return word.empty() ? std::string("nollie") : "n_" + word;
 }
+// ---- before the pop: the trick as the game names it at the flick ------------------------------------------------------
+// The game starts its trick clip at the flick, not at the takeoff. Its Float.Anim.TrickPhase is the clip's time over its
+// length (0 to 1; 5 while no trick plays) and Bool.Intent.Trick comes on for that update: in every recorded pop it went from 5
+// to about 0.025 between 0.17 and 0.22 s before the board left the ground (the physics went to 200), the clip's own pop
+// mark (0.17 to 0.22 s into the game's trick clips) - and the trick's name the studio reads in the air came only 0.03 to
+// 0.05 s after the takeoff (bug report timelines, 2026-11-01). So everything a maker keyed before the pop was over before the
+// studio knew which trick it was. The game picks the clip at the flick by EnumGS.Anim.CurrentFlipTrick and EnumGS.PopHeight,
+// so both are known there.
+// Whether the game started a trick this update: its trick input came on, or its trick phase went back to the start.
+inline bool trick_flicked(std::optional<float> phase_before, std::optional<float> phase, std::optional<bool> intent_before,
+                          std::optional<bool> intent) noexcept {
+    if (intent && *intent && !intent_before.value_or(false)) return true;
+    if (!phase || !phase_before || !std::isfinite(*phase) || !std::isfinite(*phase_before)) return false;
+    return *phase >= 0 && *phase < 0.3f && *phase_before > *phase + 0.2f;
+}
+// A CurrentFlipTrick value's name ("Kickflip", "N_360Flip", trainer_gamestate.h flip_trick_name) as the studio's trick key,
+// the one the game says in the air (trick_key). The impossibles are named by the foot in the air ("bsimpossible",
+// "n_fsimpossible") where the flick list names the plain one by the trick: the ollie's impossible is the back foot's, the
+// nollie's the front foot's. Empty for no trick ("None") and for the ones no saved trick is made from (wallies, a held or
+// late flip). Only a guess until the air: the name the game says there decides, and a wrong guess gives way to it.
+inline std::string flip_trick_key(std::string_view game_name) {
+    if (game_name.empty() || game_name == "None" || game_name.starts_with("LateFlip") || game_name.starts_with("HeldFlip") ||
+        game_name.find("Wallie") != std::string_view::npos)
+        return {};
+    auto key = trick_key(game_name);
+    if (key == "impossible") return "bsimpossible";
+    if (key == "n_impossible") return "n_fsimpossible";
+    return key;
+}
+// Where the game's trick clip is when the flick shows (TrickPhase 0.0246 of a 2 s clip): before it, even the game shows its
+// own blend from riding into the trick, never the clip.
+inline constexpr float flick_clip_time = 0.05f;
+// The trick's time by the game's own TrickPhase, before the pop: the phase times the length of the game's clip (the edit's
+// own, made on it), up to a little past the pop. Never later: past the catch the phase still runs where the game has left the
+// clip (the 1.0.19 phase line jumped tricks to their landing that way). Empty when it does not say.
+inline std::optional<float> trick_phase_time(std::optional<float> phase, float duration, float takeoff) noexcept {
+    if (!phase || !std::isfinite(*phase) || *phase < 0 || *phase >= 1 || !(duration > 0) || !std::isfinite(duration)) return std::nullopt;
+    const float t = *phase * duration;
+    if (!(takeoff > 0) || t > takeoff + 0.05f) return std::nullopt;
+    return t;
+}
+// How long a trick begun at the flick waits for the board to leave the ground (the clips' pops come 0.17 to 0.22 s in): a
+// flick that never pops (a trick input the game turned into something else on the ground) lets go after this.
+inline constexpr double before_pop_patience = 0.45;
+
 struct ContactWindow {
     std::optional<double> since;
     bool observe(double now, bool contact) noexcept {

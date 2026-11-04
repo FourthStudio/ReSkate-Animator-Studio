@@ -12086,17 +12086,29 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             }
         }
     }
-    // Before the pop the game has not named the trick yet, so keys there never play in game: that stretch is
-    // darker, and says why.
+    // Where the trick starts to show in game (studio::shown_in_game_from): from the game's flick, a little into the clip, when
+    // the game names the trick there; else from the pop. What comes before it never plays in game: that stretch is darker,
+    // and says why. After it the keys fade in (half the Crossfade), shown by the shade thinning out.
     if (v.has_clip && v.takeoff > 0) {
-        const float from = std::max(x_of(0), ruler_left), to = std::min(x_of(v.takeoff), ruler_right);
-        if (to > from) {
-            d->AddRectFilled(ImVec2(from, at.y + header_h), ImVec2(to, at.y + size.y), IM_COL32(0, 0, 0, 90));
-            // Said on the stretch itself (no hover box: the studio has none), when there is room for it.
-            const char* why = "BEFORE THE POP: NOT IN GAME";
-            const auto tw = text_size(f.bold, 10 * k, why);
-            if (to - from > tw.x + 16 * k) text(d, f.bold, 10 * k, ImVec2(from + 8 * k, at.y + size.y - tw.y - 8 * k), IM_COL32(255, 255, 255, 90), why);
+        const float shown = studio::shown_in_game_from(v.takeoff);
+        const float top = at.y + header_h, bottom = at.y + size.y;
+        const float from = std::max(x_of(0), ruler_left), to = std::min(x_of(shown), ruler_right);
+        if (to > from) d->AddRectFilled(ImVec2(from, top), ImVec2(to, bottom), IM_COL32(0, 0, 0, 90));
+        const float fade = 0.1f + 0.5f * v.trick_crossfade.value_or(v.crossfade);
+        const float fade_from = std::max(x_of(shown), ruler_left), fade_to = std::min(x_of(shown + fade), ruler_right);
+        if (fade_to > fade_from) {
+            const float a = x_of(shown), b = x_of(shown + fade);
+            const auto alpha = [&](float x) { return static_cast<int>(70 * std::clamp(1 - (x - a) / std::max(b - a, 1.0f), 0.0f, 1.0f)); };
+            d->AddRectFilledMultiColor(ImVec2(fade_from, top), ImVec2(fade_to, bottom), IM_COL32(0, 0, 0, alpha(fade_from)),
+                                       IM_COL32(0, 0, 0, alpha(fade_to)), IM_COL32(0, 0, 0, alpha(fade_to)), IM_COL32(0, 0, 0, alpha(fade_from)));
         }
+        // Said on the stretch itself (no hover box: the studio has none), when there is room for it: before the pop it plays
+        // from the game's flick, or not at all.
+        const bool from_flick = shown < v.takeoff;
+        const char* why = from_flick ? "BEFORE THE POP: IN GAME FROM THE FLICK" : "BEFORE THE POP: NOT IN GAME";
+        const float room = std::min(x_of(v.takeoff), ruler_right) - from;
+        const auto tw = text_size(f.bold, 10 * k, why);
+        if (room > tw.x + 16 * k) text(d, f.bold, 10 * k, ImVec2(from + 8 * k, bottom - tw.y - 8 * k), IM_COL32(255, 255, 255, 90), why);
     }
     // CATCH: where the trick is caught - the pose held in the air off a bigger drop or down stairs, before it plays on to
     // its landing. The studio finds it (AUTO CATCH); drag the flag to the frame to hold, double-click it for the

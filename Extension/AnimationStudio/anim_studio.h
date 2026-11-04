@@ -270,6 +270,9 @@ void set_crossfade(float seconds);
 // Transitions: SMOOTH, a trick hands over to a grind the way the game hands over its own (the board and legs first, then the
 // arms, then the back and head, the trick going on meanwhile); CLASSIC, it fades out over the Crossfade.
 void set_smooth_transitions(bool on);
+// Seconds into a trick's clip from which it shows in game: from the game's flick (a little after the clip's start) when tricks
+// begin there, else from its pop (`takeoff`). The timeline shades what comes before it.
+float shown_in_game_from(float takeoff) noexcept;
 // Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
 // elbows bend one way, nothing twists round) while you pose, and in game the arms, back and head stay in it too (the legs
 // play as keyed, against the board). Off, joints go where you push them.
