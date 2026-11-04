@@ -47,6 +47,9 @@ void download() noexcept;    // the popup's UPDATE NOW: download, check and inst
 void restart() noexcept;     // the popup's RESTART NOW: close the game, start it again with the new ReSkate.dll
 void cancel() noexcept;      // the popup's CANCEL (asked again at the next start)
 void open_folder() noexcept; // where the download went, in Explorer
+// SETTINGS > UPDATES > Going back: the folder ReSkate runs from in Explorer, ReSkate.dll.previous chosen (ReSkate.dll when
+// no update has kept one yet).
+void open_previous() noexcept;
 // The studio's popup is up: a newer version not answered yet, or a download going, done or failed and not put away.
 bool popup_wanted() noexcept;
 void close_popup() noexcept; // KEEP PLAYING / LATER / CLOSE
@@ -62,6 +65,14 @@ bool available() noexcept;   // this build looks for its own updates (it is the 
 // SETTINGS > STUDIO > Check for updates, saved with the profile (on unless switched off).
 bool checking() noexcept;
 void set_checking(bool on) noexcept;
+
+// `text` as the end of a sentence: a full stop added, unless it ends in one already (or in ! or ?). The errors come from
+// Windows and from the updater's own words, some ending in a full stop and some not ("..another process.." before).
+inline std::string as_sentence(std::string text) {
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    if (!text.empty() && text.back() != '.' && text.back() != '!' && text.back() != '?') text += '.';
+    return text;
+}
 
 // Whether version `a` is newer than `b` ("1.1.2" > "1.1.1"; a leading v and anything after a '+' or '-' left out).
 bool newer(std::string_view a, std::string_view b) noexcept;
