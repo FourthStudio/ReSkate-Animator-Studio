@@ -5800,7 +5800,9 @@ bool shop_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec
     // Labels at 0.4 of the height like every other button (0.3 made the LIBRARY's small buttons read a size smaller
     // than the rest), then fitted: shrunk a little when they run wide, and cut short with "..." past that, so a long
     // name never spills out of its button.
-    const float iw = icon ? 26 * k : 0, room = size.x - 2 * (size.y > 48 * k ? 26 : 18) * k - iw - (icon == 3 ? 27 * k : 0);
+    // `iw` is the icon's room (the arrow's too), as shop_button_width counts it. A little slack in the checks: a button
+    // sized by shop_button_width can come out a few thousandths short after the float maths.
+    const float iw = icon ? 26 * k : 0, room = size.x - 2 * (size.y > 48 * k ? 26 : 18) * k - iw + 0.5f;
     float fs = std::min(15 * k, size.y * 0.4f), sp = 0.5f * k;
     float tw = spaced_width(mont(f, fs), fs, label, sp);
     std::string fitted;
@@ -10076,7 +10078,8 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
         // The icon, big, running off the corner: the tile is its frame.
         ImGui::PushClipRect(ImVec2(ta.x + 6 * k, ta.y + 6 * k), ImVec2(tb.x - 6 * k, tb.y - 6 * k), true);
         const float side = tile_h * 1.28f;
-        const ImVec2 ia(tb.x - side * 0.80f, ta.y - tile_h * 0.04f);
+        // 12 in from the right edge: the camera and the shoe ran into the tile's edge at 4:3.
+        const ImVec2 ia(tb.x - side * 0.80f - 12 * k, ta.y - tile_h * 0.04f);
         if (i >= static_cast<int>(icons.size()) || !draw_studio_picture(d, icons[static_cast<std::size_t>(i)], ia, ImVec2(ia.x + side, ia.y + side), white))
             tile_picture(d, i, ImVec2(tb.x - tile_h * 1.1f, ta.y + tile_h * 0.1f), ImVec2(tb.x, tb.y), lit);
         ImGui::PopClipRect();
@@ -10084,7 +10087,7 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
         text(d, f.heading, 34 * k, ImVec2(ta.x + 26 * k, ta.y + 20 * k), ink, settings_pages[static_cast<std::size_t>(i)]);
         // The words stop short of where the icon's white strokes begin (about a tenth into its box), so grey text never
         // sits on white art on narrower screens.
-        const float text_w = std::min(tile_w * 0.48f, (tb.x - side * 0.72f) - (ta.x + 28 * k) - 12 * k);
+        const float text_w = std::min(tile_w * 0.42f, (tb.x - side * 0.72f - 12 * k) - (ta.x + 28 * k) - 12 * k);
         paragraph(d, f.bold, 14 * k, ImVec2(ta.x + 28 * k, ta.y + 66 * k), text_w, lit ? IM_COL32(8, 8, 10, 220) : soft,
                   settings_blurbs[static_cast<std::size_t>(i)]);
         if (lit && nav().keys) chosen_outline(d, ta, tb, k);
@@ -12411,6 +12414,12 @@ void joint_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at,
             for (std::size_t i = 0; i < 3; ++i) position[i] = v.board_base.position[i] + offset.offset[i];
             euler = studio::to_euler(studio::multiply(offset.rotation, v.board_base.rotation));
         }
+        // An untouched joint shows 0.0, not "-0.0": what rounds to zero at the shown precision is shown as zero (only the
+        // shown number; a drag still starts from it and writes what it is dragged to).
+        for (auto& e : euler)
+            if (std::abs(e) < 0.05f) e = 0;
+        for (auto& p : position)
+            if (std::abs(p) < 0.0005f) p = 0;
         ImGui::PushStyleColor(ImGuiCol_Text, white);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(36, 38, 44, 255));
         ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(52, 56, 64, 255));
@@ -12847,7 +12856,8 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     const ImVec2 psize(pw.x + 34 * k, 32 * k), pa(corner.x - psize.x, corner.y);
     if (action(d, f, "##trickpanel", pa, psize, pill, Look::dark, true, u.trick_panel)) u.trick_panel = !u.trick_panel;
     if (!u.trick_panel) return;
-    const float w = 420 * k, row = 76 * k;
+    // 82 a section: its note sits under its button (at 50; at 44 it ran through the button's bottom edge).
+    const float w = 420 * k, row = 82 * k;
     // (DROP PREVIEW is gone, 2026-10-29: it played the trick as off a drop here, which read as a setting of the trick and led to
     // wrong keys.)
     const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 4 * row);
@@ -12860,7 +12870,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         const auto vw = text_size(f.bold, 14 * k, value.c_str());
         text(d, f.bold, 14 * k, ImVec2(value_right - vw.x, y), enabled ? soft : faint, value);
     };
-    const auto note = [&](const char* words) { text(d, f.bold, 11 * k, ImVec2(x, y + 44 * k), faint, elide(f.bold, 11 * k, words, bw)); };
+    const auto note = [&](const char* words) { text(d, f.bold, 11 * k, ImVec2(x, y + 50 * k), faint, elide(f.bold, 11 * k, words, bw)); };
     head("MODIFIER HINT", v.modifier_hint ? "ON" : "OFF", !v.previewing, x + bw);
     if (action(d, f, "##modifierhint", ImVec2(x, y + 22 * k), ImVec2(bw, 24 * k),
                v.modifier_hint ? "RECOMMENDED FOR MODIFIERS" : "NO RECOMMENDATION", Look::ghost, !v.previewing))
