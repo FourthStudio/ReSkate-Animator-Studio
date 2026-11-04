@@ -1124,6 +1124,20 @@ void open_team_page(std::string_view team) {
     if (team.empty() || !std::all_of(team.begin(), team.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; })) return;
     ShellExecuteW(nullptr, L"open", widen(team_page(team)).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
+// The packs GET and UPDATE put in the library (by the names they have there), waiting for the LIBRARY to ask whether to
+// add each to a playlist (take_fresh_installs). Kept apart from the market's own state: only the install writes it.
+static std::mutex fresh_mutex;
+static std::vector<std::string> fresh_packs;
+static void note_fresh_install(const std::vector<std::string>& made) {
+    std::lock_guard lock(fresh_mutex);
+    for (const auto& pack : made)
+        if (!pack.empty() && std::find(fresh_packs.begin(), fresh_packs.end(), pack) == fresh_packs.end() && fresh_packs.size() < 64)
+            fresh_packs.push_back(pack);
+}
+std::vector<std::string> take_fresh_installs() {
+    std::lock_guard lock(fresh_mutex);
+    return std::exchange(fresh_packs, {});
+}
 void install(const std::string& full_name) {
     Pack pack;
     {
@@ -1205,6 +1219,7 @@ void install(const std::string& full_name) {
             if (!made.empty()) m.installed_as[pack.full_name] = made.front();
             save_lists_locked(m);
         }
+        note_fresh_install(made); // the LIBRARY asks whether to add it to a playlist
         result.message = "Installed " + pack.title + " " + pack.version + ". " + message;
     });
 }

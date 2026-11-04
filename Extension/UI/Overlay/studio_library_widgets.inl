@@ -51,36 +51,58 @@ void library_member_row(ImDrawList* d, const Fonts& f, const studio::View& v, co
         elide(body(f, 11 * k), 11 * k, origin, text_w));
     ImGui::PopID();
 }
+// WHAT PLAYS, across the top of every part of the LIBRARY: the playlist that plays by default and the one a held button
+// plays, each pressed to change it (the links a new player could not find on the page before), playback on or off, and
+// the setup guide again.
 void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
-    const float k = f.k;
+    auto& u = ui(); auto& route = u.library; const float k = f.k;
     const auto bind = studio::modifier_binding();
     const bool enabled = studio::modifier_mask(bind) != 0;
-    const float resume_w = v.play_in_game ? 0.f : 102 * k;
-    const float setup_w = 142 * k, guide_w = 142 * k, half = (b.x - a.x - setup_w - guide_w - resume_w - 24 * k) * 0.5f;
-    // NOW PLAYING: what plays by default and what plays while the button is held, on a strip of grip tape, the default one
-    // taped down with its name in the shop's capitals.
     library_sheet(d, f, a, b);
     masking_tape(d, f, {a.x + 2 * k, a.y + 3 * k}, 38 * k, 13 * k, -38, 401); // over the corner, clear of the words
-    const ImU32 paused = lib_warn;
-    lib_caps(d, f, {a.x + 22 * k, a.y + 11 * k}, 10 * k, v.play_in_game ? lib_blue : paused, v.play_in_game ? "PLAYS BY DEFAULT" : "PAUSED / DEFAULT");
-    text(d, anton(f, 19 * k), 19 * k, {a.x + 22 * k, a.y + 26 * k}, lib_ink,
-         elide(anton(f, 19 * k), 19 * k, upper(v.playlist_playing.empty() ? "the game's own animations" : v.playlist_playing), half - 32 * k));
-    d->AddLine({a.x + half, a.y + 10 * k}, {a.x + half, b.y - 10 * k}, IM_COL32(255, 255, 255, 40), 1.5f * k);
-    lib_caps(d, f, {a.x + half + 14 * k, a.y + 11 * k}, 10 * k, enabled && v.modifier_ready ? lib_blue : lib_ink_faint,
-             enabled ? !v.play_in_game ? "ON THE BUTTON / PAUSED" : !v.modifier_ready ? "ON THE BUTTON / NOT READY"
-                 : std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(bind.button)] : "ON THE BUTTON / OFF");
-    text(d, anton(f, 19 * k), 19 * k, {a.x + half + 14 * k, a.y + 26 * k}, bind.playlist.empty() ? lib_ink_faint : lib_ink,
-         elide(anton(f, 19 * k), 19 * k, upper(bind.playlist.empty() ? "nothing set" : bind.playlist), half - 24 * k));
-    if (!v.play_in_game && lib_button(d, f, "##resumeplayback", {b.x - setup_w - guide_w - resume_w, a.y + 9 * k}, {resume_w - 8 * k, 36 * k}, "RESUME", Look::blue))
-        studio::set_play_in_game(true);
+    const float guide_w = 96 * k, play_w = 152 * k;
+    const float slots_w = std::max(200 * k, b.x - a.x - guide_w - play_w - 36 * k), half = slots_w * 0.5f;
+    // A slot: its role in capitals, the playlist in Anton, CHANGE at its right; the whole of it is the button.
+    const auto slot = [&](const char* id, float x, float w, const std::string& role, ImU32 role_ink, const std::string& name, bool set) {
+        const ImVec2 sa(x, a.y + 5 * k), sb(x + w, b.y - 5 * k);
+        bool lit = false;
+        const bool pressed = hit(id, sa, sb, &lit);
+        if (lit) d->AddRectFilled(sa, sb, IM_COL32(255, 255, 255, 20));
+        if (lit && nav().keys) chosen_outline(d, sa, sb, k);
+        const float change_w = spaced_width(mont(f, 10 * k), 10 * k, "CHANGE >", 1.6f * k) + 10 * k;
+        lib_caps(d, f, {sb.x - change_w, a.y + 21 * k}, 10 * k, lit ? lib_blue : lib_ink_faint, "CHANGE >");
+        lib_caps(d, f, {x + 14 * k, a.y + 11 * k}, 10 * k, role_ink, role);
+        text(d, anton(f, 19 * k), 19 * k, {x + 14 * k, a.y + 26 * k}, set ? lib_ink : lib_ink_faint,
+             elide(anton(f, 19 * k), 19 * k, upper(name), w - change_w - 28 * k));
+        return pressed;
+    };
+    const bool playing = !v.playlist_playing.empty();
+    if (slot("##roledefault", a.x + 8 * k, half - 8 * k, v.play_in_game ? "PLAYS BY DEFAULT" : "PLAYS BY DEFAULT / PAUSED",
+             v.play_in_game && playing ? lib_blue : lib_warn, playing ? v.playlist_playing : "nothing yet - choose one", playing)) {
+        route.choosing_default = true;
+        route.settings_scroll = 0;
+    }
+    d->AddLine({a.x + half + 2 * k, a.y + 12 * k}, {a.x + half + 2 * k, b.y - 12 * k}, IM_COL32(255, 255, 255, 40), 1.5f * k);
+    const std::string held = std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(bind.button)];
+    if (slot("##rolebutton", a.x + half + 8 * k, half - 8 * k,
+             !enabled ? "WHILE A BUTTON IS HELD" : !v.play_in_game ? held + " / PAUSED" : !v.modifier_ready ? held + " / LOADING" : held,
+             enabled && v.modifier_ready && v.play_in_game ? lib_blue : lib_ink_faint, bind.playlist.empty() ? "not set up" : bind.playlist,
+             !bind.playlist.empty())) {
+        route.modifier_setup = true;
+        route.settings_scroll = 0;
+    }
+    // Playback on or off: every playlist at once (the game's own animations while it is off).
+    const float px = a.x + slots_w + 18 * k;
+    lib_caps(d, f, {px, a.y + 22 * k}, 10 * k, v.play_in_game ? lib_ink_soft : lib_warn, "PLAYBACK");
+    if (toggle(d, f, "##playback", {px + play_w - 76 * k, a.y + 13 * k}, v.play_in_game)) {
+        studio::set_play_in_game(!v.play_in_game);
+        say(v.play_in_game ? "Playback is off: the game's own animations play until you switch it on again."
+                           : "Playback is on: your playlists play in game.");
+    }
     // The setup guide again, whenever it is wanted (it shows by itself only while something is not set up).
-    if (lib_button(d, f, "##showguide", {b.x - setup_w - guide_w, a.y + 9 * k}, {guide_w - 10 * k, 36 * k}, "SETUP GUIDE", Look::ghost)) {
-        auto& u = ui();
+    if (lib_button(d, f, "##showguide", {b.x - guide_w - 6 * k, a.y + 10 * k}, {guide_w - 4 * k, 36 * k}, "GUIDE", Look::ghost)) {
         u.library_guide_hidden = u.library_guide_finished = false;
         u.library_guide_started = true;
-    }
-    if (lib_button(d, f, "##editmodifier", {b.x - setup_w, a.y + 9 * k}, {setup_w - 10 * k, 36 * k}, "BUTTON SETUP", Look::ghost)) {
-        ui().library.modifier_setup = true; ui().library.settings_scroll = 0;
     }
 }
 // A step's badge: a disc with its number in Anton, centred in it (done: the studio's blue with a tick; now: a blue ring;
@@ -109,12 +131,14 @@ void library_step(ImDrawList* d, const Fonts& f, ImVec2 at, int number, std::str
     step_badge(d, f, ImVec2(at.x + 15 * k, at.y + 12 * k), 14 * k, number, StepState::now);
     lib_caps(d, f, ImVec2(at.x + 40 * k, at.y + 5 * k), 15 * k, lib_ink, words, 1.8f);
 }
-// ---- the setup guide: a playlist made, animations in it, playing by default, tried in game ----
+// ---- the setup guide: a playlist made, tricks in it, playing by default, tried in game ----
 // For a player new to it the LIBRARY's parts (playlists, packs, what plays by default, the button) are a lot at once, so
 // until his tricks play the strip at the top walks him through it: four steps, the ones done ticked, the next one's own
-// button doing it for him (the page's own buttons do the same). It shows only while something is not set up (no
-// playlist, nothing playing by default, or what plays is empty), and once begun stays till TRY IT or put away.
-bool lib_guide_on = false; // this frame (the create and add pages say which step they are)
+// button doing it for him, and the same button on the page ringed in blue (lib_pulse) so he sees where it lives. It shows
+// only while something is not set up (no playlist, nothing playing by default, or what plays is empty), and once begun
+// stays till TRY IT or put away.
+bool lib_guide_on = false; // this frame
+int lib_guide_now = -1;    // and its step (library_guide_step), for the page's buttons to ring the one it means
 void library_start_create(); // studio_library_playlists.inl
 int library_guide_step(const studio::View& v) {
     if (v.playlists.empty()) return 0;
@@ -132,23 +156,31 @@ bool library_guide_wanted(const studio::View& v) {
 void library_guide_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui(); auto& route = u.library; const float k = f.k;
     library_sheet(d, f, a, b);
-    static constexpr std::array<const char*, 4> names{"MAKE A PLAYLIST", "ADD ANIMATIONS", "PLAY IT BY DEFAULT", "TRY IT IN GAME"};
-    static constexpr std::array<const char*, 4> next{"MAKE A PLAYLIST", "+ ADD ANIMATIONS", "PLAY IT BY DEFAULT", "CLOSE AND TRY IT"};
+    static constexpr std::array<const char*, 4> names{"MAKE A PLAYLIST", "ADD TRICKS", "PLAY IT BY DEFAULT", "TRY IT IN GAME"};
+    static constexpr std::array<const char*, 4> next{"MAKE A PLAYLIST", "+ ADD TRICKS", "PLAY IT BY DEFAULT", "CLOSE AND TRY IT"};
     const int step = library_guide_step(v);
-    const float mid = (a.y + b.y) * 0.5f;
+    const float mid = (a.y + b.y) * 0.5f, fs = 12 * k;
+    const float hide_w = 44 * k, next_w = 220 * k;
+    // Every step named when they fit; on a narrow screen only the one to do now is (the others are their numbers).
+    const float room = b.x - a.x - 92 * k - next_w - hide_w - 40 * k;
+    float all = 0;
+    for (const auto* name : names) all += 34 * k + spaced_width(mont(f, fs), fs, name, 1.4f * k) + 22 * k;
+    const bool every = all <= room;
     lib_caps(d, f, {a.x + 16 * k, mid - 6 * k}, 11 * k, lib_blue, "SET UP", 2.2f);
     float x = a.x + 92 * k;
     for (int i = 0; i < static_cast<int>(names.size()); ++i) {
         const StepState state = i < step ? StepState::done : i == step ? StepState::now : StepState::later;
         step_badge(d, f, {x + 13 * k, mid}, 13 * k, i + 1, state);
-        const float fs = 12 * k;
-        lib_caps(d, f, {x + 34 * k, mid - 7 * k}, fs, state == StepState::now ? lib_ink : state == StepState::done ? lib_ink_soft : lib_ink_faint,
-                 names[static_cast<std::size_t>(i)], 1.4f);
-        x += 34 * k + spaced_width(mont(f, fs), fs, names[static_cast<std::size_t>(i)], 1.4f * k) + 22 * k;
-        if (i + 1 < static_cast<int>(names.size())) d->AddLine({x - 14 * k, mid}, {x - 4 * k, mid}, IM_COL32(255, 255, 255, 60), 2 * k);
+        x += 30 * k;
+        if (every || i == step) {
+            lib_caps(d, f, {x + 4 * k, mid - 7 * k}, fs, state == StepState::now ? lib_ink : state == StepState::done ? lib_ink_soft : lib_ink_faint,
+                     names[static_cast<std::size_t>(i)], 1.4f);
+            x += 4 * k + spaced_width(mont(f, fs), fs, names[static_cast<std::size_t>(i)], 1.4f * k);
+        }
+        x += 22 * k;
+        if (i + 1 < static_cast<int>(names.size())) d->AddLine({x - 16 * k, mid}, {x - 6 * k, mid}, IM_COL32(255, 255, 255, 60), 2 * k);
     }
     // The next step's own button, and a way to put the guide away.
-    const float hide_w = 44 * k, next_w = std::min(240 * k, std::max(160 * k, b.x - x - hide_w - 30 * k));
     if (lib_button(d, f, "##guidenext", {b.x - hide_w - 14 * k - next_w, a.y + 9 * k}, {next_w, 38 * k}, next[static_cast<std::size_t>(step)], Look::blue)) {
         std::string m;
         switch (step) {
@@ -217,7 +249,7 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     if (!bind.playlist.empty() && lib_button(d, f, "##editmodifiercontent", {x, y}, {236 * k, 32 * k}, "EDIT THIS PLAYLIST", Look::ghost)) {
         studio::open_playlist(bind.playlist); route.select(bind.playlist); route.page = 0; route.modifier_setup = false;
     }
-    if (bind.playlist.empty()) y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w, lib_ink_faint, "Create a playlist in Library > Playlists first, then choose it here.");
+    if (bind.playlist.empty()) y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w, lib_ink_faint, "Make a playlist first (+ NEW PLAYLIST), then choose it here.");
     y += 52 * k;
     if (studio::modifier_mask(bind) && !v.modifier_ready)
         y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w - 8 * k, lib_warn,

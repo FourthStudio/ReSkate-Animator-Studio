@@ -337,6 +337,25 @@ struct Ui {
     std::uint64_t library_request_seen{};
     studio::LibraryNavigation library;
     std::optional<studio::PlaylistEntry> library_pending_source;
+    // The LIBRARY's reorder: an entry of the open playlist picked up by its grip, dragged with the mouse or carried with the
+    // pad or the arrow keys, and the place it would go (list_reorder.h). Found again by what it is (`entry`), so a list
+    // that changed under it drops it rather than moving another one.
+    struct LibraryCarry {
+        bool on{}, mouse{}, moved{};
+        std::string list;          // the playlist it is in
+        studio::PlaylistEntry entry;
+        std::size_t from{}, to{};
+        float press_y{};           // where the mouse went down on the grip
+        int frame{-1};             // the frame it was last drawn on: one left behind (the page went) is let go
+    } library_carry;
+    // "Add it to a playlist?": packs just got in the MARKET wait here (one card at a time); `offer_pack` is the one asked
+    // about now. NEW PLAYLIST... on that card, or on the SAVED card, types its name into `offer_name`. `save_offer_for`: the
+    // trick whose SAVED card had its question answered (or NOT NOW), so it is not asked again.
+    std::vector<std::string> offer_packs;
+    std::string offer_pack;
+    bool offer_naming{};
+    std::array<char, 64> offer_name{};
+    std::string save_offer_for;
     std::optional<studio::LibraryNavigation> preview_library_return;
     int preview_return_tab{-1};
     bool preview_return_pack_page{};
@@ -1597,6 +1616,10 @@ struct Nav {
     bool clipped{};
     int top{};                     // the highest layer drawn last frame: only that one can be chosen
     std::unordered_map<int, float> region_end; // each scrolled list's furthest scroll, as it was last frame
+    // A LIBRARY row picked up with the pad or the keys: while it is drawn (this frame or the last), up and down move it
+    // rather than the choice, and add up here until it takes them.
+    int carry_frame{-1};
+    int carried{};
 };
 Nav& nav() {
     static auto* n = new Nav;
@@ -1611,6 +1634,10 @@ const Spot* spot_of(ImGuiID id) {
 void nav_step(int dx, int dy) {
     auto& n = nav();
     n.keys = true;
+    if (n.carry_frame >= ImGui::GetFrameCount() - 1) {
+        n.carried += dy;
+        return;
+    }
     const Spot* from = spot_of(n.focus);
     if (from && from->layer != n.top) from = nullptr;
     if (from && from->sideways && dx != 0 && dy == 0) {
@@ -2452,7 +2479,8 @@ bool any_card_open(const studio::View& v) {
     const auto& u = ui();
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
            !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account || !u.reshare_pack.empty() ||
-           !u.playlist_for.empty() || !u.binding.empty() || v.loop_offer.has_value() || !v.guide_seen || studio::update::popup_wanted() || u.dev_key;
+           !u.playlist_for.empty() || !u.binding.empty() || v.loop_offer.has_value() || !v.guide_seen || studio::update::popup_wanted() || u.dev_key ||
+           !u.offer_pack.empty();
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -2490,6 +2518,7 @@ bool close_card(const studio::View& v) {
         u.cover_pack.clear();
         release_cover_art();
     } else if (!u.share_pack.empty()) u.share_pack.clear();
+    else if (!u.offer_pack.empty()) u.offer_pack.clear(), u.offer_naming = false; // NOT NOW
     else if (u.save_card) u.save_card = false;
     else if (!v.test_returned.empty()) studio::clear_test_returned();
     else return false;
@@ -2499,6 +2528,10 @@ bool close_card(const studio::View& v) {
 void menu_back(const studio::View& v) {
     auto& u = ui();
     if (close_card(v)) return;
+    if (u.library_carry.on) { // a LIBRARY row picked up: put back where it was
+        u.library_carry = {};
+        return;
+    }
     if (u.menu_tab == 0) {
         if (u.selecting) {
             u.selecting = false;
@@ -2576,6 +2609,7 @@ void save_now(const studio::View& v) {
     if (saved && first) {
         u.save_card = true;
         u.label_for.clear();
+        u.offer_naming = false;
     }
 }
 // Test in game: saved first when it has changes, then the studio closes and that trick plays until it is opened again.
@@ -10042,7 +10076,7 @@ float open_trick_tags(ImDrawList* d, const Fonts& f, const studio::View& v, ImVe
 void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     const float k = f.k;
-    const auto [a, b] = card_box(d, f, display, 860 * k, 620 * k, "SAVED");
+    const auto [a, b] = card_box(d, f, display, 860 * k, std::min(display.y - 60 * k, 700 * k), "SAVED");
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 92 * k;
     const auto name = v.name;
@@ -10050,7 +10084,17 @@ void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
     open_trick_tags(d, f, v, ImVec2(x, y));
     y += 36 * k;
     y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "It is in MY TRICKS. Give it a name you will know it by.") + 14 * k;
-    y += in_game_row(d, f, v, name, ImVec2(x, y), w) + 18 * k;
+    // A new trick plays in game only once it is in a playlist that plays: asked here, ADD first (library_offers' block).
+    // Answered, or in a playlist already, the line says where it plays instead.
+    if (u.save_offer_for != name && studio::playlists_containing(name).empty()) {
+        heading(d, f, ImVec2(x, y), w, "Play it in game?");
+        y += 34 * k;
+        bool answered = false;
+        y += offer_block(d, f, v, {"", name}, "My tricks", ImVec2(x, y), w, answered) + 18 * k;
+        if (answered) u.save_offer_for = name;
+    } else {
+        y += in_game_row(d, f, v, name, ImVec2(x, y), w) + 18 * k;
+    }
     heading(d, f, ImVec2(x, y), w, "Name it");
     y += 32 * k;
     if (u.label_for != name && !ImGui::IsAnyItemActive()) {
@@ -10701,6 +10745,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (!u.share_pack.empty()) share_card(d, f, v, display);
     else if (!u.delete_card.empty()) delete_card(d, f, v, display);
     else if (!u.reshare_pack.empty()) reshare_card(d, f, v, display);
+    else if (!u.offer_pack.empty()) offer_card(d, f, v, display);
     else if (u.save_card) save_card(d, f, v, display);
     else if (v.loop_offer) loop_card(d, f, v, display);
     else if (!v.test_returned.empty()) test_card(d, f, v, display);
@@ -12754,6 +12799,7 @@ void draw_animation_studio() {
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
     auto* d = ImGui::GetWindowDrawList();
     library_news();
+    library_offers(v); // a pack just got in the MARKET: "add it to a playlist?"
     if (u.menu) {
         u.menu_fade = std::min(1.0f, u.menu_fade + ImGui::GetIO().DeltaTime * 8);
         menu_backdrop(d, f, display, 0.6f + 0.4f * u.menu_fade);

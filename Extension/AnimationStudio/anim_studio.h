@@ -468,9 +468,14 @@ bool clear_playlist_entries(const std::string& target, std::string& message);
 bool undo_playlist_entries(const std::string& target, std::string& message);
 bool duplicate_playlist(const std::string& target, std::string& message);
 std::vector<std::string> playlists_containing(const std::string& animation);
+// The playlists a whole pack is in (the "add it to a playlist?" card is not shown for a pack already linked).
+std::vector<std::string> playlists_with_pack(const std::string& pack);
 void request_library(bool modifier_help = false);
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
+// The LIBRARY's drag: `entry` of playlist `target` goes to place `to` and those between shift by one (an insert, not a
+// swap). Found by what it is, so a list changed meanwhile cannot have another entry moved. UNDO puts it back.
+bool playlist_move_to(const std::string& target, const PlaylistEntry& entry, std::size_t to, std::string& message);
 void open_playlist(const std::string& name);   // the one LIBRARY > NOW PLAYING shows
 bool new_playlist(std::string& message);        // "Playlist N", empty and off, and opened
 bool new_playlist(const std::string& name, std::string& message);

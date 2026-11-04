@@ -8670,6 +8670,15 @@ std::vector<std::string> playlists_containing(const std::string& animation) {
         if (playlist_membership(list.entries, s.packs, animation).included()) out.push_back(list.name);
     return out;
 }
+std::vector<std::string> playlists_with_pack(const std::string& pack) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.library_read) read_library_locked(s);
+    std::vector<std::string> out;
+    for (const auto& list : s.playlists.lists)
+        if (std::any_of(list.entries.begin(), list.entries.end(), [&](const auto& e) { return e.pack == pack; })) out.push_back(list.name);
+    return out;
+}
 bool duplicate_playlist(const std::string& target, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -8721,8 +8730,15 @@ void playlist_move(std::size_t index, int by) {
     std::string message = s.playlist_open + ": order changed. UNDO restores it.";
     edit_playlist_locked(s, s.playlist_open, message, [&](auto& entries) {
         if (index >= entries.size() || to < 0 || to >= static_cast<std::ptrdiff_t>(entries.size())) return false;
-        std::swap(entries[index], entries[static_cast<std::size_t>(to)]); return true;
+        return move_to_index(entries, index, static_cast<std::size_t>(to));
     });
+}
+bool playlist_move_to(const std::string& target, const PlaylistEntry& entry, std::size_t to, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto what = entry.animation.empty() ? "the pack " + entry.pack : shown_name(s, entry.animation);
+    message = "Moved " + what + " to place " + std::to_string(to + 1) + " in " + target + ". UNDO puts it back.";
+    return edit_playlist_locked(s, target, message, [&](auto& entries) { return move_playlist_entry(entries, entry, to); });
 }
 void open_playlist(const std::string& name) {
     auto& s = state();
