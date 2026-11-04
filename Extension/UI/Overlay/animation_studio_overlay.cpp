@@ -10861,7 +10861,7 @@ void cover_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
         text(d, mont(f, 15 * k), 15 * k, ImVec2(pa.x + 20 * k, pa.y + 20 * k), soft, "Making it...");
     }
     paragraph(d, body(f, 13 * k), 13 * k, ImVec2(pa.x, pb.y + 18 * k), side, soft,
-              "This is the picture people see on your pack: in the MARKET, on Thunderstore, and in PACKS. Pick what is behind it, put its name on a banner "
+              "This is the picture people see on your pack: in the MARKET, on Thunderstore, and in your LIBRARY. Pick what is behind it, put its name on a banner "
               "in one of the shop's fonts, and stick a tag on it. Or use a picture of your own, as it is.");
     // ---- the choices ----
     const float ox = pb.x + 44 * k, ow = b.x - 34 * k - ox;
