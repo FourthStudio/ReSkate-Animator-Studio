@@ -2149,6 +2149,11 @@ bool face_studio_stance(State& s) {
         return false;
     }
 }
+// The snapshot the game's threads read, behind a lock of its own: they take it at every animation update, and with the
+// studio's lock they waited for whatever held that (a pack's import, the LIBRARY read again, the studio's screen copying
+// its view), a stall of the game's own thread each time.
+static std::mutex published_snapshot_mutex;
+static std::shared_ptr<const Snapshot> published_snapshot;
 void publish_locked(State& s, bool edits_changed = true) {
     if (face_studio_stance(s)) edits_changed = true;
     overrides_allowed.store(s.open || s.play_in_game, std::memory_order_release);
@@ -2182,12 +2187,15 @@ void publish_locked(State& s, bool edits_changed = true) {
     snap->room = s.room;
     snap->speed = s.edits.speed;
     s.snapshot = std::move(snap);
+    {
+        std::lock_guard lock(published_snapshot_mutex);
+        published_snapshot = s.snapshot;
+    }
     ++s.revision;
 }
 std::shared_ptr<const Snapshot> snapshot() {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    return s.snapshot;
+    std::lock_guard lock(published_snapshot_mutex);
+    return published_snapshot;
 }
 float duration_locked(const State& s) { return s.clip ? s.clip->duration() : 0.0f; }
 // The brackets' keys stay at nothing - 0, 0, 0 - on every joint, so the edits always come in from the game's own
@@ -9315,9 +9323,13 @@ std::string left_out_note(const std::vector<std::string>& names) {
                        names.size() == 1 ? "was" : "were", names.size() == 1 ? "is" : "are", list);
 }
 namespace {
+struct ZipContents;
+// A pack's zip read and every file in it checked (read_pack_zip, check_pack_zip): done before the studio's lock is taken.
+std::shared_ptr<ZipContents> read_checked_pack_zip(const std::filesystem::path& path); // below
 } // namespace
 bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message,
-                        std::vector<std::string>* made_packs = nullptr, const std::string& replace = {}); // below
+                        std::vector<std::string>* made_packs = nullptr, const std::string& replace = {},
+                        const std::shared_ptr<ZipContents>& ready = {}); // below
 bool share_pack(const std::string& pack_name, SharedPack& out, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -9366,9 +9378,16 @@ bool set_pack_description(const std::string& pack_name, const std::string& descr
     return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) { pack.description = utf8_prefix(description, 2000); });
 }
 bool import_pack_zip(const std::filesystem::path& zip, std::string& message, std::vector<std::string>* made, const std::string& replace) {
+    // Read and checked before the studio's lock is taken: half a second to most of a second for a 40-55 MB MARKET pack
+    // (measured 2026-11-04), which the game's own thread spent waiting for the lock (the studio's tick takes it every
+    // tick). A zip that fails here is read again under the lock, which says why.
+    std::shared_ptr<ZipContents> ready;
+    try {
+        ready = read_checked_pack_zip(zip);
+    } catch (...) {}
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    return import_zips_locked(s, {zip}, false, message, made, replace);
+    return import_zips_locked(s, {zip}, false, message, made, replace, ready);
 }
 std::filesystem::path studio_folder() { return library_folder(); }
 std::filesystem::path pack_export_folder() {
@@ -9409,7 +9428,7 @@ bool export_pack(const std::string& pack_name, std::string& message) {
 }
 
 bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message,
-                        std::vector<std::string>* made_packs, const std::string& replace);
+                        std::vector<std::string>* made_packs, const std::string& replace, const std::shared_ptr<ZipContents>& ready);
 bool import_packs(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -9498,6 +9517,21 @@ ZipContents read_pack_zip(const std::filesystem::path& path) {
     }
     return out;
 }
+// Every animation, and every pack, checked before any is written: a zip that fails leaves nothing of itself behind.
+void check_pack_zip(const ZipContents& zipped) {
+    for (const auto& [pack_name, text] : zipped.pack_files) (void)read_pack_json(Json::parse(text));
+    for (const auto& [name, pair] : zipped.found) {
+        if (pair.first.empty() || pair.second.empty()) throw std::runtime_error(name + " is missing its .json or .clip");
+        (void)from_json(pair.first);
+        const std::vector<std::uint8_t> clip(pair.second.begin(), pair.second.end());
+        if (trick_clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
+    }
+}
+std::shared_ptr<ZipContents> read_checked_pack_zip(const std::filesystem::path& path) {
+    auto zipped = std::make_shared<ZipContents>(read_pack_zip(path));
+    check_pack_zip(*zipped);
+    return zipped;
+}
 // Packs just installed play at once: packs play only from the playlist that is on, so they go in the playlist that is on,
 // or - when none is - in "My packs" (made if need be), which is switched on. Says what it did.
 std::string play_new_packs_locked(State& s, const std::vector<std::string>& packs) {
@@ -9513,7 +9547,7 @@ std::string play_new_packs_locked(State& s, const std::vector<std::string>& pack
 }
 } // namespace
 bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message,
-                        std::vector<std::string>* made_packs, const std::string& replace) {
+                        std::vector<std::string>* made_packs, const std::string& replace, const std::shared_ptr<ZipContents>& ready) {
     const auto folder = library_folder();
     const auto inbox = pack_import_folder(s);
     if (!s.library_read) read_library_locked(s);
@@ -9523,19 +9557,14 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
     std::vector<std::string> fresh_packs; // new here, not an update of one: they go in the playlist that plays
     for (const auto& path : zips) {
         try {
-            // Read it all first (under the studio's lock); nothing is written unless every file in it checks out.
-            auto zipped = read_pack_zip(path);
+            // Read it all first; nothing is written unless every file in it checks out. A single pack's zip from the MARKET
+            // comes read and checked already (import_pack_zip, outside the lock); the inbox's are read here.
+            const bool read_before = ready && zips.size() == 1;
+            auto zipped = read_before ? std::move(*ready) : read_pack_zip(path);
             auto& found = zipped.found;
             auto& pack_files = zipped.pack_files;
             auto& pack_pictures = zipped.pack_pictures;
-            // Check every animation, and every pack, before writing any: a zip that fails leaves nothing of itself behind.
-            for (const auto& [pack_name, text] : pack_files) (void)read_pack_json(Json::parse(text));
-            for (const auto& [name, pair] : found) {
-                if (pair.first.empty() || pair.second.empty()) throw std::runtime_error(name + " is missing its .json or .clip");
-                (void)from_json(pair.first);
-                const std::vector<std::uint8_t> clip(pair.second.begin(), pair.second.end());
-                if (trick_clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
-            }
+            if (!read_before) check_pack_zip(zipped);
             PackFileTransaction transaction(folder);
             std::set<std::string> removed_members, kept_edits;
             std::vector<std::string> new_packs;
