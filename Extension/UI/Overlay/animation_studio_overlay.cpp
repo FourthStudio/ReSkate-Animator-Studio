@@ -12416,10 +12416,10 @@ void joint_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at,
         }
         // An untouched joint shows 0.0, not "-0.0": what rounds to zero at the shown precision is shown as zero (only the
         // shown number; a drag still starts from it and writes what it is dragged to).
-        for (auto& e : euler)
-            if (std::abs(e) < 0.05f) e = 0;
-        for (auto& p : position)
-            if (std::abs(p) < 0.0005f) p = 0;
+        for (auto& angle : euler)
+            if (std::abs(angle) < 0.05f) angle = 0;
+        for (auto& along : position)
+            if (std::abs(along) < 0.0005f) along = 0;
         ImGui::PushStyleColor(ImGuiCol_Text, white);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(36, 38, 44, 255));
         ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(52, 56, 64, 255));
