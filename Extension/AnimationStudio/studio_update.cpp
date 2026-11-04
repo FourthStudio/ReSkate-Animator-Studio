@@ -267,6 +267,8 @@ void run_download() {
             st.step = step;
             st.failed_at = at;
             st.error = why;
+            // A download that failed its check is thrown away: nothing for OPEN FOLDER to show.
+            if (at < 2) st.saved_to.clear();
         });
         logging::log(Level::warning, Channel::runtime, "Animator Studio update {}: {}", version, why);
     };
@@ -428,6 +430,18 @@ void open_folder() noexcept {
     if (st.saved_to.empty()) return;
     const std::wstring arguments = L"/select,\"" + st.saved_to.wstring() + L"\"";
     ShellExecuteW(nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+}
+void open_previous() noexcept {
+    try {
+        const auto dll = own_dll();
+        if (dll.empty()) return;
+        auto previous = dll;
+        previous += L".previous";
+        std::error_code error;
+        const auto& chosen = std::filesystem::is_regular_file(previous, error) ? previous : dll;
+        const std::wstring arguments = L"/select,\"" + chosen.wstring() + L"\"";
+        ShellExecuteW(nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+    } catch (...) {}
 }
 bool popup_wanted() noexcept {
     const auto st = state();

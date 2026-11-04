@@ -5800,7 +5800,9 @@ bool shop_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec
     // Labels at 0.4 of the height like every other button (0.3 made the LIBRARY's small buttons read a size smaller
     // than the rest), then fitted: shrunk a little when they run wide, and cut short with "..." past that, so a long
     // name never spills out of its button.
-    const float iw = icon ? 26 * k : 0, room = size.x - 2 * (size.y > 48 * k ? 26 : 18) * k - iw - (icon == 3 ? 27 * k : 0);
+    // `iw` is the icon's room (the arrow's too), as shop_button_width counts it. A little slack in the checks: a button
+    // sized by shop_button_width can come out a few thousandths short after the float maths.
+    const float iw = icon ? 26 * k : 0, room = size.x - 2 * (size.y > 48 * k ? 26 : 18) * k - iw + 0.5f;
     float fs = std::min(15 * k, size.y * 0.4f), sp = 0.5f * k;
     float tw = spaced_width(mont(f, fs), fs, label, sp);
     std::string fitted;
@@ -9631,12 +9633,14 @@ std::vector<Setting> updates_settings() {
                                 : newer                       ? st.latest + "  -  NEW"
                                                               : st.latest,
                                 "The newest release of the Animator Studio on GitHub (FourthStudio/ReSkate-Animator-Studio), not counting test "
-                                "builds." + std::string(st.step == up::Step::failed ? " It could not be asked: " + st.error + "." : "")));
+                                "builds." + std::string(st.step == up::Step::failed ? " It could not be asked: " + up::as_sentence(st.error) : "")));
     {
+        // The one row that acts: it checks GitHub, or updates, or restarts, and its value says which it will do.
         Setting s = button_row("Update",
-                               "UPDATE NOW downloads the new ReSkate.dll, checks it against GitHub's SHA-256 and puts it in place of this one "
-                               "(kept as ReSkate.dll.previous), in the folder ReSkate runs from, step by step in the installer. Then KEEP "
-                               "PLAYING, or RESTART NOW to close the game and start it again with it.",
+                               "Checks GitHub for a newer Animator Studio; when there is one, UPDATE NOW downloads the new ReSkate.dll, checks it "
+                               "against GitHub's SHA-256 and puts it in place of this one (kept as ReSkate.dll.previous), in the folder ReSkate "
+                               "runs from, step by step in the installer. Then KEEP PLAYING, or RESTART NOW to close the game and start it "
+                               "again with it.",
                                [newer, installed, going, restart = st.can_restart] {
                                    if (newer) up::download();
                                    else if (going) up::show_popup();
@@ -9652,9 +9656,9 @@ std::vector<Setting> updates_settings() {
                   : st.step == up::Step::installing                                                  ? std::string("INSTALLING...")
                   : st.step == up::Step::restarting                                                  ? std::string("RESTARTING...")
                   : installed                                                                        ? std::string(st.can_restart ? "RESTART NOW TO USE IT" : "INSTALLED  -  RESTART THE GAME")
-                  : st.step == up::Step::current                                                     ? std::string("UP TO DATE")
+                  : st.step == up::Step::current                                                     ? std::string("UP TO DATE  -  CHECK AGAIN")
                   : st.step == up::Step::failed                                                      ? std::string("COULD NOT CHECK  -  TRY AGAIN")
-                                                                                                     : std::string("CHECK NOW");
+                                                                                                     : std::string("CHECK FOR UPDATES");
         rows.push_back(std::move(s));
     }
     if (newer || installed) {
@@ -9663,18 +9667,18 @@ std::vector<Setting> updates_settings() {
         s.value = "SEE " + st.latest;
         rows.push_back(std::move(s));
     }
-    {
-        Setting s = button_row("Check now", "Asks GitHub for the newest release now.", [] { up::check_now(); });
-        s.value = st.step == up::Step::checking ? "CHECKING..." : "CHECK";
-        rows.push_back(std::move(s));
-    }
     rows.push_back(on_off("Check at every start", up::checking(),
                           "At each start the studio asks GitHub whether a newer Animator Studio is out, and a note says so in game. "
                           "Nothing is downloaded or changed until you choose UPDATE NOW.",
                           [](bool on) { up::set_checking(on); }));
-    rows.push_back(info_setting("Going back", "RESKATE.DLL.PREVIOUS",
-                                "Each update keeps the version it replaced beside ReSkate.dll, as ReSkate.dll.previous. To go back: close the "
-                                "game, delete ReSkate.dll and rename ReSkate.dll.previous to ReSkate.dll."));
+    {
+        Setting s = button_row("Going back",
+                               "Each update keeps the version it replaced beside ReSkate.dll, as ReSkate.dll.previous. To go back: close the "
+                               "game, delete ReSkate.dll and rename ReSkate.dll.previous to ReSkate.dll. This shows it in its folder.",
+                               [] { up::open_previous(); });
+        s.value = "SHOW THE OLD VERSION";
+        rows.push_back(std::move(s));
+    }
     return rows;
 }
 // SETTINGS > BAILS: Real Bails (Extension/Skater/real_bails.h), the muscles in the ragdoll, and how they are tuned.
@@ -10076,7 +10080,8 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
         // The icon, big, running off the corner: the tile is its frame.
         ImGui::PushClipRect(ImVec2(ta.x + 6 * k, ta.y + 6 * k), ImVec2(tb.x - 6 * k, tb.y - 6 * k), true);
         const float side = tile_h * 1.28f;
-        const ImVec2 ia(tb.x - side * 0.80f, ta.y - tile_h * 0.04f);
+        // 12 in from the right edge: the camera and the shoe ran into the tile's edge at 4:3.
+        const ImVec2 ia(tb.x - side * 0.80f - 12 * k, ta.y - tile_h * 0.04f);
         if (i >= static_cast<int>(icons.size()) || !draw_studio_picture(d, icons[static_cast<std::size_t>(i)], ia, ImVec2(ia.x + side, ia.y + side), white))
             tile_picture(d, i, ImVec2(tb.x - tile_h * 1.1f, ta.y + tile_h * 0.1f), ImVec2(tb.x, tb.y), lit);
         ImGui::PopClipRect();
@@ -10084,7 +10089,7 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
         text(d, f.heading, 34 * k, ImVec2(ta.x + 26 * k, ta.y + 20 * k), ink, settings_pages[static_cast<std::size_t>(i)]);
         // The words stop short of where the icon's white strokes begin (about a tenth into its box), so grey text never
         // sits on white art on narrower screens.
-        const float text_w = std::min(tile_w * 0.48f, (tb.x - side * 0.72f) - (ta.x + 28 * k) - 12 * k);
+        const float text_w = std::min(tile_w * 0.42f, (tb.x - side * 0.72f - 12 * k) - (ta.x + 28 * k) - 12 * k);
         paragraph(d, f.bold, 14 * k, ImVec2(ta.x + 28 * k, ta.y + 66 * k), text_w, lit ? IM_COL32(8, 8, 10, 220) : soft,
                   settings_blurbs[static_cast<std::size_t>(i)]);
         if (lit && nav().keys) chosen_outline(d, ta, tb, k);
@@ -12044,8 +12049,9 @@ void adding_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
 // Whichever card is up, over everything.
 // A newer Animator Studio on GitHub (Extension/AnimationStudio/studio_update.h), as an installer: what it says about itself
 // and UPDATE NOW or LATER; then its steps - DOWNLOAD, VERIFY, INSTALL, DONE - with how far it is, where it goes (the
-// folder ReSkate runs from) and, done, KEEP PLAYING or RESTART NOW. Every message is wrapped inside the card and the
-// notes give way to it, so nothing runs into the buttons (the UI audit's #15).
+// folder ReSkate runs from) and, done, KEEP PLAYING or RESTART NOW. The card is as tall as what it holds: its notes box
+// fits the release's notes (scrolling past the tallest the screen allows), every message is wrapped inside it, and
+// nothing runs into the buttons (the UI audit's #15, the review's #10).
 void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
     namespace up = studio::update;
     auto& u = ui();
@@ -12058,20 +12064,16 @@ void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
     const bool going = st.step == up::Step::downloading || st.step == up::Step::verifying || st.step == up::Step::installing;
     const bool installer = step >= 0;
     const ImU32 red = IM_COL32(255, 140, 130, 255);
-    const auto [a, b] = card_box(d, f, display, 1040 * k, 800 * k,
-                                 restarting ? "RESTARTING" : installed ? "UPDATE INSTALLED" : install_failed ? "COULD NOT INSTALL" : failed ? "DOWNLOAD FAILED"
-                                 : going ? "INSTALLING UPDATE" : "UPDATE AVAILABLE");
-    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
-    float y = a.y + 92 * k;
-    y += paragraph(d, f.bold, 21 * k, ImVec2(x, y), w, white, "Animator Studio " + st.latest + " is out. You have " + st.running + ".") + 2 * k;
-    if (!st.title.empty()) {
-        text(d, f.bold, 14 * k, ImVec2(x, y), soft, elide(f.bold, 14 * k, st.title, w));
-        y += 26 * k;
-    }
-    // The buttons along the foot, and above them what the installer says: measured first, so the notes take what is left.
-    const float bh = 50 * k, bw = 260 * k, row = b.y - 26 * k - bh;
-    const auto tall = [&](ImFont* font, float size, const std::string& value) {
-        return sharp(font, size)->CalcTextSizeA(size, FLT_MAX, w, value.c_str()).y;
+    // The card's width as card_box makes it, so everything is measured before it is drawn.
+    const float card_w = std::min(1040 * k, display.x - 40 * k), w = card_w - 60 * k;
+    const auto tall = [&](ImFont* font, float size, float width, const std::string& value) {
+        return sharp(font, size)->CalcTextSizeA(size, FLT_MAX, width, value.c_str()).y;
+    };
+    // An error as a sentence of its own: a capital first, one full stop at its end.
+    const auto sentence = [](std::string text) {
+        text = up::as_sentence(std::move(text));
+        if (!text.empty() && text[0] >= 'a' && text[0] <= 'z') text[0] = static_cast<char>(text[0] - 'a' + 'A');
+        return text;
     };
     const auto mb = [](std::uint64_t bytes) { return std::format("{:.1f}", static_cast<double>(bytes) / (1024.0 * 1024.0)); };
     std::string say;     // what is happening, or what went wrong
@@ -12103,62 +12105,91 @@ void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
               " and runs from the next start. The old one is kept as ReSkate.dll.previous. " +
               (st.can_restart ? "KEEP PLAYING and it is there next time, or RESTART NOW to close the game and start it again with it."
                               : "Close the game and start it with ReSkateLauncher as usual to use it.");
-        if (!st.error.empty()) say += " " + st.error + ".";
+        if (!st.error.empty()) say += " " + sentence(st.error);
     } else if (restarting) {
         say = st.restarting_for < 12 ? "Closing the game. It starts again by itself in a few seconds, with Animator Studio " + st.latest + "."
                                      : "Waiting for the game to close. If it asks whether to quit, say yes: it starts again by itself. If it does not "
                                        "close, close it and start it with ReSkateLauncher as usual.";
     } else if (failed) {
-        say = (install_failed ? "It could not be installed: " + st.error + "." +
-                                    (st.saved_to.empty() ? std::string{}
-                                                         : " Nothing was changed. OPEN FOLDER shows the new ReSkate.dll to copy over ReSkate.dll yourself "
-                                                           "with the game closed.")
-                              : "The download did not work: " + st.error + ". TRY AGAIN goes on from where it stopped.");
+        // The error says what state it left things in; what can be done next follows it.
+        say = install_failed ? "It could not be installed: " + up::as_sentence(st.error) +
+                                   (st.saved_to.empty() ? std::string{}
+                                                        : " OPEN FOLDER shows the new ReSkate.dll to copy over ReSkate.dll yourself with the game closed.")
+                             : "The download did not work: " + up::as_sentence(st.error) +
+                                   (st.failed_at == 0 ? " TRY AGAIN goes on from where it stopped." : " TRY AGAIN downloads it again.");
         say_ink = red;
     }
-    // At most a handful of lines: a longer message is cut at the panel's foot rather than drawn over the buttons.
-    const float say_h = say.empty() ? 0.0f : std::min(tall(f.bold, 16 * k, say), 4 * 22 * k);
+    // What the installer says, at most a handful of lines: a longer message is cut at its foot, never drawn over the buttons.
+    const float say_h = say.empty() ? 0.0f : std::min(tall(f.bold, 16 * k, w, say), 4 * 22 * k);
     const float steps_h = installer ? 54 * k : 0.0f, bar_h = st.step == up::Step::downloading ? 22 * k : 0.0f;
     const float where_h = installer && !where.empty() ? 24 * k : 0.0f;
     const float panel_h = steps_h + say_h + (say_h > 0 ? 10 * k : 0.0f) + bar_h + where_h;
-    // What changed, as the release says it (its Markdown read plainly: headings in blue, bullets, no stars or backticks).
-    const ImVec2 la(x, y), lb(x + w, std::max(y + 60 * k, row - 18 * k - panel_h - (panel_h > 0 ? 12 * k : 0.0f)));
+    // What changed, as the release says it (its Markdown read plainly: headings in blue, bullets, no stars or backticks):
+    // measured (draw false) for the box's height, then drawn in it. Returns how tall it came out.
+    const std::string& notes = st.notes;
+    const auto notes_pass = [&](bool draw, float nx, float top, float nw) {
+        float ny = top;
+        const auto put = [&](ImFont* font, float size, ImVec2 at, float width, ImU32 ink, const std::string& value) {
+            return draw ? paragraph(d, font, size, at, width, ink, value) : tall(font, size, width, value);
+        };
+        std::size_t from = 0;
+        while (from <= notes.size() && !notes.empty()) {
+            auto to = notes.find('\n', from);
+            if (to == std::string::npos) to = notes.size();
+            std::string line = notes.substr(from, to - from);
+            from = to + 1;
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            std::string plain;
+            for (std::size_t i = 0; i < line.size(); ++i) {
+                if (line[i] == '`') continue;
+                if (line[i] == '*' && i + 1 < line.size() && line[i + 1] == '*') { ++i; continue; }
+                plain += line[i];
+            }
+            if (plain.empty()) { ny += 8 * k; if (from > notes.size()) break; continue; }
+            std::size_t hashes = 0;
+            while (hashes < plain.size() && plain[hashes] == '#') ++hashes;
+            if (hashes > 0) {
+                ny += 6 * k;
+                ny += put(f.heading, (hashes == 1 ? 22 : 18) * k, ImVec2(nx, ny), nw, blue_light, upper(plain.substr(std::min(plain.size(), hashes + 1)))) + 6 * k;
+            } else if (plain.rfind("- ", 0) == 0 || plain.rfind("* ", 0) == 0) {
+                if (draw) text(d, f.bold, 15 * k, ImVec2(nx, ny), blue_light, "-");
+                ny += put(f.body, 15 * k, ImVec2(nx + 18 * k, ny), nw - 18 * k, white, plain.substr(2)) + 4 * k;
+            } else {
+                ny += put(f.body, 15 * k, ImVec2(nx, ny), nw, white, plain) + 4 * k;
+            }
+            if (from > notes.size()) break;
+        }
+        if (notes.empty()) ny += put(f.body, 15 * k, ImVec2(nx, ny), nw, soft, "The release says nothing about what changed. Its page: " + st.page);
+        return ny - top;
+    };
+    // The card from the top down: its title and headline, the notes box (as tall as the notes, at least a few lines, at
+    // most what the screen leaves), the installer's panel, the buttons.
+    const std::string headline = "Animator Studio " + st.latest + " is out. You have " + st.running + ".";
+    const float head_h = 92 * k + tall(f.bold, 21 * k, w, headline) + 2 * k + (st.title.empty() ? 0.0f : 26 * k);
+    const float bh = 50 * k, bw = 260 * k, foot_h = 18 * k + bh + 26 * k;
+    const float panel_gap = panel_h > 0 ? 12 * k : 0.0f;
+    const float most_card = std::min(800 * k, display.y - 40 * k);
+    const float notes_h = notes_pass(false, 0, 0, w - 40 * k) + 20 * k;
+    const float box_h = std::clamp(notes_h, 160 * k, std::max(160 * k, most_card - head_h - panel_h - panel_gap - foot_h));
+    const auto [a, b] = card_box(d, f, display, 1040 * k, head_h + box_h + panel_h + panel_gap + foot_h,
+                                 restarting ? "RESTARTING" : installed ? "UPDATE INSTALLED" : install_failed ? "COULD NOT INSTALL" : failed ? "DOWNLOAD FAILED"
+                                 : going ? "INSTALLING UPDATE" : "UPDATE AVAILABLE");
+    const float x = a.x + 30 * k;
+    float y = a.y + 92 * k;
+    y += paragraph(d, f.bold, 21 * k, ImVec2(x, y), w, white, headline) + 2 * k;
+    if (!st.title.empty()) {
+        text(d, f.bold, 14 * k, ImVec2(x, y), soft, elide(f.bold, 14 * k, st.title, w));
+        y += 26 * k;
+    }
+    const float row = b.y - 26 * k - bh;
+    // The box ends where the panel and the buttons start, whatever height the card came out (card_box keeps it on screen).
+    const ImVec2 la(x, y), lb(x + w, std::max(y + 60 * k, std::min(y + box_h, row - 18 * k - panel_h - panel_gap)));
     d->AddRectFilled(la, lb, IM_COL32(8, 9, 11, 200));
     begin_region(240, ImVec2(la.x + 14 * k, la.y + 10 * k), ImVec2(lb.x - 8 * k, lb.y - 10 * k), u.update_scroll, k);
-    float ny = la.y + 10 * k - u.update_scroll;
-    const float nx = la.x + 16 * k, nw = w - 40 * k;
-    std::size_t from = 0;
-    const std::string& notes = st.notes;
-    while (from <= notes.size() && !notes.empty()) {
-        auto to = notes.find('\n', from);
-        if (to == std::string::npos) to = notes.size();
-        std::string line = notes.substr(from, to - from);
-        from = to + 1;
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-        std::string plain;
-        for (std::size_t i = 0; i < line.size(); ++i) {
-            if (line[i] == '`') continue;
-            if (line[i] == '*' && i + 1 < line.size() && line[i + 1] == '*') { ++i; continue; }
-            plain += line[i];
-        }
-        if (plain.empty()) { ny += 8 * k; if (from > notes.size()) break; continue; }
-        std::size_t hashes = 0;
-        while (hashes < plain.size() && plain[hashes] == '#') ++hashes;
-        if (hashes > 0) {
-            ny += 6 * k;
-            ny += paragraph(d, f.heading, (hashes == 1 ? 22 : 18) * k, ImVec2(nx, ny), nw, blue_light, upper(plain.substr(std::min(plain.size(), hashes + 1)))) + 6 * k;
-        } else if (plain.rfind("- ", 0) == 0 || plain.rfind("* ", 0) == 0) {
-            text(d, f.bold, 15 * k, ImVec2(nx, ny), blue_light, "-");
-            ny += paragraph(d, f.body, 15 * k, ImVec2(nx + 18 * k, ny), nw - 18 * k, white, plain.substr(2)) + 4 * k;
-        } else {
-            ny += paragraph(d, f.body, 15 * k, ImVec2(nx, ny), nw, white, plain) + 4 * k;
-        }
-        if (from > notes.size()) break;
-    }
-    if (notes.empty()) ny += paragraph(d, f.body, 15 * k, ImVec2(nx, ny), nw, soft, "The release says nothing about what changed. Its page: " + st.page);
-    end_region(d, ImVec2(la.x + 14 * k, la.y + 10 * k), ImVec2(lb.x - 8 * k, lb.y - 10 * k), ny + u.update_scroll - (la.y + 10 * k), u.update_scroll, k);
+    const float drawn = notes_pass(true, la.x + 16 * k, la.y + 10 * k - u.update_scroll, w - 40 * k);
+    end_region(d, ImVec2(la.x + 14 * k, la.y + 10 * k), ImVec2(lb.x - 8 * k, lb.y - 10 * k), drawn, u.update_scroll, k);
     // The installer: its four steps, each lit as it is reached, the one going on in blue, a failed one in red.
-    float py = lb.y + 12 * k;
+    float py = lb.y + panel_gap;
     if (installer) {
         static constexpr std::array<const char*, 4> names{"DOWNLOAD", "VERIFY", "INSTALL", "DONE"};
         const float gap = 10 * k, sw = (w - 3 * gap) / 4;
@@ -12411,6 +12442,12 @@ void joint_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at,
             for (std::size_t i = 0; i < 3; ++i) position[i] = v.board_base.position[i] + offset.offset[i];
             euler = studio::to_euler(studio::multiply(offset.rotation, v.board_base.rotation));
         }
+        // An untouched joint shows 0.0, not "-0.0": what rounds to zero at the shown precision is shown as zero (only the
+        // shown number; a drag still starts from it and writes what it is dragged to).
+        for (auto& angle : euler)
+            if (std::abs(angle) < 0.05f) angle = 0;
+        for (auto& along : position)
+            if (std::abs(along) < 0.0005f) along = 0;
         ImGui::PushStyleColor(ImGuiCol_Text, white);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(36, 38, 44, 255));
         ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(52, 56, 64, 255));
@@ -12847,7 +12884,8 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     const ImVec2 psize(pw.x + 34 * k, 32 * k), pa(corner.x - psize.x, corner.y);
     if (action(d, f, "##trickpanel", pa, psize, pill, Look::dark, true, u.trick_panel)) u.trick_panel = !u.trick_panel;
     if (!u.trick_panel) return;
-    const float w = 420 * k, row = 76 * k;
+    // 82 a section: its note sits under its button (at 50; at 44 it ran through the button's bottom edge).
+    const float w = 420 * k, row = 82 * k;
     // (DROP PREVIEW is gone, 2026-10-29: it played the trick as off a drop here, which read as a setting of the trick and led to
     // wrong keys.)
     const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 4 * row);
@@ -12860,7 +12898,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         const auto vw = text_size(f.bold, 14 * k, value.c_str());
         text(d, f.bold, 14 * k, ImVec2(value_right - vw.x, y), enabled ? soft : faint, value);
     };
-    const auto note = [&](const char* words) { text(d, f.bold, 11 * k, ImVec2(x, y + 44 * k), faint, elide(f.bold, 11 * k, words, bw)); };
+    const auto note = [&](const char* words) { text(d, f.bold, 11 * k, ImVec2(x, y + 50 * k), faint, elide(f.bold, 11 * k, words, bw)); };
     head("MODIFIER HINT", v.modifier_hint ? "ON" : "OFF", !v.previewing, x + bw);
     if (action(d, f, "##modifierhint", ImVec2(x, y + 22 * k), ImVec2(bw, 24 * k),
                v.modifier_hint ? "RECOMMENDED FOR MODIFIERS" : "NO RECOMMENDATION", Look::ghost, !v.previewing))

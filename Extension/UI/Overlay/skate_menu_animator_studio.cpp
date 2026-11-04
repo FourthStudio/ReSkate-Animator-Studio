@@ -394,8 +394,11 @@ void updates_card(SkateMenu& menu, const Model& model) {
         note((st.can_restart ? "Installed. KEEP PLAYING and it is there next time, or RESTART NOW to close the game and start it again with " + st.latest + "."
                              : "Installed. Close the game and start it with ReSkateLauncher to use " + st.latest + ".")
                  .c_str());
-    if (st.step == up::Step::install_failed) warn(("It could not be installed: " + st.error + ". Nothing was changed.").c_str());
-    else if (st.step == up::Step::download_failed) warn(("The download did not work: " + st.error + ". TRY AGAIN goes on from where it stopped.").c_str());
+    if (st.step == up::Step::install_failed) warn(("It could not be installed: " + up::as_sentence(st.error)).c_str());
+    else if (st.step == up::Step::download_failed)
+        warn(("The download did not work: " + up::as_sentence(st.error) +
+              (st.failed_at == 0 ? " TRY AGAIN goes on from where it stopped." : " TRY AGAIN downloads it again."))
+                 .c_str());
     // What can be done now: the one to press as the studio's own big blue button, the rest under it.
     if (st.step == up::Step::newer) {
         const auto label = "UPDATE TO " + st.latest + " NOW";
