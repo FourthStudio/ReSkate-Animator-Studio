@@ -3456,8 +3456,121 @@ void tricks_begin_at_the_flick_and_hand_over_the_games_way() {
               "With no keys on that foot it stands where the game has it on the board");
     }
 }
+// Inertialization from the pose that was shown (Bollo, GDC 2018), the deck under a foot, and the early start.
+void transitions_go_from_the_shown_pose() {
+    // The curve: from x0 with v0, to nothing with no speed and no acceleration at its end.
+    {
+        const float x0 = 0.6f, v0 = -1.5f, length = 0.4f;
+        const auto c = InertialCurve::make(x0, v0, length);
+        const float h = 1e-3f;
+        const auto speed = [&](float t) { return (c.at(t + h) - c.at(t - h)) / (2 * h); };
+        const auto accel = [&](float t) { return (c.at(t + h) - 2 * c.at(t) + c.at(t - h)) / (h * h); };
+        check(near(c.at(0), x0) && near((c.at(h) - c.at(0)) / h, v0, 0.05f), "It starts where the shown pose was, moving as it moved");
+        check(near(c.at(c.length), 0) && near(c.at(c.length + 1), 0) && std::abs(speed(c.length - 2 * h)) < 0.02f &&
+                  std::abs(accel(c.length - 3 * h)) < 1.0f,
+              "and ends on the new pose with no speed and no acceleration left");
+        bool never_past = true;
+        for (float t = 0; t <= c.length; t += 0.002f) never_past = never_past && c.at(t) >= -1e-4f && c.at(t) <= x0 + 1e-4f;
+        check(never_past, "never past the new pose, never further than it began");
+        const auto away = InertialCurve::make(0.5f, 3.0f, 0.3f);
+        check(away.v0 == 0 && near(away.length, 0.3f), "A difference growing at the change starts from standing (its speed away dropped)");
+        const auto quick = InertialCurve::make(0.1f, -10.0f, 0.4f);
+        check(near(quick.length, 0.05f) && quick.at(0.06f) == 0, "A fast one towards the pose is shortened so it cannot overshoot");
+        check(InertialCurve::make(0, 1, 0.3f).at(0.1f) == 0 && InertialCurve::make(0.2f, 0, 0).at(0) == 0, "Nothing to blend, nothing drawn");
+        check(near(inertial_left(0, 0.3f), 1) && near(inertial_left(0.3f, 0.3f), 0) && inertial_left(0.15f, 0.3f) < 0.5f &&
+                  near(inertial_left(0.1f, 0.3f), InertialCurve::make(1, 0, 0.3f).at(0.1f)),
+              "With no speed of its own it is the same curve: half way, most of the difference is gone");
+    }
+    // A pose: a knee shown bent 50 degrees more than the grind pose wants, still bending 1 rad/s towards it; the hips 12 cm off.
+    {
+        std::vector<Offset> shown(400), before(400), target(400);
+        shown[342].rotation = axis_angle({1, 0, 0}, 50 * 3.14159265f / 180);
+        before[342].rotation = axis_angle({1, 0, 0}, (50 + 57.2957795f / 60) * 3.14159265f / 180); // 1 rad/s less bent a frame later
+        shown[7].offset = {0, 0.12f, 0};
+        before[7].offset = {0, 0.12f, 0};
+        PoseInertia inertia;
+        inertia.begin(10.0, shown, before, 1.0f / 60, target, [](std::size_t j) { return j == 342 ? 8.0f / 60 : 15.0f / 60; });
+        check(inertia.running(10.0) && near(inertia.longest, 15.0f / 60), "It runs as long as its slowest joint");
+        std::vector<Offset> now = target;
+        inertia.apply(10.0, now);
+        check(same_turn(now[342].rotation, shown[342].rotation) && near(now[7].offset[1], 0.12f), "At the change the shown pose is drawn exactly");
+        const auto [legs, hips] = inertia.began_with(std::array<int, 2>{342, 7});
+        check(near(legs, 50, 0.01f) && near(hips, 0.12f), "and says how far it began from the new pose");
+        std::vector<Offset> later = target;
+        inertia.apply(10.0 + 8.0 / 60 + 0.001, later);
+        check(same_turn(later[342].rotation, Quat{0, 0, 0, 1}) && later[7].offset[1] > 0, "The knee is on the new pose in the legs' time, the hips still going");
+        std::vector<Offset> done = target;
+        inertia.apply(10.3, done);
+        check(!inertia.running(10.3) && near(done[7].offset[1], 0), "and everything is by the slowest joint's");
+        // On a target that moves (the game's live pose into the grind), the difference rides on it: never the target's old pose.
+        std::vector<Offset> moving = target;
+        moving[342].rotation = axis_angle({1, 0, 0}, -0.3f);
+        inertia.apply(10.0, moving);
+        check(same_turn(moving[342].rotation, normalised(multiply(axis_angle({1, 0, 0}, -0.3f), shown[342].rotation))),
+              "The difference is laid on the live target, after it");
+    }
+    // The deck: a flat foot standing on it (ankle 10.4 cm over the mount) is on it; 3 cm lower it is lifted by 3 cm; beside the
+    // deck or under the board, it is left alone.
+    {
+        const auto standing = [](float x, float y, float z) {
+            Joint foot;
+            foot.position = {x, y, z};
+            // The sole flat on the deck: the foot's own "down" (deck_guard's, 0.54 0.84 0) turned onto the deck's down (0 -1 0).
+            foot.rotation = axis_angle({0, 0, 1}, -1.5707963f - std::atan2(0.8412f, 0.5408f));
+            return foot;
+        };
+        auto on = standing(0.02f, 0.104f, 0.1f);
+        // Find the turn that puts the sole flat: the lowest point should be close to the grip.
+        const auto flat = sole_on_deck(on);
+        check(flat.lowest && *flat.lowest > -0.01f && *flat.lowest < 0.02f && flat.lift == 0, "A foot standing on the deck is on it, not in it");
+        auto in = on; in.position[1] -= 0.03f;
+        const auto sunk = sole_on_deck(in);
+        check(sunk.lowest && *sunk.lowest < -0.015f && near(sunk.lift, -*sunk.lowest), "A foot 3 cm into the deck is lifted by as much");
+        auto lifted = in; lifted.position[1] += sunk.lift;
+        check(sole_on_deck(lifted).lowest && *sole_on_deck(lifted).lowest > -1e-4f, "and is then on it");
+        auto beside = in; beside.position[0] = 0.4f;
+        check(!sole_on_deck(beside).lowest && sole_on_deck(beside).lift == 0, "A foot beside the deck is not the deck's");
+        auto under = in; under.position[1] = -0.05f;
+        check(sole_on_deck(under).lift == 0, "A foot under the board (a flip turning under him) is never pulled up through it");
+        auto kick = standing(0.0f, 0.104f, 0.36f);
+        check(deck_top_at(0.36f) > deck_grip && sole_on_deck(kick).lift >= 0, "The kicks rise towards the tips");
+    }
+    // The deck's hold as the body's pass does it: a leg whose foot is drawn 3 cm into a level deck is bent by its IK until the
+    // sole is on the grip, the foot keeping its turn, the hip where it was.
+    {
+        std::vector<Joint> pose(skeleton_joints);
+        pose[8].position = {0.1f, -0.05f, 0};
+        pose[9].position = {0, -0.4f, 0.02f};
+        pose[9].rotation = normalised(Quat{0.08f, 0, 0, 1});
+        pose[10].position = {0, -0.4f, 0};
+        const Quat flat = axis_angle({0, 0, 1}, -1.5707963f - std::atan2(0.8412f, 0.5408f));
+        pose[10].rotation = normalised(multiply(conjugate(world(pose, 9).rotation), flat));
+        const auto foot = world(pose, 10);
+        Joint board; // level, its mount 10.4 cm under where the ankle stands on it, less 3 cm: the foot 3 cm in
+        board.position = {foot.position[0], foot.position[1] - 0.104f + 0.03f, foot.position[2] - 0.1f};
+        const auto on_board = [&](const Joint& j) {
+            Joint r = j;
+            for (std::size_t k = 0; k < 3; ++k) r.position[k] -= board.position[k];
+            return r;
+        };
+        const auto before = sole_on_deck(on_board(foot));
+        check(before.lift > 0.025f && before.lift < 0.035f, "The foot is 3 cm into the deck");
+        const auto hip = world(pose, 8).position;
+        place_foot(pose, 10, Vec3{foot.position[0], foot.position[1] + before.lift, foot.position[2]}, &foot.rotation, 1.0f);
+        const auto after = sole_on_deck(on_board(world(pose, 10)));
+        check(after.lowest && *after.lowest > -0.002f && *after.lowest < 0.003f && after.lift == 0,
+              "and the IK puts its sole on the grip");
+        check(same_turn(world(pose, 10).rotation, foot.rotation) && length3_test(sub3_test(world(pose, 8).position, hip)) < 1e-4f,
+              "the foot keeping its turn and the hip its place");
+    }
+    // Starting early: nothing far off, all of it at the contact, eased between; nothing when the game does not say.
+    check(contact_ahead(0.5f) == 0 && near(contact_ahead(0), 1) && contact_ahead(0.1f) > 0.2f && contact_ahead(0.1f) < 0.8f &&
+              contact_ahead(-1) == 0 && contact_ahead(std::nanf("")) == 0,
+          "The feet go onto the board as the game's contact comes, over the last fifth of a second");
+}
 int main(int argc, char** argv) {
     try {
+        transitions_go_from_the_shown_pose();
         tricks_begin_at_the_flick_and_hand_over_the_games_way();
         check(fill_pop_rank(0, 1) > playback_pop_rank("high", "") && fill_pop_rank(0, 2) > fill_pop_rank(0, 1) &&
               fill_pop_rank(-1, 1) == -1 && fill_pop_rank(0, 0) == 0,
