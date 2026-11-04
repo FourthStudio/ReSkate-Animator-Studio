@@ -472,6 +472,9 @@ struct Market {
     std::deque<std::string> icon_queue;
     std::set<std::string> icons_asked;
     bool icon_worker{};
+    // Each pack version's icon file ("" none on the disk), asked of the disk once: view() is called several times a frame
+    // while the MARKET is open, and asking the disk for 50 icons cost 4.7 ms a call (2026-11-04).
+    std::map<std::string, std::string> icon_files;
     struct Readme {
         std::string version, about;
         std::vector<std::string> tricks;
@@ -725,7 +728,7 @@ std::filesystem::path icon_path(const Pack& p) { return folder() / L"icons" / wi
 void icon_worker() {
     auto& m = market();
     for (;;) {
-        std::string url;
+        std::string url, key;
         std::filesystem::path path;
         {
             std::lock_guard lock(m.mutex);
@@ -739,10 +742,13 @@ void icon_worker() {
             if (found == m.packs.end() || found->icon_url.empty()) continue;
             url = found->icon_url;
             path = icon_path(*found);
+            key = found->full_name + "|" + found->version;
         }
         std::error_code error;
         std::filesystem::create_directories(path.parent_path(), error);
-        (void)download_file(url, path, 2 * 1024 * 1024, nullptr);
+        const auto got = download_file(url, path, 2 * 1024 * 1024, nullptr);
+        std::lock_guard lock(m.mutex);
+        m.icon_files[key] = got.ok ? utf8(path) : std::string{};
     }
 }
 // The READMEs, one after another: from disk when this version's was read before, else from Thunderstore.
@@ -974,7 +980,12 @@ View view() {
             p.month_likes = n.likes;
             p.month_counted = n.counted;
         }
-        if (const auto path = icon_path(p); std::filesystem::is_regular_file(path, error)) p.icon_file = utf8(path);
+        auto icon = m.icon_files.find(p.full_name + "|" + p.version);
+        if (icon == m.icon_files.end()) {
+            const auto path = icon_path(p);
+            icon = m.icon_files.emplace(p.full_name + "|" + p.version, std::filesystem::is_regular_file(path, error) ? utf8(path) : std::string{}).first;
+        }
+        p.icon_file = icon->second;
     }
     return v;
 }
@@ -1090,7 +1101,10 @@ void want_icons(const std::vector<std::string>& full_names) {
         const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == name; });
         if (found == m.packs.end() || found->icon_url.empty()) continue;
         const auto key = name + "|" + found->version;
-        if (m.icons_asked.contains(key) || std::filesystem::is_regular_file(icon_path(*found), error)) continue;
+        if (m.icons_asked.contains(key)) continue;
+        if (const auto known = m.icon_files.find(key); known != m.icon_files.end() ? !known->second.empty()
+                                                                                  : std::filesystem::is_regular_file(icon_path(*found), error))
+            continue;
         m.icons_asked.insert(key);
         m.icon_queue.push_back(name);
     }
