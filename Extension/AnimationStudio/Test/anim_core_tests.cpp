@@ -3275,8 +3275,112 @@ void a_loop_hands_its_pose_to_its_line() {
     check(line_names("a|b|c").size() == 3 && line_names("").empty(), "A line's list splits on |");
 }
 
+// The 1.2 transitions: a trick begun at the game's flick (what was keyed before the pop plays), and the handovers the game's
+// own way (a rail before the catch, the next pop, a rail or a ledge ahead).
+void tricks_begin_at_the_flick_and_hand_over_the_games_way() {
+    // The flick, as the bug reports recorded it (2026-11-01): TrickPhase idles at 5, goes to 0.0247 with the trick input on for
+    // one update, then rises by about 1/122 an update through the pop.
+    check(trick_flicked(5.0f, 0.0247f, false, true), "The trick input with the phase back at its start is the flick");
+    check(trick_flicked(5.0f, 0.0247f, std::nullopt, std::nullopt) && trick_flicked(5.0f, 0.0247f, false, false),
+          "The phase going back to its start is the flick, with the input not read or missed");
+    check(trick_flicked(0.62f, 0.02f, true, true), "and so is a trick started again while the last one's phase ran (input held)");
+    check(!trick_flicked(0.0247f, 0.033f, true, false) && !trick_flicked(0.1016f, 0.1055f, false, false),
+          "The phase running on through the pop is not a flick");
+    check(!trick_flicked(0.27f, 5.0f, false, false) && !trick_flicked(5.0f, 5.0f, false, false),
+          "The phase going to idle at the catch, or staying idle, is not a flick");
+    check(!trick_flicked(std::nullopt, 0.02f, std::nullopt, std::nullopt), "Nothing read, no flick");
+    // CurrentFlipTrick's names, as the trick key the game says in the air (and the library is filed under).
+    check(flip_trick_key("Kickflip") == "kickflip" && flip_trick_key("N_360Flip") == "n_360flip" &&
+              flip_trick_key("FSPopShuvit") == "fspopshuvit" && flip_trick_key("360PopShuvit") == "360popshuvit" &&
+              flip_trick_key("Ollie") == "ollie" && flip_trick_key("Nollie") == "nollie" && flip_trick_key("Laserflip") == "laserflip",
+          "The game's flip trick names are the studio's trick keys");
+    check(flip_trick_key("Impossible") == "bsimpossible" && flip_trick_key("FrontFoot_Impossible") == "fsimpossible" &&
+              flip_trick_key("N_Impossible") == "n_fsimpossible" && flip_trick_key("N_BackFoot_Impossible") == "n_bsimpossible",
+          "The impossibles are named by the foot, as in the air");
+    check(flip_trick_key("None").empty() && flip_trick_key("Wallie").empty() && flip_trick_key("FSWallie").empty() &&
+              flip_trick_key("LateFlipTrick").empty() && flip_trick_key("HeldFlipTrick").empty(),
+          "No trick, a wallie and a late or held flip start nothing at the flick");
+
+    // An attempt from the flick: rolling, the flick 0.17 s before the pop, the trick chosen there, the same attempt in the air.
+    PlaybackEpisode e;
+    e.observe(10.0, MotionState::riding);
+    check(e.begin_before_pop(10.0, MotionState::riding) && e.phase == PlaybackPhase::before_pop && e.entry == EntryKind::ground &&
+              e.selection_open(10.0),
+          "The flick on the ground begins an attempt before the pop, open to choose a trick in");
+    const auto attempt = e.id;
+    e.select(10.02);
+    check(e.sample(10.05, 0.18f, 0.6f, 2, 1, 0, true, true).time < 0 && e.phase == PlaybackPhase::before_pop,
+          "Before the pop no clock of its own runs, and asking does not end the attempt");
+    check(!e.begin_before_pop(10.05, MotionState::riding), "A second flick before the pop begins nothing new");
+    e.observe(10.08, MotionState::riding); // the crouch (103)
+    check(!e.observe(10.17, MotionState::air) && e.took_off && e.id == attempt && e.phase == PlaybackPhase::air && e.selected_at == 10.02 &&
+              e.takeoff == 10.17 && near(static_cast<float>(e.flicked), 10.0f),
+          "The pop is the same attempt: its trick and choice kept, the takeoff at the pop");
+    e.observe(10.19, MotionState::air);
+    check(!e.took_off && e.selection_open(10.4) && !e.selection_open(10.6), "It took off once; its choice stays open for a moment in the air");
+    e.observe(10.6, MotionState::riding); e.observe(10.64, MotionState::riding);
+    check(e.phase == PlaybackPhase::landing, "and it lands as any trick does");
+    // The next flick over that landing: the next attempt (a combo), not the old one.
+    check(e.begin_before_pop(10.9, MotionState::riding) && e.id == attempt + 1, "The next flick over a landing is the next attempt");
+    // A flick that never pops lets go after its patience; one that goes onto a rail too; none begins in the air or on a rail.
+    e.observe(10.9 + before_pop_patience - 0.01, MotionState::riding);
+    check(e.phase == PlaybackPhase::before_pop, "It waits for the pop a while");
+    e.observe(10.9 + before_pop_patience + 0.02, MotionState::riding);
+    check(e.phase == PlaybackPhase::idle, "and lets go when no pop comes of the flick");
+    PlaybackEpisode railed;
+    railed.observe(1.0, MotionState::riding);
+    check(railed.begin_before_pop(1.0, MotionState::riding), "A flick rolling");
+    railed.observe(1.05, MotionState::rail);
+    check(railed.phase == PlaybackPhase::idle, "going onto a rail instead lets go");
+    PlaybackEpisode flying;
+    flying.observe(1.0, MotionState::riding); flying.observe(1.1, MotionState::air);
+    check(!flying.begin_before_pop(1.1, MotionState::air) && !flying.begin_before_pop(1.12, MotionState::riding),
+          "No attempt begins at a flick in the air, or rolling straight after it before its landing is sure");
+    PlaybackEpisode grinding;
+    grinding.observe(1.0, MotionState::rail);
+    check(!grinding.begin_before_pop(1.0, MotionState::rail), "nor on a rail (the game plays its flips from there another way)");
+    // A plain takeoff (no flick seen) still starts its attempt at the pop, as before.
+    PlaybackEpisode plain;
+    plain.observe(1.0, MotionState::riding);
+    check(plain.observe(1.2, MotionState::air) && !plain.took_off && plain.flicked < 0, "Without a flick the attempt starts at the pop as before");
+
+    // Onto a rail before the trick's catch: the legs in 8 ticks as ever, the hips, arms and back in the game's 30 (its pivot
+    // blend); after the catch, 8/15/24 as before.
+    check(near(handover_seconds(10, true), handover_legs) && near(handover_seconds(342, true), handover_legs),
+          "Before the catch the legs still go in 8 ticks, so the feet are on the rail's board");
+    check(near(handover_seconds(7, true), handover_before_catch) && near(handover_seconds(44, true), handover_before_catch) &&
+              near(handover_seconds(47, true), handover_before_catch),
+          "and the hips, back and arms in 30");
+    check(near(handover_seconds(7, false), handover_middle) && near(handover_seconds(44, false), handover_torso) &&
+              handover_left(44, 0.2f) == handover_left(44, 0.2f, false),
+          "After the catch the handover is as it was");
+    check(handover_left(47, 0.3f, true) > handover_left(47, 0.3f, false) && handover_left(47, handover_before_catch, true) == 0 &&
+              near(handover_longest(true), handover_before_catch) && near(handover_longest(false), handover_torso),
+          "Before the catch the arms are still going over where they were done after it, and done by the 30 ticks");
+    check(handover_kind(true, 0.3f, 0.5f, false) == HandoverKind::rail_before_catch && handover_kind(true, 0.6f, 0.5f, false) == HandoverKind::rail &&
+              handover_kind(true, 0.3f, -1, false) == HandoverKind::rail && handover_kind(false, 0.3f, 0.5f, true) == HandoverKind::next_pop &&
+              handover_kind(false, 0.9f, 0.5f, false) == HandoverKind::ground,
+          "Which handover runs: before or after the catch onto a rail, into the next pop, anywhere else");
+    check(std::string_view(handover_kind_name(HandoverKind::rail_before_catch)) == "rail_before_catch" &&
+              std::string_view(handover_kind_name(HandoverKind::none)).empty(),
+          "and its name in the bug report");
+    // A rail or a ledge ahead: the board, hips and legs go to the game's 0.25 s ahead of it after the catch, only the game's 8
+    // ticks (and the probe's lag) ahead before it.
+    check(near(raised_lead_for(0.6f, 0.5f, 0.25f, true), 0.25f) && near(raised_lead_for(0.3f, 0.5f, 0.25f, true), raised_late_lead) &&
+              near(raised_lead_for(0.3f, 0.5f, 0.25f, false), 0.25f) && near(raised_lead_for(0.3f, -1, 0.25f, true), 0.25f) &&
+              near(raised_lead_for(-1, 0.5f, 0.25f, true), 0.25f),
+          "The lead onto a rail waits for the catch, unless the switch is off or the catch or time is not known");
+    // With the late lead, a release that starts when the probe first sees the rail (0.4 s ahead, at the pop) has not started
+    // by the time the flip is half done; it is all the way over by the contact.
+    const auto release_at = [](float in, float lead) { const float u = std::clamp(1 - in / lead, 0.0f, 1.0f); return u * u * (3 - 2 * u); };
+    check(release_at(0.3f, raised_lead_for(0.35f, 0.5f, 0.25f, true)) == 0 && release_at(0.3f, 0.25f) == 0 &&
+              release_at(0.15f, raised_lead_for(0.35f, 0.5f, 0.25f, true)) < release_at(0.15f, 0.25f) &&
+              release_at(0.0f, raised_lead_for(0.45f, 0.5f, 0.25f, true)) == 1,
+          "Before the catch the legs go over later, and are over at the contact");
+}
 int main(int argc, char** argv) {
     try {
+        tricks_begin_at_the_flick_and_hand_over_the_games_way();
         check(fill_pop_rank(0, 1) > playback_pop_rank("high", "") && fill_pop_rank(0, 2) > fill_pop_rank(0, 1) &&
               fill_pop_rank(-1, 1) == -1 && fill_pop_rank(0, 0) == 0,
               "Imported pop fallbacks rank after explicit and ANY choices, retain rejection and prefer the nearest height");

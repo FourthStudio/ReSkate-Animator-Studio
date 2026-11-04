@@ -26,13 +26,15 @@ inline MotionState motion_state(std::optional<std::uint32_t> state) noexcept {
     return MotionState::unknown;
 }
 enum class EntryKind { unknown, ground, rail };
-enum class PlaybackPhase { idle, air, landing, rail_release };
+// before_pop: the game named its trick at the flick (trick_flicked) and plays its clip up to the pop on the ground; the
+// air goes on from there as the same attempt.
+enum class PlaybackPhase { idle, before_pop, air, landing, rail_release };
 inline const char* entry_name(EntryKind value) noexcept {
     return value == EntryKind::ground ? "ground" : value == EntryKind::rail ? "rail" : "unknown";
 }
 inline const char* phase_name(PlaybackPhase value) noexcept {
     return value == PlaybackPhase::air ? "air" : value == PlaybackPhase::landing ? "landing" :
-           value == PlaybackPhase::rail_release ? "rail_release" : "idle";
+           value == PlaybackPhase::rail_release ? "rail_release" : value == PlaybackPhase::before_pop ? "before_pop" : "idle";
 }
 struct PlaybackSample { float time{-1}, weight{}; bool finished{}; };
 // A trick fitted to the game's air, never slower than it was recorded. Seconds into the recording's air for
@@ -76,25 +78,44 @@ struct PlaybackEpisode {
     EntryKind entry{EntryKind::unknown};
     std::uint64_t id{};
     double takeoff{}, landing{-1}, release_at{}, selected_at{-1}, last_observed{-1};
+    double flicked{-1}; // the flick this attempt began at (begin_before_pop); -1: it began at the takeoff
     float release_weight{}, last_weight{};
     float last_time{-1};   // the recording's time last sampled
     float landed_from{-1}; // where the recording was when the game touched down (-1 while in the air)
+    bool took_off{};       // this update the board left the ground under an attempt begun at the flick (the same attempt goes on)
     ContactWindow contact;
     GameplayClipClock clock;
     void reset() noexcept { const auto next_id = id; *this = {}; id = next_id; }
-    // True only when a new airborne episode begins. A rail exit cannot inherit the entry trick.
+    // The game named its trick at the flick (trick_flicked), rolling on the ground: an attempt begins now, before the pop, so
+    // what was keyed before the pop plays as the game plays its clip up to it. Not over one already in the air or before its
+    // pop; over a landing it is the next trick (a combo). True when it began.
+    bool begin_before_pop(double now, MotionState motion) noexcept {
+        if (!std::isfinite(now) || motion != MotionState::riding || previous != MotionState::riding ||
+            (phase != PlaybackPhase::idle && phase != PlaybackPhase::landing))
+            return false;
+        ++id; phase = PlaybackPhase::before_pop; flicked = takeoff = now; landing = -1; selected_at = -1; landed_from = -1; last_time = -1;
+        entry = EntryKind::ground; clock.reset(); contact.since.reset(); last_weight = 0; took_off = false;
+        return true;
+    }
+    // True only when a new airborne episode begins. A rail exit cannot inherit the entry trick. An attempt begun at the flick
+    // takes off as the same attempt (took_off), with its trick kept.
     bool observe(double now, MotionState motion) noexcept {
+        took_off = false;
         if (!std::isfinite(now) || (last_observed >= 0 && now < last_observed)) { reset(); return false; }
         last_observed = now;
         if (motion == MotionState::unknown || motion == MotionState::offboard) {
             reset(); previous = motion; return false;
         }
         bool started = false;
-        if (motion == MotionState::air && phase != PlaybackPhase::air) {
+        if (motion == MotionState::air && phase == PlaybackPhase::before_pop) {
+            phase = PlaybackPhase::air; takeoff = now; landing = -1; landed_from = -1; contact.since.reset(); took_off = true;
+        } else if (motion == MotionState::air && phase != PlaybackPhase::air) {
             const auto from = previous;
-            ++id; phase = PlaybackPhase::air; takeoff = now; landing = -1; selected_at = -1; landed_from = -1; last_time = -1;
+            ++id; phase = PlaybackPhase::air; takeoff = now; landing = -1; selected_at = -1; landed_from = -1; last_time = -1; flicked = -1;
             entry = from == MotionState::rail ? EntryKind::rail : from == MotionState::riding ? EntryKind::ground : EntryKind::unknown;
             clock.reset(); contact.since.reset(); last_weight = 0; started = true;
+        } else if (phase == PlaybackPhase::before_pop && (motion != MotionState::riding || now - flicked > before_pop_patience)) {
+            phase = PlaybackPhase::idle; // no pop came of the flick (or it went onto a rail): the game's own from here
         } else if (motion == MotionState::rail && (phase == PlaybackPhase::air || phase == PlaybackPhase::landing)) {
             phase = selected_at >= 0 && clock.time >= 0 ? PlaybackPhase::rail_release : PlaybackPhase::idle;
             release_at = now; release_weight = last_weight; contact.since.reset();
@@ -105,7 +126,11 @@ struct PlaybackEpisode {
         previous = motion;
         return started;
     }
-    bool selection_open(double now) const noexcept { return phase == PlaybackPhase::air && now >= takeoff && now - takeoff < 0.35; }
+    // A trick may still be chosen (or chosen again, when the game names another or grades its pop): from the flick, and for a
+    // moment after the takeoff.
+    bool selection_open(double now) const noexcept {
+        return phase == PlaybackPhase::before_pop || (phase == PlaybackPhase::air && now >= takeoff && now - takeoff < 0.35);
+    }
     void select(double now) noexcept {
         if (!std::isfinite(now)) return;
         selected_at = now;
@@ -119,6 +144,9 @@ struct PlaybackEpisode {
     PlaybackSample sample(double now, float up, float down, float duration, float speed, float predicted_air,
                           bool source_timing = false, bool fit_air = false) noexcept {
         PlaybackSample out;
+        // Before the pop only the game's clip says where the trick is (NativeClock): no clock of its own runs from a takeoff
+        // that has not come yet.
+        if (phase == PlaybackPhase::before_pop) return out;
         if (selected_at < 0 || up < 0 || duration <= 0 || up > duration || down > duration ||
             !std::isfinite(now) || !std::isfinite(up) || !std::isfinite(down) ||
             !std::isfinite(duration) || !std::isfinite(speed) || speed <= 0 || !std::isfinite(predicted_air)) return out;
@@ -300,10 +328,44 @@ inline float handover_seconds(std::uint16_t joint) noexcept {
     default: return handover_middle; // the hips, the shoulders and arms
     }
 }
+// A board that meets a rail before the trick's catch - the flip still turning - the game takes over with another blend: a
+// pivot blend about the hips over 30 ticks (TrickInAir to Grinding, the transition with no branch window: Team A and the 1.2
+// scout, transitions_scout.md 1.3). The board and legs still go in 8 (the feet have to be on the board on the rail); the
+// hips, arms, back and head take the 30, not the 15 and 24 they take after the catch.
+inline constexpr float handover_before_catch = 30.0f / 60;
+inline float handover_seconds(std::uint16_t joint, bool before_catch) noexcept {
+    const float s = handover_seconds(joint);
+    return before_catch && s > handover_legs ? handover_before_catch : s;
+}
+// How long the whole handover runs (its slowest part).
+inline float handover_longest(bool before_catch) noexcept { return before_catch ? handover_before_catch : handover_torso; }
 // How much of the trick it leaves joint `joint` still shows, `elapsed` seconds into the handover (1 to 0, eased).
-inline float handover_left(std::uint16_t joint, float elapsed) noexcept {
-    const float u = std::clamp(elapsed / handover_seconds(joint), 0.0f, 1.0f);
+inline float handover_left(std::uint16_t joint, float elapsed, bool before_catch = false) noexcept {
+    const float u = std::clamp(elapsed / handover_seconds(joint, before_catch), 0.0f, 1.0f);
     return 1 - u * u * (3 - 2 * u);
+}
+// Which handover runs (the bug report's handover_kind): onto a rail after the trick's catch, onto one before it (the flip
+// still turning: the slow pivot blend), into the next pop (the trick held as drawn as it let go), or anywhere else (its end on
+// the ground, out of a grind loop).
+enum class HandoverKind { none, rail, rail_before_catch, next_pop, ground };
+inline const char* handover_kind_name(HandoverKind k) noexcept {
+    return k == HandoverKind::rail ? "rail" : k == HandoverKind::rail_before_catch ? "rail_before_catch" :
+           k == HandoverKind::next_pop ? "next_pop" : k == HandoverKind::ground ? "ground" : "";
+}
+// `time`: where the trick it leaves was; `caught`: its catch (below 0: not known, taken as caught).
+inline HandoverKind handover_kind(bool rail, float time, float caught, bool held_for_next_pop) noexcept {
+    if (rail) return caught > 0 && time >= 0 && time < caught ? HandoverKind::rail_before_catch : HandoverKind::rail;
+    return held_for_next_pop ? HandoverKind::next_pop : HandoverKind::ground;
+}
+// Onto a rail or a ledge (raised_release): how far ahead of the contact the board, hips and legs start going to the game's.
+// After the trick's catch, `lead` (the studio's 0.25 s). Before it only the game's own 8 ticks and the probe's lag
+// (`late_lead`): the probe sees a rail 0.13 to 0.43 s ahead, often right after the pop, and the flip's legs and board went
+// to the game's for most of a short air while the upper body kept the trick (the 2026-11-03 session, scout 3 #4). A contact
+// that comes before the catch still gets its late lead before it, so the feet are on the deck at the lock.
+inline constexpr float raised_late_lead = 0.18f;
+inline float raised_lead_for(float time, float caught, float lead, bool wait_for_catch) noexcept {
+    if (!wait_for_catch || !(caught > 0) || !(time >= 0) || time >= caught) return lead;
+    return std::min(lead, raised_late_lead);
 }
 // In the air before a grind the game turns the board to the rail's angle - 70 degrees in the last 0.1 to 0.13 s before the
 // lock, at up to 14 degrees a frame - with the board caught and flat and the skater not turning with it (its own grinds,
