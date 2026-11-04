@@ -1074,7 +1074,9 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
                     continue;
                 }
                 bool lit = false;
-                const bool pressed = hit("##item", ia, ib, &lit);
+                bool pressed = hit("##item", ia, ib, &lit);
+                // Under the hover preview's window the row is hidden: a click there is not on it.
+                if (u.peek_hole && ImGui::IsMouseHoveringRect(u.peek_a, u.peek_b, false) && !nav().keys) pressed = lit = false;
                 const bool chosen = s.picked.names.contains(it.name);
                 // A double click opens it (the first click already chose it).
                 if (lit && !nav().keys && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !s.select_mode && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift)

@@ -4146,6 +4146,9 @@ void hover_preview(const Fonts& f, const studio::View& v) {
     auto& u = ui();
     auto& h = u.hover;
     const double now = ImGui::GetTime();
+    // The mouse inside the preview's own window keeps that preview. In MY TRICKS' list the window lies over rows, and the
+    // row under the mouse there started its own preview as the mouse moved down inside it.
+    if (u.peek_hole && !h.key.empty() && ImGui::IsMouseHoveringRect(u.peek_a, u.peek_b, false)) u.hover_candidate = h.key;
     if (!v.hover_preview || u.hover_candidate.empty() || any_card_open(v) || !u.menu || u.menu_tab != 0) {
         cover_peek_hole();
         stop_hover_peek();
