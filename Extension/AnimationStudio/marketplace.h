@@ -199,6 +199,9 @@ inline std::string team_page(std::string_view team) { return std::string(site) +
 void open_team_page(std::string_view team); // in the browser; a team's name of letters, figures and _ only
 // Downloads the pack and puts it in the library (the studio's import), in the background.
 void install(const std::string& full_name);
+// The packs installed by install() since this was last asked, by the names they have in the library, taken (each is
+// given once): the LIBRARY asks whether to add each to a playlist. Any thread.
+std::vector<std::string> take_fresh_installs();
 // Downloads the pack to watch its tricks first (View::preview), in the background: one pack at a time, the last asked
 // for. The last few downloaded are kept, so watching again is at once, and GET after it downloads nothing again.
 void want_preview(const std::string& full_name);

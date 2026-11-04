@@ -8519,16 +8519,17 @@ void play_playlist_locked(State& s, const std::string& name, std::string& messag
     const auto before = lists.on;
     if (name.empty()) {
         lists.on.clear();
-        message = (before.empty() ? std::string("No playlist is on") : before + " is off: no playlist is on") + ", so nothing of yours plays.";
+        message = (before.empty() ? std::string("No playlist plays by default") : before + " no longer plays by default") +
+                  ": the game's own tricks play unless a button playlist is held.";
         (void)playlists_changed_locked(s, lists, message);
         return;
     }
     const auto* list = lists.named(name);
     if (!list) return say_locked(s, message, "There is no playlist called " + name + ".");
     lists.on = name;
-    message = (list->entries.empty() ? name + " is on - it is empty, so nothing of yours plays until you add to it."
-                                     : name + " is on: it decides what plays in game.") +
-              (before.empty() || before == name ? std::string{} : " " + before + " is off now: one playlist plays at a time.");
+    message = (list->entries.empty() ? name + " is the default playlist now - it is empty, so nothing of yours plays until you add to it."
+                                     : name + " plays by default now.") +
+              (before.empty() || before == name ? std::string{} : " " + before + " is no longer the default: one plays at a time.");
     playlists_changed_locked(s, lists, message);
 }
 void set_playlist_mode_locked(State& s, const std::string& name, PlaylistMode mode, std::string& message) {
@@ -8536,7 +8537,7 @@ void set_playlist_mode_locked(State& s, const std::string& name, PlaylistMode mo
     auto* list = lists.named(name);
     if (!list) return;
     list->mode = mode;
-    message = mode == PlaylistMode::fixed ? "Fixed: where two in the playlist are the same trick, the one higher up plays every time."
+    message = mode == PlaylistMode::fixed ? "Priority: where two in the playlist are the same trick, the one higher up plays every time."
               : mode == PlaylistMode::turns ? "In turns: the same trick from the playlist plays one after another, top to bottom."
                                             : "Shuffle: the same trick from the playlist plays at random, never twice running.";
     playlists_changed_locked(s, lists, message);
@@ -8794,6 +8795,15 @@ std::vector<std::string> playlists_containing(const std::string& animation) {
         if (playlist_membership(list.entries, s.packs, animation).included()) out.push_back(list.name);
     return out;
 }
+std::vector<std::string> playlists_with_pack(const std::string& pack) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.library_read) read_library_locked(s);
+    std::vector<std::string> out;
+    for (const auto& list : s.playlists.lists)
+        if (std::any_of(list.entries.begin(), list.entries.end(), [&](const auto& e) { return e.pack == pack; })) out.push_back(list.name);
+    return out;
+}
 bool duplicate_playlist(const std::string& target, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -8806,7 +8816,7 @@ bool duplicate_playlist(const std::string& target, std::string& message) {
     for (unsigned n = 2; lists.named(copy.name); ++n) copy.name = base + " " + std::to_string(n);
     const auto name = copy.name;
     lists.lists.push_back(std::move(copy));
-    message = "Made " + name + ". Your normal and modifier assignments are unchanged.";
+    message = "Made " + name + ". What plays by default and on the button is unchanged.";
     try { if (!playlists_changed_locked(s, lists, message)) return false; }
     catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     s.playlist_open = name;
@@ -8845,8 +8855,15 @@ void playlist_move(std::size_t index, int by) {
     std::string message = s.playlist_open + ": order changed. UNDO restores it.";
     edit_playlist_locked(s, s.playlist_open, message, [&](auto& entries) {
         if (index >= entries.size() || to < 0 || to >= static_cast<std::ptrdiff_t>(entries.size())) return false;
-        std::swap(entries[index], entries[static_cast<std::size_t>(to)]); return true;
+        return move_to_index(entries, index, static_cast<std::size_t>(to));
     });
+}
+bool playlist_move_to(const std::string& target, const PlaylistEntry& entry, std::size_t to, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto what = entry.animation.empty() ? "the pack " + entry.pack : shown_name(s, entry.animation);
+    message = "Moved " + what + " to place " + std::to_string(to + 1) + " in " + target + ". UNDO puts it back.";
+    return edit_playlist_locked(s, target, message, [&](auto& entries) { return move_playlist_entry(entries, entry, to); });
 }
 void open_playlist(const std::string& name) {
     auto& s = state();
@@ -8876,7 +8893,7 @@ bool new_playlist(const std::string& wanted, std::string& message) {
     if (name.empty()) { say_locked(s, message, "Give this playlist a name."); return false; }
     if (lists.named(name)) { say_locked(s, message, "There is already a playlist called " + name + "."); return false; }
     lists.lists.push_back({name, PlaylistMode::shuffle, {}});
-    message = "Made " + name + ": add whole packs or single tricks to it, then switch it on.";
+    message = "Made " + name + ": add whole packs or single tricks to it, then SET AS DEFAULT to play it.";
     try { commit_playlist_structure_locked(s, lists, s.modifier, name, message); }
     catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     return true;
@@ -9002,7 +9019,7 @@ std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& en
     if (list->entries.size() > 2000) { say_locked(s, message, "This playlist has reached its 2000-entry limit."); return {}; }
     const auto what = entry.animation.empty() ? "the pack " + entry.pack : shown_name(s, entry.animation);
     message = "Added " + what + " to " + name +
-              (lists.on == name ? ": it plays in game now." : ". Playback assignments are unchanged; choose its role in the LIBRARY.");
+              (lists.on == name ? ": it plays by default now." : ". " + name + " is not the default playlist: SET AS DEFAULT in the LIBRARY plays it.");
     s.playlist_open = name;
     return playlists_changed_locked(s, lists, message) ? name : std::string{};
 }

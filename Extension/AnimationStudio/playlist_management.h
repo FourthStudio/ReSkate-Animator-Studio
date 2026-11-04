@@ -1,5 +1,6 @@
 #pragma once
 #include "anim_presets.h"
+#include "list_reorder.h"
 
 namespace dingosdk::anim_studio {
 inline bool same_playlist_source(const PlaylistEntry& a, const PlaylistEntry& b) {
@@ -81,6 +82,39 @@ inline bool set_playlist_pack(std::vector<PlaylistEntry>& entries, const std::st
     std::erase_if(entries, [&](const auto& e) { return e.pack == pack; });
     if (included) entries.insert(entries.begin() + static_cast<std::ptrdiff_t>(std::min(position, entries.size())), {pack, "", {}});
     return entries != before;
+}
+// The LIBRARY's drag (and its pad and keyboard moves): `entry`, found by its source (pack and animation, which are one
+// entry each in a playlist), goes to place `to` and the entries between shift by one. Found by what it is rather than
+// where it was drawn, so a list that changed under the drag cannot have the wrong entry moved. False when it is not there
+// or would stay where it is.
+inline bool move_playlist_entry(std::vector<PlaylistEntry>& entries, const PlaylistEntry& entry, std::size_t to) {
+    const auto at = std::find_if(entries.begin(), entries.end(), [&](const auto& e) { return same_playlist_source(e, entry); });
+    if (at == entries.end() || entries.empty()) return false;
+    return move_to_index(entries, static_cast<std::size_t>(at - entries.begin()), std::min(to, entries.size() - 1));
+}
+// Where ADD on the "add it to a playlist?" card puts a pack just got or a trick just saved: the playlist that plays by
+// default. With none playing, it is the one open in the LIBRARY (else the first) and that one is made the default, since
+// nothing of the player's plays until one is; with no playlist at all a new one is made (`name` is then the name to give
+// it). `play`: the playlist is to become the default as well.
+struct OfferTarget {
+    std::string name;
+    bool make{}, play{};
+    bool operator==(const OfferTarget&) const = default;
+};
+inline OfferTarget offer_target(std::span<const std::string> playlists, const std::string& playing, const std::string& open,
+                                const std::string& new_name = "My tricks") {
+    const auto has = [&](const std::string& name) { return !name.empty() && std::find(playlists.begin(), playlists.end(), name) != playlists.end(); };
+    if (has(playing)) return {playing, false, false};
+    if (has(open)) return {open, false, true};
+    if (!playlists.empty()) return {playlists.front(), false, true};
+    return {new_name, true, true};
+}
+// A free name for a playlist made for the player ("My tricks", "My tricks 2"...).
+inline std::string free_playlist_name_like(std::span<const std::string> playlists, const std::string& base) {
+    const auto taken = [&](const std::string& name) { return std::find(playlists.begin(), playlists.end(), name) != playlists.end(); };
+    std::string name = base;
+    for (int n = 2; taken(name) && n < 1000; ++n) name = base + " " + std::to_string(n);
+    return name;
 }
 inline Json playlist_entries_json(const std::vector<PlaylistEntry>& entries) {
     Json out = Json::array();

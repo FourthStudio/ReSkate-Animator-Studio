@@ -346,6 +346,26 @@ struct Ui {
     std::uint64_t library_request_seen{};
     studio::LibraryNavigation library;
     std::optional<studio::PlaylistEntry> library_pending_source;
+    // The LIBRARY's reorder: an entry of the open playlist picked up by its grip, dragged with the mouse or carried with the
+    // pad or the arrow keys, and the place it would go (list_reorder.h). Found again by what it is (`entry`), so a list
+    // that changed under it drops it rather than moving another one.
+    struct LibraryCarry {
+        bool on{}, mouse{}, moved{};
+        std::string list;          // the playlist it is in
+        studio::PlaylistEntry entry;
+        std::size_t from{}, to{};
+        float press_y{};           // where the mouse went down on the grip
+        int frame{-1};             // the frame it was last drawn on: one left behind (the page went) is let go
+    } library_carry;
+    // "Add it to a playlist?": packs just got in the MARKET wait here (one card at a time); `offer_pack` is the one asked
+    // about now. NEW PLAYLIST... on that card, or on the SAVED card, types its name into `offer_name`. `save_offer_for`: the
+    // trick whose SAVED card had its question answered (or NOT NOW), so it is not asked again.
+    std::vector<std::string> offer_packs;
+    std::string offer_pack;
+    bool offer_naming{};
+    std::array<char, 64> offer_name{};
+    std::string save_offer_for;
+    float save_chips_scroll{}; // the SAVED card's packs
     std::optional<studio::LibraryNavigation> preview_library_return;
     int preview_return_tab{-1};
     bool preview_return_pack_page{};
@@ -1635,6 +1655,10 @@ struct Nav {
         ImDrawList* list{};
         int cmd{}, idx{}, vtx{};
     } region_start[2]{};
+    // A LIBRARY row picked up with the pad or the keys: while it is drawn (this frame or the last), up and down move it
+    // rather than the choice, and add up here until it takes them.
+    int carry_frame{-1};
+    int carried{};
 };
 Nav& nav() {
     static auto* n = new Nav;
@@ -1649,6 +1673,10 @@ const Spot* spot_of(ImGuiID id) {
 void nav_step(int dx, int dy) {
     auto& n = nav();
     n.keys = true;
+    if (n.carry_frame >= ImGui::GetFrameCount() - 1) {
+        n.carried += dy;
+        return;
+    }
     const Spot* from = spot_of(n.focus);
     if (from && from->layer != n.top) from = nullptr;
     if (from && from->sideways && dx != 0 && dy == 0) {
@@ -2548,7 +2576,8 @@ bool any_card_open(const studio::View& v) {
     const auto& u = ui();
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
            !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account || !u.reshare_pack.empty() ||
-           !u.playlist_for.empty() || !u.binding.empty() || v.loop_offer.has_value() || !v.guide_seen || studio::update::popup_wanted() || u.dev_key;
+           !u.playlist_for.empty() || !u.binding.empty() || v.loop_offer.has_value() || !v.guide_seen || studio::update::popup_wanted() || u.dev_key ||
+           !u.offer_pack.empty();
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -2586,6 +2615,7 @@ bool close_card(const studio::View& v) {
         u.cover_pack.clear();
         release_cover_art();
     } else if (!u.share_pack.empty()) u.share_pack.clear();
+    else if (!u.offer_pack.empty()) u.offer_pack.clear(), u.offer_naming = false; // NOT NOW
     else if (u.save_card) u.save_card = false;
     else if (!v.test_returned.empty()) studio::clear_test_returned();
     else return false;
@@ -2595,6 +2625,10 @@ bool close_card(const studio::View& v) {
 void menu_back(const studio::View& v) {
     auto& u = ui();
     if (close_card(v)) return;
+    if (u.library_carry.on) { // a LIBRARY row picked up: put back where it was
+        u.library_carry = {};
+        return;
+    }
     if (u.menu_tab == 0) {
         if (u.selecting) {
             u.selecting = false;
@@ -2672,6 +2706,7 @@ void save_now(const studio::View& v) {
     if (saved && first) {
         u.save_card = true;
         u.label_for.clear();
+        u.offer_naming = false;
     }
 }
 // Test in game: saved first when it has changes, then the studio closes and that trick plays until it is opened again.
@@ -3781,16 +3816,16 @@ float in_game_row(ImDrawList* d, const Fonts& f, const studio::View& v, const st
     if (!p) return 0;
     const bool in = in_playing_list(v, name);
     const std::string pop = p->pop.empty() ? "any pop" : "a " + p->pop + " pop";
-    std::string words = "PLAYLISTS chooses any destinations for this animation. Normal and modifier playback are assigned separately in the Library.";
-    if (in && p->active) words = "In the normal playlist " + v.playlist_playing + ": it plays when you do the trick on " + pop + ".";
+    std::string words = "Not in the playlist that plays by default. PLAYLISTS... puts it in any playlist; what plays by default and on a button is set in the LIBRARY.";
+    if (in && p->active) words = "In " + v.playlist_playing + ", the playlist that plays by default: it plays when you do the trick on " + pop + ".";
     else if (in) {
         words = "In " + v.playlist_playing + ", but another of its trick, pop and stance is higher up and plays first: move it up there, "
-                "or set the playlist to IN TURNS or SHUFFLE.";
+                "or set the playlist to IN TURNS or SHUFFLE in its SETTINGS.";
         const auto slot = studio::preset_slot(p->trick, p->pop) + studio::stance_part(*p);
         for (const auto& o : v.presets)
             if (o.name != name && o.active && studio::preset_slot(o.trick, o.pop) + studio::stance_part(o) == slot) {
                 words = "In " + v.playlist_playing + ", but " + shown_name(v, o.name) + " is higher up and plays first on " + pop +
-                        ": move it up there, or set the playlist to IN TURNS or SHUFFLE.";
+                        ": move it up there, or set the playlist to IN TURNS or SHUFFLE in its SETTINGS.";
                 break;
             }
     }
@@ -5070,7 +5105,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 if (hit("##one", ImVec2(a.x, y), ImVec2(a.x + width - 276 * k, y + row_h), &lit)) open_or_preview(v, member, pack.name);
                 flat_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + row_h), lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(26, 27, 30, 240),
                                         seed_of(ImVec2(a.x, y)), k * 0.7f);
-                if (lit && nav().keys) chosen_outline(d, ImVec2(a.x, y), ImVec2(a.x + width - 80 * k, y + row_h), k);
+                if (lit && nav().keys) chosen_outline(d, ImVec2(a.x, y), ImVec2(a.x + width - 276 * k, y + row_h), k); // the hit area, not over PREVIEW and ACTIVE
                 float right = a.x + width - 280 * k;
                 if (const auto* p = preset_named(v, member)) trick_tags(d, f, *p, forced, right, y + 13 * k);
                 text(d, f.bold, 17 * k, ImVec2(a.x + 16 * k, y + 12 * k), pack.pack.off.contains(member) ? faint : white,
@@ -5285,9 +5320,11 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     y += 60 * k;
     const auto count = saved_count(v, pack);
     text(d, f.bold, 15 * k, ImVec2(x + 2 * k, y), soft,
-         std::to_string(count) + (count == 1 ? " trick" : " tricks") +
-             (pack.made_by.empty() ? std::string{} : ".   Made by " + pack.made_by) +
-             (edited_words(pack.modified).empty() ? std::string{} : ".   Last edited " + edited_words(pack.modified)));
+         elide(f.bold, 15 * k,
+               std::to_string(count) + (count == 1 ? " trick" : " tricks") +
+                   (pack.made_by.empty() ? std::string{} : ".   Made by " + pack.made_by) +
+                   (edited_words(pack.modified).empty() ? std::string{} : ".   Last edited " + edited_words(pack.modified)),
+               w - 8 * k));
     y += 40 * k;
     {
         text(d, f.heading, 15 * k, ImVec2(x, y + 10 * k), white, "EVERY TRICK PLAYS ON");
@@ -9883,25 +9920,45 @@ void playlist_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     const float x = a.x + 28 * k, w = b.x - a.x - 56 * k;
     text(d, f.bold, 18 * k, ImVec2(x, a.y + 91 * k), white, elide(f.bold, 18 * k, whole ? u.playlist_for_entry.pack : shown_name(v, name), w));
     paragraph(d, f.bold, 13 * k, ImVec2(x, a.y + 122 * k), w, soft,
-        whole ? "Choose a playlist to add this pack's enabled animations. Existing entries are not duplicated; local exclusions are restored. Playback assignments stay unchanged."
-              : "Add this animation to any playlist, or remove it from just one. Your animation files, source packs and playback assignments stay unchanged.");
-    const auto included = whole ? std::vector<std::string>{} : studio::playlists_containing(name);
+        whole ? "Press a playlist to put the whole pack in it, or to take it out. Tricks its maker adds later go in too. Your packs and tricks stay as they are."
+              : "Press a playlist to put this trick in it, or to take it out of just that one. Your packs and tricks stay as they are.");
+    const auto included = whole ? studio::playlists_with_pack(u.playlist_for_entry.pack) : studio::playlists_containing(name);
     const auto binding = studio::modifier_binding();
     const ImVec2 la(x, a.y + 184 * k), lb(b.x - 28 * k, b.y - 86 * k);
     begin_region(205, la, lb, u.library_modal_scroll, k);
     float y = la.y - u.library_modal_scroll;
-    if (v.playlists.empty()) y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "Create your first playlist below. You can assign normal or modifier playback in the Library afterwards.");
+    if (v.playlists.empty()) y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "Make your first playlist below. What plays by default and on a button is set in the LIBRARY.");
+    // A row each: the playlist's name at the left (cut short first), what it plays as and what a press does at the right,
+    // so a long name never hides whether it adds or takes out.
     for (const auto& list : v.playlists) {
         ImGui::PushID(list.name.c_str());
         const bool have = std::find(included.begin(), included.end(), list.name) != included.end();
-        std::string label = list.name + (whole ? " / ADD PACK" : have ? " / REMOVE" : " / ADD");
-        if (list.name == v.playlist_playing) label += " / DEFAULT";
-        if (list.name == binding.playlist) label += " / BUTTON";
-        if (action(d, f, "##playlistmembership", ImVec2(x, y), ImVec2(w - 8 * k, 46 * k), label, have ? Look::paper : Look::dark)) {
+        const ImVec2 ra(x, y), rb(x + w - 8 * k, y + 46 * k);
+        bool lit = false;
+        if (hit("##playlistmembership", ra, rb, &lit)) {
             std::string m;
-            if (whole) studio::edit_playlist_pack(list.name, u.playlist_for_entry.pack, true, m);
+            if (whole) studio::edit_playlist_pack(list.name, u.playlist_for_entry.pack, !have, m);
             else studio::edit_playlist_member(list.name, u.playlist_for_entry, !have, m);
             say(m);
+        }
+        if (rb.y > la.y && ra.y < lb.y) {
+            d->AddRectFilled(ra, rb, have ? (lit ? IM_COL32(30, 84, 130, 250) : IM_COL32(17, 57, 91, 245)) : lit ? IM_COL32(40, 42, 48, 250) : IM_COL32(14, 15, 18, 235));
+            d->AddRect(ra, rb, IM_COL32(255, 255, 255, lit ? 120 : 46), 0, 0, 1 * k);
+            if (lit && nav().keys) chosen_outline(d, ra, rb, k);
+            // The press, as a button-like word at the far right; the roles as tags before it.
+            const std::string act = have ? "IN IT / TAKE OUT" : whole ? "+ ADD PACK" : "+ ADD";
+            const float aw = text_size(mont(f, 13 * k), 13 * k, act.c_str()).x + 24 * k;
+            const ImVec2 aa(rb.x - 8 * k - aw, ra.y + 8 * k), ab(rb.x - 8 * k, rb.y - 8 * k);
+            d->AddRectFilled(aa, ab, have ? IM_COL32(233, 230, 221, 255) : blue);
+            text(d, mont(f, 13 * k), 13 * k, ImVec2(aa.x + 12 * k, aa.y + (ab.y - aa.y - 13 * k) * 0.5f), have ? shop_ink : white, act);
+            float tx = aa.x - 8 * k;
+            for (const auto* role : {list.name == binding.playlist ? "ON THE BUTTON" : "", list.name == v.playlist_playing ? "PLAYS BY DEFAULT" : ""}) {
+                if (!*role) continue;
+                tx -= tag_width(f, role);
+                tag(d, f, ImVec2(tx, ra.y + 13 * k), role, IM_COL32(70, 72, 80, 255));
+                tx -= 6 * k;
+            }
+            text(d, f.bold, 16 * k, ImVec2(ra.x + 14 * k, ra.y + 13 * k), white, elide(f.bold, 16 * k, list.name, tx - ra.x - 26 * k));
         }
         ImGui::PopID(); y += 54 * k;
     }
@@ -10186,7 +10243,7 @@ float open_trick_tags(ImDrawList* d, const Fonts& f, const studio::View& v, ImVe
 void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     const float k = f.k;
-    const auto [a, b] = card_box(d, f, display, 860 * k, 620 * k, "SAVED");
+    const auto [a, b] = card_box(d, f, display, 860 * k, std::min(display.y - 60 * k, 700 * k), "SAVED");
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 92 * k;
     const auto name = v.name;
@@ -10194,7 +10251,17 @@ void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
     open_trick_tags(d, f, v, ImVec2(x, y));
     y += 36 * k;
     y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "It is in MY TRICKS. Give it a name you will know it by.") + 14 * k;
-    y += in_game_row(d, f, v, name, ImVec2(x, y), w) + 18 * k;
+    // A new trick plays in game only once it is in a playlist that plays: asked here, ADD first (library_offers' block).
+    // Answered, or in a playlist already, the line says where it plays instead.
+    if (u.save_offer_for != name && studio::playlists_containing(name).empty()) {
+        heading(d, f, ImVec2(x, y), w, "Play it in game?");
+        y += 34 * k;
+        bool answered = false;
+        y += offer_block(d, f, v, {"", name}, "My tricks", ImVec2(x, y), w, answered) + 18 * k;
+        if (answered) u.save_offer_for = name;
+    } else {
+        y += in_game_row(d, f, v, name, ImVec2(x, y), w) + 18 * k;
+    }
     heading(d, f, ImVec2(x, y), w, "Name it");
     y += 32 * k;
     if (u.label_for != name && !ImGui::IsAnyItemActive()) {
@@ -10212,7 +10279,15 @@ void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
     y += 54 * k;
     heading(d, f, ImVec2(x, y), w, "Put it in a pack");
     y += 34 * k;
-    y += pack_chips(d, f, v, name, ImVec2(x, y), w) + 16 * k;
+    {
+        // Its own scrolled box down to the buttons: with many packs the chips ran on under them.
+        const ImVec2 ca(x, y), cb(x + w, b.y - 82 * k);
+        if (cb.y > ca.y + 30 * k) {
+            begin_region(211, ca, cb, u.save_chips_scroll, k);
+            const float chips = pack_chips(d, f, v, name, ImVec2(x, y - u.save_chips_scroll), w - 10 * k);
+            end_region(d, ca, cb, chips, u.save_chips_scroll, k);
+        }
+    }
     const float bw = (w - 20 * k) / 3, by = b.y - 70 * k;
     if (action(d, f, "##savetest", ImVec2(x, by), ImVec2(bw, 46 * k), "TEST IN GAME", Look::blue)) test_now(v);
     if (action(d, f, "##savekeep", ImVec2(x + bw + 10 * k, by), ImVec2(bw, 46 * k), "KEEP EDITING", Look::dark)) u.save_card = false;
@@ -10850,6 +10925,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (!u.share_pack.empty()) share_card(d, f, v, display);
     else if (!u.delete_card.empty()) delete_card(d, f, v, display);
     else if (!u.reshare_pack.empty()) reshare_card(d, f, v, display);
+    else if (!u.offer_pack.empty()) offer_card(d, f, v, display);
     else if (u.save_card) save_card(d, f, v, display);
     else if (v.loop_offer) loop_card(d, f, v, display);
     else if (!v.test_returned.empty()) test_card(d, f, v, display);
@@ -12929,6 +13005,7 @@ void draw_animation_studio() {
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
     auto* d = ImGui::GetWindowDrawList();
     library_news();
+    library_offers(v); // a pack just got in the MARKET: "add it to a playlist?"
     if (u.menu) {
         u.menu_fade = std::min(1.0f, u.menu_fade + ImGui::GetIO().DeltaTime * 8);
         menu_backdrop(d, f, display, 0.6f + 0.4f * u.menu_fade);
