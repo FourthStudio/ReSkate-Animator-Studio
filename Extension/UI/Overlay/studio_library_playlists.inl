@@ -333,10 +333,13 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     }
     // Rung only while nothing plays by default: with a default playing, the guide's step is playback, not this list.
     if (lib_guide_on && lib_guide_now == 2 && v.playlist_playing.empty()) lib_pulse(d, default_a, {default_a.x + default_w, default_a.y + rh}, k);
-    const std::string held = std::string("ON ") + studio::modifier_button_names[static_cast<std::size_t>(binding.button)];
-    const std::string button_label = modifier ? held + " / SET UP" : "PLAY ON A BUTTON...";
+    // Says what it does: "+ ADD A BUTTON" until this playlist has a button (it read "ON OFF / SET UP" with none chosen),
+    // then the button it plays on, held.
+    const bool has_button = modifier && binding.button > 0 && static_cast<std::size_t>(binding.button) < studio::modifier_button_names.size();
+    const std::string button_label =
+        has_button ? std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(binding.button)] + "  -  CHANGE" : "+ ADD A BUTTON";
     const float button_x = x + default_w + 10 * k, button_w = lib_w(f, button_label, rh, 214 * k);
-    if (lib_button(d, f, "##librarymodifierrole", {button_x, ry}, {button_w, rh}, button_label, modifier ? Look::paper : Look::ghost)) {
+    if (lib_button(d, f, "##librarymodifierrole", {button_x, ry}, {button_w, rh}, button_label, has_button ? Look::paper : Look::ghost)) {
         if (!modifier) { auto live = studio::modifier_binding(); live.playlist = v.playlist_open; studio::set_modifier_binding(live); }
         route.modifier_setup = true; route.settings_scroll = 0;
     }
@@ -346,9 +349,10 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     }
     {
         // What it does now, in words, beside the buttons that change it.
-        const std::string role = normal && modifier ? "plays by default and on the button" : normal ? "plays by default" : modifier ? "plays while the button is held"
+        const std::string role = normal && has_button ? "plays by default and while the button is held" : normal ? "plays by default"
+                                 : has_button ? "plays while the button is held"
                                  : v.playlist.empty() ? "empty" : "not playing yet - press SET AS DEFAULT";
-        const bool good = (normal || modifier) && v.play_in_game;
+        const bool good = (normal || has_button) && v.play_in_game;
         const float role_x = button_x + button_w + 14 * k, room = r - undo_w - 12 * k - role_x;
         text(d, body(f, 13 * k), 13 * k, {role_x, ry + 10 * k}, good ? lib_blue : lib_warn,
              elide(body(f, 13 * k), 13 * k, (good || v.play_in_game || !(normal || modifier) ? role : role + " / playback is off"), room));

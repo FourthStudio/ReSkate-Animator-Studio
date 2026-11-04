@@ -6143,15 +6143,22 @@ void torn_photo(ImDrawList* d, const Fonts& f, const ArtPlace& art, ImVec2 at, I
         return;
     }
     solid.flush(d);
+    // The picture is laid flat over the whole torn shape, its tears included. Clamping each corner into the box instead
+    // squashed every strip whose torn foot or top ran past the box, so the picture zigzagged along the tear (the board in
+    // a cover's photo went wavy).
+    float lo_x = 0, hi_x = size.x, lo_y = 0, hi_y = size.y;
+    for (const auto* side : {&shape.top, &shape.foot, &shape.left, &shape.right})
+        for (const auto& q : *side) lo_x = std::min(lo_x, q.x), hi_x = std::max(hi_x, q.x), lo_y = std::min(lo_y, q.y), hi_y = std::max(hi_y, q.y);
+    const float across = std::max(1.0f, hi_x - lo_x), down = std::max(1.0f, hi_y - lo_y);
     // Cover-fit: the picture's shape kept, cut round `focus`.
-    const float box = size.x / size.y, shape_of = art.width / art.height;
+    const float box = across / down, shape_of = art.width / art.height;
     float uw = 1, vh = 1;
     if (shape_of > box) uw = box / shape_of;
     else vh = shape_of / box;
     const float u0 = std::clamp(focus.x - uw * 0.5f, 0.0f, 1 - uw), v0 = std::clamp(focus.y - vh * 0.5f, 0.0f, 1 - vh);
     const ImVec2 span(art.uv1.x - art.uv0.x, art.uv1.y - art.uv0.y);
     const auto uv = [&](float x, float y, float) {
-        const float u = u0 + uw * std::clamp(x / size.x, 0.0f, 1.0f), v = v0 + vh * std::clamp(y / size.y, 0.0f, 1.0f);
+        const float u = u0 + uw * ((x - lo_x) / across), v = v0 + vh * ((y - lo_y) / down);
         return ImVec2(art.uv0.x + span.x * u, art.uv0.y + span.y * v);
     };
     Mesh picture;

@@ -92,9 +92,11 @@ void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     Plate normal{v.play_in_game ? "PLAYS BY DEFAULT" : "PLAYS BY DEFAULT / PLAYBACK OFF", playing ? v.playlist_playing : "nothing yet",
                  playing ? entries(v.playlist_playing) : std::string{}, v.play_in_game && playing ? lib_blue : lib_warn, playing};
     const std::string held = std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(bind.button)];
+    // With no button chosen it says so ("no button yet"), not the playlist that would play on one: a name there read as
+    // if it already played on a button.
     Plate button{!enabled ? "ON A BUTTON" : !v.play_in_game ? held + " / OFF" : !v.modifier_ready ? held + " / LOADING" : held,
-                 bind.playlist.empty() ? "not set up" : bind.playlist, bind.playlist.empty() ? std::string{} : entries(bind.playlist),
-                 enabled && v.modifier_ready && v.play_in_game ? lib_blue : lib_ink_soft, !bind.playlist.empty()};
+                 enabled ? bind.playlist : "no button yet", enabled ? entries(bind.playlist) : std::string{},
+                 enabled && v.modifier_ready && v.play_in_game ? lib_blue : lib_ink_soft, enabled};
     measure(normal);
     measure(button);
     a.x = std::max(a.x, b.x - (14 * k + normal.w + gap + button.w + tail));
