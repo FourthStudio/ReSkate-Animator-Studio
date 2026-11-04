@@ -16,7 +16,8 @@ struct TricksShelf {
     tb::GroupBy group_mine{tb::GroupBy::trick}, group_packs{tb::GroupBy::pack};
     tb::Sort sort;
     tb::Filter filter; // its source and search are set from the page each frame
-    std::set<std::string> folded;
+    std::set<std::string> folded;     // LIST and DETAILS: the groups folded (they start open)
+    std::set<std::string> icons_open; // ICONS: the groups opened (they start folded, each a card, as MY TRICKS had them)
     tb::Selection picked;
     bool select_mode{};
     bool filter_tab{};
@@ -209,85 +210,20 @@ std::vector<std::string> shelf_matching(const std::vector<std::string>& terms) {
     return out;
 }
 
-// ---- what a kind of trick looks like ----
-ImU32 type_colour(tb::Type t) {
-    switch (t) {
-    case tb::Type::flip: return IM_COL32(90, 180, 255, 255);
-    case tb::Type::shuv: return IM_COL32(184, 132, 255, 255);
-    case tb::Type::grind: return IM_COL32(255, 156, 52, 255);
-    case tb::Type::manual: return IM_COL32(82, 206, 120, 255);
-    case tb::Type::grab: return IM_COL32(246, 208, 70, 255);
-    case tb::Type::other: break;
-    }
-    return IM_COL32(186, 188, 196, 255);
+// ---- folding ----
+// Whether a group is folded: ICONS starts with every group folded (a card each), LIST and DETAILS with every one open.
+bool shelf_folded(const std::string& key) {
+    const auto& s = shelf();
+    return s.mode == tb::ViewMode::icons ? !s.icons_open.contains(key) : s.folded.contains(key);
 }
-// A board drawn for the kind: a deck on its wheels and what is done with it - turned over (a flip), spun flat round (a
-// shuv), on a rail (a grind or slide), up on its back wheels (a manual), held (a grab), popped up (the rest). `s` is how
-// wide it is.
-void trick_glyph(ImDrawList* d, ImVec2 c, float s, tb::Type type, ImU32 colour) {
-    const float line = std::max(1.4f, s * 0.07f);
-    const auto at = [&](float x, float y) { return ImVec2(c.x + x * s, c.y + y * s); };
-    // The deck with its kicks and wheels, turned by `tilt` (radians) about `pivot` and lifted by `lift`.
-    const auto deck = [&](float tilt, float lift, ImVec2 pivot) {
-        const float cs = std::cos(tilt), sn = std::sin(tilt);
-        const auto p = [&](float x, float y) {
-            const float dx = x * s, dy = (y + lift) * s;
-            return ImVec2(pivot.x + dx * cs - dy * sn, pivot.y + dx * sn + dy * cs);
-        };
-        const ImVec2 board[4]{p(-0.46f, -0.08f), p(-0.34f, 0.0f), p(0.34f, 0.0f), p(0.46f, -0.08f)};
-        d->AddPolyline(board, 4, colour, ImDrawFlags_None, line * 1.5f);
-        d->AddCircleFilled(p(-0.24f, 0.1f), s * 0.058f, colour, 12);
-        d->AddCircleFilled(p(0.24f, 0.1f), s * 0.058f, colour, 12);
-    };
-    const auto head = [&](ImVec2 tip, float dx, float dy) {
-        const float len = std::max(1e-3f, std::sqrt(dx * dx + dy * dy)), ux = dx / len, uy = dy / len, h = s * 0.13f;
-        d->AddTriangleFilled(ImVec2(tip.x + ux * h * 0.55f, tip.y + uy * h * 0.55f), ImVec2(tip.x - ux * h * 0.6f - uy * h * 0.6f, tip.y - uy * h * 0.6f + ux * h * 0.6f),
-                             ImVec2(tip.x - ux * h * 0.6f + uy * h * 0.6f, tip.y - uy * h * 0.6f - ux * h * 0.6f), colour);
-    };
-    // Part of an ellipse round `centre`, from one angle to the other, its arrow head at the end.
-    const auto turn = [&](ImVec2 centre, float rx, float ry, float from, float to) {
-        constexpr int steps = 22;
-        std::array<ImVec2, steps + 1> pts{};
-        for (int i = 0; i <= steps; ++i) {
-            const float t = from + (to - from) * static_cast<float>(i) / steps;
-            pts[static_cast<std::size_t>(i)] = ImVec2(centre.x + std::cos(t) * rx * s, centre.y + std::sin(t) * ry * s);
-        }
-        d->AddPolyline(pts.data(), steps + 1, colour, ImDrawFlags_None, line);
-        head(pts[steps], pts[steps].x - pts[steps - 1].x, pts[steps].y - pts[steps - 1].y);
-    };
-    const ImU32 ground = with_alpha(colour, 110);
-    switch (type) {
-    case tb::Type::flip:
-        deck(0, 0.04f, c);
-        turn(at(0, 0.02f), 0.2f, 0.4f, -2.5f, 2.3f);
-        break;
-    case tb::Type::shuv:
-        deck(0, 0, c);
-        turn(at(0, 0.03f), 0.52f, 0.2f, 0.6f, 5.7f);
-        break;
-    case tb::Type::grind:
-        deck(0, -0.14f, c);
-        d->AddLine(at(-0.52f, 0.1f), at(0.52f, 0.1f), colour, line * 1.3f);
-        d->AddLine(at(-0.3f, 0.1f), at(-0.3f, 0.38f), colour, line);
-        d->AddLine(at(0.3f, 0.1f), at(0.3f, 0.38f), colour, line);
-        break;
-    case tb::Type::manual:
-        d->AddLine(at(-0.52f, 0.25f), at(0.52f, 0.25f), ground, line);
-        deck(-0.34f, 0, at(0.04f, 0.0f));
-        break;
-    case tb::Type::grab:
-        deck(0, 0.1f, c);
-        d->AddLine(at(0.2f, -0.44f), at(0.04f, -0.12f), colour, line * 1.3f); // the arm
-        d->AddCircleFilled(at(0.02f, -0.08f), s * 0.085f, colour, 14);        // the hand, on the deck's edge
-        break;
-    case tb::Type::other:
-        deck(0, 0.18f, c);
-        d->AddLine(at(0, 0.0f), at(0, -0.34f), colour, line * 1.2f);
-        head(at(0, -0.36f), 0, -1);
-        break;
-    }
+void shelf_fold(const std::string& key, bool fold) {
+    auto& s = shelf();
+    if (s.mode == tb::ViewMode::icons) {
+        if (fold) s.icons_open.erase(key);
+        else s.icons_open.insert(key);
+    } else if (fold) s.folded.insert(key);
+    else s.folded.erase(key);
 }
-
 // ---- choosing and opening ----
 // Opens it in the editor (asking about changes not saved there); one locked to its maker is watched instead.
 void shelf_open(const studio::View& v, const std::string& name) {
@@ -386,10 +322,7 @@ void shelf_group_row(ImDrawList* d, const Fonts& f, const tb::Group& g, bool fol
         right -= 10 * k;
     }
     bool lit = false;
-    if (hit("##fold", a, ImVec2(right, b.y), &lit)) {
-        if (folded) s.folded.erase(g.key);
-        else s.folded.insert(g.key);
-    }
+    if (hit("##fold", a, ImVec2(right, b.y), &lit)) shelf_fold(g.key, !folded);
     around_peek(d, a, ImVec2(right, b.y), [&] {
         if (lit) d->AddRectFilled(a, ImVec2(right, b.y), IM_COL32(255, 255, 255, 14));
         if (lit && nav().keys) chosen_outline(d, a, ImVec2(right, b.y), k);
@@ -417,14 +350,12 @@ float shelf_tick(ImDrawList* d, const Fonts& f, float x, float cy, bool chosen) 
     tick_box(d, ImVec2(x + 9 * f.k, cy), 8 * f.k, chosen, chosen ? white : soft, f.k);
     return x + 28 * f.k;
 }
-// A row of the LIST: its kind's board, its name, then the game's name for its trick; its tags at the right.
+// A row of the LIST: its name, then the game's name for its trick; its tags at the right.
 void shelf_list_row(ImDrawList* d, const Fonts& f, const studio::View& v, const tb::Item& it, ImVec2 a, ImVec2 b, bool chosen, bool lit) {
     const float k = f.k, cy = (a.y + b.y) * 0.5f;
     flat_rect(d, a, b, chosen ? tricks_row_chosen : lit ? tricks_row_lit : tricks_row, seed_of(a), k * 0.45f);
     if (it.name == v.name && v.has_clip) d->AddRectFilled(ImVec2(a.x, a.y + 5 * k), ImVec2(a.x + 4 * k, b.y - 5 * k), blue);
-    float x = shelf_tick(d, f, a.x + 12 * k, cy, chosen);
-    trick_glyph(d, ImVec2(x + 15 * k, cy + 1 * k), 28 * k, it.type, type_colour(it.type));
-    x += 40 * k;
+    const float x = shelf_tick(d, f, a.x + 16 * k, cy, chosen);
     const float tags_end = shelf_tags(d, f, it, b.x - 12 * k, cy - 10 * k, x + 200 * k);
     const float room = tags_end - x - 14 * k;
     ImFont* name_font = body(f, 16 * k);
@@ -449,9 +380,7 @@ void shelf_details_row(ImDrawList* d, const Fonts& f, const studio::View& v, con
         ImU32 ink = soft;
         switch (column) {
         case tb::Column::name: {
-            float nx = shelf_tick(d, f, x, cy, chosen);
-            trick_glyph(d, ImVec2(nx + 12 * k, cy + 1 * k), 22 * k, it.type, type_colour(it.type));
-            nx += 32 * k;
+            const float nx = shelf_tick(d, f, x, cy, chosen);
             const float w = std::max(0.0f, x + room - nx - (it.locked ? 20 * k : 0));
             text(d, body(f, 15 * k), 15 * k, ImVec2(nx, cy - 9 * k), white, elide(body(f, 15 * k), 15 * k, it.shown, w));
             if (it.locked) { // a little padlock
@@ -511,29 +440,120 @@ void shelf_details_head(ImDrawList* d, const Fonts& f, const std::vector<std::pa
         x += width;
     }
 }
-// An icon: its kind's board big on a tile, its name under it, its pop and stance.
-void shelf_tile(ImDrawList* d, const Fonts& f, const studio::View& v, const tb::Item& it, ImVec2 a, ImVec2 b, bool chosen, bool lit) {
-    const float k = f.k, w = b.x - a.x;
-    flat_rect(d, a, b, chosen ? tricks_row_chosen : lit ? tricks_row_lit : tricks_row, seed_of(a), k * 0.6f);
-    if (chosen) d->AddRect(a, b, blue_light, 0, 0, 2 * k);
-    if (it.name == v.name && v.has_clip) d->AddRectFilled(ImVec2(a.x, a.y), ImVec2(b.x, a.y + 4 * k), blue);
-    const ImU32 colour = type_colour(it.type);
-    const ImVec2 c((a.x + b.x) * 0.5f, a.y + 52 * k);
-    d->AddCircleFilled(c, 40 * k, with_alpha(colour, 26), 36);
-    trick_glyph(d, ImVec2(c.x, c.y + 2 * k), 64 * k, it.type, colour);
-    if (shelf().select_mode) tick_box(d, ImVec2(a.x + 18 * k, a.y + 18 * k), 8 * k, chosen, chosen ? white : soft, k);
-    if (it.locked) tag(d, f, ImVec2(b.x - tag_width(f, "LOCKED") - 8 * k, a.y + 8 * k), "LOCKED", IM_COL32(120, 34, 36, 255));
-    else if (it.plays) tag(d, f, ImVec2(b.x - tag_width(f, "IN DEFAULT") - 8 * k, a.y + 8 * k), "IN DEFAULT", IM_COL32(36, 150, 76, 255));
-    ImFont* font = body(f, 15 * k);
-    const auto name = elide(font, 15 * k, it.shown, w - 20 * k);
-    const float nw = text_size(font, 15 * k, name.c_str()).x;
-    text(d, font, 15 * k, ImVec2(a.x + (w - nw) * 0.5f, a.y + 102 * k), white, name);
-    std::string line = it.pop < 0 ? std::string("PIECE") : std::string(tb::pop_names[static_cast<std::size_t>(it.pop)]) + " POP";
-    if (it.stance != 0) line += "  /  " + std::string(shelf_stance(it));
-    const auto shown = elide(mont(f, 10.5f * k), 10.5f * k, line, w - 20 * k);
-    const float lw = text_size(mont(f, 10.5f * k), 10.5f * k, shown.c_str()).x;
-    text(d, mont(f, 10.5f * k), 10.5f * k, ImVec2(a.x + (w - lw) * 0.5f, a.y + 126 * k), it.stance != 0 ? IM_COL32(240, 160, 70, 255) : soft, shown);
+// ICONS: a saved trick as MY TRICKS' card always looked: its name on a line of its own, what it is under it, its tags left
+// to right (the pack last, left out first when there is no room), and EDIT (PREVIEW when it is locked), TEST IN GAME and
+// PLAYLISTS along its foot, each as wide as its label. The card above the foot is the item the list chooses with.
+constexpr float shelf_card_foot = 46;
+void shelf_card(ImDrawList* d, const Fonts& f, const studio::View& v, const tb::Item& it, ImVec2 a, ImVec2 b, bool chosen, bool lit) {
+    const float k = f.k, strip = shelf_card_foot * k, w = b.x - a.x;
+    flat_rect(d, a, b, chosen ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
+    if (it.name == v.name && v.has_clip) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
+    float nx = a.x + 18 * k;
+    if (shelf().select_mode) {
+        tick_box(d, ImVec2(a.x + 27 * k, a.y + 24 * k), 8 * k, chosen, chosen ? white : soft, k);
+        nx += 22 * k;
+    }
+    text(d, f.bold, 21 * k, ImVec2(nx, a.y + 12 * k), white, elide(f.bold, 21 * k, it.shown, b.x - nx - 18 * k));
+    std::string what = upper(it.trick_label);
+    if (it.pop >= 0) what += "  /  " + std::string(tb::pop_names[static_cast<std::size_t>(it.pop)]) + " POP";
+    if (const auto when = edited_words(it.modified); !when.empty()) what += "  /  EDITED " + when;
+    text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 40 * k), soft, elide(f.bold, 12 * k, what, w - 36 * k));
+    float tx = a.x + 18 * k;
+    const float tags_end = b.x - 14 * k, ty = a.y + 60 * k;
+    const auto put = [&](const std::string& label, ImU32 fill) {
+        const float tw = tag_width(f, label);
+        if (tx + tw > tags_end) return;
+        tag(d, f, ImVec2(tx, ty), label, fill);
+        tx += tw + 6 * k;
+    };
+    put(shelf_stance(it), it.stance == 0 ? IM_COL32(255, 255, 255, 36) : IM_COL32(196, 104, 0, 255));
+    if (it.plays) put("IN DEFAULT", IM_COL32(36, 150, 76, 255));
+    if (it.locked) put("LOCKED", IM_COL32(120, 34, 36, 255));
+    if (!it.packs.empty()) {
+        const std::string more = it.packs.size() > 1 ? " +" + std::to_string(it.packs.size() - 1) : std::string{};
+        const float room = tags_end - tx - 14 * k - (more.empty() ? 0.0f : text_size(f.bold, 12 * k, more.c_str()).x);
+        if (room > 40 * k) put(elide(f.bold, 12 * k, upper(it.packs.front()), room) + more, it.from_pack ? blue_dim : IM_COL32(255, 255, 255, 36));
+    }
+    if (lit && nav().keys) chosen_outline(d, a, ImVec2(b.x, b.y - strip), k);
+    const char* open_label = it.locked ? "PREVIEW" : "EDIT";
+    const float fs = 12 * k, by = b.y - strip + 6 * k; // action()'s label on a 30-high button
+    const float edit_w = text_size(mont(f, fs), fs, open_label).x + 26 * k, test_w = text_size(mont(f, fs), fs, "TEST IN GAME").x + 26 * k;
+    const float play_w = std::max(0.0f, w - 28 * k - 16 * k - edit_w - test_w);
+    if (action(d, f, "##edit", ImVec2(a.x + 14 * k, by), ImVec2(edit_w, 30 * k), open_label, Look::blue)) shelf_open(v, it.name);
+    if (action(d, f, "##test", ImVec2(a.x + 22 * k + edit_w, by), ImVec2(test_w, 30 * k), "TEST IN GAME")) {
+        std::string m;
+        studio::clear_test_returned();
+        studio::test_in_game(it.name, m);
+        say(m);
+    }
+    if (playlist_button(d, f, "##playlist", ImVec2(b.x - 14 * k - play_w, by), ImVec2(play_w, 30 * k), it.plays)) press_playlist(v, it.name, it.plays);
+}
+// ICONS, a group folded: one card for all of it, as MY TRICKS' trick groups always looked - a little stack, its name, its
+// pops and stances at a glance, how many, and when it was last changed. Pressed, it opens; with SELECT on, the box at its
+// left chooses all of it.
+void shelf_group_card(ImDrawList* d, const Fonts& f, const tb::Group& g, ImVec2 a, ImVec2 b) {
+    auto& s = shelf();
+    const float k = f.k;
+    ImGui::PushID(("card|" + g.key).c_str());
+    const bool ticking = s.select_mode;
+    const auto chosen = static_cast<std::size_t>(std::count_if(g.items.begin(), g.items.end(), [&](std::size_t i) { return s.picked.names.contains(s.items[i].name); }));
+    const float box_w = ticking ? 56 * k : 0;
+    bool box_lit = false, lit = false;
+    if (ticking && hit("##grouptick", a, ImVec2(a.x + box_w, b.y), &box_lit)) {
+        for (const auto i : g.items) {
+            if (chosen == g.items.size()) s.picked.names.erase(s.items[i].name);
+            else s.picked.names.insert(s.items[i].name);
+        }
+        ui().trick_page = s.picked.names.size() == 1 ? *s.picked.names.begin() : std::string{};
+        s.page_seen = ui().trick_page;
+    }
+    if (hit("##groupopen", ImVec2(a.x + box_w, a.y), b, &lit)) shelf_fold(g.key, false);
+    flat_rect(d, ImVec2(a.x + 10 * k, a.y - 6 * k), ImVec2(b.x - 10 * k, a.y + 10 * k), IM_COL32(40, 42, 48, 220), seed_of(a) + 3, k * 0.6f);
+    flat_rect(d, a, b, lit ? IM_COL32(48, 50, 56, 250) : chosen ? IM_COL32(30, 52, 86, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
+    d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue_light);
+    if (ticking) {
+        if (box_lit) d->AddRectFilled(ImVec2(a.x + 5 * k, a.y), ImVec2(a.x + box_w, b.y), IM_COL32(255, 255, 255, 20));
+        const ImVec2 c(a.x + 30 * k, a.y + 24 * k);
+        tick_box(d, c, 8 * k, chosen == g.items.size(), chosen ? white : soft, k);
+        if (chosen && chosen < g.items.size()) d->AddRectFilled(ImVec2(c.x - 4 * k, c.y - 4 * k), ImVec2(c.x + 4 * k, c.y + 4 * k), white); // some of it
+        if (box_lit && nav().keys) chosen_outline(d, a, ImVec2(a.x + box_w, b.y), k);
+    }
+    const float tx = a.x + (ticking ? 48.0f : 18.0f) * k, tw = b.x - tx - 18 * k;
+    std::set<std::string> pops, stances;
+    std::size_t playing = 0;
+    std::int64_t newest = 0;
+    for (const auto i : g.items) {
+        const auto& it = s.items[i];
+        pops.insert(it.pop < 0 ? std::string("PIECE") : std::string(tb::pop_names[static_cast<std::size_t>(it.pop)]));
+        stances.insert(shelf_stance(it));
+        playing += it.plays;
+        newest = std::max(newest, it.modified);
+    }
+    text(d, f.bold, 21 * k, ImVec2(tx, a.y + 12 * k), white, elide(f.bold, 21 * k, upper(g.title), tw));
+    std::string pop_line;
+    for (const char* pop : {"LOW", "MID", "HIGH", "ANY"})
+        if (pops.contains(pop)) pop_line += (pop_line.empty() ? "" : " / ") + std::string(pop) + " POP";
+    if (pops.contains("PIECE")) pop_line += (pop_line.empty() ? "" : " / ") + std::string("PIECES");
+    text(d, f.bold, 12 * k, ImVec2(tx, a.y + 42 * k), soft, elide(f.bold, 12 * k, pop_line, tw));
+    std::string stance_line;
+    for (const char* stance : {"NORMAL", "FAKIE", "SWITCH (FAKIE NOLLIE)", "SWITCH", "SWITCH FAKIE"})
+        if (stances.contains(stance)) stance_line += (stance_line.empty() ? "" : " / ") + std::string(stance);
+    text(d, f.bold, 12 * k, ImVec2(tx, a.y + 60 * k), soft, elide(f.bold, 12 * k, stance_line, tw));
+    float x = tx;
+    const auto put = [&](const std::string& label, ImU32 fill) {
+        const float w = tag_width(f, label);
+        if (x + w > b.x - 14 * k) return;
+        tag(d, f, ImVec2(x, a.y + 80 * k), label, fill);
+        x += w + 6 * k;
+    };
+    put(std::to_string(g.items.size()) + (g.items.size() == 1 ? " TRICK" : " TRICKS"), IM_COL32(255, 255, 255, 36));
+    if (playing) put(std::to_string(playing) + " IN DEFAULT", IM_COL32(36, 150, 76, 255));
+    const auto when = edited_words(newest);
+    const std::string open_line = ticking && chosen ? std::format("OPEN THE GROUP   /   {} OF {} CHOSEN", chosen, g.items.size())
+                                                    : "OPEN THE GROUP" + (when.empty() ? std::string{} : "   /   LAST EDITED " + when);
+    text(d, f.bold, 12 * k, ImVec2(tx, b.y - 24 * k), lit ? blue_light : faint, elide(f.bold, 12 * k, open_line, tw));
     if (lit && nav().keys) chosen_outline(d, a, b, k);
+    ImGui::PopID();
 }
 
 // ---- the FILTER tab ----
@@ -1007,15 +1027,13 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
         if (chip(d, f, "##shelfselect", ImVec2(rx, y + 4 * k), select, s.select_mode)) s.select_mode = !s.select_mode;
         const bool grouped = group_by != tb::GroupBy::none && !s.groups.empty();
         if (grouped) {
-            const bool any_open = std::any_of(s.groups.begin(), s.groups.end(), [&](const tb::Group& g) { return !s.folded.contains(g.key); });
+            const bool any_open = std::any_of(s.groups.begin(), s.groups.end(), [&](const tb::Group& g) { return !shelf_folded(g.key); });
             const char* fold = any_open ? "FOLD ALL" : "OPEN ALL";
             const float fw = chip_width(f, fold);
             if (rx - 8 * k - fw > db.x + 10 * k) {
                 rx -= 8 * k + fw;
                 if (chip(d, f, "##shelffold", ImVec2(rx, y + 4 * k), fold, false)) {
-                    if (any_open)
-                        for (const auto& g : s.groups) s.folded.insert(g.key);
-                    else s.folded.clear();
+                    for (const auto& g : s.groups) shelf_fold(g.key, any_open);
                 }
             }
         }
@@ -1052,7 +1070,10 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
     }
     // ---- the list ----
     const ImVec2 sheet_a(a.x, y), sheet_b(right, b.y);
-    library_sheet(d, f, sheet_a, sheet_b);
+    // Round the hover preview's window, never through it: the menu leaves that window clear to see the skater do the trick,
+    // and the sheet painted over it was why the preview showed an empty grey frame.
+    around_peek(d, ImVec2(sheet_a.x - 24 * k, sheet_a.y - 24 * k), ImVec2(sheet_b.x + 24 * k, sheet_b.y + 24 * k),
+                [&] { library_sheet(d, f, sheet_a, sheet_b); });
     const float pad = 12 * k;
     ImVec2 la(sheet_a.x + pad, sheet_a.y + pad), lb(sheet_b.x - pad, sheet_b.y - pad);
     const float list_w = lb.x - la.x - 10 * k; // the scroll bar's room at the right
@@ -1069,28 +1090,32 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
         // How it is laid out: again only when what is shown, the view, the folds or the width changed.
         // ICONS as many across as fit; LIST rows two or more across once there is room (one row 2000 units long on a 21:9
         // screen left a name far from its tags); DETAILS a table, an item a row.
-        const float tile_min = s.mode == tb::ViewMode::list ? 600 * k : 184 * k, tile_gap = s.mode == tb::ViewMode::list ? 16 * k : 12 * k;
+        const float tile_min = s.mode == tb::ViewMode::list ? 600 * k : 300 * k, tile_gap = 16 * k;
         const std::size_t columns =
             s.mode == tb::ViewMode::details ? 1 : static_cast<std::size_t>(std::max(1.0f, std::floor((list_w + tile_gap) / (tile_min + tile_gap))));
         tb::Metrics metrics;
         metrics.header_h = 40 * k;
         metrics.row_h = s.mode == tb::ViewMode::details ? 38 * k : 44 * k;
-        metrics.tile_h = 152 * k;
+        metrics.tile_h = 132 * k;
         metrics.gap = s.mode == tb::ViewMode::icons ? tile_gap : 4 * k;
         metrics.group_gap = 14 * k;
         metrics.columns = columns;
+        metrics.folded_as_cards = s.mode == tb::ViewMode::icons;
         {
             tb::Mark m;
             m.add(s.shown_generation);
             m.add(static_cast<std::uint64_t>(s.mode));
             m.add(columns);
             m.add(static_cast<std::uint64_t>(k * 1000));
-            for (const auto& g : s.folded) m.add(g);
+            for (const auto& g : s.mode == tb::ViewMode::icons ? s.icons_open : s.folded) m.add(g);
             if (m.value != s.layout_mark) {
                 s.layout_mark = m.value;
-                s.layout = tb::lay_out(s.groups, s.folded, s.mode, metrics);
+                std::set<std::string> folded;
+                for (const auto& g : s.groups)
+                    if (shelf_folded(g.key)) folded.insert(g.key);
+                s.layout = tb::lay_out(s.groups, folded, s.mode, metrics);
                 s.order.clear();
-                for (const auto i : tb::shown_order(s.groups, s.folded)) s.order.push_back(s.items[i].name);
+                for (const auto i : tb::shown_order(s.groups, folded)) s.order.push_back(s.items[i].name);
             }
         }
         // Ctrl + A: everything shown chosen (not while typing).
@@ -1118,8 +1143,8 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
             }
             if (!found)
                 for (const auto& g : s.groups)
-                    if (s.folded.contains(g.key) && std::any_of(g.items.begin(), g.items.end(), [&](std::size_t i) { return s.items[i].name == s.reveal; })) {
-                        s.folded.erase(g.key); // laid out again next frame, and scrolled to then
+                    if (shelf_folded(g.key) && std::any_of(g.items.begin(), g.items.end(), [&](std::size_t i) { return s.items[i].name == s.reveal; })) {
+                        shelf_fold(g.key, false); // laid out again next frame, and scrolled to then
                         break;
                     }
             if (found || --s.reveal_tries <= 0) s.reveal.clear();
@@ -1130,49 +1155,63 @@ void shelf_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
         begin_region(24, la, lb, s.scroll, k);
         const auto [from, to] = tb::visible(s.layout, s.scroll, s.scroll + (lb.y - la.y), 2);
         const float tile_w = columns > 1                       ? (list_w - tile_gap * static_cast<float>(columns - 1)) / static_cast<float>(columns)
-                             : s.mode == tb::ViewMode::list ? list_w
-                                                            : std::min(list_w, 260 * k);
+                             : list_w;
+        // One item: chosen with a click, opened with a double click, drawn as a card, a row of the list or of the table.
+        const auto item = [&](const tb::Item& it, ImVec2 ia, ImVec2 ib) {
+            ImGui::PushID(it.name.c_str());
+            const bool card = s.mode == tb::ViewMode::icons;
+            if (card && card_under_peek(ia, ib)) {
+                ImGui::PopID();
+                return;
+            }
+            bool lit = false;
+            bool pressed = hit("##item", ia, card ? ImVec2(ib.x, ib.y - shelf_card_foot * k) : ib, &lit); // a card's foot is its buttons'
+            // Under the hover preview's window the row is hidden: a click there is not on it.
+            if (u.peek_hole && ImGui::IsMouseHoveringRect(u.peek_a, u.peek_b, false) && !nav().keys) pressed = lit = false;
+            const bool chosen = s.picked.names.contains(it.name);
+            // A double click opens it (the first click already chose it).
+            if (lit && !nav().keys && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !s.select_mode && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift)
+                shelf_open(v, it.name);
+            else if (pressed) shelf_click(v, it.name);
+            if (ib.y > la.y && ia.y < lb.y) {
+                switch (s.mode) {
+                case tb::ViewMode::icons: shelf_card(d, f, v, it, ia, ib, chosen, lit); break;
+                case tb::ViewMode::list: around_peek(d, ia, ib, [&] { shelf_list_row(d, f, v, it, ia, ib, chosen, lit); }); break;
+                case tb::ViewMode::details: around_peek(d, ia, ib, [&] { shelf_details_row(d, f, v, it, cols, ia, ib, chosen, lit); }); break;
+                }
+                const std::string name = it.name;
+                note_hover("mine|" + name, ia, ib, [name](bool play) { return studio::peek_saved(name, play); }, it.shown);
+            }
+            ImGui::PopID();
+        };
         for (std::size_t r = from; r < to; ++r) {
             const auto& row = s.layout.rows[r];
             const float ry = la.y + row.top - s.scroll;
-            const auto& g = s.groups[row.group];
-            ImGui::PushID(static_cast<int>(row.group));
-            if (row.header) {
-                shelf_group_row(d, f, g, s.folded.contains(g.key), ImVec2(la.x, ry), ImVec2(la.x + list_w, ry + row.height));
-                ImGui::PopID();
+            const bool across = s.mode != tb::ViewMode::details;
+            const auto place = [&](std::size_t j) {
+                const ImVec2 ia = across ? ImVec2(la.x + static_cast<float>(j) * (tile_w + tile_gap), ry) : ImVec2(la.x, ry);
+                return std::pair{ia, across ? ImVec2(ia.x + tile_w, ry + row.height) : ImVec2(la.x + list_w, ry + row.height)};
+            };
+            if (row.folded_cards) {
+                // Folded groups side by side, a card each; a group of one is that trick's own card.
+                for (std::size_t j = 0; j < row.count; ++j) {
+                    const auto& g = s.groups[row.group + j];
+                    const auto [ia, ib] = place(j);
+                    ImGui::PushID(static_cast<int>(row.group + j));
+                    if (g.items.size() == 1) item(s.items[g.items.front()], ia, ib);
+                    else if (!card_under_peek(ia, ib) && ib.y > la.y - 200 * k && ia.y < lb.y + 200 * k) shelf_group_card(d, f, g, ia, ib);
+                    ImGui::PopID();
+                }
                 continue;
             }
-            for (std::size_t j = 0; j < row.count; ++j) {
-                const auto& it = s.items[g.items[row.first + j]];
-                const bool across = s.mode != tb::ViewMode::details;
-                const ImVec2 ia = across ? ImVec2(la.x + static_cast<float>(j) * (tile_w + tile_gap), ry) : ImVec2(la.x, ry);
-                const ImVec2 ib = across ? ImVec2(ia.x + tile_w, ry + row.height) : ImVec2(la.x + list_w, ry + row.height);
-                ImGui::PushID(it.name.c_str());
-                if (s.mode == tb::ViewMode::icons && card_under_peek(ia, ib)) {
-                    ImGui::PopID();
-                    continue;
+            const auto& g = s.groups[row.group];
+            ImGui::PushID(static_cast<int>(row.group));
+            if (row.header) shelf_group_row(d, f, g, shelf_folded(g.key), ImVec2(la.x, ry), ImVec2(la.x + list_w, ry + row.height));
+            else
+                for (std::size_t j = 0; j < row.count; ++j) {
+                    const auto [ia, ib] = place(j);
+                    item(s.items[g.items[row.first + j]], ia, ib);
                 }
-                bool lit = false;
-                bool pressed = hit("##item", ia, ib, &lit);
-                // Under the hover preview's window the row is hidden: a click there is not on it.
-                if (u.peek_hole && ImGui::IsMouseHoveringRect(u.peek_a, u.peek_b, false) && !nav().keys) pressed = lit = false;
-                const bool chosen = s.picked.names.contains(it.name);
-                // A double click opens it (the first click already chose it).
-                if (lit && !nav().keys && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !s.select_mode && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift)
-                    shelf_open(v, it.name);
-                else if (pressed) shelf_click(v, it.name);
-                const bool on_screen = ib.y > la.y && ia.y < lb.y;
-                if (on_screen) {
-                    switch (s.mode) {
-                    case tb::ViewMode::icons: shelf_tile(d, f, v, it, ia, ib, chosen, lit); break;
-                    case tb::ViewMode::list: around_peek(d, ia, ib, [&] { shelf_list_row(d, f, v, it, ia, ib, chosen, lit); }); break;
-                    case tb::ViewMode::details: around_peek(d, ia, ib, [&] { shelf_details_row(d, f, v, it, cols, ia, ib, chosen, lit); }); break;
-                    }
-                    const std::string name = it.name;
-                    note_hover("mine|" + name, ia, ib, [name](bool play) { return studio::peek_saved(name, play); }, it.shown);
-                }
-                ImGui::PopID();
-            }
             ImGui::PopID();
         }
         end_region(d, la, lb, s.layout.height + 8 * k, s.scroll, k);
