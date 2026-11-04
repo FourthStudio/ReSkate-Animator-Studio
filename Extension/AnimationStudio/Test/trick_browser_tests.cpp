@@ -194,7 +194,7 @@ void rows_lay_out_headings_lists_and_icons() {
     const auto icons = lay_out(groups, {}, ViewMode::icons, m);
     check(icons.rows.size() == 5 && icons.rows[1].count == 3 && icons.rows[2].count == 2 && icons.rows[2].first == 3 && icons.rows[4].count == 2,
           "Icons are not laid three across");
-    const auto folded = lay_out(groups, {"a"}, ViewMode::list, m);
+    const auto folded = lay_out(groups, {"a"}, ViewMode::details, m);
     check(folded.rows.size() == 4 && folded.rows[1].header && folded.rows[1].group == 1, "A folded group still shows its items");
     check(shown_order(groups, {"a"}) == std::vector<std::size_t>{5, 6}, "A folded group's items are in a Shift + click's range");
     const std::vector<Group> plain{{"", "", {0, 1, 2}}};
