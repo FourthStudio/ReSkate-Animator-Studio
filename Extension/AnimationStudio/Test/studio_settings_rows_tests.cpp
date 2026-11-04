@@ -197,7 +197,7 @@ void how_it_works_opens_the_guide_again() {
 void the_mode_is_the_playing_playlists_and_set_by_its_name() {
     reset();
     const auto row = which_version_plays(two_playlists("Park"), [](const std::string&) {});
-    check(row.options == std::vector<std::string>{"FIXED", "IN TURNS", "SHUFFLE"} && row.value == "SHUFFLE" && row.enabled,
+    check(row.options == std::vector<std::string>{"PRIORITY", "IN TURNS", "SHUFFLE"} && row.value == "SHUFFLE" && row.enabled,
           "The mode is not the playing playlist's");
     row.pick(1);
     check(anim_studio::given.mode_of == "Park" && anim_studio::given.mode == anim_studio::PlaylistMode::turns,
