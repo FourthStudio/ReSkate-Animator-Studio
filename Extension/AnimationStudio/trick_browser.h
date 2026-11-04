@@ -268,15 +268,20 @@ inline std::vector<Group> arrange(const std::vector<Item>& items, const Filter& 
 enum class ViewMode : std::uint8_t { icons, list, details };
 struct Row {
     bool header{};                 // a group's heading, else items
-    std::size_t group{};           // the group it is in
-    std::size_t first{}, count{};  // items: from this place in its group, this many (a row of icons has more than one)
+    std::size_t group{};           // the group it is in (folded groups as cards: the first of them)
+    std::size_t first{}, count{};  // items: from this place in its group, this many (a row of icons has more than one);
+                                   // folded groups as cards: how many groups, from `group` on
     float top{}, height{};
+    bool folded_cards{};           // a row of folded groups, each a card of its own (Metrics::folded_as_cards)
 };
 // How tall each row is (already scaled), and how many items go across: icons, and a LIST's rows on a wide screen (one
 // long row each across 2000 units of a 21:9 screen left the name far from its tags); DETAILS is a table, one a row.
 struct Metrics {
     float header_h{36}, row_h{40}, tile_h{150}, gap{4}, group_gap{10};
     std::size_t columns{1};
+    // ICONS: a folded group is a card among the cards (its trick's saves stacked in one, as MY TRICKS had them before),
+    // not a heading on a line of its own; the folded ones next to each other share rows.
+    bool folded_as_cards{};
 };
 struct Layout {
     std::vector<Row> rows;
@@ -288,9 +293,26 @@ inline Layout lay_out(const std::vector<Group>& groups, const std::set<std::stri
     float y = 0;
     const std::size_t across = mode == ViewMode::details ? 1 : std::max<std::size_t>(1, m.columns);
     const float item_h = mode == ViewMode::icons ? m.tile_h : m.row_h;
+    std::size_t run_from = 0, run = 0; // folded groups waiting to be laid as cards
+    const auto lay_run = [&] {
+        for (std::size_t i = 0; i < run; i += across) {
+            Row r{false, run_from + i, 0, std::min(across, run - i), y, m.tile_h};
+            r.folded_cards = true;
+            out.rows.push_back(r);
+            y += m.tile_h + m.gap;
+        }
+        if (run) y += m.group_gap;
+        run = 0;
+    };
     for (std::size_t g = 0; g < groups.size(); ++g) {
         const auto& group = groups[g];
         const bool headed = !group.key.empty();
+        if (m.folded_as_cards && headed && folded.contains(group.key)) {
+            if (!run) run_from = g;
+            ++run;
+            continue;
+        }
+        lay_run();
         if (headed) {
             out.rows.push_back(Row{true, g, 0, 0, y, m.header_h});
             y += m.header_h + m.gap;
@@ -305,6 +327,7 @@ inline Layout lay_out(const std::vector<Group>& groups, const std::set<std::stri
         }
         if (headed) y += m.group_gap;
     }
+    lay_run();
     out.height = std::max(0.0f, y - m.gap);
     return out;
 }

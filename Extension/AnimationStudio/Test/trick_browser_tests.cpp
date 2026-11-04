@@ -197,6 +197,15 @@ void rows_lay_out_headings_lists_and_icons() {
     const auto folded = lay_out(groups, {"a"}, ViewMode::details, m);
     check(folded.rows.size() == 4 && folded.rows[1].header && folded.rows[1].group == 1, "A folded group still shows its items");
     check(shown_order(groups, {"a"}) == std::vector<std::size_t>{5, 6}, "A folded group's items are in a Shift + click's range");
+    // ICONS with folded groups as cards: the folded ones next to each other share rows, an open one breaks the run.
+    std::vector<Group> three{{"a", "A", {0, 1}}, {"b", "B", {2}}, {"c", "C", {3, 4}}, {"d", "D", {5}}};
+    m.columns = 2;
+    m.folded_as_cards = true;
+    const auto cards = lay_out(three, {"a", "b", "d"}, ViewMode::icons, m);
+    check(cards.rows.size() == 4 && cards.rows[0].folded_cards && cards.rows[0].group == 0 && cards.rows[0].count == 2 && cards.rows[1].header &&
+              cards.rows[1].group == 2 && cards.rows[2].count == 2 && cards.rows[3].folded_cards && cards.rows[3].group == 3 && cards.rows[3].count == 1,
+          "Folded groups are not laid as cards beside each other, or an open group does not break their run");
+    m.folded_as_cards = false;
     const std::vector<Group> plain{{"", "", {0, 1, 2}}};
     const auto flat = lay_out(plain, {}, ViewMode::details, m);
     check(flat.rows.size() == 3 && !flat.rows[0].header && flat.rows[0].top == 0 && flat.height == 3 * 40 + 2 * 5,
