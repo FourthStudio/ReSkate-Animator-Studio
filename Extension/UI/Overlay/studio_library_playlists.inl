@@ -212,13 +212,10 @@ Grip library_entry_row(ImDrawList* d, const Fonts& f, const studio::View& v, con
                 route.open_packs.insert(e.pack);
         }
     } else {
+        // This row out of the list (a pack further down may still hold the trick: its row says so when opened). The studio
+        // says what it did on its own line, with UNDO.
         const float rx = place(104 * k);
-        if (button("##removemember", rx, 104 * k, "REMOVE", Look::ghost)) {
-            std::string m;
-            if (p) studio::edit_playlist_member(v.playlist_open, e, false, m);
-            else studio::playlist_remove(i);
-            say(m);
-        }
+        if (button("##removemember", rx, 104 * k, "REMOVE", Look::ghost)) studio::playlist_remove(i);
         if (p) {
             const float ex = place(80 * k);
             if (button("##edit", ex, 80 * k, p->locked ? "VIEW" : "EDIT", Look::ghost, p->available)) open_or_preview(v, p->name, e.pack);
@@ -365,8 +362,16 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     // Where each entry's row and block (with its open pack) were drawn this frame: the drag finds its gap in them.
     std::vector<float> tops, bottoms, block_tops, block_bottoms;
     if (!terms.empty()) {
+        // The tricks of the playlist that match, kept until the search or the library changes (as library_found).
+        static struct { std::uint64_t key{}; std::string query; std::vector<std::size_t> found; } hits;
+        if (hits.key != index.key || hits.query != route.content_query.data()) {
+            hits.key = index.key; hits.query = route.content_query.data(); hits.found.clear();
+            for (std::size_t i = 0; i < v.presets.size(); ++i)
+                if (index.member(v.presets[i].name).included() && library_search(index, v.presets[i], terms)) hits.found.push_back(i);
+        }
         std::size_t shown = 0;
-        for (const auto& p : v.presets) if (index.member(p.name).included() && library_search(index, p, terms)) {
+        for (const auto place : hits.found) {
+            const auto& p = v.presets[place];
             std::string from;
             if (p.foreign || index.imported.contains(p.name)) if (const auto at = index.origins.find(p.name); at != index.origins.end() && !at->second.empty()) from = at->second.front();
             library_member_row(d, f, v, index, p, from, v.playlist_open, true, {x, y}, w - 8 * k); y += 90 * k; ++shown;
