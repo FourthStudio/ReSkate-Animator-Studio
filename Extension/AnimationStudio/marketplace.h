@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -95,6 +96,71 @@ inline const CrewMember* crew_member(std::string_view team) {
     return nullptr;
 }
 
+// ---- what kind of tricks a pack holds (the MARKET's shelves by trick type) ----
+// A trick's kind, from its line in the pack's README (its name, the game's trick it plays on, then its pop and stance in
+// brackets: "Steezy Flip - Kickflip (mid pop, fakie)"). Read from the words, since a pack's own names are free. The order
+// they are tried in matters: grinds and slides first (a lock, a rail), manuals, then flips (an impossible, a tre and a
+// "heel" are flips, a "sketchy landing" flip still a flip), shuv-its, then landings, reverts and powerslides, grabs,
+// ollies and nollies, and the rest. The kinds are listed in the order the shop shows them.
+enum class TrickKind : std::uint8_t { flip, shuvit, ollie, grind, manual, grab, landing, other };
+inline constexpr std::size_t trick_kind_count = 8;
+inline constexpr std::array<const char*, trick_kind_count> trick_kind_names{"FLIPS", "SHUV-ITS", "OLLIES", "GRINDS & SLIDES", "MANUALS", "GRABS",
+                                                                           "LANDINGS & REVERTS", "OTHER"};
+using KindCounts = std::array<std::uint16_t, trick_kind_count>;
+inline TrickKind trick_kind(std::string_view line) {
+    // The name only: the last bracket is its pop and stance.
+    if (const auto open = line.rfind(" ("); open != std::string_view::npos && line.ends_with(")")) line = line.substr(0, open);
+    std::string low;
+    low.reserve(line.size() + 2);
+    low += ' ';
+    for (const char c : line) {
+        const auto u = static_cast<unsigned char>(c);
+        low += (u < 128 && std::isalnum(u)) ? static_cast<char>(std::tolower(u)) : ' ';
+    }
+    low += ' ';
+    const auto has = [&](std::string_view part) { return low.find(part) != std::string::npos; };
+    // A whole word (or the word and an s): "lock" in "cross lock", not in "block".
+    const auto word = [&](std::string_view w) {
+        for (auto at = low.find(w); at != std::string::npos; at = low.find(w, at + 1)) {
+            const char after = low[at + w.size()]; // there is always the closing space
+            if (low[at - 1] == ' ' && (after == ' ' || (after == 's' && low[at + w.size() + 1] == ' '))) return true;
+        }
+        return false;
+    };
+    const bool powerslide = has("powerslide") || has("power slide");
+    if (has("grind") || (has("slide") && !powerslide) || word("5050") || has(" 50 50 ") || has(" 5 0 ") || word("smith") || word("feeble") ||
+        word("crook") || word("crooked") || word("overcrook") || word("salad") || word("suski") || word("willy") || word("rail") || word("lock") ||
+        word("ledge") || word("blunt") || word("noseblunt") || word("crosslock") || word("smif"))
+        return TrickKind::grind;
+    if (word("manual") || word("manny") || word("nosemanual")) return TrickKind::manual;
+    if (has("flip") || word("impossible") || word("imp") || word("tre") || word("lazer") || word("laser") || word("casper") || word("varial") ||
+        word("heel") || word("vheel") || word("kick") || word("vkick") || word("inward") || word("inw") || word("hard") || word("kf") ||
+        word("hf"))
+        return TrickKind::flip;
+    if (has("shuv") || has("shove") || has("bigspin") || has("big spin")) return TrickKind::shuvit;
+    if (word("revert") || word("land") || word("landing") || powerslide) return TrickKind::landing;
+    if (word("grab") || word("indy") || word("melon") || word("stalefish") || word("method") || word("mute") || word("airwalk") ||
+        word("benihana") || word("judo") || word("madonna") || word("roastbeef") || word("crail") || word("japan") || word("christ"))
+        return TrickKind::grab;
+    if (word("ollie") || word("nollie")) return TrickKind::ollie;
+    return TrickKind::other;
+}
+// How many of a pack's tricks are of each kind.
+inline KindCounts trick_kinds(const std::vector<std::string>& tricks) {
+    KindCounts out{};
+    for (const auto& t : tricks) {
+        auto& n = out[static_cast<std::size_t>(trick_kind(t))];
+        if (n < 65535) ++n;
+    }
+    return out;
+}
+
+// One of a pack's versions on Thunderstore: its number ("" when not known), the day it came out, its downloads.
+struct PackVersion {
+    std::string version, date;
+    std::uint64_t downloads{};
+};
+
 struct Pack {
     std::string full_name;      // Owner-Name
     std::string owner, name;    // the team, and the package's name
@@ -125,6 +191,9 @@ struct Pack {
     std::vector<std::string> tricks;
     int readme{};
     std::string stance; // what its tag says (ALL STANCES, GOOFY...), "" not known
+    KindCounts kinds{}; // its tricks by kind (trick_kind), once its README is read
+    // Its versions, newest first (from the full listing TOP OF THE MONTH reads): empty until that has been read once.
+    std::vector<PackVersion> versions;
 };
 struct Detail {
     std::string full_name, version;

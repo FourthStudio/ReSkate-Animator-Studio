@@ -23,10 +23,12 @@
 
 namespace dingosdk::anim_studio::market {
 // ---- this month ----
-// A version's downloads, and the day it came out ("2026-11-01", in UTC as Thunderstore gives it).
+// A version's downloads, and the day it came out ("2026-11-01", in UTC as Thunderstore gives it). Its number ("1.2.0")
+// for a pack's page, "" in what older studios kept.
 struct VersionCount {
     std::string date;
     std::uint64_t downloads{};
+    std::string version;
 };
 using VersionCounts = std::map<std::string, std::vector<VersionCount>>; // a pack (Team-Name) -> its versions
 // Each of the studio's packs' versions, from Thunderstore's package listing (the one with every version in it).
@@ -46,18 +48,21 @@ inline VersionCounts read_version_counts(const std::string& text) {
                 if (!v.is_object()) continue;
                 const auto date = v.value("date_created", "");
                 if (day_number(date) < 0) continue;
-                versions.push_back({date.substr(0, 10), static_cast<std::uint64_t>(std::max(0.0, v.value("downloads", 0.0)))});
+                auto number = v.value("version_number", "");
+                if (!plain_version(number)) number.clear();
+                versions.push_back({date.substr(0, 10), static_cast<std::uint64_t>(std::max(0.0, v.value("downloads", 0.0))), std::move(number)});
             }
         } catch (...) {}
     }
     return out;
 }
-// The same, as the studio keeps it between runs ({"Team-Name": [["2026-11-01", 120], ...]}).
+// The same, as the studio keeps it between runs ({"Team-Name": [["2026-11-01", 120, "1.0.1"], ...]}; older studios kept
+// no number, and theirs is read as well).
 inline std::string version_counts_json(const VersionCounts& counts) {
     Json out = Json::object();
     for (const auto& [name, versions] : counts) {
         Json list = Json::array();
-        for (const auto& v : versions) list.push_back(Json::array({Json(v.date), Json(v.downloads)}));
+        for (const auto& v : versions) list.push_back(Json::array({Json(v.date), Json(v.downloads), Json(v.version)}));
         out[name] = std::move(list);
     }
     return out.dump();
@@ -70,8 +75,11 @@ inline VersionCounts read_version_counts_json(const std::string& text) {
         if (!list.is_array()) continue;
         auto& versions = out[name];
         for (const auto& v : list)
-            if (v.is_array() && v.size() == 2 && v.at(0).is_string() && v.at(1).is_number() && day_number(v.at(0).string()) >= 0)
-                versions.push_back({v.at(0).string().substr(0, 10), static_cast<std::uint64_t>(std::max(0.0, v.at(1).get<double>()))});
+            if (v.is_array() && (v.size() == 2 || v.size() == 3) && v.at(0).is_string() && v.at(1).is_number() && day_number(v.at(0).string()) >= 0) {
+                std::string number = v.size() == 3 && v.at(2).is_string() ? v.at(2).string() : std::string{};
+                if (!plain_version(number)) number.clear();
+                versions.push_back({v.at(0).string().substr(0, 10), static_cast<std::uint64_t>(std::max(0.0, v.at(1).get<double>())), std::move(number)});
+            }
     }
     return out;
 }
