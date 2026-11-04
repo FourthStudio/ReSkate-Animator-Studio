@@ -261,6 +261,13 @@ constexpr bool rail_entry_after_the_catch = true;
 // the keys move it in the studio, onto the board drawn this frame (ride_feet_on_the_board) - after the catch, when the game has
 // left the trick's clip for its in-air hold, its landing or a grind, the keys bent the legs of a pose they were not made on.
 constexpr bool feet_ride_the_board = true;
+// INTO A MANUAL: a trick landing into a manual (Enum.Intent.Manual on at the touchdown) lets go there, over its Crossfade, as
+// the game goes from its trick into its manual - not after its landing keys were laid on the manual's pose until the pose
+// drift noticed (0.1 to 0.3 s later).
+constexpr bool let_go_into_a_manual = true;
+// OUT OF POSITIONS: a trick whose clip the game was not found playing (on its own clock: out of a grind or a manual, the game
+// still blending into its trick) has its keys only as far as the game's pose is near its clip (pose_fit_share).
+constexpr bool own_clock_follows_the_pose = true;
 // Gameplay source time follows the native clip. Legacy drop-preview tools retain their own timing metadata.
 // Why a trick lets go at its catch on a higher pop than it was made on (and over at least 0.3 s, whatever the crossfade).
 constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it was made on: the game's own pose from here";
@@ -578,6 +585,7 @@ struct Live {
     int drift_count{};
     std::string clock_why;       // why it let go, said once
     float clock_why_time{-1};    // where the trick was when it let go
+    float own_clock_fit{-1};     // on its own clock: how far the game is on its clip (pose_fit_share, eased; -1 not yet)
     std::uint64_t finished_episode{~std::uint64_t{0}}; // a trick let go is not taken up again in its air
     std::string finished_trick;
     // Board edit axes at takeoff, relative to actor placement. No recorded board pose is replayed.
@@ -4219,6 +4227,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     }
                     l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1;
                     l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear(); l.clock_why_time = -1;
+                    l.own_clock_fit = -1;
                     l.clock_fallback = !found || !found->native || found->native->models.empty();
                     if (found) {
                         const bool lead_matches = found->leads_right == live.leads_right;
@@ -4363,6 +4372,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     // The next pop: at the game's flick (its trick clip starts there, a tenth of a second before the crouch the
                     // physics shows as 103).
                     else if (touch && ((current_state && *current_state == 103) || (hand_back_at_the_flick && l.flicked))) why = next_pop_why;
+                    // Landing into a manual (the game's manual input on at the touchdown): straight into it, as the game goes
+                    // from its trick into its manual (10 ticks), never the trick's landing keys on the manual's pose first.
+                    else if (let_go_into_a_manual && touch && l.manual_now > 0) why = "a manual";
                     else if (time >= 0 && time >= edit_end - 0.5f / 60) why = "its end";
                     // Rolling after the touchdown looks like the end of every trick, so the clock holds its time there (a held
                     // pose): a trick with keys after its landing then held its last pose until the pose drifted away, seconds
@@ -4412,6 +4424,14 @@ void on_animation(std::uintptr_t component) noexcept {
                     // saved while watched at x.5 played at half speed on its own clock).
                     sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), 1.0f, l.predicted_air, true, fit_keys_to_air);
                     if (sampled.time >= 0) sampled.time = std::min(clip.duration(), sampled.time);
+                    // As far as the game's pose is on the trick's own clip there (own_clock_follows_the_pose), eased so one odd
+                    // pose does not flicker it.
+                    if (own_clock_follows_the_pose && sampled.time >= 0) {
+                        const float fit = pose_fit_share(l.native_clock.own_error(l.pose, sampled.time));
+                        l.own_clock_fit = l.own_clock_fit < 0 ? fit : l.own_clock_fit + (fit - l.own_clock_fit) * 0.25f;
+                        sampled.weight *= l.own_clock_fit;
+                        diagnostic.own_clock_fit = l.own_clock_fit;
+                    }
                 }
                 // A trick made on one pop, on the game's clip of another (its pack says any pop): the keys laid on that clip's
                 // body - tucked otherwise on a higher pop - drew the legs through the board (renztre, low, on a high pop). It

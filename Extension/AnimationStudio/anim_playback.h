@@ -381,6 +381,19 @@ inline Joint foot_sliding_to_the_games(const Joint& at_the_lock, const Joint& ga
     for (std::size_t i = 0; i < 3; ++i) foot.position[i] = games.position[i] + (at_the_lock.position[i] - games.position[i]) * k;
     return foot;
 }
+// ---- a trick on its own clock, as far as the game is on its clip ---------------------------------------------------------
+// When the game's clip for a trick is not found (the pose clock had nothing within 4.5 degrees in a quarter of a second) the
+// trick plays on its own clock - and its keys went on whatever the game was doing in full: out of a grind (the game blends its
+// grind pose into the trick over 24 ticks), out of a manual, or a trick whose clip the game was not playing at all (16.7 and
+// 17.5 degrees off in the 2026-11-03 session). Keys made on one pose bent on another are the "weird bone placements". So on its
+// own clock a trick's keys go on as far as the game's pose is near the trick's own clip at that time: in full within 6
+// degrees (the pose clock's own good range), not at all past 12, eased between - they come in as the game arrives on its
+// clip, as the game's own blend does. `error`: degrees (180 or more: nothing to compare with, so in full, as before).
+inline float pose_fit_share(float error_degrees) noexcept {
+    if (!std::isfinite(error_degrees) || error_degrees >= 180) return 1;
+    const float u = std::clamp((error_degrees - 6.0f) / 6.0f, 0.0f, 1.0f);
+    return 1 - u * u * (3 - 2 * u);
+}
 // ---- the feet ride on the board (the game's own foot warp) --------------------------------------------------------------
 // The game holds the feet in the board's frame from the catch: in the user's own grinds (custom tricks off) each foot stayed
 // within 0.5 cm of one spot on the deck while the board turned 50 to 70 degrees under him into the lock, and its grind

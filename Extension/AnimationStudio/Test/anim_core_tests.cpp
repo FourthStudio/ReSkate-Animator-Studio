@@ -3395,6 +3395,13 @@ void tricks_begin_at_the_flick_and_hand_over_the_games_way() {
               release_at(0.0f, raised_lead_for(0.45f, 0.5f, 0.25f, true)) == 1,
           "Before the catch the legs go over later, and are over at the contact");
 
+    // On its own clock a trick's keys go on as far as the game's pose is near its clip (the session's 4.6 degrees: in full; 16.7
+    // and 17.5: not at all), eased, and in full when there is nothing to compare with.
+    check(pose_fit_share(4.6f) == 1 && pose_fit_share(6) == 1 && pose_fit_share(16.7f) == 0 && pose_fit_share(12) == 0 &&
+              near(pose_fit_share(9), 0.5f) && pose_fit_share(180) == 1 && pose_fit_share(std::nanf("")) == 1 &&
+              pose_fit_share(8) > pose_fit_share(10),
+          "A trick on its own clock follows how near the game's pose is to its clip");
+
     // The feet ride on the board where the studio shows them standing on it.
     check(foot_on_deck_share(0.104f, 0.15f, 0.02f, 5) == 1 && foot_on_deck_share(0.104f, -0.2f, -0.05f, 20) == 1,
           "A foot standing on the deck (ankle 10.4 cm over the mount, sole flat) rides fully");
