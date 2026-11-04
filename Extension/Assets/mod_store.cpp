@@ -9,6 +9,7 @@
 #include "Launcher/mod_manager.h"
 
 #include <Windows.h>
+#include <winhttp.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -413,14 +414,21 @@ std::string install_one(const ts::Package& wanted, std::size_t at, std::size_t o
                 Sleep(100);
             }
         });
-        result = https::get(package::download_url(name, version.number), archive, version.file_size ? version.file_size + (1 << 20) : largest_download,
-                            download_seconds, agent, &watch);
+        // Patiently (https::fetch): a request that stalls for a minute or drops is gone on from where it got to, rather than
+        // the whole download failing after 10 seconds without data.
+        https::Fetch options;
+        options.max_bytes = version.file_size ? version.file_size + (1 << 20) : largest_download;
+        options.total_seconds = download_seconds;
+        options.stall_ms = 60000;
+        options.tries = 8;
+        result = https::fetch(package::download_url(name, version.number), archive, options, agent, &watch);
     }
     if (stop.load()) throw std::runtime_error("Cancelled.");
     if (!result.ok)
-        throw std::runtime_error(result.http_status && result.http_status != 200
+        throw std::runtime_error(result.http_status && result.http_status != 200 && result.http_status != 206
             ? "the download failed (Thunderstore answered " + std::to_string(result.http_status) + ")"
-            : "the download failed (Windows error " + std::to_string(result.error) + ")");
+            : result.error == ERROR_WINHTTP_TIMEOUT ? "the download failed (nothing came for a minute, " + std::to_string(result.attempts) + " tries)"
+            : "the download failed (Windows error " + std::to_string(result.error) + ", " + std::to_string(result.attempts) + " tries)");
     set_package(Progress::Step::installing, nullptr, at, of);
     set_activity("Installing " + wanted.title() + " v" + version.number + counter, 0);
     launcher_mods::InstallOptions options;

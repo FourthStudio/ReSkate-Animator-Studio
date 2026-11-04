@@ -1,20 +1,22 @@
 #include "studio_update.h"
+#include "studio_update_files.h"
 #include "reskate_version.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Vfs/https_download.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include <Windows.h>
-#include <bcrypt.h>
+#include <winhttp.h>
 #include <shellapi.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <format>
 #include <functional>
-#include <fstream>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -33,6 +35,8 @@ struct Shared {
     std::mutex mutex;
     State state;
     std::string dll_url, dll_digest, sum_url; // the release's ReSkate.dll, its SHA-256 as GitHub gives it, its .sha256 file
+    std::uint64_t dll_size{};                 // its size as GitHub gives it, 0 not given
+    std::chrono::steady_clock::time_point restart_asked;
     std::atomic<bool> loaded{}, checking{true}, dirty{}, started{}, busy{}, popup_closed{};
     https::Watch watch;
 };
@@ -68,36 +72,6 @@ std::vector<int> numbers(std::string_view v) {
     return out;
 }
 
-std::filesystem::path game_folder() {
-    std::array<wchar_t, 32768> module{};
-    if (!GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()))) return {};
-    return std::filesystem::path(module.data()).parent_path();
-}
-std::filesystem::path updates_folder(const std::string& version) {
-    return game_folder() / L"Animator Studio updates" / std::filesystem::path(version);
-}
-
-// The file's SHA-256 as lower-case hex, empty when it cannot be read.
-std::string sha256_of(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return {};
-    BCRYPT_HASH_HANDLE hash{};
-    if (!BCRYPT_SUCCESS(BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, &hash, nullptr, 0, nullptr, 0, 0))) return {};
-    std::vector<char> chunk(1 << 20);
-    bool ok = true;
-    while (in) {
-        in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-        const auto got = static_cast<ULONG>(in.gcount());
-        if (got && !BCRYPT_SUCCESS(BCryptHashData(hash, reinterpret_cast<PUCHAR>(chunk.data()), got, 0))) { ok = false; break; }
-    }
-    std::array<unsigned char, 32> digest{};
-    ok = ok && BCRYPT_SUCCESS(BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0));
-    BCryptDestroyHash(hash);
-    if (!ok) return {};
-    std::string hex;
-    for (const auto byte : digest) hex += std::format("{:02x}", byte);
-    return hex;
-}
 std::string lower_hex(std::string_view text) {
     std::string out;
     for (const char c : text) {
@@ -115,8 +89,12 @@ std::wstring wide(const std::string& text) {
     if (n > 0) MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), n);
     return out;
 }
+std::uint64_t now_us() noexcept {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
-// The ReSkate.dll this code runs from (the one the launcher put in the game: its own path, whatever the folder).
+// The ReSkate.dll this code runs from: the one the launcher put in the game, by the path it was loaded from, whatever its
+// folder (the launcher's own, a dev build's, one reached through a junction) and whatever it is called.
 std::filesystem::path own_dll() {
     static const int marker = 0;
     HMODULE self{};
@@ -126,52 +104,69 @@ std::filesystem::path own_dll() {
     std::array<wchar_t, 32768> path{};
     const DWORD n = GetModuleFileNameW(self, path.data(), static_cast<DWORD>(path.size()));
     if (!n || n >= path.size()) return {};
-    return std::filesystem::path(path.data());
+    return std::filesystem::path(std::wstring(path.data(), n));
 }
-std::filesystem::path launcher_beside(const std::filesystem::path& dll) {
+// Where an update is downloaded to: "Animator Studio updates\<version>" beside ReSkate.dll, or - when that folder takes no
+// files (read-only, protected) - the player's own %LOCALAPPDATA%\ReSkate, so OPEN FOLDER still has it to copy by hand.
+std::filesystem::path updates_folder(const std::filesystem::path& dll, std::string version) {
+    for (auto& c : version)
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '.' && c != '-' && c != '+' && c != '_') c = '_';
+    if (version.empty()) version = "latest";
     std::error_code error;
-    const auto launcher = dll.parent_path() / L"ReSkateLauncher.exe";
-    return !dll.empty() && std::filesystem::is_regular_file(launcher, error) ? launcher : std::filesystem::path{};
+    if (!dll.empty()) {
+        const auto beside = dll.parent_path() / L"Animator Studio updates" / std::filesystem::path(version);
+        std::filesystem::create_directories(beside, error);
+        if (!error && files::writable(beside)) return beside;
+    }
+    std::array<wchar_t, 32768> local{};
+    const auto n = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
+    const auto root = n && n < local.size() ? std::filesystem::path(std::wstring(local.data(), n)) : std::filesystem::temp_directory_path(error);
+    const auto own = root / L"ReSkate" / L"Animator Studio updates" / std::filesystem::path(version);
+    std::filesystem::create_directories(own, error);
+    return own;
 }
-
-// Puts the downloaded ReSkate.dll in place of the one the game loaded. Windows lets a loaded DLL be renamed but never
-// overwritten or deleted, so: the new one is copied in beside it first (same folder, so the swap is two renames) and
-// read back against its SHA-256, the running one is renamed to ReSkate.dll.previous (the one before is replaced: kept
-// to go back to), and the new one renamed into its place. Anything failing puts the old one back.
-bool install(const std::filesystem::path& downloaded, const std::string& digest, std::filesystem::path& current, std::string& why) {
-    current = own_dll();
-    if (current.empty()) {
-        why = "the running ReSkate.dll could not be found";
+// An x64 DLL with ReSkate's initializer: the release's asset is a ReSkate runtime, not some other file under its name.
+bool reskate_runtime(const std::filesystem::path& dll, std::string& why) {
+    try {
+        const auto info = launcher::inspect_pe_file(dll);
+        if (!info.pe64 || info.machine != IMAGE_FILE_MACHINE_AMD64 || !(info.characteristics & IMAGE_FILE_DLL)) {
+            why = "it is not an x64 Windows DLL";
+            return false;
+        }
+        if (launcher::exported_function_rva(dll, "DingoSDKDebugInitialize") >= info.image_size) {
+            why = "it is not a ReSkate runtime";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& e) {
+        why = std::string("it is not a ReSkate runtime (") + e.what() + ")";
         return false;
     }
-    const auto folder = current.parent_path();
-    const auto previous = folder / (current.filename().wstring() + L".previous");
-    const auto incoming = folder / (current.filename().wstring() + L".incoming");
-    std::error_code error;
-    std::filesystem::remove(incoming, error);
-    if (!CopyFileW(downloaded.c_str(), incoming.c_str(), FALSE)) {
-        why = std::format("it could not be copied into {} (Windows error {}). Is the folder read-only?", folder.string(), GetLastError());
-        return false;
-    }
-    if (!digest.empty() && sha256_of(incoming) != digest) {
-        std::filesystem::remove(incoming, error);
-        why = "the copy did not match its SHA-256, so nothing was changed";
-        return false;
-    }
-    if (!MoveFileExW(current.c_str(), previous.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        const auto code = GetLastError();
-        std::filesystem::remove(incoming, error);
-        why = std::format("the running ReSkate.dll could not be moved aside (Windows error {})", code);
-        return false;
-    }
-    if (!MoveFileExW(incoming.c_str(), current.c_str(), 0)) {
-        const auto code = GetLastError();
-        MoveFileExW(previous.c_str(), current.c_str(), 0); // the old one back where it was
-        std::filesystem::remove(incoming, error);
-        why = std::format("the new ReSkate.dll could not be put in place (Windows error {}); the old one is back", code);
-        return false;
-    }
-    return true;
+}
+// Why a download failed, in words.
+std::string download_failure(const https::Download& got) {
+    std::string why;
+    if (got.http_status && got.http_status != 200 && got.http_status != 206) why = std::format("GitHub answered {}", got.http_status);
+    else
+        switch (got.error) {
+        case ERROR_WINHTTP_TIMEOUT: why = "the connection stopped sending (nothing came for a minute)"; break;
+        case ERROR_WINHTTP_NAME_NOT_RESOLVED:
+        case ERROR_WINHTTP_CANNOT_CONNECT: why = "GitHub could not be reached (no connection?)"; break;
+        case ERROR_WINHTTP_CONNECTION_ERROR:
+        case ERROR_WINHTTP_INVALID_SERVER_RESPONSE: why = "the connection kept dropping"; break;
+        case ERROR_WINHTTP_SECURE_FAILURE: why = "a secure connection could not be made (a proxy, antivirus or the PC's clock?)"; break;
+        case ERROR_INVALID_DATA: why = "it did not match its SHA-256 twice, so it was thrown away"; break;
+        case ERROR_BAD_LENGTH: why = "it arrived another size than GitHub said"; break;
+        case ERROR_FILE_TOO_LARGE: why = "it is far bigger than a ReSkate.dll"; break;
+        case ERROR_CANCELLED: why = "it was stopped"; break;
+        case ERROR_DISK_FULL:
+        case ERROR_HANDLE_DISK_FULL:
+        case ERROR_WRITE_FAULT: why = "it could not be written to the disk (is it full?)"; break;
+        case ERROR_ACCESS_DENIED: why = "its folder could not be written to"; break;
+        default: why = std::format("Windows error {}", got.error); break;
+        }
+    if (got.attempts > 1 && got.error != ERROR_CANCELLED) why += std::format(", after {} tries", got.attempts);
+    return why;
 }
 
 void set(const std::function<void(State&)>& change) {
@@ -201,6 +196,7 @@ void run_check() {
         const auto field = [&](const char* key) { return j.contains(key) && j[key].is_string() ? j[key].string() : std::string{}; };
         const auto tag = field("tag_name");
         std::string dll_url, digest, sum_url;
+        std::uint64_t size = 0;
         if (j.contains("assets") && j["assets"].is_array()) {
             const auto& assets = j["assets"];
             for (std::size_t i = 0; i < assets.size(); ++i) {
@@ -211,21 +207,31 @@ void run_check() {
                 if (name == "ReSkate.dll") {
                     dll_url = url;
                     if (a.contains("digest") && a["digest"].is_string()) digest = lower_hex(a["digest"].string());
+                    try {
+                        const auto bytes = a.value("size", 0.0);
+                        if (bytes > 0 && bytes < static_cast<double>(most_dll_bytes)) size = static_cast<std::uint64_t>(bytes);
+                    } catch (...) {}
                 }
                 if (name == "ReSkate.dll.sha256") sum_url = url;
             }
         }
         const bool is_newer = !tag.empty() && newer(tag, running_version_of_build()) && !dll_url.empty();
+        // Whether it can go in where ReSkate runs from, said with the offer rather than after the download.
+        const auto dll = own_dll();
+        const bool writable = dll.empty() || files::writable(dll.parent_path());
         {
             std::lock_guard lock(s.mutex);
             s.dll_url = dll_url;
             s.dll_digest = digest;
             s.sum_url = sum_url;
+            s.dll_size = size;
             auto& st = s.state;
             st.latest = tag;
             st.title = field("name");
             st.notes = field("body");
             st.page = field("html_url");
+            st.installed_to = dll;
+            st.folder_writable = writable;
             st.step = is_newer ? Step::newer : Step::current;
         }
         logging::log(Level::info, Channel::runtime, "Animator Studio update check: running {}, newest release {}{}", running_version_of_build(), tag,
@@ -241,82 +247,98 @@ void run_check() {
 void run_download() {
     auto& s = shared();
     std::string url, digest, sum_url, version;
+    std::uint64_t size{};
     {
         std::lock_guard lock(s.mutex);
         url = s.dll_url;
         digest = s.dll_digest;
         sum_url = s.sum_url;
+        size = s.dll_size;
         version = s.state.latest;
         s.state.step = Step::downloading;
         s.state.error.clear();
+        s.state.failed_at = -1;
         s.state.received = s.state.total = 0;
+        s.state.checked = false;
     }
     s.popup_closed.store(false);
-    const auto fail = [&](const std::string& why) {
-        set([&](State& st) { st.step = Step::download_failed; st.error = why; });
-        logging::log(Level::warning, Channel::runtime, "Animator Studio update download: {}", why);
+    const auto fail = [&](Step step, int at, const std::string& why) {
+        set([&](State& st) {
+            st.step = step;
+            st.failed_at = at;
+            st.error = why;
+        });
+        logging::log(Level::warning, Channel::runtime, "Animator Studio update {}: {}", version, why);
     };
+    const auto current = own_dll();
+    if (current.empty()) return fail(Step::install_failed, 2, "the running ReSkate.dll could not be found");
     // The SHA-256 to check it against: GitHub's own, else the release's .sha256 file.
     if (digest.empty() && !sum_url.empty())
         if (const auto text = https::get_text(wide(sum_url), 4096, 20, agent)) digest = lower_hex(*text);
+    const auto folder = updates_folder(current, version);
+    const auto final_path = folder / L"ReSkate.dll";
+    // 1. Downloading: patiently (a dropped or stalled connection goes on from where it got to), checked against its SHA-256
+    // before it takes its name; downloaded before and whole, nothing to fetch.
     std::error_code error;
-    const auto folder = updates_folder(version);
-    std::filesystem::create_directories(folder, error);
-    const auto final_path = folder / L"ReSkate.dll", part = folder / L"ReSkate.dll.part";
-    // Installed once downloaded and checked: the game runs it from its next start.
-    const auto put_in_place = [&] {
-        std::filesystem::path current;
-        std::string why;
-        if (!install(final_path, digest, current, why)) {
-            set([&](State& st) { st.step = Step::install_failed; st.error = why; st.saved_to = final_path; });
-            logging::log(Level::warning, Channel::runtime, "Animator Studio {} not installed: {}", version, why);
-            return;
-        }
-        const bool restartable = !launcher_beside(current).empty();
-        set([&](State& st) {
-            st.step = Step::installed;
-            st.saved_to = final_path;
-            st.installed_to = current;
-            st.can_restart = restartable;
-        });
-        logging::log(Level::info, Channel::runtime, "Animator Studio {} installed in place of {} (the old one is ReSkate.dll.previous)", version,
-                     current.string());
-    };
-    // Downloaded before and whole: nothing to fetch.
-    if (!digest.empty() && std::filesystem::exists(final_path, error) && sha256_of(final_path) == digest) {
-        put_in_place();
-        return;
+    if (digest.empty() || !std::filesystem::exists(final_path, error) || files::sha256_of(final_path) != digest) {
+        s.watch.cancel.store(false);
+        s.watch.received.store(0);
+        s.watch.total.store(size);
+        s.watch.deadline_us.store(0);
+        s.watch.retry_at_us.store(0);
+        https::Fetch options;
+        options.max_bytes = most_dll_bytes;
+        options.expected_bytes = size;
+        options.stall_ms = 60000;
+        options.tries = 8;
+        options.keep_partial = true; // TRY AGAIN goes on from what came
+        if (!digest.empty()) options.verify = [&digest](const std::filesystem::path& file) { return files::sha256_of(file) == digest; };
+        const auto got = https::fetch(wide(url), final_path, options, agent, &s.watch);
+        if (!got.ok) return fail(Step::download_failed, got.error == ERROR_INVALID_DATA ? 1 : 0, download_failure(got));
+        logging::log(Level::info, Channel::runtime, "Animator Studio {} downloaded to {} ({} request{}{})", version, files::path_text(final_path),
+                     got.attempts, got.attempts == 1 ? "" : "s", got.resumed ? ", resumed" : "");
     }
-    std::filesystem::remove(part, error);
-    s.watch.cancel.store(false);
-    s.watch.received.store(0);
-    s.watch.total.store(0);
-    s.watch.deadline_us.store(0);
-    const auto got = https::get(wide(url), part, most_dll_bytes, 900, agent, &s.watch);
-    if (!got.ok) {
-        std::filesystem::remove(part, error);
-        return fail(got.http_status ? std::format("GitHub answered {}", got.http_status) : std::format("the download stopped ({})", got.error));
+    // 2. Verifying: GitHub's SHA-256 (read again from the disk), and that it is a ReSkate runtime at all.
+    set([&](State& st) {
+        st.step = Step::verifying;
+        st.saved_to = final_path;
+    });
+    if (!digest.empty() && files::sha256_of(final_path) != digest) {
+        std::filesystem::remove(final_path, error);
+        return fail(Step::install_failed, 1, "the download did not match its SHA-256, so it was thrown away. TRY AGAIN downloads it again");
     }
-    if (!digest.empty() && sha256_of(part) != digest) {
-        std::filesystem::remove(part, error);
-        return fail("the download did not match its SHA-256, so it was thrown away. Try again.");
+    if (std::string why; !reskate_runtime(final_path, why)) {
+        std::filesystem::remove(final_path, error);
+        return fail(Step::install_failed, 1, "the download is not a ReSkate.dll (" + why + "), so it was thrown away");
     }
-    std::filesystem::remove(final_path, error);
-    std::filesystem::rename(part, final_path, error);
-    if (error) return fail("it could not be saved in " + folder.string());
-    set([&](State& st) { st.step = Step::downloaded; st.saved_to = final_path; });
-    logging::log(Level::info, Channel::runtime, "Animator Studio {} downloaded to {}{}", version, final_path.string(),
-                 digest.empty() ? " (no SHA-256 to check it against)" : ", SHA-256 checked");
-    put_in_place();
+    // 3. Installing: into the folder ReSkate runs from, the old one kept as ReSkate.dll.previous.
+    set([&](State& st) { st.step = Step::installing; st.installed_to = current; });
+    const auto swap = files::install_dll(final_path, current, digest);
+    if (!swap.ok) return fail(Step::install_failed, 2, swap.why);
+    const bool restartable = !files::launcher_for(current).empty();
+    set([&](State& st) {
+        st.step = Step::installed;
+        st.saved_to = final_path;
+        st.installed_to = current;
+        st.can_restart = restartable;
+        st.checked = !digest.empty();
+    });
+    logging::log(Level::info, Channel::runtime, "Animator Studio {} installed in place of {}{} ({})", version, files::path_text(current),
+                 swap.earlier_update ? " (over the update installed earlier this session)" : ", the old one kept as ReSkate.dll.previous",
+                 digest.empty() ? "no SHA-256 to check it against" : "SHA-256 checked");
 }
 
 void start_thread(void (*work)()) {
     auto& s = shared();
     if (s.busy.exchange(true)) return;
-    std::thread([work] {
-        try { work(); } catch (...) {}
-        shared().busy.store(false);
-    }).detach();
+    try {
+        std::thread([work] {
+            try { work(); } catch (...) {}
+            shared().busy.store(false);
+        }).detach();
+    } catch (...) {
+        s.busy.store(false);
+    }
 }
 }
 
@@ -327,7 +349,12 @@ State state() {
     if (copy.step == Step::downloading) {
         copy.received = s.watch.received.load();
         copy.total = s.watch.total.load();
+        copy.attempt = s.watch.attempt.load();
+        const auto retry = s.watch.retry_at_us.load(), now = now_us();
+        copy.retry_in = retry > now ? static_cast<std::uint32_t>((retry - now + 999999) / 1000000) : 0;
     }
+    if (copy.step == Step::restarting)
+        copy.restarting_for = std::chrono::duration<float>(std::chrono::steady_clock::now() - s.restart_asked).count();
     if (copy.running.empty()) copy.running = running_version_of_build();
     return copy;
 }
@@ -368,45 +395,24 @@ void restart() noexcept {
     try {
         const auto st = state();
         if (st.step != Step::installed || !st.can_restart) return;
-        const auto launcher = launcher_beside(st.installed_to);
+        const auto launcher = files::launcher_for(st.installed_to);
         if (launcher.empty()) return;
-        const auto folder = launcher.parent_path();
-        // A hidden PowerShell (no window: CREATE_NO_WINDOW) waits for this game to close, then starts ReSkateLauncher.exe
-        // as its Play does (--no-gui, the saved launch options) without its own update check (--no-update: that would put
-        // base ReSkate's DLL back over this one). The launcher's folder has plain letters only (it will not run anywhere
-        // else), and a quote in it is doubled for PowerShell.
-        std::array<wchar_t, MAX_PATH> system{};
-        const UINT n = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
-        if (!n || n >= system.size()) return;
-        const std::wstring shell = std::wstring(system.data()) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
-        const auto quoted = [](std::wstring text) {
-            std::wstring out = L"'";
-            for (const wchar_t c : text) out += c == L'\'' ? std::wstring(L"''") : std::wstring(1, c);
-            return out + L"'";
-        };
-        const std::wstring script = L"Wait-Process -Id " + std::to_wstring(GetCurrentProcessId()) +
-                                    L" -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Start-Process -FilePath " + quoted(launcher.wstring()) +
-                                    L" -ArgumentList '--no-gui','--no-update' -WorkingDirectory " + quoted(folder.wstring());
-        std::wstring command = L"\"" + shell + L"\" -NoProfile -NonInteractive -WindowStyle Hidden -Command \"" + script + L"\"";
-        STARTUPINFOW startup{sizeof(startup)};
-        PROCESS_INFORMATION process{};
-        // Outside any job the game is in when it may be (so closing the game does not end it), else as it is.
-        BOOL started = CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB,
-                                      nullptr, folder.c_str(), &startup, &process);
-        if (!started)
-            started = CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, folder.c_str(), &startup, &process);
-        if (!started) {
-            const auto code = GetLastError();
+        if (const auto code = files::start_hidden(files::restart_script(GetCurrentProcessId(), launcher), launcher.parent_path())) {
             set([&](State& s) { s.error = std::format("the game could not be restarted (Windows error {}); close it and start it as usual", code); });
             return;
         }
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-        set([](State& s) { s.step = Step::restarting; });
-        logging::log(Level::info, Channel::runtime, "Animator Studio update: closing the game to start it again with the new ReSkate.dll");
+        {
+            auto& s = shared();
+            std::lock_guard lock(s.mutex);
+            s.state.step = Step::restarting;
+            s.state.error.clear();
+            s.restart_asked = std::chrono::steady_clock::now();
+        }
+        logging::log(Level::info, Channel::runtime, "Animator Studio update: closing the game to start it again with the new ReSkate.dll ({})",
+                     files::path_text(launcher));
         logging::flush();
         // Then the game is asked to close as its own window's close button would: every top-level window of this process
-        // gets WM_CLOSE (it saves and closes as it always does).
+        // gets WM_CLOSE (it saves and closes as it always does; when it asks first, the player answers).
         EnumWindows(
             [](HWND window, LPARAM) -> BOOL {
                 DWORD owner = 0;
@@ -426,8 +432,8 @@ void open_folder() noexcept {
 bool popup_wanted() noexcept {
     const auto st = state();
     if (st.step == Step::newer) return !st.answered;
-    if (st.step == Step::downloading || st.step == Step::downloaded || st.step == Step::download_failed || st.step == Step::installed ||
-        st.step == Step::install_failed || st.step == Step::restarting)
+    if (st.step == Step::downloading || st.step == Step::verifying || st.step == Step::installing || st.step == Step::download_failed ||
+        st.step == Step::installed || st.step == Step::install_failed || st.step == Step::restarting)
         return !shared().popup_closed.load();
     return false;
 }
@@ -438,6 +444,19 @@ void close_popup() noexcept {
 void show_popup() noexcept {
     set([](State& st) { st.answered = false; });
     shared().popup_closed.store(false);
+}
+int install_step(const State& st, bool& failed) noexcept {
+    failed = st.step == Step::download_failed || st.step == Step::install_failed;
+    switch (st.step) {
+    case Step::downloading: return 0;
+    case Step::verifying: return 1;
+    case Step::installing: return 2;
+    case Step::installed:
+    case Step::restarting: return 3;
+    case Step::download_failed:
+    case Step::install_failed: return std::clamp(st.failed_at, 0, 2);
+    default: return -1;
+    }
 }
 std::string running_version() noexcept {
     try {
