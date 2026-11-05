@@ -724,6 +724,54 @@ int button_row(SkateMenu& menu, const char* id, std::initializer_list<RowButton>
     return pressed;
 }
 
+int button_grid(SkateMenu& menu, const char* id, const std::vector<std::string>& names, int lit) {
+    int pressed = -1;
+    ImGui::PushID(id);
+    const int count = static_cast<int>(names.size());
+    if (!console_mode) {
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        for (int i = 0; i < count; ++i) {
+            const auto& name = names[static_cast<std::size_t>(i)];
+            const float width = ImGui::CalcTextSize(name.c_str()).x + ImGui::GetStyle().FramePadding.x * 2 + px(8);
+            if (i) {
+                ImGui::SameLine();
+                if (ImGui::GetCursorScreenPos().x + width > right) ImGui::NewLine();
+            }
+            ImGui::PushID(i);
+            if (i == lit) ImGui::PushStyleColor(ImGuiCol_Button, blue);
+            if (ImGui::Button(name.c_str(), ImVec2(width, px(30)))) pressed = i;
+            if (i == lit) ImGui::PopStyleColor();
+            ImGui::PopID();
+        }
+        ImGui::PopID();
+        return pressed;
+    }
+    // Full screen: tiles as button_row's, at least 150 px wide, as many to a row as fit.
+    const float gap = px(10), height = px(46), room = ImGui::GetContentRegionAvail().x;
+    const int across = std::max(1, std::min(count, static_cast<int>((room + gap) / (px(150) + gap))));
+    const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
+    auto* draw = ImGui::GetWindowDrawList();
+    for (int i = 0; i < count; ++i) {
+        if (i % across) ImGui::SameLine(0, gap);
+        ImGui::PushID(i);
+        const auto at = ImGui::GetCursorScreenPos();
+        if (ImGui::InvisibleButton("##tile", ImVec2(width, height), ImGuiButtonFlags_EnableNav)) pressed = i;
+        const bool hot = (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) || ImGui::IsItemHovered();
+        const ImVec2 end(at.x + width, at.y + height);
+        skate_theme::rough_rect(draw, at, end, hot ? blue : i == lit ? paper : IM_COL32(26, 26, 26, 235), static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+                                ui_scale);
+        const auto& name = names[static_cast<std::size_t>(i)];
+        const auto size = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, name.c_str());
+        draw->PushClipRect(at, end, true);
+        draw->AddText(menu.bold, px(16), ImVec2(at.x + std::max(px(10), (width - size.x) * .5f), at.y + (height - size.y) * .5f),
+                      i == lit && !hot ? skate_theme::black : paper, name.c_str());
+        draw->PopClipRect();
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+    return pressed;
+}
+
 bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selected, const std::vector<std::string>& options, bool enabled,
                 bool* pressed) {
     const int count = static_cast<int>(options.size());
@@ -880,11 +928,25 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
     }
     ImGui::PushID(id);
     const float gap = px(6);
-    const float tab_width = (ImGui::GetContentRegionAvail().x - gap * (tabs.size() - 1)) / tabs.size();
     const float height = px(34);
+    // As many rows as it takes for every label to fit (two rows of three, say), the tabs of
+    // each row as wide as each other.
+    const int count = static_cast<int>(tabs.size());
+    const float avail = ImGui::GetContentRegionAvail().x;
+    float widest = 0;
+    for (const char* label : tabs) widest = std::max(widest, menu.bold->CalcTextSizeA(px(15), FLT_MAX, 0, label).x);
+    int columns = count;
+    for (int rows = 1; rows <= count; ++rows) {
+        columns = (count + rows - 1) / rows;
+        if ((avail - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns) >= widest + px(16)) break;
+    }
+    const int rows = (count + columns - 1) / columns;
+    const float tab_width = (avail - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+    const auto start = ImGui::GetCursorScreenPos();
     auto* draw = ImGui::GetWindowDrawList();
-    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
-        if (i) ImGui::SameLine(0, gap);
+    for (int i = 0; i < count; ++i) {
+        ImGui::SetCursorScreenPos(ImVec2(start.x + static_cast<float>(i % columns) * (tab_width + gap),
+                                         start.y + static_cast<float>(i / columns) * (height + gap)));
         const auto at = ImGui::GetCursorScreenPos();
         ImGui::PushID(i);
         if (ImGui::InvisibleButton("##tab", ImVec2(tab_width, height), ImGuiButtonFlags_EnableNav) && selected != i) {
@@ -905,6 +967,8 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
             on ? skate_theme::black : paper, label);
         draw->PopClipRect();
     }
+    ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + static_cast<float>(rows) * height + static_cast<float>(rows - 1) * gap));
+    ImGui::Dummy(ImVec2(0, 0));
     ImGui::PopID();
     ImGui::Dummy(ImVec2(0, px(6)));
 }
@@ -913,7 +977,7 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
 namespace {
 // The menu fonts are built into ReSkate.dll (External/fonts, shared with the
 // launcher); Windows fonts are the fallback.
-ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
+ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges, bool merge = false) {
     HMODULE module{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&embedded_font), &module)) return nullptr;
@@ -924,6 +988,7 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
     ImFontConfig config;
     config.FontDataOwnedByAtlas = false;  // the resource lives as long as the DLL
     config.OversampleH = size >= 32 ? 1 : 2;
+    config.MergeMode = merge;  // into the font added just before: only letters it does not have are taken from this one
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data, static_cast<int>(SizeofResource(module, resource)), size,
         &config, ranges);
 }
@@ -997,6 +1062,12 @@ void load_skate_fonts(SkateMenu& menu, float studio_scale) {
     // punctuation (headlines are in capitals), so the atlas stays small.
     static const ImWchar plain[]{0x0020, 0x007E, 0};
     static const ImWchar capitals[]{0x0020, 0x0040, 0x0041, 0x005A, 0};
+    // The sizes that draw names people type (packs, playlists, makers) also get accented Latin, and Cyrillic and any
+    // letter the face lacks is merged in from Montserrat at the same size: those names showed "?" in Anton and the
+    // marker. Only up to 48 units, where names are drawn, so the atlas stays small on a 4K screen.
+    static const ImWchar names[]{0x0020, 0x007E, 0x00A0, 0x017F, 0};
+    static const ImWchar names_merged[]{0x00A0, 0x017F, 0x0400, 0x045F, 0};
+    constexpr float names_up_to = 48;
     const float scale = std::clamp(studio_scale, 0.45f, 3.0f);
     menu.studio_scale = scale;
     const auto face = [&](SkateMenu::StudioFace& out, const wchar_t* resource, const char* file, std::initializer_list<float> sizes,
@@ -1005,7 +1076,14 @@ void load_skate_fonts(SkateMenu& menu, float studio_scale) {
         for (const float size : sizes) {
             if (out.count >= static_cast<int>(out.fonts.size())) break;
             out.sizes[static_cast<std::size_t>(out.count)] = size;
-            out.fonts[static_cast<std::size_t>(out.count)] = font(resource, file, std::round(size * scale), size >= big_from ? big_glyphs : small_glyphs);
+            const bool with_names = small_glyphs == plain && size <= names_up_to;
+            ImFont* made = font(resource, file, std::round(size * scale), size >= big_from ? big_glyphs : with_names ? names : small_glyphs);
+            // Merged only when the face itself came from the DLL (its data is not the atlas's to free), and so it is the
+            // atlas's last font: a Windows or ImGui fallback face is left as it is.
+            if (with_names && made && !atlas->Sources.empty() && atlas->Sources.back().DstFont == made &&
+                !atlas->Sources.back().FontDataOwnedByAtlas)
+                embedded_font(L"FONT_HEADING", std::round(size * scale), names_merged, true);
+            out.fonts[static_cast<std::size_t>(out.count)] = made;
             ++out.count;
         }
     };

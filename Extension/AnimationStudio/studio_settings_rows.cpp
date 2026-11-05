@@ -86,6 +86,12 @@ Setting how_it_works() {
                       "tricks in a playlist, and pop heights.",
                       [] { studio::set_guide_seen(false); });
 }
+Setting editor_tour() {
+    return button_row("Editor tour",
+                      "The short tour of the editor from its first opening again: the skater and his joints, the joint card and "
+                      "KEY, the timeline, scrubbing and playing, the camera, SAVE and TEST IN GAME. It shows on the editor.",
+                      [] { studio::set_editor_tour_seen(false); });
+}
 Setting report_a_bug(Tell tell) {
     return button_row("Report a bug",
                       "Something went wrong? Press this afterwards, from the pause menu or the studio: the last 25 seconds of play "
@@ -192,19 +198,22 @@ Setting pack_folder(const studio::Settings& now, bool exporting) {
     return s;
 }
 
+// One always plays by default once there is a playlist (the user, 2026-11-05), so there is no NONE to pick.
 Setting playing_playlist(const studio::PlaylistsNow& now, Tell tell) {
-    std::vector<std::string> options{"NONE"};
+    std::vector<std::string> options;
     int selected = 0;
     for (const auto& list : now.lists) {
         if (list.name == now.on) selected = static_cast<int>(options.size());
         options.push_back(std::format("{} ({})", list.name, list.size));
     }
+    if (options.empty()) options.push_back("NO PLAYLISTS YET");
     Setting s = one_of("Playing", std::move(options), selected,
-                       "The playlist that decides what of yours plays in game, from the top down. One plays at a time; NONE: "
-                       "nothing of yours plays. Playlists are made in the studio: the LIBRARY.",
+                       "The playlist that decides what of yours plays in game, from the top down. One plays at a time, and one always "
+                       "does. Playlists are made in the studio: the LIBRARY.",
                        [lists = now.lists, tell = std::move(tell)](int picked) {
+                           if (picked < 0 || static_cast<std::size_t>(picked) >= lists.size()) return;
                            std::string m;
-                           studio::play_playlist(picked == 0 ? std::string{} : lists[static_cast<std::size_t>(picked - 1)].name, m);
+                           studio::play_playlist(lists[static_cast<std::size_t>(picked)].name, m);
                            tell(m);
                        });
     s.enabled = !now.lists.empty();
@@ -226,7 +235,7 @@ Setting modifier_playlist(const studio::PlaylistsNow& now, const ModifierBinding
         names.push_back(list.name);
     }
     return one_of("Modifier playlist", std::move(options), selected,
-        "Normal input keeps the regular playlist. Input + modifier uses an eligible animation from this playlist, falling back to normal when none fits. Editing a playlist never changes this assignment.",
+        "Normal input keeps the default playlist. Input + modifier uses an eligible animation from this playlist, falling back to normal when none fits. Editing a playlist never changes this assignment.",
         [names](int picked) {
             if (picked < 0 || static_cast<std::size_t>(picked) >= names.size()) return;
             auto live = studio::modifier_binding(); live.playlist = names[static_cast<std::size_t>(picked)]; studio::set_modifier_binding(live);
@@ -239,9 +248,9 @@ Setting modifier_native_button(const ModifierBinding& binding) {
 }
 Setting which_version_plays(const studio::PlaylistsNow& now, Tell tell) {
     const auto on = std::find_if(now.lists.begin(), now.lists.end(), [&](const auto& list) { return list.name == now.on; });
-    Setting s = one_of("Which version plays", {"FIXED", "IN TURNS", "SHUFFLE"},
+    Setting s = one_of("Which version plays", {"PRIORITY", "IN TURNS", "SHUFFLE"},
                        on == now.lists.end() ? 0 : static_cast<int>(on->mode),
-                       "When the playlist that plays has more than one version of a trick (the same trick, pop and stance). Fixed: "
+                       "When the playlist that plays has more than one version of a trick (the same trick, pop and stance). Priority: "
                        "the one highest in the playlist plays every time (a pack's slot on Alternate still takes turns). In turns: "
                        "one after another, top to bottom, attempt by attempt. Shuffle: any of them at random, never the same one "
                        "twice running.",

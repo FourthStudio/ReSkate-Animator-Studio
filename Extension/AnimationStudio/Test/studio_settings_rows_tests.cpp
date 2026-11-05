@@ -9,7 +9,7 @@
 namespace dingosdk::anim_studio {
 namespace {
 struct Given {
-    std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, guide_seen, smooth, advanced, fingers;
+    std::optional<bool> room, grab, limits, play_in_game, front_foot, catch_marker, guide_seen, tour_seen, smooth, advanced, fingers;
     std::optional<int> stance, combo;
     std::optional<float> crossfade;
     std::optional<std::string> your_name;
@@ -35,6 +35,7 @@ void set_crossfade(float seconds) { given.crossfade = seconds; }
 void set_your_name(const std::string& name) { given.your_name = name; }
 void set_catch_marker(bool on) { given.catch_marker = on; }
 void set_guide_seen(bool seen) { given.guide_seen = seen; }
+void set_editor_tour_seen(bool seen) { given.tour_seen = seen; }
 void set_smooth_transitions(bool on) { given.smooth = on; }
 void play_playlist(const std::string& name, std::string& message) {
     given.playing = name;
@@ -168,16 +169,15 @@ void playing_lists_none_and_each_playlist_and_switches_by_name() {
     reset();
     std::string told;
     const auto row = playing_playlist(two_playlists("Park"), [&](const std::string& said) { told = said; });
-    check(row.options == std::vector<std::string>{"NONE", "Street (4)", "Park (0)"}, "Playing does not list NONE and each playlist with its size");
-    check(row.selected == 2 && row.value == "Park (0)" && row.enabled, "Playing does not show the playlist that is on");
-    row.pick(1);
-    check(anim_studio::given.playing == "Street" && told == "Street is on.", "Picking a playlist did not switch it on by its name");
+    check(row.options == std::vector<std::string>{"Street (4)", "Park (0)"}, "Playing does not list each playlist with its size (and no NONE)");
+    check(row.selected == 1 && row.value == "Park (0)" && row.enabled, "Playing does not show the playlist that is on");
     row.pick(0);
-    check(anim_studio::given.playing == "", "Picking NONE did not switch playlists off");
+    check(anim_studio::given.playing == "Street" && told == "Street is on.", "Picking a playlist did not switch it on by its name");
 }
 void playing_is_none_and_greyed_with_no_playlists() {
     const auto row = playing_playlist({}, [](const std::string&) {});
-    check(row.options == std::vector<std::string>{"NONE"} && row.selected == 0 && !row.enabled, "Playing is not NONE and greyed with no playlists");
+    check(row.options == std::vector<std::string>{"NO PLAYLISTS YET"} && row.selected == 0 && !row.enabled,
+          "Playing does not say there are no playlists, greyed, with none");
 }
 void the_catch_marker_is_on_by_default_and_sets_itself() {
     reset();
@@ -194,10 +194,17 @@ void how_it_works_opens_the_guide_again() {
     row.act();
     check(anim_studio::given.guide_seen == false, "How it works did not open the guide again");
 }
+void editor_tour_shows_the_tour_again() {
+    reset();
+    const auto row = editor_tour();
+    check(row.kind == Setting::Kind::action, "Editor tour is not a button");
+    row.act();
+    check(anim_studio::given.tour_seen == false && !anim_studio::given.guide_seen, "Editor tour did not ask for the tour (alone) again");
+}
 void the_mode_is_the_playing_playlists_and_set_by_its_name() {
     reset();
     const auto row = which_version_plays(two_playlists("Park"), [](const std::string&) {});
-    check(row.options == std::vector<std::string>{"FIXED", "IN TURNS", "SHUFFLE"} && row.value == "SHUFFLE" && row.enabled,
+    check(row.options == std::vector<std::string>{"PRIORITY", "IN TURNS", "SHUFFLE"} && row.value == "SHUFFLE" && row.enabled,
           "The mode is not the playing playlist's");
     row.pick(1);
     check(anim_studio::given.mode_of == "Park" && anim_studio::given.mode == anim_studio::PlaylistMode::turns,
@@ -230,6 +237,7 @@ int main() {
         the_mode_is_the_playing_playlists_and_set_by_its_name();
         the_catch_marker_is_on_by_default_and_sets_itself();
         how_it_works_opens_the_guide_again();
+        editor_tour_shows_the_tour_again();
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "animation studio settings tests passed\n";
 }

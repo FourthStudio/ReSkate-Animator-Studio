@@ -112,6 +112,16 @@ struct InteractiveDebug {
     std::uint64_t studio_room_changes{}; // the Studio room setting's switches seen (anim_studio::room_changes)
     bool studio_reopen{};                // closed to open again in the room
     std::uint64_t studio_room_seen{}; // when the room's skater was last seen (GetTickCount64)
+    // The studio opens with him off his board, standing (studio_step_off_tick in client_debug.cpp), and puts him back on it
+    // when it closes if it took him off (studio_remount_tick). Times are GetTickCount64.
+    struct StudioStepOff {
+        bool active{}, braking{}, woke{};
+        std::uint64_t started{}, riding_since{}, on_foot_since{}, next_press{}, reads_at_press{};
+        int presses{};
+    } studio_step_off;
+    bool studio_remount{};
+    std::uint64_t studio_remount_next{}, studio_remount_reads{};
+    int studio_remount_presses{};
     // Shares Freecam's owned mode-1 camera; each tick publishes the head pose
     // instead of a flight step.
     bool first_person{}, first_person_waiting{};

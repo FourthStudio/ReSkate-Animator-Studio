@@ -1,5 +1,6 @@
 #include "marketplace.h"
 #include "marketplace_listing.h"
+#include "marketplace_month.h"
 #include "anim_studio.h"
 #include "anim_core.h"
 #include "Engine/Core/Json/json.h"
@@ -22,6 +23,7 @@
 #include <cmath>
 #include <deque>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -164,91 +166,167 @@ std::string said(const Answer& a) {
 }
 
 // ---- downloads ------------------------------------------------------------------------------------
-// Why a download failed, in words. Thunderstore says 200 before the body comes, so a body cut short (the time ran out,
-// the connection dropped) needs its own words, not "the download failed (200)".
+// Downloads go through https::fetch: a request that stalls (under 16 KB in a minute) or drops is dropped and the next one
+// goes on from where it got to (a Range request, against the file's ETag), up to eight in a row that bring nothing, with
+// growing waits between them; a slow line that keeps moving is never cut off however long it takes. Players saw a pack's
+// download fail with "it took too long" (1.1.x had one 30 minute limit and three tries, each from the start). A pack's
+// zip is checked whole (every file's CRC) before it takes its place.
+constexpr std::uint32_t stall_ms = 60000;
+// Packs are tens of MB now; hundreds are taken, up to what the import takes (read_pack_zip: 512 MB).
+constexpr std::uint64_t most_pack_bytes = 512ull * 1024 * 1024;
+// Why a download failed, in words. Thunderstore says 200 before the body comes, so a body cut short (the connection
+// dropped, it stalled) needs its own words, not "the download failed (200)".
 std::string download_failure(const https::Download& got) {
-    if (got.http_status && got.http_status != 200) return "Thunderstore answered " + std::to_string(got.http_status);
-    switch (got.error) {
-    case ERROR_TIMEOUT:
-    case ERROR_WINHTTP_TIMEOUT: return "it took too long (a slow or busy connection)";
-    case ERROR_FILE_TOO_LARGE: return "it is bigger than the studio takes";
-    case ERROR_CANCELLED: return "it was stopped";
-    case ERROR_WRITE_FAULT:
-    case ERROR_DISK_FULL:
-    case ERROR_HANDLE_DISK_FULL: return "it could not be written to the disk (is it full?)";
-    case ERROR_WINHTTP_NAME_NOT_RESOLVED:
-    case ERROR_WINHTTP_CANNOT_CONNECT: return "Thunderstore could not be reached (no connection?)";
-    case ERROR_WINHTTP_CONNECTION_ERROR:
-    case ERROR_WINHTTP_INVALID_SERVER_RESPONSE: return "the connection dropped part way";
-    default: return "Windows error " + std::to_string(got.error);
-    }
-}
-// Slow connections: every step of a request (finding Thunderstore, connecting, each read) may wait a minute instead of
-// the usual 5-10 seconds, and a request that timed out or dropped is tried twice more. Not again after Thunderstore said
-// no, it was too big, it was stopped, or the disk would not take it.
-constexpr std::uint32_t patience_ms = 60000;
-constexpr int tries = 3;
-// Tried again: a step that waited too long, a connection that could not be made or dropped, and Thunderstore busy (429, or
-// a 5xx). Not the whole request's own time running out (a slow line would only start over and run out again), nor a no.
-bool worth_again(const https::Download& got) {
-    if (got.http_status == 429 || (got.http_status >= 500 && got.http_status < 600)) return true;
-    if (got.http_status && got.http_status != 200) return false;
-    switch (got.error) {
-    case ERROR_WINHTTP_TIMEOUT:
-    case ERROR_WINHTTP_NAME_NOT_RESOLVED:
-    case ERROR_WINHTTP_CANNOT_CONNECT:
-    case ERROR_WINHTTP_CONNECTION_ERROR:
-    case ERROR_WINHTTP_INVALID_SERVER_RESPONSE: return true;
-    default: return false;
-    }
+    std::string why;
+    if (got.http_status && got.http_status != 200 && got.http_status != 206)
+        why = got.http_status == 429 || got.http_status >= 500 ? "Thunderstore was busy (it answered " + std::to_string(got.http_status) + ")"
+              : got.http_status == 404                         ? std::string("Thunderstore does not have it any more (404)")
+                                                               : "Thunderstore answered " + std::to_string(got.http_status);
+    else
+        switch (got.error) {
+        case ERROR_WINHTTP_TIMEOUT: why = "the connection stopped sending (nothing came for a minute)"; break;
+        case ERROR_TIMEOUT: why = "it ran out of time"; break;
+        case ERROR_FILE_TOO_LARGE: why = "it is bigger than the studio takes (512 MB)"; break;
+        case ERROR_CANCELLED: why = "it was stopped"; break;
+        case ERROR_INVALID_DATA: why = "it arrived damaged twice (its zip did not check out)"; break;
+        case ERROR_BAD_LENGTH: why = "it arrived another size than Thunderstore said"; break;
+        case ERROR_WRITE_FAULT:
+        case ERROR_DISK_FULL:
+        case ERROR_HANDLE_DISK_FULL: why = "it could not be written to the disk (is it full?)"; break;
+        case ERROR_ACCESS_DENIED: why = "the studio's folder could not be written to"; break;
+        case ERROR_WINHTTP_NAME_NOT_RESOLVED:
+        case ERROR_WINHTTP_CANNOT_CONNECT: why = "Thunderstore could not be reached (no connection?)"; break;
+        case ERROR_WINHTTP_CONNECTION_ERROR:
+        case ERROR_WINHTTP_INVALID_SERVER_RESPONSE: why = "the connection kept dropping"; break;
+        case ERROR_WINHTTP_SECURE_FAILURE: why = "a secure connection could not be made (a proxy, antivirus or the PC's clock?)"; break;
+        default: why = "Windows error " + std::to_string(got.error); break;
+        }
+    if (got.attempts > 1 && got.error != ERROR_CANCELLED) why += ", after " + std::to_string(got.attempts) + " tries";
+    return why;
 }
 // What a failed listing read says: unreachable, or reached and refused.
 std::string listing_failure(const https::Download& got) {
     return (got.http_status && got.http_status != 200 ? "Thunderstore's listing could not be read: " : "Thunderstore could not be reached: ") +
            download_failure(got) + ".";
 }
-// A small answer from Thunderstore (a listing page, a README, a package's details), patiently.
-std::optional<std::string> fetch_text(const std::string& url, std::uint64_t most, std::uint32_t seconds, https::Download* result = nullptr) {
-    https::Download got;
-    for (int attempt = 0; attempt < tries; ++attempt) {
-        https::Watch watch;
-        watch.patience_ms.store(patience_ms);
-        if (auto text = https::get_text(widen(url), most, seconds, agent, &got, &watch)) {
-            if (result) *result = got;
-            return text;
-        }
-        if (!worth_again(got)) break;
-        if (attempt + 1 < tries) std::this_thread::sleep_for(std::chrono::seconds(2));
-    }
-    if (result) *result = got;
-    return std::nullopt;
+// A file in the studio's market folder that a download goes into before it is read.
+std::filesystem::path scratch_file(const std::string& what) {
+    static std::atomic<unsigned> serial{};
+    return folder() / L"downloads" / widen("get-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(++serial) + "-" + what + ".tmp");
 }
-// A file (a pack's zip, an icon) downloaded to `destination` (which must not be there), patiently: a pack's zip has up to
-// 30 minutes (a 127 MB one needs 0.4 MB/s to come in the 5 minutes it once had).
-https::Download download_file(const std::string& url, const std::filesystem::path& destination, std::uint64_t most, std::uint32_t seconds,
-                              https::Watch* watch) {
-    https::Watch own;
-    if (!watch) watch = &own;
-    watch->patience_ms.store(patience_ms);
-    https::Download got;
-    for (int attempt = 0; attempt < tries; ++attempt) {
-        std::error_code error;
-        std::filesystem::remove(destination, error);
-        watch->received.store(0);
-        got = https::get(widen(url), destination, most, seconds, agent, watch);
-        if (got.ok) return got;
-        const bool again = worth_again(got) && attempt + 1 < tries;
-        logging::log(Level::warning, Channel::skater, "Animator Studio market: a download failed ({}, try {} of {}){}", download_failure(got),
-                     attempt + 1, tries, again ? "; trying again" : "");
-        if (!again) break;
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-    }
+// A small answer from Thunderstore (a listing page, a README, a package's details), patiently: no limit on the whole of it
+// (the community's whole listing is several MB), only on stalls, four of them in a row.
+std::optional<std::string> fetch_text(const std::string& url, std::uint64_t most, std::uint32_t /*seconds*/, https::Download* result = nullptr) {
+    const auto file = scratch_file("text");
     std::error_code error;
-    std::filesystem::remove(destination, error);
+    std::filesystem::create_directories(file.parent_path(), error);
+    https::Fetch options;
+    options.max_bytes = most;
+    options.stall_ms = stall_ms;
+    options.tries = 4;
+    options.backoff_ms = 2000;
+    const auto got = https::fetch(widen(url), file, options, agent);
+    if (result) *result = got;
+    std::optional<std::string> text;
+    if (got.ok) text = read_file(file);
+    std::filesystem::remove(file, error);
+    return text;
+}
+// A downloaded file read as a zip without reading it all into memory (miniz is built without its own file reading).
+struct ZipFile {
+    HANDLE file{INVALID_HANDLE_VALUE};
+    mz_zip_archive archive{};
+    bool open{};
+    explicit ZipFile(const std::filesystem::path& path) {
+        file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        LARGE_INTEGER size{};
+        if (file == INVALID_HANDLE_VALUE || !GetFileSizeEx(file, &size)) return;
+        archive.m_pRead = [](void* opaque, mz_uint64 at, void* buffer, size_t n) -> size_t {
+            size_t done = 0;
+            while (done < n) {
+                OVERLAPPED where{};
+                const auto offset = at + done;
+                where.Offset = static_cast<DWORD>(offset);
+                where.OffsetHigh = static_cast<DWORD>(offset >> 32);
+                DWORD got = 0;
+                const auto want = static_cast<DWORD>(std::min<size_t>(n - done, 1u << 30));
+                if (!ReadFile(static_cast<HANDLE>(opaque), static_cast<char*>(buffer) + done, want, &got, &where) || !got) break;
+                done += got;
+            }
+            return done;
+        };
+        archive.m_pIO_opaque = file;
+        open = mz_zip_reader_init(&archive, static_cast<mz_uint64>(size.QuadPart), 0);
+    }
+    ~ZipFile() {
+        if (open) mz_zip_reader_end(&archive);
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    }
+    ZipFile(const ZipFile&) = delete;
+    ZipFile& operator=(const ZipFile&) = delete;
+    // Every file in it reads back with its CRC: the whole zip came.
+    bool whole() { return open && mz_zip_validate_archive(&archive, 0); }
+    // One of the studio's packs: its marker at the top.
+    bool studio() { return open && mz_zip_reader_locate_file(&archive, "reskate-animations.json", nullptr, 0) >= 0; }
+};
+// A file (an icon) downloaded to `destination`, patiently.
+https::Download download_file(const std::string& url, const std::filesystem::path& destination, std::uint64_t most, https::Watch* watch) {
+    https::Fetch options;
+    options.max_bytes = most;
+    options.stall_ms = stall_ms;
+    options.tries = 4;
+    options.backoff_ms = 2000;
+    const auto got = https::fetch(widen(url), destination, options, agent, watch);
+    if (!got.ok && got.error != ERROR_CANCELLED)
+        logging::log(Level::warning, Channel::skater, "Animator Studio market: a download failed: {}", download_failure(got));
     return got;
 }
+// A pack's zip, downloaded to `destination` (replaced only by the whole, checked zip). What came of a failed download is
+// kept beside it (destination + ".part"), so TRY AGAIN goes on from there.
 https::Download download_pack(const std::string& url, const std::filesystem::path& destination, https::Watch* watch) {
-    return download_file(url, destination, 256ull * 1024 * 1024, 1800, watch);
+    https::Fetch options;
+    options.max_bytes = most_pack_bytes;
+    options.stall_ms = stall_ms;
+    options.tries = 8;
+    options.keep_partial = true;
+    options.verify = [](const std::filesystem::path& zip) { return ZipFile(zip).whole(); };
+    const auto started = std::chrono::steady_clock::now();
+    const auto got = https::fetch(widen(url), destination, options, agent, watch);
+    const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    std::error_code error;
+    const auto size = got.ok ? std::filesystem::file_size(destination, error) : 0;
+    if (got.ok)
+        logging::log(Level::info, Channel::skater, "Animator Studio market: downloaded {:.1f} MB in {:.0f} s ({} request{}{}), its zip checked.",
+                     static_cast<double>(size) / 1048576.0, seconds, got.attempts, got.attempts == 1 ? "" : "s", got.resumed ? ", resumed" : "");
+    else
+        logging::log(Level::warning, Channel::skater, "Animator Studio market: a pack's download failed after {:.0f} s: {}", seconds,
+                     download_failure(got));
+    return got;
+}
+// How far a download is, as a pack's line says it while it runs: "12.3 of 53.8 MB", or what it waits for.
+std::string download_words(const https::Watch& watch) {
+    const auto mb = [](std::uint64_t bytes) { return std::format("{:.1f}", static_cast<double>(bytes) / 1048576.0); };
+    const auto received = watch.received.load(), total = watch.total.load();
+    if (const auto retry = watch.retry_at_us.load()) {
+        const auto now = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        const auto in = retry > now ? (retry - now + 999999) / 1000000 : 0;
+        return std::format("connection lost at {} MB, trying again in {} s", mb(received), in);
+    }
+    const auto attempt = watch.attempt.load();
+    const std::string again = attempt > 1 ? std::format(" (try {})", attempt) : std::string{};
+    if (total) return mb(received) + " of " + mb(total) + " MB" + again;
+    return received ? mb(received) + " MB" + again : "connecting" + again;
+}
+// Parts of downloads that never finished (a pack not tried again): gone after a few days.
+void prune_parts(const std::filesystem::path& in) {
+    std::error_code error;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    for (const auto& entry : std::filesystem::directory_iterator(in, error)) {
+        const auto name = entry.path().filename().wstring();
+        if (!(name.ends_with(L".part") || name.ends_with(L".part.etag") || name.ends_with(L".tmp"))) continue;
+        if (now - entry.last_write_time(error) > std::chrono::hours(72)) std::filesystem::remove(entry.path(), error);
+    }
 }
 
 // ---- the token, kept encrypted for this Windows user ---------------------------------------------
@@ -394,10 +472,15 @@ struct Market {
     Detail detail;
     std::deque<std::string> icon_queue;
     std::set<std::string> icons_asked;
+    // Each pack's icon on disk, by "Team-Name|version": its file (UTF-8), "" when it is not there. Looked at once and then
+    // kept: view() and want_icons() run every frame the MARKET is open, and a look at the disk for every pack each frame
+    // cost a few milliseconds. The icon worker fills in the ones it downloads.
+    std::map<std::string, std::string> icon_files;
     bool icon_worker{};
     struct Readme {
         std::string version, about;
         std::vector<std::string> tricks;
+        KindCounts kinds{}; // its tricks by kind, worked out once as it is read (a pack can list hundreds)
         int state{}; // 1 being read, 2 read, 3 could not be read
     };
     std::map<std::string, Readme> readmes; // full name -> its README, for the version read
@@ -406,6 +489,18 @@ struct Market {
     bool settings_read{};
     Preview preview;
     bool preview_worker{};
+    // TOP OF THE MONTH: each pack's versions (their downloads, when each came out) and where this month's counting began.
+    VersionCounts counts;
+    std::chrono::steady_clock::time_point counts_fetched{};
+    bool counts_fresh{}; // read from Thunderstore this run (not only from the copy on disk)
+    MonthBase month_base;
+    // The developers' VERIFIED list (read from GitHub every few minutes, kept on disk between runs).
+    VerifiedList verified_list;
+    std::chrono::steady_clock::time_point verified_fetched{};
+    bool verified_ever{};
+    int look{};
+    int dev_state{};
+    std::string dev_login, dev_error;
 };
 Market& market() {
     static auto* m = new Market;
@@ -418,7 +513,8 @@ void save_lists_locked(const Market& m) {
         for (const auto& [name, version] : m.installed) installed[name] = version;
         for (const auto& [name, pack] : m.installed_as) installed_as[name] = pack;
         write_file(folder() / L"settings.json", Json{{"favorites", std::move(favorites)}, {"installed", std::move(installed)},
-                                                     {"installed_as", std::move(installed_as)}, {"like_prompt", m.like_prompt}}.dump(2));
+                                                     {"installed_as", std::move(installed_as)}, {"like_prompt", m.like_prompt},
+                                                     {"look", m.look}}.dump(2));
     } catch (...) {}
 }
 void read_settings_locked(Market& m) {
@@ -440,12 +536,38 @@ void read_settings_locked(Market& m) {
                 for (const auto& [name, pack] : root.at("installed_as").items())
                     if (pack.is_string()) m.installed_as[name] = pack.string();
             m.like_prompt = root.value("like_prompt", true);
+            if (root.contains("look") && root.at("look").is_number()) m.look = std::clamp(static_cast<int>(root.at("look").get<double>()), 0, 16);
             if (old_name) {
                 save_lists_locked(m);
                 std::error_code error;
                 if (std::filesystem::exists(folder() / L"settings.json", error)) std::filesystem::remove(folder() / L"market.json", error);
             }
         }
+        // What was counted and read before: this month's numbers and the VERIFIED list at once, while they are read again.
+        try {
+            if (const auto text = read_file(folder() / L"versions.json"); !text.empty()) m.counts = read_version_counts_json(text);
+        } catch (...) {}
+        try {
+            if (const auto text = read_file(folder() / L"month.json"); !text.empty()) m.month_base = read_month_base(text);
+        } catch (...) {}
+        try {
+            if (const auto text = read_file(folder() / L"verified.json"); !text.empty()) m.verified_list = read_verified(text);
+        } catch (...) {}
+        // What GitHub said of the developer key on this PC: it can write (VERIFY says so if it no longer can), or it was
+        // refused, and why. A key with neither is NOT CHECKED. Each keeps its row and its REMOVE.
+        try {
+            std::error_code missing;
+            if (std::filesystem::is_regular_file(folder() / L"dev.key", missing)) {
+                m.dev_state = 4;
+                if (const auto text = read_file(folder() / L"dev.json"); !text.empty()) {
+                    const auto root = Json::parse(text);
+                    m.dev_login = root.value("login", "");
+                    m.dev_error = root.value("refused", "");
+                    if (!m.dev_login.empty()) m.dev_state = 2;
+                    else if (!m.dev_error.empty()) m.dev_state = 3;
+                }
+            }
+        } catch (...) {}
         if (const auto text = read_file(account_file()); !text.empty()) {
             const auto root = Json::parse(text);
             m.team = root.value("team", "");
@@ -463,6 +585,36 @@ std::string token_fingerprint(const std::string& token) {
     std::string out;
     for (const unsigned char b : md5("reskate-animator-studio/token/" + token)) out += hex[b >> 4], out += hex[b & 15];
     return out.substr(0, 16);
+}
+// This month, in UTC as Thunderstore's dates are ("2026-11").
+std::string this_month() {
+    const auto days = std::chrono::duration_cast<std::chrono::hours>(std::chrono::system_clock::now().time_since_epoch()).count() / 24;
+    return month_of_day(days);
+}
+// The VERIFIED list as GitHub has it now, every few minutes (or when asked): kept on disk, and kept as it was when GitHub
+// cannot be reached. Not there at all (no developer has verified anything yet) is an empty list.
+void refresh_verified(bool force) {
+    auto& m = market();
+    {
+        std::lock_guard lock(m.mutex);
+        if (!force && m.verified_ever && std::chrono::steady_clock::now() - m.verified_fetched < std::chrono::minutes(3)) return;
+        m.verified_ever = true;
+        m.verified_fetched = std::chrono::steady_clock::now();
+    }
+    https::Download got{};
+    const auto text = https::get_text(widen(verified_list_url()), 1024 * 1024, 30, agent, &got);
+    std::optional<VerifiedList> list;
+    try {
+        if (text) list = read_verified(*text);
+        else if (got.http_status == 404) list = VerifiedList{};
+    } catch (...) {}
+    if (!list) return;
+    std::lock_guard lock(m.mutex);
+    if (list->packs == m.verified_list.packs && list->makers == m.verified_list.makers) return;
+    m.verified_list = std::move(*list);
+    try {
+        write_file(folder() / L"verified.json", verified_json(m.verified_list));
+    } catch (...) {}
 }
 // A pack's newest version and its download, asked of the package itself. False when it cannot be had.
 bool fill_version(Pack& p) {
@@ -584,7 +736,7 @@ std::filesystem::path icon_path(const Pack& p) { return folder() / L"icons" / wi
 void icon_worker() {
     auto& m = market();
     for (;;) {
-        std::string url;
+        std::string url, key;
         std::filesystem::path path;
         {
             std::lock_guard lock(m.mutex);
@@ -598,16 +750,25 @@ void icon_worker() {
             if (found == m.packs.end() || found->icon_url.empty()) continue;
             url = found->icon_url;
             path = icon_path(*found);
+            key = found->full_name + "|" + found->version;
         }
         std::error_code error;
         std::filesystem::create_directories(path.parent_path(), error);
-        auto temporary = path;
-        temporary += L".part";
-        std::filesystem::remove(temporary, error);
-        const auto got = download_file(url, temporary, 2 * 1024 * 1024, 90, nullptr);
-        if (got.ok) std::filesystem::rename(temporary, path, error);
-        else std::filesystem::remove(temporary, error);
+        const auto got = download_file(url, path, 2 * 1024 * 1024, nullptr);
+        std::lock_guard lock(m.mutex);
+        m.icon_files[key] = got.ok ? utf8(path) : std::string{};
     }
+}
+// The pack's icon file, "" when it is not on disk: looked at the first time only (the icon worker says when it writes one).
+const std::string& icon_file_locked(Market& m, const Pack& p) {
+    const auto key = p.full_name + "|" + p.version;
+    auto found = m.icon_files.find(key);
+    if (found == m.icon_files.end()) {
+        std::error_code error;
+        const auto path = icon_path(p);
+        found = m.icon_files.emplace(key, std::filesystem::is_regular_file(path, error) ? utf8(path) : std::string{}).first;
+    }
+    return found->second;
 }
 // The READMEs, one after another: from disk when this version's was read before, else from Thunderstore.
 std::filesystem::path readme_path(const std::string& full_name, const std::string& version) {
@@ -644,6 +805,7 @@ void readme_worker() {
         if (markdown.empty()) readme.state = 3;
         else {
             read_readme(markdown, readme.about, readme.tricks);
+            readme.kinds = trick_kinds(readme.tricks);
             readme.state = 2;
         }
         std::lock_guard lock(m.mutex);
@@ -654,17 +816,10 @@ void readme_worker() {
 constexpr std::size_t previews_kept = 5;
 std::filesystem::path previews_folder() { return folder() / L"previews"; }
 std::wstring preview_stem(const Pack& pack) { return widen(pack.owner + "-" + pack.name + "-" + pack.version); }
-// Whether a downloaded file is one of the studio's packs: a zip with its marker at the top.
-bool studio_zip(const std::filesystem::path& zip) {
-    const auto bytes = read_file(zip);
-    mz_zip_archive archive{};
-    if (!mz_zip_reader_init_mem(&archive, bytes.data(), bytes.size(), 0)) return false;
-    const bool ours = mz_zip_reader_locate_file(&archive, "reskate-animations.json", nullptr, 0) >= 0;
-    mz_zip_reader_end(&archive);
-    return ours;
-}
-// The ones looked at longest ago go, with their tricks, past the last few.
+// The ones looked at longest ago go, with their tricks, past the last few. A preview stopped for another pack keeps its
+// part file (up to 512 MB) to resume. Old parts go after 72 hours, as in downloads.
 void prune_previews(const std::filesystem::path& keep) {
+    prune_parts(previews_folder());
     std::error_code error;
     std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> zips;
     for (const auto& entry : std::filesystem::directory_iterator(previews_folder(), error))
@@ -686,9 +841,6 @@ std::vector<PreviewTrick> fetch_preview(const Pack& pack) {
     std::error_code error;
     std::filesystem::create_directories(zip.parent_path(), error);
     if (!std::filesystem::is_regular_file(zip, error)) {
-        auto part = zip;
-        part += L".part";
-        std::filesystem::remove(part, error);
         https::Watch watch;
         std::atomic<bool> done{};
         // How far it is, while it runs (waited for before going on: it reads `watch` and `done`).
@@ -697,7 +849,8 @@ std::vector<PreviewTrick> fetch_preview(const Pack& pack) {
                 {
                     auto& m = market();
                     std::lock_guard lock(m.mutex);
-                    // Another pack's preview asked for: this one stops, and that one's download starts.
+                    // Another pack's preview asked for: this one stops (what came is kept, to go on from), and that one's
+                    // download starts.
                     if (m.preview.full_name != pack.full_name) watch.cancel.store(true);
                     else if (const auto total = watch.total.load())
                         m.preview.fraction = static_cast<float>(watch.received.load()) / static_cast<float>(total);
@@ -713,19 +866,14 @@ std::vector<PreviewTrick> fetch_preview(const Pack& pack) {
                 if (thread.joinable()) thread.join();
             }
         } join_watcher{done, watcher};
-        const auto got = download_pack(pack.download_url, part, &watch);
+        const auto got = download_pack(pack.download_url, zip, &watch);
         done.store(true);
         watcher.join();
-        if (!got.ok) {
-            std::filesystem::remove(part, error);
-            throw std::runtime_error("the download failed: " + download_failure(got));
-        }
-        if (!studio_zip(part)) {
-            std::filesystem::remove(part, error);
+        if (!got.ok) throw std::runtime_error("the download failed: " + download_failure(got));
+        if (!ZipFile(zip).studio()) {
+            std::filesystem::remove(zip, error);
             throw std::runtime_error(pack.title + " is not an Animator Studio pack");
         }
-        std::filesystem::rename(part, zip, error);
-        if (error) throw std::runtime_error("it could not be kept");
     }
     // Looked at now: kept the longest.
     std::filesystem::last_write_time(zip, std::filesystem::file_time_type::clock::now(), error);
@@ -822,11 +970,17 @@ View view() {
     v.team_state = m.team_checked == m.team ? m.team_state : 0;
     v.account_state = m.account_checked == m.team ? m.account_state : 0;
     v.like_prompt = m.like_prompt;
+    v.dev_state = m.dev_state;
+    v.dev_login = m.dev_login;
+    v.dev_error = m.dev_error;
+    v.month = this_month();
+    v.month_known = !m.counts.empty();
+    v.verified_count = m.verified_list.packs.size() + m.verified_list.makers.size();
+    v.look = m.look;
     v.job = m.job;
     v.detail = m.detail;
     v.preview = m.preview;
     v.packs = m.packs;
-    std::error_code error;
     for (auto& p : v.packs) {
         p.favorite = m.favorites.contains(p.full_name);
         p.mine = !m.team.empty() && _stricmp(p.owner.c_str(), m.team.c_str()) == 0;
@@ -835,12 +989,22 @@ View view() {
         if (const auto found = m.readmes.find(p.full_name); found != m.readmes.end() && found->second.version == p.version) {
             p.about = found->second.about;
             p.tricks = found->second.tricks;
+            p.kinds = found->second.kinds;
             p.readme = found->second.state;
         }
         p.dev = builder_of(p.owner) != nullptr;                // BUILT BY, with a team: DEV
         p.crew = crew_member(p.owner) != nullptr || p.dev; // THE CREW: CREW CERTIFIED (and in the crew's lists, the devs too)
-        p.verified = verified_maker(p.owner);
-        if (const auto path = icon_path(p); std::filesystem::is_regular_file(path, error)) p.icon_file = utf8(path);
+        p.verified = verified_by(m.verified_list, p.owner, p.full_name);
+        {
+            const auto found = m.counts.find(p.full_name);
+            const auto n = month_numbers(p, found == m.counts.end() ? nullptr : &found->second, m.month_base, v.month);
+            p.month_downloads = n.downloads;
+            p.month_likes = n.likes;
+            p.month_counted = n.counted;
+            if (found != m.counts.end())
+                for (const auto& version : found->second) p.versions.push_back({version.version, version.date, version.downloads});
+        }
+        p.icon_file = icon_file_locked(m, p);
     }
     return v;
 }
@@ -862,6 +1026,7 @@ void refresh(bool force) {
                 readme.version = p.version;
                 if (const auto markdown = read_file(readme_path(p.full_name, p.version)); !markdown.empty()) {
                     read_readme(markdown, readme.about, readme.tricks);
+                    readme.kinds = trick_kinds(readme.tricks);
                     readme.state = 2;
                     m.readmes[p.full_name] = std::move(readme);
                 }
@@ -877,20 +1042,35 @@ void refresh(bool force) {
         auto& m = market();
         std::vector<Pack> packs;
         std::string error;
+        std::optional<VersionCounts> counts;
+        const auto listing_url = std::string(site) + "/c/" + community + "/api/v1/package/";
         // Thunderstore's search first: only the studio's packs, and a new one shows within a minute. Its whole listing
         // (every package of the community, several MB, rebuilt only now and then) when the search cannot be had.
         if (!search_packs(packs, error)) {
             packs.clear();
             error.clear();
             https::Download result{};
-            const auto url = std::string(site) + "/c/" + community + "/api/v1/package/";
-            const auto text = fetch_text(url, 96ull * 1024 * 1024, 300, &result);
+            const auto text = fetch_text(listing_url, 96ull * 1024 * 1024, 300, &result);
             if (!text) error = listing_failure(result);
             else
                 try {
                     packs = read_listing(*text);
+                    counts = read_version_counts(*text);
                 } catch (const std::exception& e) { error = std::string("Thunderstore's listing could not be read: ") + e.what(); }
+        } else {
+            // TOP OF THE MONTH needs each version's downloads, which only the whole listing has: read every twenty minutes.
+            bool due = false;
+            {
+                std::lock_guard lock(m.mutex);
+                due = !m.counts_fresh || std::chrono::steady_clock::now() - m.counts_fetched > std::chrono::minutes(20);
+            }
+            if (due)
+                if (const auto text = fetch_text(listing_url, 96ull * 1024 * 1024, 300))
+                    try {
+                        counts = read_version_counts(*text);
+                    } catch (...) {}
         }
+        refresh_verified(false);
         if (error.empty()) {
             try {
                 write_file(folder() / L"packs.json", packs_json(packs));
@@ -906,6 +1086,20 @@ void refresh(bool force) {
             m.fetched = std::chrono::steady_clock::now();
             m.error = error;
             if (error.empty()) m.packs = std::move(packs);
+            if (counts && !counts->empty()) {
+                m.counts = std::move(*counts);
+                m.counts_fresh = true;
+                m.counts_fetched = std::chrono::steady_clock::now();
+                try {
+                    write_file(folder() / L"versions.json", version_counts_json(m.counts));
+                } catch (...) {}
+            }
+            // Where this month's counting starts: a new month starts it again, a pack seen for the first time this month
+            // starts from what it has now.
+            if (error.empty() && update_month_base(m.month_base, m.packs, m.counts, this_month()))
+                try {
+                    write_file(folder() / L"month.json", month_base_json(m.month_base));
+                } catch (...) {}
         }
         {
             std::vector<std::string> names;
@@ -922,12 +1116,11 @@ void refresh(bool force) {
 void want_icons(const std::vector<std::string>& full_names) {
     auto& m = market();
     std::lock_guard lock(m.mutex);
-    std::error_code error;
     for (const auto& name : full_names) {
         const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == name; });
         if (found == m.packs.end() || found->icon_url.empty()) continue;
         const auto key = name + "|" + found->version;
-        if (m.icons_asked.contains(key) || std::filesystem::is_regular_file(icon_path(*found), error)) continue;
+        if (m.icons_asked.contains(key) || !icon_file_locked(m, *found).empty()) continue;
         m.icons_asked.insert(key);
         m.icon_queue.push_back(name);
     }
@@ -1016,6 +1209,20 @@ void open_team_page(std::string_view team) {
     if (team.empty() || !std::all_of(team.begin(), team.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; })) return;
     ShellExecuteW(nullptr, L"open", widen(team_page(team)).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
+// The packs GET and UPDATE put in the library (by the names they have there), waiting for the LIBRARY to ask whether to
+// add each to a playlist (take_fresh_installs). Kept apart from the market's own state: only the install writes it.
+static std::mutex fresh_mutex;
+static std::vector<std::string> fresh_packs;
+static void note_fresh_install(const std::vector<std::string>& made) {
+    std::lock_guard lock(fresh_mutex);
+    for (const auto& pack : made)
+        if (!pack.empty() && std::find(fresh_packs.begin(), fresh_packs.end(), pack) == fresh_packs.end() && fresh_packs.size() < 64)
+            fresh_packs.push_back(pack);
+}
+std::vector<std::string> take_fresh_installs() {
+    std::lock_guard lock(fresh_mutex);
+    return std::exchange(fresh_packs, {});
+}
 void install(const std::string& full_name) {
     Pack pack;
     {
@@ -1030,6 +1237,7 @@ void install(const std::string& full_name) {
         std::error_code error;
         std::filesystem::create_directories(zip.parent_path(), error);
         std::filesystem::remove(zip, error);
+        prune_parts(zip.parent_path());
         // The download goes when the install is done, whether it went in or not.
         struct Gone {
             const std::filesystem::path& zip;
@@ -1042,10 +1250,17 @@ void install(const std::string& full_name) {
         std::atomic<bool> done{};
         // How far the download is, while it runs. Waited for before going on: it reads `watch` and `done`, which go
         // when this does.
+        const std::string installing = "Installing " + pack.title;
         std::thread watcher([&] {
             while (!done.load()) {
                 const auto total = watch.total.load();
-                if (total) progress(0.9f * static_cast<float>(watch.received.load()) / static_cast<float>(total));
+                {
+                    // How far, in words too: a line that keeps moving, and says so when it waits to try again.
+                    auto& m = market();
+                    std::lock_guard lock(m.mutex);
+                    if (total) m.job.fraction = 0.9f * static_cast<float>(watch.received.load()) / static_cast<float>(total);
+                    m.job.what = installing + " - " + download_words(watch);
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         });
@@ -1067,17 +1282,31 @@ void install(const std::string& full_name) {
         const auto got = previewed ? https::Download{} : download_pack(pack.download_url, zip, &watch);
         done.store(true);
         watcher.join();
-        if (!previewed && !got.ok) throw std::runtime_error("the download failed: " + download_failure(got));
-        // It has to be one of the studio's: its marker at the top.
+        if (!previewed && !got.ok)
+            throw std::runtime_error("the download failed: " + download_failure(got) +
+                                     (got.error != ERROR_CANCELLED && got.error != ERROR_INVALID_DATA ? ". TRY AGAIN goes on from where it stopped." : "."));
         {
-            const auto bytes = read_file(zip);
-            mz_zip_archive archive{};
-            if (!mz_zip_reader_init_mem(&archive, bytes.data(), bytes.size(), 0)) throw std::runtime_error("the download is not a zip");
-            const bool ours = mz_zip_reader_locate_file(&archive, "reskate-animations.json", nullptr, 0) >= 0;
-            mz_zip_reader_end(&archive);
-            if (!ours) throw std::runtime_error(pack.title + " is not an Animator Studio pack");
+            auto& m = market();
+            std::lock_guard lock(m.mutex);
+            m.job.what = installing + " - checking it";
+        }
+        // It has to be one of the studio's (its marker at the top), and whole: a kept preview is checked again too.
+        {
+            ZipFile archive(zip);
+            if (!archive.open) throw std::runtime_error("the download is not a zip");
+            if (!archive.studio()) throw std::runtime_error(pack.title + " is not an Animator Studio pack");
+            if (previewed && !archive.whole()) {
+                std::error_code gone_error;
+                std::filesystem::remove(previews_folder() / (preview_stem(pack) + L".zip"), gone_error);
+                throw std::runtime_error("the kept preview of it is damaged, so it was removed: INSTALL again downloads it");
+            }
         }
         progress(0.95f);
+        {
+            auto& m = market();
+            std::lock_guard lock(m.mutex);
+            m.job.what = installing + " - putting it in your LIBRARY";
+        }
         std::string message;
         std::vector<std::string> made;
         // An UPDATE or a REINSTALL replaces the pack it became before, rather than adding another copy of it.
@@ -1097,6 +1326,7 @@ void install(const std::string& full_name) {
             if (!made.empty()) m.installed_as[pack.full_name] = made.front();
             save_lists_locked(m);
         }
+        note_fresh_install(made); // the LIBRARY asks whether to add it to a playlist
         result.message = "Installed " + pack.title + " " + pack.version + ". " + message;
     });
 }
@@ -1122,6 +1352,207 @@ void want_preview(const std::string& full_name) {
         m.preview.state = 3;
         m.preview.error = "It could not be started.";
     }
+}
+// ---- VERIFIED: the developer key and the list on GitHub ----------------------------------------------
+static std::filesystem::path dev_key_file() { return folder() / L"dev.key"; }
+static std::filesystem::path dev_file() { return folder() / L"dev.json"; }
+static std::vector<std::wstring> github_headers(const std::string& token, bool json_body = false) {
+    std::vector<std::wstring> out{L"Authorization: Bearer " + widen(token), L"Accept: application/vnd.github+json", L"X-GitHub-Api-Version: 2022-11-28"};
+    if (json_body) out.push_back(L"Content-Type: application/json");
+    return out;
+}
+// What GitHub said when it said no: its message, short.
+static std::string github_said(const Answer& a) {
+    if (!a.error.empty()) return "GitHub could not be reached: " + a.error;
+    std::string text;
+    try {
+        const auto root = Json::parse(a.body);
+        if (root.is_object()) text = root.value("message", "");
+    } catch (...) {}
+    if (text.size() > 200) text.resize(200);
+    return "GitHub answered " + std::to_string(a.status) + (text.empty() ? std::string{} : " (" + text + ")");
+}
+static std::string github_api() { return std::string("https://api.github.com/repos/") + verified_repo; }
+bool link_dev_key(const std::string& token, std::string& message) {
+    if (token.size() < 20 || token.size() > 512 || token.find_first_of(" \r\n\t") != std::string::npos) {
+        message = "That is not a GitHub token: make one on github.com under Settings > Developer settings > Personal access tokens, and paste it here.";
+        return false;
+    }
+    const auto sealed = protect(token, true);
+    if (sealed.empty()) {
+        message = "The key could not be kept safely on this PC.";
+        return false;
+    }
+    {
+        // Under the lock, as a key check's answer is: a check of the key before can then never write over this one.
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        try {
+            write_file(dev_key_file(), sealed);
+            std::error_code error;
+            std::filesystem::remove(dev_file(), error);
+        } catch (const std::exception& e) {
+            message = e.what();
+            return false;
+        }
+        m.dev_state = 0;
+        m.dev_login.clear();
+        m.dev_error.clear();
+    }
+    check_dev_key(true);
+    message = "Developer key kept. Asking GitHub whether it can write to the studio's repository...";
+    return true;
+}
+void unlink_dev_key() {
+    std::error_code error;
+    std::filesystem::remove(dev_key_file(), error);
+    std::filesystem::remove(dev_file(), error);
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    m.dev_state = 0;
+    m.dev_login.clear();
+    m.dev_error.clear();
+}
+void check_dev_key(bool again) {
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        read_settings_locked(m);
+        if (m.dev_state == 1 || (!again && m.dev_state != 0)) return;
+        std::error_code missing;
+        if (!std::filesystem::is_regular_file(dev_key_file(), missing)) {
+            m.dev_state = 0;
+            return;
+        }
+        m.dev_state = 1;
+    }
+    std::thread([] {
+        int state = 4;
+        std::string login, why;
+        const auto checked_key = read_file(dev_key_file());
+        const auto token = protect(checked_key, false);
+        if (token.empty()) state = 3, why = "The key on this PC could not be read: add it again.";
+        else {
+            // The repository as the key's account sees it: whether it may push to it.
+            const auto repo = request(L"GET", github_api(), github_headers(token), {}, 30000);
+            if (repo.status == 200) {
+                bool push = false;
+                try {
+                    const auto root = Json::parse(repo.body);
+                    if (root.contains("permissions") && root.at("permissions").is_object()) push = root.at("permissions").value("push", false);
+                } catch (...) {}
+                if (push) {
+                    state = 2;
+                    const auto user = request(L"GET", "https://api.github.com/user", github_headers(token), {}, 30000);
+                    try {
+                        if (user.status == 200) login = Json::parse(user.body).value("login", "");
+                    } catch (...) {}
+                    if (login.empty()) login = "developer";
+                } else {
+                    state = 3;
+                    why = std::string("This key's account cannot write to ") + verified_repo + ". Only the studio's developers can verify packs.";
+                }
+            } else if (repo.status == 401 || repo.status == 403 || repo.status == 404) {
+                state = 3;
+                why = "GitHub did not take the key (wrong, expired or taken back): " + github_said(repo);
+            } else why = github_said(repo);
+        }
+        logging::log(Level::info, Channel::skater, "Animator Studio market: the developer key {}.",
+                     state == 2 ? "can verify packs" : state == 3 ? "cannot verify packs" : "could not be checked");
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        // REMOVE, or LINK with another key, during the check: this answer is for a key that is no longer on this PC.
+        if (read_file(dev_key_file()) != checked_key) return;
+        m.dev_state = state;
+        m.dev_login = login;
+        m.dev_error = why;
+        try {
+            if (state == 2) write_file(dev_file(), Json{{"login", login}}.dump(2));
+            else if (state == 3) write_file(dev_file(), Json{{"refused", why}}.dump(2));
+        } catch (...) {}
+    }).detach();
+}
+void set_verified(const std::string& full_name, bool on) {
+    if (!plain_full_name(full_name)) return;
+    std::string title = full_name;
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        for (const auto& p : m.packs)
+            if (p.full_name == full_name) title = p.title;
+    }
+    start_job((on ? "Verifying " : "Taking VERIFIED off ") + title, [full_name, title, on](Job& result) {
+        const auto token = protect(read_file(dev_key_file()), false);
+        if (token.empty()) throw std::runtime_error("No developer key on this PC: add one in SETTINGS > STUDIO > Developer key.");
+        const auto api = github_api();
+        const auto file = api + "/contents/" + verified_file;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            progress(0.15f);
+            VerifiedList list;
+            std::string sha;
+            const auto got = request(L"GET", file + "?ref=" + verified_branch, github_headers(token), {}, 30000);
+            if (got.status == 200) {
+                const auto root = Json::parse(got.body);
+                sha = root.value("sha", "");
+                list = read_verified(base64_decode(root.value("content", "")));
+            } else if (got.status == 404) {
+                // Not there yet: the file, or its branch, made from the default branch's newest commit the first time.
+                const auto ref = request(L"GET", api + "/git/ref/heads/" + verified_branch, github_headers(token), {}, 30000);
+                if (ref.status == 404) {
+                    const auto repo = request(L"GET", api, github_headers(token), {}, 30000);
+                    if (repo.status != 200) throw std::runtime_error(github_said(repo));
+                    const auto main = Json::parse(repo.body).value("default_branch", "main");
+                    const auto head = request(L"GET", api + "/git/ref/heads/" + main, github_headers(token), {}, 30000);
+                    if (head.status != 200) throw std::runtime_error(github_said(head));
+                    const auto root = Json::parse(head.body);
+                    const auto from = root.contains("object") && root.at("object").is_object() ? root.at("object").value("sha", "") : std::string{};
+                    if (from.empty()) throw std::runtime_error("GitHub did not say where " + main + " is.");
+                    const auto made = request(L"POST", api + "/git/refs", github_headers(token, true),
+                                              Json{{"ref", std::string("refs/heads/") + verified_branch}, {"sha", from}}.dump(), 30000);
+                    if (made.status != 201 && made.status != 422) throw std::runtime_error(github_said(made)); // 422: made meanwhile
+                } else if (ref.status != 200) throw std::runtime_error(github_said(ref));
+            } else throw std::runtime_error(github_said(got));
+            progress(0.55f);
+            std::erase_if(list.packs, [&](const std::string& p) { return same_name(p, full_name); });
+            if (on) list.packs.insert(full_name);
+            Json body{{"message", std::string("Market: ") + full_name + (on ? " is VERIFIED" : " is no longer VERIFIED")},
+                      {"content", base64_encode(verified_json(list))},
+                      {"branch", verified_branch}};
+            if (!sha.empty()) body["sha"] = sha;
+            const auto put = request(L"PUT", file, github_headers(token, true), body.dump(), 30000);
+            if (put.status == 200 || put.status == 201) {
+                auto& m = market();
+                {
+                    std::lock_guard lock(m.mutex);
+                    m.verified_list = list;
+                    m.verified_fetched = std::chrono::steady_clock::now();
+                    try {
+                        write_file(folder() / L"verified.json", verified_json(list));
+                    } catch (...) {}
+                }
+                const auto dash = full_name.find('-');
+                const bool by_maker = !on && std::any_of(list.makers.begin(), list.makers.end(),
+                                                         [&](const std::string& t) { return same_name(t, std::string_view(full_name).substr(0, dash)); });
+                result.message = on ? title + " is VERIFIED: it is on the VERIFIED shelf now, and in everyone's MARKET within a few minutes."
+                               : by_maker ? title + " is off the list, but its maker is VERIFIED, so it still shows the tag."
+                                          : title + " is no longer VERIFIED: everyone's MARKET has it within a few minutes.";
+                return;
+            }
+            if ((put.status == 409 || put.status == 422) && attempt == 0) continue; // changed meanwhile: read it again
+            if (put.status == 403 || put.status == 404)
+                throw std::runtime_error(std::string("GitHub would not let the key write to ") + verified_repo +
+                                         ": it needs Contents read and write there. " + github_said(put));
+            throw std::runtime_error(github_said(put));
+        }
+        throw std::runtime_error("The VERIFIED list changed on GitHub while it was being written: try again.");
+    });
+}
+void set_look(int look) {
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    read_settings_locked(m);
+    m.look = std::clamp(look, 0, 16);
+    save_lists_locked(m);
 }
 bool link_account(const std::string& team, const std::string& token, std::string& message) {
     const bool team_ok = !team.empty() && team.size() <= 64 &&

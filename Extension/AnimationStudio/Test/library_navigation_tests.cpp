@@ -31,6 +31,12 @@ int main() {
         route.modifier_setup = route.choosing_modifier_playlist = true; route.show_page(1);
         check(!route.modifier_setup && !route.choosing_modifier_playlist,
               "Switching sections closes the nested setup chooser, so Back cannot target an invisible page");
+        route.show_page(0); route.choosing_default = true; route.settings = true;
+        check(route.back() && !route.choosing_default && route.settings, "Choosing what plays by default closes first, on its own");
+        route.choosing_default = true; route.add_to("Specials");
+        check(!route.choosing_default && route.adding(), "Adding to a playlist never leaves the default chooser open under it");
+        route.choosing_default = true; route.show_page(1);
+        check(!route.choosing_default, "Switching sections closes the default chooser");
         std::cout << "Library routes, preview bookmarks and Back navigation passed\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

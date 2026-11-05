@@ -21,6 +21,7 @@ struct LibraryNavigation {
     std::string selected, adding_to, confirmation;
     bool modifier_setup{}, settings{}, creating{};
     bool choosing_modifier_playlist{};
+    bool choosing_default{}; // WHAT PLAYS > PLAYS BY DEFAULT pressed: the playlists to choose from
     std::array<char, 64> new_name{};
     LibraryBrowseState collection, picker;
     std::array<char, 64> content_query{};
@@ -39,12 +40,12 @@ struct LibraryNavigation {
     }
     void show_page(int next) {
         page = next;
-        adding_to.clear(); confirmation.clear(); modifier_setup = settings = choosing_modifier_playlist = false;
+        adding_to.clear(); confirmation.clear(); modifier_setup = settings = choosing_modifier_playlist = choosing_default = false;
     }
     void add_to(const std::string& name, const std::string& pack = {}) {
         if (name.empty()) return;
         select(name); page = 0; adding_to = name;
-        modifier_setup = settings = choosing_modifier_playlist = false; confirmation.clear();
+        modifier_setup = settings = choosing_modifier_playlist = choosing_default = false; confirmation.clear();
         if (!pack.empty() && picker.pack != pack) {
             picker.source = 0; picker.pack = pack; picker.scroll = 0;
             picker.expanded.clear(); picker.query.fill(0); picker.seen_query.clear();
@@ -53,6 +54,7 @@ struct LibraryNavigation {
     bool back() {
         if (creating) { creating = false; return true; }
         if (!confirmation.empty()) { confirmation.clear(); return true; }
+        if (choosing_default) { choosing_default = false; return true; }
         if (choosing_modifier_playlist) { choosing_modifier_playlist = false; return true; }
         if (modifier_setup) { modifier_setup = false; return true; }
         if (settings) { settings = false; return true; }

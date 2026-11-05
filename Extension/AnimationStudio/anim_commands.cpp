@@ -20,5 +20,13 @@ void register_animation_studio_commands(Commands& registry) {
         std::string message; anim_studio::export_diagnostics(message); out(message);
     };
     registry.add(std::move(dump));
+    // The DEVELOPER KEY card for a developer whose Thunderstore team is not one of BUILT BY's (22sh, Norms), so SETTINGS does not
+    // show its row. The key only works with write access to the studio's GitHub repository; anyone else's is REFUSED.
+    auto devkey = action("animstudio devkey", "Open the Animator Studio's DEVELOPER KEY card (for its developers)", Group::gameplay, {});
+    devkey.run = [](const Model&, const Values&, const Output& out) {
+        anim_studio::request_dev_key();
+        out("Opening the DEVELOPER KEY card (Animator Studio, SETTINGS > STUDIO).");
+    };
+    registry.add(std::move(devkey));
 }
 } // namespace dingosdk::console

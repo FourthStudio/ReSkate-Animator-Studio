@@ -26,6 +26,10 @@ struct JumpScaleResult {
 JumpScaleResult take_jump_scale_result() noexcept;
 // Trainer: a function to run on the physics thread after each of the skater's physics updates (nullptr: none).
 void set_physics_step_callback(void (*callback)() noexcept) noexcept;
+// Real Bails (real_bails.h): called with a skater's physics core after each of its physics updates (any skater: the
+// callee checks it is the local one). Writes to the bodies' velocity and spin there go into the next physics step, as
+// noclip's do; later in the step (the skeleton response) the game has already taken them from the world again.
+void set_body_motion_callback(void (*callback)(std::uintptr_t core) noexcept) noexcept;
 // Trainer: the local skater's push speed as a multiple of the game's own (1 leaves the skater
 // alone); `stock` is the game's top pushing speed in m/s. `cruise` above 0 is auto push: a
 // rolling skater that is not braking gains speed up to it (m/s). Publish every client tick: it

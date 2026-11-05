@@ -11,6 +11,7 @@
 #include <vector>
 #include <optional>
 #include <limits>
+#include <map>
 #include <memory>
 #include "utf8_text.h"
 
@@ -68,6 +69,11 @@ inline constexpr std::uint16_t skateboard_root_joint = 380;
 // Not a skater joint: the board (its deck's mount, which carries the deck, trucks and wheels). Its
 // track turns and moves the board where the recording had it, in the board's own frame.
 inline constexpr std::uint16_t board_joint = 900;
+// Not skater joints either: the board's trucks, each its hanger with its axle and wheels (the board rig's bones 8, at the
+// nose, and 4). A truck's keys turn it about itself, in its own axes, on top of how the game steers it; its baseplate stays
+// bolted to the deck (studio_trucks.h). Like the fingers, a truck gets its brackets only once it is keyed.
+inline constexpr std::uint16_t front_truck_joint = 901, back_truck_joint = 902;
+inline constexpr bool truck_joint(std::uint16_t joint) noexcept { return joint == front_truck_joint || joint == back_truck_joint; }
 // Keys sit on whole frames of the timeline, 30 a second, never between two: anything that moves a key in
 // time puts it back on one, so the timeline never grows odd fractions of a frame between its keys.
 inline constexpr float key_fps = 30.0f;
@@ -423,6 +429,12 @@ bool fakie_mirrored(const Animation& animation) noexcept; // set to fakie or swi
 Joint mirror_board_pose(const Joint& board) noexcept;
 // A board key (in the board's own frame) under the game's mirror: across is what reflects.
 Quat mirror_board_rotation(const Quat& q) noexcept;
+// A truck key, in the truck's own axes (y across the board, x and z in the plane along it, the same for both trucks): the
+// game's mirror plane runs along the board, so a turn about y stays and the others go the other way.
+Quat mirror_truck_rotation(const Quat& q) noexcept;
+// A truck's turn at `seconds` from its keys, inside the animation's start and end; none: no turn. `mirror`: the stance
+// played the other way round.
+Quat truck_turn(const Animation& edits, std::uint16_t truck, float seconds, bool mirror = false);
 Vec3 mirror_board_vector(const Vec3& v) noexcept;
 // The clip on the other side: every frame, and the board. Only for a skater clip (joints == 395).
 Clip mirror_clip(const Clip& clip);
@@ -502,14 +514,29 @@ private:
     struct Sample {
         double at{};
         std::vector<Quat> rotation; // the body joints, below Ground
+        // How far this sample is from each frame of each model (at row_start[model]), worked out the first time a fit
+        // needs it and kept: a sample stays in the window for about 20 updates, and working every row out again at every
+        // update cost 9 ms an update on the game's thread with 100 pieces in the playlist (2026-11-04).
+        std::vector<float> rows;
+        std::vector<std::uint8_t> row_ready;
     };
     struct Fit {
         float score{1}, still{1}, time{-1};
         bool moving{};
     };
-    Fit fit(const Model& model, const std::array<const Sample*, 8>& window, const std::array<float, 8>& ages) const;
+    const float* row(Sample& sample, std::size_t model);
+    Fit fit(std::size_t model, const std::array<Sample*, 8>& window, const std::array<float, 8>& ages);
     std::vector<Model> models_;
+    std::vector<std::size_t> row_start_; // each model's first frame in a sample's rows
+    std::size_t row_frames_{};           // every model's frames together
     std::deque<Sample> history_;
+    Sample spare_; // the last sample let go, its buffers used again for the next
+    // Each clip's telling joints from the last set_pieces, with what the clip held then (clip_print).
+    struct Picked {
+        std::uint64_t print{};
+        std::vector<std::uint16_t> joints;
+    };
+    std::map<const Clip*, Picked> picked_;
     double last_at_{-1};
     int locked_{-1}, candidate_{-1};
     int streak_{};
@@ -604,6 +631,9 @@ public:
     // One animation update: the game's own pose and the seconds the game moved on since the last.
     Reading update(std::span<const Joint> pose, float step) noexcept;
     bool active() const noexcept { return static_cast<bool>(models_); }
+    // How far (degrees) the game's pose is from the edit's own clip at `edit_seconds`, either way round, without looking for
+    // or following it (180 when there is no own clip): a time told by the game itself (its trick phase) checked against the pose.
+    float own_error(std::span<const Joint> pose, float edit_seconds) const noexcept;
 
 private:
     float error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept;

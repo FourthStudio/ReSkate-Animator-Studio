@@ -9,6 +9,9 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/no_bail.h"
+#include "Engine/Game/Build/20260929/rigid_bodies.h"
+#include "Engine/Game/Build/20260929/skater_state.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "free_flight.h"
 #include "client_camera_activation.h"
@@ -18,6 +21,7 @@
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/UI/Overlay/scripted_pad.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -1306,6 +1310,127 @@ bool first_person_camera_height_write(bool high) noexcept {
     if (write.plugin != first_person::CycleStep::none) plugin.request.store(static_cast<std::uint8_t>(write.plugin), std::memory_order_release);
     return write.high;
 }
+// ---- the studio takes him off his board ----------------------------------------------------------------------------
+// The studio opens with the skater off his board and standing (the user, 2026-11-05: "force the player to step off the
+// board and stand still"). On the board the game keeps him rolling under the studio, and the studio's hover preview and
+// rail look at him: on 2026-11-05, half a minute after the studio opened on a rolling skater, the game had him in state
+// 700 (by a rail) and set him up again every 3 s for minutes, bailing between. On foot, with the game's pad blocked
+// while the studio is open, he stands where he is. He steps off by the game's own board button (Y, triangle) on the
+// stand-in pad the room's walk presses RB on, and is put back on his board the same way when the studio closes.
+namespace {
+// The physics selector's state (anim_playback.h motion_state): 100, 101, 103 riding on the ground, 504 on foot.
+std::optional<std::uint32_t> studio_physics_state(std::uintptr_t base, std::uintptr_t component) noexcept {
+    std::uintptr_t core{}, core_type{}, context{};
+    std::uint32_t state{};
+    if (!component || !first_person_read(component + addr::rigid_bodies::component_core, &core, 8) ||
+        !first_person_read(core, &core_type, 8) || core_type != base + addr::no_bail::bail_core_vtable ||
+        !first_person_read(core + addr::rigid_bodies::core_context, &context, 8) ||
+        !first_person_read(context + addr::skater_state::physics_state_offset, &state, 4))
+        return std::nullopt;
+    return state;
+}
+bool studio_riding(std::uint32_t state) noexcept { return state == 100 || state == 101 || state == 103; }
+// The board button held `ms`. A tap steps on or off; the longer hold is the second try, for a game that wants it held.
+void press_board_button(std::uint64_t ms) {
+    XINPUT_GAMEPAD pressed{}, neutral{};
+    pressed.wButtons = XINPUT_GAMEPAD_Y;
+    const auto ticks = static_cast<std::uint32_t>((ms * 60 + 999) / 1000);
+    overlay::play_pad({{0, pressed}, {ticks, neutral}, {ticks + 15, neutral}});
+}
+constexpr std::uint64_t step_off_brake_ms = 250;  // riding, braked this long before the press (stopped: 0.6 a step)
+constexpr std::uint64_t step_off_stand_ms = 300;  // on foot this long: standing
+constexpr std::uint64_t step_off_retry_ms = 1500; // a press that changed nothing is made again (held longer) after this
+constexpr std::uint64_t step_off_give_up_ms = 6000;
+constexpr int step_off_presses = 3;
+// Each tick while the studio waits to open: true once he stands off his board, or it was given up on (the studio then
+// opens with him as he is, braked as before).
+bool studio_step_off_tick(InteractiveDebug& debug, std::uintptr_t base, std::uintptr_t component) {
+    auto& s = debug.studio_step_off;
+    const auto now = GetTickCount64();
+    const auto state = studio_physics_state(base, component);
+    s.braking = state && studio_riding(*state);
+    if (state && *state == addr::no_bail::offboard_physics_state) {
+        if (!s.on_foot_since) s.on_foot_since = now;
+        if (now - s.on_foot_since >= step_off_stand_ms) {
+            if (s.presses) {
+                debug.studio_remount = true;
+                logging::log(logging::Level::info, logging::Channel::skater,
+                             "Animation Studio: stepped off the board for the studio ({} press{}, {} ms).", s.presses,
+                             s.presses == 1 ? "" : "es", now - s.started);
+            }
+            return true;
+        }
+        return false;
+    }
+    s.on_foot_since = 0;
+    if (now - s.started >= step_off_give_up_ms) {
+        logging::log(logging::Level::warning, logging::Channel::skater,
+                     "Animation Studio: did not step off the board ({} press{}, physics state {}): the studio opens with him on it.",
+                     s.presses, s.presses == 1 ? "" : "es", state ? std::to_string(*state) : std::string("unknown"));
+        // A press that did take him off later still has him put back on.
+        if (s.presses) debug.studio_remount = true;
+        return true;
+    }
+    // In the air, on a rail, in a bail: no press, he is waited for.
+    if (!s.braking) {
+        s.riding_since = 0;
+        return false;
+    }
+    if (!s.riding_since) s.riding_since = now;
+    if (now - s.riding_since < step_off_brake_ms || now < s.next_press || s.presses >= step_off_presses) return false;
+    // The last press never reached the game (it polls no controller until it has seen one arrive): it is asked to look for
+    // controllers, and the press is made again, as the room's walk does.
+    if (s.presses && !s.woke && overlay::script_reads() == s.reads_at_press) {
+        s.woke = true;
+        overlay::wake_controller_reads();
+        s.next_press = now + 900;
+        --s.presses;
+        return false;
+    }
+    s.reads_at_press = overlay::script_reads();
+    press_board_button(s.presses == 0 ? 150 : 600);
+    ++s.presses;
+    s.next_press = now + step_off_retry_ms;
+    return false;
+}
+// After the studio closed, once the walk back from its room is done and the game's menu is shut: back on the board, if the
+// studio took him off it and he still stands.
+void studio_remount_tick(InteractiveDebug& debug, std::uintptr_t base, std::uintptr_t component, bool ready, bool busy) {
+    if (!debug.studio_remount) return;
+    const auto now = GetTickCount64();
+    const auto room_phase = anim_studio::room::phase();
+    if (busy || room_phase == anim_studio::room::Phase::opening || room_phase == anim_studio::room::Phase::leaving) {
+        debug.studio_remount_next = std::max(debug.studio_remount_next, now + 500);
+        return;
+    }
+    if (!ready || !component || now < debug.studio_remount_next) return;
+    if (const auto menu = multiplayer::sample_game_ui_state(base); !menu.available || menu.in_menu) {
+        debug.studio_remount_next = now + 300;
+        return;
+    }
+    const auto state = studio_physics_state(base, component);
+    if (!state) return;
+    const auto stop = [&](const char* how) {
+        logging::log(logging::Level::info, logging::Channel::skater, "Animation Studio: {} ({} press{}).", how,
+                     debug.studio_remount_presses, debug.studio_remount_presses == 1 ? "" : "es");
+        debug.studio_remount = false;
+        debug.studio_remount_presses = 0;
+    };
+    if (*state != addr::no_bail::offboard_physics_state) {
+        stop(debug.studio_remount_presses ? "back on the board after the studio" : "he was off his feet already after the studio: left as he is");
+        return;
+    }
+    if (debug.studio_remount_presses >= 2) {
+        stop("could not put him back on the board after the studio");
+        return;
+    }
+    if (debug.studio_remount_presses == 1 && overlay::script_reads() == debug.studio_remount_reads) overlay::wake_controller_reads();
+    debug.studio_remount_reads = overlay::script_reads();
+    press_board_button(debug.studio_remount_presses == 0 ? 150 : 600);
+    ++debug.studio_remount_presses;
+    debug.studio_remount_next = now + step_off_retry_ms;
+}
+}
 // FOURTH Animation Studio: hands the studio the local skater every tick, and opens or closes it when
 // it asks (F8), through the same camera and HUD steps as the Park Editor.
 void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {
@@ -1320,8 +1445,10 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
     const auto menu = multiplayer::sample_game_ui_state(trial.base);
     anim_studio::modifier_tick(can_control && phase && component && !debug.animation_studio && !debug.park_editor && menu.available && !menu.in_menu);
     const auto wanted = anim_studio::tick(trial.base, component, debug.animation_studio, fov);
-    // Open, the studio holds the skater still (client_noclip.cpp applies it in the physics step).
-    if (debug.animation_studio && can_control) {
+    // Open, the studio holds the skater still (client_noclip.cpp applies it in the physics step); so does the walk to its
+    // room, and the wait for him to step off while he still rolls.
+    if ((debug.animation_studio || debug.studio_room_walk || (debug.studio_step_off.active && debug.studio_step_off.braking)) &&
+        can_control) {
         try {
             overlay::DebugModel skater;
             (void)debug_skater(trial.base, client, skater);
@@ -1357,6 +1484,35 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
         anim_studio::request_open(true);
     }
     bool open_now = wanted.changed && wanted.want_open && !debug.animation_studio;
+    // Off the board before anything else: the walk to the room, or the studio where he is.
+    if (debug.studio_step_off.active) {
+        if (!wanted.want_open) {
+            // Closed (F8) before it opened: back on the board if a press took him off.
+            debug.studio_step_off.active = false;
+            debug.studio_step_off.braking = false;
+            if (debug.studio_step_off.presses) debug.studio_remount = true;
+            debug.studio_remount_next = GetTickCount64() + 300;
+            return;
+        }
+        anim_studio::set_loading(anim_studio::Loading::opening, 0.5f);
+        if (!studio_step_off_tick(debug, trial.base, component)) return;
+        debug.studio_step_off.active = false;
+        debug.studio_step_off.braking = false;
+        open_now = true;
+    } else if (open_now && !debug.studio_room_walk && can_control && phase && component && !debug.park_editor) {
+        if (const auto state = studio_physics_state(trial.base, component); state && *state != addr::no_bail::offboard_physics_state) {
+            debug.studio_step_off = {};
+            debug.studio_step_off.active = true;
+            debug.studio_step_off.started = GetTickCount64();
+            debug.studio_remount = false; // on his board now: nothing to put back
+            debug.studio_remount_presses = 0;
+            anim_studio::set_loading(anim_studio::Loading::opening, 0.5f);
+            (void)studio_step_off_tick(debug, trial.base, component);
+            return;
+        }
+    }
+    studio_remount_tick(debug, trial.base, component, can_control && phase,
+                        debug.animation_studio || debug.studio_room_walk || debug.studio_reopen || wanted.want_open);
     if (debug.studio_room_walk) {
         if (!wanted.want_open) {
             // Closed (F8) before the room was there: back to the world.
@@ -1416,6 +1572,8 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
             debug.status = "Animation Studio open.";
         } else {
             debug.animation_studio = false;
+            // Back on the board (studio_remount_tick) once the game's camera is his again.
+            debug.studio_remount_next = GetTickCount64() + 500;
             apply(overlay::DebugAction::set_game_ui_hidden, debug.studio_previous_ui);
             if (!debug.studio_previous_camera) apply(overlay::DebugAction::set_free_camera, false);
             if (debug.studio_previous_noclip && session_noclip_allowed()) apply(overlay::DebugAction::set_noclip, true);

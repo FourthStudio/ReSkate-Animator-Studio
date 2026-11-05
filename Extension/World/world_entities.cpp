@@ -1,11 +1,13 @@
 #include "world_entities.h"
 #include "world_entities_contract.h"
+#include "level_loading.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/ai_skaters.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/physics_bodies.h"
 #include "Engine/Game/Build/20260929/skater_entities.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include <Windows.h>
@@ -368,7 +370,7 @@ std::optional<Box> blueprint_bounds(std::uintptr_t base, std::string_view bluepr
             if (const auto asset = find(domain, name.c_str()); detail::object_blueprint(asset, base, read)) return asset_bounds(base, asset);
         }
         return std::nullopt;
-    });
+    }, level_content_active());
 }
 
 void set_joint_source(JointSource source) noexcept { joint_source.store(source, std::memory_order_release); }
@@ -464,8 +466,8 @@ void bodies_for(std::uintptr_t base, const Key& key, Live& l, const Wanted& w, s
         l.next_look = now + 250;
         if (const auto world = p.world()) l.bodies = find_bodies(base, l.entity, world);
         // Not kept in the entity where they were looked for: rays into the object's own box, the
-        // first body they meet, and the rest of that body's owner's.
-        if (l.bodies.empty() && p.hit && p.owned)
+        // first body they meet that is the object's, and the rest of that body's owner's.
+        if (l.bodies.empty() && p.hit && p.owned && p.component)
             if (const auto box = blueprint_bounds(base, l.asset)) {
                 const auto& m = l.matrix;
                 const auto at = [&](float x, float y, float z) {
@@ -480,11 +482,9 @@ void bodies_for(std::uintptr_t base, const Key& key, Live& l, const Wanted& w, s
                     {at(lo[0] - 0.5f, cy, cz), at(hi[0], cy, cz)},
                     {at(cx, cy, lo[2] - 0.5f), at(cx, cy, hi[2])},
                 }};
-                for (const auto& [from, to] : rays)
-                    if (const auto body = p.hit(from, to)) {
-                        l.bodies = p.owned(*body, 16);
-                        if (!l.bodies.empty()) break;
-                    }
+                const auto own = ptr(l.entity, addr::physics_bodies::entity_physics_component);
+                l.bodies = detail::own_bodies(rays, p.hit, [&](const Body& body) { return detail::own_body(own, p.component(body)); },
+                                              [&](const Body& body) { return p.owned(body, 16); });
             }
         if (!l.bodies.empty() || now >= l.made + 5000) {
             l.looked = true;
@@ -610,8 +610,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             if (const auto l = live.find(key); l != live.end()) {
                 bodies_for(base, key, l->second, w, now);
                 // Move a resident object in place: recreating restarts its effects and makes it jump.
-                // One on a joint follows it every frame.
-                if (l->second.matrix != w.matrix && (w.attach || now >= l->second.moved + 16)) {
+                // Joint attachments and non-solid visuals follow changed transforms every client tick.
+                if (detail::movement_due(l->second.matrix != w.matrix, w.solid, w.attach.has_value(),
+                    now, l->second.moved)) {
                     move(base, l->second, w.matrix);
                     std::lock_guard lock(s.mutex);
                     if (const auto at = s.live.find(key); at != s.live.end()) at->second.matrix = w.matrix, at->second.moved = now;

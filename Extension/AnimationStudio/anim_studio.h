@@ -3,6 +3,7 @@
 #include "trick_modifier.h"
 #include "anim_library.h"
 #include "anim_presets.h"
+#include "studio_settings_file.h"
 #include <array>
 #include <cstdint>
 #include <map>
@@ -69,6 +70,9 @@ struct View {
     std::size_t source_pose_count{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
+    // The trick previewed is locked by its creator (trick_lock.h): preview only. Its keys' values are not in `tracks` (their
+    // times are), so nothing on the screen can copy them.
+    bool locked{};
     // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
     // and its name. Opening another trick to edit drops it, so ask first.
     bool kept_dirty{};
@@ -143,6 +147,7 @@ struct View {
     struct PlaylistView {
         std::string name;
         std::size_t size{};
+        PlaylistMode mode{PlaylistMode::fixed}; // how it plays a trick it has more than one of (its tag in the LIBRARY)
     };
     std::vector<PlaylistView> playlists;
     std::string playlist_open, playlist_playing;
@@ -151,12 +156,17 @@ struct View {
     std::vector<PlaylistEntry> playlist;
     bool playlist_can_undo{}, playlist_redo{};
     std::uint64_t library_request{};
+    std::uint64_t dev_key_request{}; // `animstudio devkey`: the DEVELOPER KEY card asked for (request_dev_key)
+    std::uint64_t tab_request{};     // a tab of the menu asked for (request_tab), and which
+    int tab_requested{};
     bool library_modifier_help{};
     bool modifier_ready{};
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
     // SETTINGS > STUDIO: the CATCH flag on the timeline shown or not; and whether the first-start guide has been read (it
     // opens by itself until it has).
     bool catch_marker{true}, guide_seen{true};
+    bool editor_tour_seen{true}; // the editor's first-open tour was gone through or skipped (it shows until it has)
+    TricksView tricks_view;      // TRICKS > MY TRICKS: icons, list or details, its groups and order, as last shown
     // The editor's keys rebound in SETTINGS > STUDIO > EDITOR KEYS: an action's name to its key's name (the overlay's
     // names). Only those not on their own key.
     std::map<std::string, std::string> keys;
@@ -206,6 +216,9 @@ Settings settings();
 bool room_wanted() noexcept;       // the Studio room row is on
 void watch_room(bool on) noexcept; // look for the menu's skater in the room
 bool room_skater_seen() noexcept;  // the menu's skater was drawn in the room just now
+// For the log when the walk to the room fails: " A skater was drawn ... from the room's spot ..." when one was drawn somewhere
+// else lately while the room was looked for (a map whose menu room is not where it is measured), else "".
+std::string room_skater_note();
 void set_in_room(bool on) noexcept; // the studio is open in the room: the skater is drawn there
 // The loading screen over the walk to the room and back. `seconds`: how long it stays at least (it is
 // set again while the walk goes on). Any thread.
@@ -261,6 +274,9 @@ void set_crossfade(float seconds);
 // Transitions: SMOOTH, a trick hands over to a grind the way the game hands over its own (the board and legs first, then the
 // arms, then the back and head, the trick going on meanwhile); CLASSIC, it fades out over the Crossfade.
 void set_smooth_transitions(bool on);
+// Seconds into a trick's clip from which it shows in game: from the game's flick (a little after the clip's start) when tricks
+// begin there, else from its pop (`takeoff`). The timeline shades what comes before it.
+float shown_in_game_from(float takeoff) noexcept;
 // Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
 // elbows bend one way, nothing twists round) while you pose, and in game the arms, back and head stay in it too (the legs
 // play as keyed, against the board). Off, joints go where you push them.
@@ -468,9 +484,23 @@ bool clear_playlist_entries(const std::string& target, std::string& message);
 bool undo_playlist_entries(const std::string& target, std::string& message);
 bool duplicate_playlist(const std::string& target, std::string& message);
 std::vector<std::string> playlists_containing(const std::string& animation);
+// The playlists a whole pack is in (the "add it to a playlist?" card is not shown for a pack already linked).
+std::vector<std::string> playlists_with_pack(const std::string& pack);
+// Every saved animation's playlists at once (TRICKS' IN PLAYLISTS column and filter): one lock and one walk of the
+// playlists, where playlists_containing for each of hundreds would take the lock and walk them all once a trick.
+std::map<std::string, std::vector<std::string>> playlists_by_animation();
 void request_library(bool modifier_help = false);
+// Opens the studio on SETTINGS with its DEVELOPER KEY card (console: animstudio devkey). For its developers whose Thunderstore
+// team is not BUILT BY's (22sh, Norms): SETTINGS shows that row only to those teams and THE CREW's, or once a key is on the PC.
+void request_dev_key();
+// Opens the studio's menu on one of its tabs (the overlay's numbers: 0 TRICKS, 1 LIBRARY, 2 MARKET, 3 SETTINGS, 4 ABOUT,
+// 5 PACKS), for the ReSkate menu's ANIMATOR STUDIO page.
+void request_tab(int tab);
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
+// The LIBRARY's drag: `entry` of playlist `target` goes to place `to` and those between shift by one (an insert, not a
+// swap). Found by what it is, so a list changed meanwhile cannot have another entry moved. UNDO puts it back.
+bool playlist_move_to(const std::string& target, const PlaylistEntry& entry, std::size_t to, std::string& message);
 void open_playlist(const std::string& name);   // the one LIBRARY > NOW PLAYING shows
 bool new_playlist(std::string& message);        // "Playlist N", empty and off, and opened
 bool new_playlist(const std::string& name, std::string& message);
@@ -489,6 +519,10 @@ void set_hover_preview(bool on);
 void set_catch_marker(bool on);
 // The first-start guide read (true), or to open again (false).
 void set_guide_seen(bool seen);
+// The editor's tour gone through or skipped (true), or to show again the next time the editor is up (false).
+void set_editor_tour_seen(bool seen);
+// How TRICKS > MY TRICKS is shown (icons, list, details; grouped; sorted), kept for the next time.
+void set_tricks_view(const TricksView& view);
 // The editor's rebound keys (View::keys), kept in studio-settings.json; empty puts every key back.
 void set_key_bindings(const std::map<std::string, std::string>& keys);
 std::map<std::string, std::string> key_bindings(); // the same, cheaply (the loading screen's tips name them)

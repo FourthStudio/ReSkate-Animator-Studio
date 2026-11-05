@@ -1,5 +1,8 @@
 add_library(dingosdk_runtime SHARED
     Runtime/runtime_init.cpp
+    Extension/Objects/placement_physics.cpp
+    Extension/Objects/placement_adapters.cpp
+    Extension/Skater/skater_movement.cpp
     Runtime/runtime_state.cpp
     Runtime/client_tick.cpp
     Runtime/frame_timing.cpp
@@ -34,6 +37,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Remote/native_skater_spawn.cpp
     Extension/Multiplayer/Remote/puppet_cost.cpp
     Extension/Multiplayer/Remote/native_cosmetics.cpp
+    Extension/Multiplayer/Remote/stand_ins.cpp
     Extension/Multiplayer/Remote/native_audio.cpp
     Extension/Multiplayer/Remote/native_vfx.cpp
     Extension/Multiplayer/Voice/voice_chat.cpp
@@ -96,6 +100,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/stack_check_report.cpp
     Extension/World/texture_handle_limit.cpp
     Extension/World/texture_handle_guard.cpp
+    Extension/World/reference_list_guard.cpp
     Extension/World/physics_wake_guard.cpp
     Extension/World/streaming_copy_guard.cpp
     Extension/Settings/replay_drafts.cpp
@@ -115,6 +120,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Objects/console_commands.cpp
     Extension/Objects/ParkEditor/park_editor_commands.cpp
     Extension/Objects/ParkEditor/park_editor_runtime.cpp
+    Extension/Objects/ParkEditor/park_editor_bodies.cpp
     Extension/Objects/ParkEditor/park_editor_preview.cpp
     Extension/Objects/ParkEditor/park_editor_selection.cpp
     Extension/Objects/ParkEditor/world_pick.cpp
@@ -141,11 +147,14 @@ add_library(dingosdk_runtime SHARED
     Extension/Plugins/plugin_commands.cpp
     Extension/Plugins/plugin_http.cpp
     Extension/Plugins/plugin_game_runtime.cpp
+    Extension/Plugins/plugin_ui_values.cpp
     Extension/Rendering/plugin_effects.cpp
     Extension/Plugins/plugin_joystick.cpp
     Extension/Skater/skater_animation.cpp
     Extension/Plugins/plugin_sound.cpp
     Extension/Skater/skater_events.cpp
+    Extension/Skater/real_bails.cpp
+    Extension/Skater/real_bails_model.cpp
     Extension/Skater/outfit_overlay.cpp
     Extension/Skater/layer_materials.cpp
     Extension/Skater/board_pose.cpp
@@ -154,6 +163,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/xray_render.cpp
     Extension/Skater/xray_skeleton.cpp
     Extension/Skater/game_speed.cpp
+    Extension/Skater/grind_target.cpp
     Extension/Skater/launches.cpp
     Extension/Skater/pad_hide.cpp
     Extension/Skater/trick_rewrite.cpp
@@ -229,6 +239,7 @@ add_library(dingosdk_runtime SHARED
     Extension/AnimationStudio/studio_settings_rows.cpp
     Extension/AnimationStudio/native_library.cpp
     Extension/AnimationStudio/marketplace.cpp
+    Extension/AnimationStudio/studio_update.cpp
     Extension/AnimationStudio/anim_commands.cpp
     Extension/AnimationStudio/pop_grades.cpp
     Extension/AnimationStudio/studio_room.cpp
@@ -352,16 +363,16 @@ set(dingosdk_startup_art "${PROJECT_SOURCE_DIR}/assets/startup_splash.png")
 if(NOT EXISTS "${dingosdk_startup_art}")
     set(dingosdk_startup_art "${PROJECT_SOURCE_DIR}/assets/startup_splash.jpg")
 endif()
-if(EXISTS "${PROJECT_SOURCE_DIR}/assets")
-    # Adding or removing the picture re-runs the configure step.
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/assets")
-endif()
+# Adding or removing the picture re-runs the configure step: a glob of its two names, which CMake
+# checks itself. A folder named in CMAKE_CONFIGURE_DEPENDS did that before, but MSBuild knows only
+# files there, so it re-ran CMake in every project on every build, and a parallel build's CMake runs
+# collided writing the same generated files ("Configuring incomplete" in a release build).
+file(GLOB dingosdk_startup_art_names CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/assets/startup_splash.png" "${PROJECT_SOURCE_DIR}/assets/startup_splash.jpg")
 # Chat emotes (Better Chat's pack format; Extension/UI/Overlay/chat_emotes.h), built into
-# ReSkate.dll when the repository has assets/emotes/emotes.json and emotes.png.
+# ReSkate.dll when the repository has assets/emotes/emotes.json and emotes.png (globbed likewise).
 set(dingosdk_emotes "${PROJECT_SOURCE_DIR}/assets/emotes")
-if(EXISTS "${dingosdk_emotes}")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_emotes}")
-endif()
+file(GLOB dingosdk_emotes_names CONFIGURE_DEPENDS "${dingosdk_emotes}/emotes.json" "${dingosdk_emotes}/emotes.png")
 if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes.png")
     file(TO_NATIVE_PATH "${dingosdk_emotes}" dingosdk_emotes_native)
     string(REPLACE "\\" "\\\\" dingosdk_emotes_native "${dingosdk_emotes_native}")
@@ -379,9 +390,10 @@ if(EXISTS "${dingosdk_studio_loading}")
     string(REPLACE "\\" "\\\\" dingosdk_studio_loading_native "${dingosdk_studio_loading_native}")
     set(dingosdk_studio_resources "STUDIO_LOADING RCDATA \"${dingosdk_studio_loading_native}\"\n")
     # The MARKET's art (contrib/animator-studio/market_art/make_market_art.py): its wall, the tiling grip tape, concrete and
-    # papers, the skater's two prints, the splatters and the halftone (studio_market_art.h, studio_cover_maker.h).
+    # papers, the skater's three prints, the splatters and the halftone (studio_market_art.h, studio_cover_maker.h).
     foreach(dingosdk_art wallpaper:wallpaper.jpg grip:grip.jpg concrete:concrete.jpg paper_white:paper_white.jpg paper_blue:paper_blue.jpg
-            skater:skater_duotone.jpg print:skater_halftone.jpg splatter_a:splatter_a.png splatter_b:splatter_b.png halftone:halftone_blue.png)
+            skater:skater_duotone.jpg print:skater_halftone.jpg skater_bw:skater_bw.jpg splatter_a:splatter_a.png splatter_b:splatter_b.png
+            halftone:halftone_blue.png)
         string(REPLACE ":" ";" dingosdk_art_pair "${dingosdk_art}")
         list(GET dingosdk_art_pair 0 dingosdk_art_name)
         list(GET dingosdk_art_pair 1 dingosdk_art_file)
@@ -407,7 +419,7 @@ if(EXISTS "${dingosdk_studio_loading}")
         string(APPEND dingosdk_studio_resources "STUDIO_CREW_${dingosdk_crew_upper} RCDATA \"${dingosdk_crew_native}\"\n")
     endforeach()
     # The settings tiles' icons (contrib/animator-studio/make_studio_icons.py), in skate.'s own grungy white style.
-    foreach(dingosdk_studio_icon studio skater tricks packs)
+    foreach(dingosdk_studio_icon studio skater tricks packs bails updates)
         set(dingosdk_studio_icon_path "${PROJECT_SOURCE_DIR}/assets/animator_studio/icon_${dingosdk_studio_icon}.png")
         if(EXISTS "${dingosdk_studio_icon_path}")
             set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_studio_icon_path}")

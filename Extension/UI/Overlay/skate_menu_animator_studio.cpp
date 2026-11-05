@@ -2,9 +2,11 @@
 #include "skate_style.h"
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/studio_settings_rows.h"
+#include "Extension/AnimationStudio/studio_update.h"
 #include "Extension/AnimationStudio/anim_studio.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <string>
@@ -79,6 +81,19 @@ void words(ImDrawList* d, ImFont* font, float size, ImVec2 at, ImU32 ink, const 
     d->AddText(font, size, ImVec2(at.x + px(2), at.y + px(2)), fade(shadow), text.c_str());
     d->AddText(font, size, at, fade(ink), text.c_str());
 }
+// `text` cut short with "..." to fit `width` drawn in `font` at `size`, whole characters only (a name with an accent is
+// never cut between the bytes of one letter). The menu can be a narrow window, and names are as long as people make them.
+std::string fit(ImFont* font, float size, const std::string& text, float width) {
+    if (width <= 0) return {};
+    if (font->CalcTextSizeA(size, FLT_MAX, 0, text.c_str()).x <= width) return text;
+    std::string cut = text;
+    while (!cut.empty()) {
+        while (!cut.empty() && (static_cast<unsigned char>(cut.back()) & 0xC0) == 0x80) cut.pop_back();
+        if (!cut.empty()) cut.pop_back();
+        if (font->CalcTextSizeA(size, FLT_MAX, 0, (cut + "...").c_str()).x <= width) break;
+    }
+    return cut + "...";
+}
 // A chip: a little label on a colour, `alpha` of the way in. Returns its width.
 float chip(ImDrawList* d, const SkateMenu& menu, ImVec2 at, const std::string& label, ImU32 fill, float alpha) {
     const float size = px(13);
@@ -136,19 +151,38 @@ void banner(SkateMenu& menu, const anim_studio::MenuSummary& now, const anim_stu
     ImGui::Dummy(ImVec2(w, row_h));
     float x = row.x;
     int i = 0;
+    bool full = false;
+    // Chips stop at the page's edge rather than running past it (a long playlist name in a narrow window).
     const auto next = [&](const std::string& label, ImU32 fill) {
+        if (full) return;
+        if (x + menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, label.c_str()).x + px(18) > row.x + w) {
+            full = true;
+            return;
+        }
         const float alpha = ease((t - 0.45f - 0.07f * static_cast<float>(i++)) / 0.25f);
         if (alpha > 0) x += chip(d, menu, ImVec2(x, row.y), label, fill, alpha) + px(8);
     };
+    const std::string playing = fit(menu.bold, px(13), now.playing, w * 0.4f);
     if (!settings.play_in_game) next("YOUR TRICKS ARE OFF IN GAME", red);
     else if (now.playing.empty()) next("NO PLAYLIST IS ON", red);
-    else if (now.entries == 0) next(now.playing + " IS EMPTY", red);
-    else next("PLAYING  " + now.playing, skate_theme::blue);
+    else if (now.entries == 0) next(playing + " IS EMPTY", red);
+    else next("PLAYING  " + playing, skate_theme::blue);
     if (!now.playing.empty())
-        next(now.mode == anim_studio::PlaylistMode::shuffle ? "SHUFFLE" : now.mode == anim_studio::PlaylistMode::turns ? "IN TURNS" : "FIXED",
+        next(now.mode == anim_studio::PlaylistMode::shuffle ? "SHUFFLE" : now.mode == anim_studio::PlaylistMode::turns ? "IN TURNS" : "PRIORITY",
              IM_COL32(40, 42, 48, 235));
     next(std::format("{} TRICKS IN PLAY", now.in_play), IM_COL32(40, 42, 48, 235));
     next(settings.smooth_transitions ? "SMOOTH" : "CLASSIC", IM_COL32(40, 42, 48, 235));
+    // The version, and a newer one when it is out (SETTINGS > UPDATES in the studio; the UPDATES card below).
+    {
+        namespace up = anim_studio::update;
+        const auto running = up::running_version();
+        const auto st = up::state();
+        const bool newer = st.step == up::Step::newer || st.step == up::Step::download_failed || st.step == up::Step::install_failed;
+        const bool installed = st.step == up::Step::installed || st.step == up::Step::restarting;
+        if (newer) next(st.latest + " IS OUT", skate_theme::blue);
+        else if (installed) next(st.latest + " INSTALLED - RESTART", skate_theme::blue);
+        else if (!running.empty()) next("V" + running, IM_COL32(40, 42, 48, 235));
+    }
     // The brush face's line at the right, when it fits beside the chips.
     const float size = px(20);
     auto* hand = marker(menu, size);
@@ -210,7 +244,8 @@ StudioCard studio_card_begin(SkateMenu& menu, const char* id, const char* title,
     d->AddRectFilled(ta, tb, skate_theme::blue);
     d->AddRectFilled(ImVec2(ta.x, tb.y - px(3)), tb, IM_COL32(0, 90, 190, 255));
     d->AddText(font, size, ImVec2(ta.x + px(12), ta.y + (px(30) - tw.y) * 0.5f), paper, title);
-    if (!aside.empty()) d->AddText(menu.bold, px(13), ImVec2(tb.x + px(12), ta.y + px(8)), muted, aside.c_str());
+    if (!aside.empty())
+        d->AddText(menu.bold, px(13), ImVec2(tb.x + px(12), ta.y + px(8)), muted, fit(menu.bold, px(13), aside, a.x + w - px(12) - (tb.x + px(12))).c_str());
     ImGui::BeginGroup();
     ImGui::Dummy(ImVec2(w, px(46)));
     ImGui::Indent(px(12));
@@ -244,7 +279,7 @@ void last_tricks(SkateMenu& menu, const anim_studio::MenuSummary& now) {
         float x = a.x + px(12);
         if (!r.pop.empty()) x += chip(d, menu, ImVec2(x, a.y + px(4)), r.pop == "low" ? "LOW" : r.pop == "mid" ? "MID" : r.pop == "high" ? "HIGH" : r.pop, IM_COL32(50, 52, 60, 255), 1) + px(10);
         const std::string& title = r.played.empty() ? r.label : r.played;
-        d->AddText(menu.bold, px(15), ImVec2(x, a.y + px(8)), paper, title.c_str());
+        d->AddText(menu.bold, px(15), ImVec2(x, a.y + px(8)), paper, fit(menu.bold, px(15), title, b.x - px(140) - x).c_str());
         // Who played it, at the right.
         const std::string who = r.played.empty() ? std::string("THE GAME'S OWN")
                                                  : std::string(r.modifier ? "MODIFIER, FOR " : "NORMAL, FOR ") + r.label + (r.choices > 1 ? std::format("  ({} TO CHOOSE FROM)", r.choices) : std::string{});
@@ -260,6 +295,146 @@ void last_tricks(SkateMenu& menu, const anim_studio::MenuSummary& now) {
         ImGui::Dummy(ImVec2(0, px(2)));
     }
 }
+
+// The installer's steps, as the studio's update card shows them: DOWNLOAD, VERIFY, INSTALL, DONE, each lit as it is
+// reached, the one going on in blue (its edge pulsing), a failed one in red.
+void install_steps(const SkateMenu& menu, const anim_studio::update::State& st) {
+    namespace up = anim_studio::update;
+    bool failed = false;
+    const int step = up::install_step(st, failed);
+    if (step < 0) return;
+    static constexpr std::array<const char*, 4> names{"DOWNLOAD", "VERIFY", "INSTALL", "DONE"};
+    auto* d = ImGui::GetWindowDrawList();
+    const auto a = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x - px(12), h = px(34), gap = px(8), sw = (w - 3 * gap) / 4, size = px(13);
+    ImGui::Dummy(ImVec2(w, h));
+    for (int i = 0; i < 4; ++i) {
+        const ImVec2 sa(a.x + static_cast<float>(i) * (sw + gap), a.y), sb(sa.x + sw, a.y + h);
+        const bool done = i < step || (i == 3 && step == 3), now = i == step && step < 3, bad = now && failed;
+        d->AddRectFilled(sa, sb, bad ? red : done ? skate_theme::blue : now ? IM_COL32(20, 60, 110, 248) : IM_COL32(26, 27, 30, 240));
+        if (now && !bad) {
+            const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 4.0f);
+            d->AddRect(sa, sb, IM_COL32(110, 190, 255, static_cast<int>(120 + 120 * pulse)), 0, 0, px(2));
+        }
+        // Its number and name, or the name alone when the tile is too narrow for both.
+        std::string label = std::format("{}  {}", i + 1, names[static_cast<std::size_t>(i)]);
+        if (menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label.c_str()).x > sw - px(12)) label = names[static_cast<std::size_t>(i)];
+        const auto t = menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label.c_str());
+        d->PushClipRect(sa, sb, true);
+        d->AddText(menu.bold, size, ImVec2(sa.x + std::max(px(4), (sw - t.x) * 0.5f), sa.y + (h - t.y) * 0.5f), done || now ? paper : muted, label.c_str());
+        d->PopClipRect();
+    }
+    ImGui::Dummy(ImVec2(0, px(4)));
+}
+// How far the download is, as a bar (a short piece running along when its size is not known).
+void download_bar(const anim_studio::update::State& st) {
+    auto* d = ImGui::GetWindowDrawList();
+    const auto a = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x - px(12), h = px(8);
+    ImGui::Dummy(ImVec2(w, h));
+    d->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(255, 255, 255, 30));
+    if (st.total) {
+        const float frac = std::clamp(static_cast<float>(static_cast<double>(st.received) / static_cast<double>(st.total)), 0.0f, 1.0f);
+        d->AddRectFilled(a, ImVec2(a.x + w * frac, a.y + h), st.retry_in ? IM_COL32(236, 214, 96, 255) : skate_theme::blue);
+    } else {
+        const float run = static_cast<float>(std::fmod(ImGui::GetTime() * 0.6, 1.0));
+        d->AddRectFilled(ImVec2(a.x + (w - px(80)) * run, a.y), ImVec2(a.x + (w - px(80)) * run + px(80), a.y + h), skate_theme::blue);
+    }
+    ImGui::Dummy(ImVec2(0, px(4)));
+}
+
+// UPDATES: the version running, the newest on GitHub, and updating from here as from the studio's installer card
+// (studio_update.h: DOWNLOAD, VERIFY, INSTALL, DONE; then KEEP PLAYING or RESTART NOW).
+void updates_card(SkateMenu& menu, const Model& model) {
+    namespace up = anim_studio::update;
+    const auto st = up::state();
+    const auto running = up::running_version(), base = up::reskate_base();
+    const bool newer = st.step == up::Step::newer || st.step == up::Step::download_failed || st.step == up::Step::install_failed;
+    const bool installed = st.step == up::Step::installed, restarting = st.step == up::Step::restarting;
+    const bool going = st.step == up::Step::downloading || st.step == up::Step::verifying || st.step == up::Step::installing;
+    const auto c = studio_card_begin(menu, "updates", "UPDATES",
+                                     going ? "installing " + st.latest : newer ? st.latest + " is out" : installed ? st.latest + " is installed"
+                                                                                                         : "the version you have, and the newest");
+    info(menu, "You have", running.empty() ? std::string("not the studio's own build")
+                                           : "Animator Studio " + running + (base.empty() ? std::string{} : "  /  ReSkate " + base));
+    if (!up::available()) {
+        note("This ReSkate.dll is not one of the Animator Studio's own releases, so it does not look for its updates.");
+        studio_card_end(c);
+        return;
+    }
+    info(menu, "Newest on GitHub",
+         st.step == up::Step::checking ? std::string("checking...")
+         : st.step == up::Step::failed ? "could not check (" + st.error + ")"
+         : st.latest.empty()           ? std::string("not checked yet")
+         : newer || going              ? st.latest + "  -  new"
+                                       : st.latest + "  -  up to date");
+    const auto mb = [](std::uint64_t bytes) { return std::format("{:.1f}", static_cast<double>(bytes) / (1024.0 * 1024.0)); };
+    install_steps(menu, st);
+    if (st.step == up::Step::downloading) {
+        note((st.retry_in  ? std::format("The connection dropped at {} MB. Trying again in {} s: it goes on from there.", mb(st.received), st.retry_in)
+              : st.total   ? std::format("Downloading {}: {} of {} MB{}", st.latest, mb(st.received), mb(st.total), st.attempt > 1 ? std::format(" (try {})", st.attempt) : std::string{})
+              : st.received ? std::format("Downloading {}: {} MB", st.latest, mb(st.received))
+                            : std::string("Connecting to GitHub..."))
+                 .c_str());
+        download_bar(st);
+    }
+    if (st.step == up::Step::verifying) note("Checking it against GitHub's SHA-256, and that it is a ReSkate runtime...");
+    if (st.step == up::Step::installing) note("Putting it in place. The version you have now is kept beside it as ReSkate.dll.previous.");
+    if ((going || installed || newer) && !st.installed_to.empty()) {
+        const auto folder = st.installed_to.parent_path().u8string();
+        note(("Into the folder ReSkate runs from: " + std::string(folder.begin(), folder.end())).c_str());
+    }
+    if (st.step == up::Step::newer && !st.folder_writable)
+        warn("That folder cannot be written to (read-only, or a protected folder such as Program Files). UPDATE NOW still downloads and checks it; "
+             "you then copy it in yourself with the game closed, or move ReSkate to a folder of its own.");
+    if (restarting)
+        note(st.restarting_for < 12 ? "Closing the game. It starts again by itself in a few seconds."
+                                    : "Waiting for the game to close. If it asks whether to quit, say yes: it starts again by itself.");
+    if (installed)
+        note((st.can_restart ? "Installed. KEEP PLAYING and it is there next time, or RESTART NOW to close the game and start it again with " + st.latest + "."
+                             : "Installed. Close the game and start it with ReSkateLauncher to use " + st.latest + ".")
+                 .c_str());
+    if (st.step == up::Step::install_failed) warn(("It could not be installed: " + up::as_sentence(st.error)).c_str());
+    else if (st.step == up::Step::download_failed)
+        warn(("The download did not work: " + up::as_sentence(st.error) +
+              (st.failed_at == 0 ? " TRY AGAIN goes on from where it stopped." : " TRY AGAIN downloads it again."))
+                 .c_str());
+    // What can be done now: the one to press as the studio's own big blue button, the rest under it.
+    if (st.step == up::Step::newer) {
+        const auto label = "UPDATE TO " + st.latest + " NOW";
+        if (studio_button(menu, "##updatenow", label.c_str(), "DOWNLOAD + INSTALL", true, 10)) up::download();
+        ImGui::Dummy(ImVec2(0, px(6)));
+        if (button_row(menu, "##whatsnew", {{"WHAT'S NEW", animator_studio_openable(model), false, "Opens the studio with what the new version changes."}}) == 0) {
+            up::show_popup();
+            anim_studio::request_open(true);
+            menu.close_requested = true;
+        }
+    } else if (st.step == up::Step::download_failed || st.step == up::Step::install_failed) {
+        const bool folder = st.step == up::Step::install_failed && !st.saved_to.empty();
+        const int pressed = folder ? button_row(menu, "##updatefailed", {{"TRY AGAIN", true, true, "Downloads and installs it again."},
+                                                                         {"OPEN FOLDER", true, false, "Where the new ReSkate.dll is, to copy in by hand."}})
+                                   : button_row(menu, "##updatefailed", {{"TRY AGAIN", true, true, "Goes on with the download from where it stopped."}});
+        if (pressed == 0) up::download();
+        if (pressed == 1) up::open_folder();
+    } else if (st.step == up::Step::downloading) {
+        if (button_row(menu, "##updatestop", {{"CANCEL", true, false, "Stops the download; UPDATE NOW goes on from where it stopped."}}) == 0) up::cancel();
+    } else if (installed) {
+        if (st.can_restart && studio_button(menu, "##restartnow", "RESTART NOW", "STARTS AGAIN BY ITSELF", true, 10)) up::restart();
+        ImGui::Dummy(ImVec2(0, px(6)));
+        if (button_row(menu, "##keepplaying", {{"KEEP PLAYING", true, !st.can_restart, "Back to the game; the new version runs from the next start."}}) == 0) {
+            up::close_popup();
+            menu.close_requested = true;
+        }
+    } else if (!going && !restarting) {
+        if (button_row(menu, "##checknow", {{st.step == up::Step::checking ? "CHECKING..." : "CHECK NOW", st.step != up::Step::checking, false,
+                                             "Asks GitHub for the newest release now."}}) == 0)
+            up::check_now();
+    }
+    bool every = up::checking();
+    if (toggle_row(menu, "Check at every start", "At each start the studio asks GitHub whether a newer version is out. Nothing is changed until you choose UPDATE NOW.", every))
+        up::set_checking(every);
+    studio_card_end(c);
+}
 }
 
 void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3&) {
@@ -274,6 +449,21 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     }
     if (const auto blocked = animator_studio_blocked_reason(model); !blocked.empty()) warn(blocked.c_str());
     ImGui::Dummy(ImVec2(0, px(6)));
+    // The studio's own tabs, as its menu has them: straight to the one wanted.
+    {
+        const bool can = animator_studio_openable(model);
+        const int picked = button_row(menu, "##studiotabs", {{"TRICKS", can, false, "Your tricks and the game's, to open and edit."},
+                                                             {"PACKS", can, false, "Make your own packs and publish them to the MARKET."},
+                                                             {"LIBRARY", can, false, "Your playlists: what plays by default and on a button."},
+                                                             {"MARKET", can, false, "Get packs other players made."}});
+        // The studio's numbers for them (animation_studio_overlay.cpp: packs_tab is 5).
+        static constexpr std::array<int, 4> tabs{0, 5, 1, 2};
+        if (picked >= 0 && picked < static_cast<int>(tabs.size())) {
+            anim_studio::request_tab(tabs[static_cast<std::size_t>(picked)]);
+            menu.close_requested = true;
+        }
+    }
+    ImGui::Dummy(ImVec2(0, px(6)));
     const anim_studio::settings_rows::Tell tell = [&menu](const std::string& said) { feedback(menu, said.c_str()); };
     switch (button_row(menu, "##studioactions", {{"HOW IT WORKS", true, false, "The guide from the first start: packs, stances, playlists, pop heights."},
                                                   {"REPORT A BUG", true, false, "The last 15 seconds, the log and your settings in one zip, for us."}})) {
@@ -286,11 +476,18 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     default: break;
     }
     ImGui::Dummy(ImVec2(0, px(12)));
+    // A newer version out, or one installed and waiting for a restart: UPDATES first. Otherwise at the foot of the page.
+    namespace up = anim_studio::update;
+    const auto update_step = up::state().step;
+    const bool update_first = update_step == up::Step::newer || update_step == up::Step::installed || update_step == up::Step::downloading ||
+                              update_step == up::Step::verifying || update_step == up::Step::installing || update_step == up::Step::restarting ||
+                              update_step == up::Step::install_failed || update_step == up::Step::download_failed;
+    if (update_first) updates_card(menu, model);
 
     // Nothing of yours plays: said, and put right in one press.
     if (settings.play_in_game && (now.playing.empty() || now.entries == 0) && !now.packs.empty()) {
-        const auto c = studio_card_begin(menu, "nothing", "NORMAL PLAYLIST IS EMPTY");
-        note("Normal input uses the game's own animations. An assigned modifier playlist can still play while its button is held. Choose a normal playlist below, or add packs to one.");
+        const auto c = studio_card_begin(menu, "nothing", "DEFAULT PLAYLIST IS EMPTY");
+        note("Normal input uses the game's own animations. An assigned modifier playlist can still play while its button is held. Choose a default playlist below, or add packs to one.");
         if (button_row(menu, "##allpacks", {{"PLAY ALL MY PACKS", true, true, "Every pack goes in the playlist that is on (or a new one)."}}) == 0) {
             for (const auto& pack : now.packs)
                 if (!pack.in) {
@@ -309,7 +506,6 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     }
     {
         const auto c = studio_card_begin(menu, "in-game", "IN GAME");
-        setting_row(menu, anim_studio::settings_rows::custom_tricks_in_game(settings));
         setting_row(menu, anim_studio::settings_rows::transitions(settings));
         setting_row(menu, anim_studio::settings_rows::trick_matching(settings));
         setting_row(menu, anim_studio::settings_rows::crossfade(settings));
@@ -317,7 +513,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     }
     {
         const auto playlists = anim_studio::playlists_now();
-        const auto c = studio_card_begin(menu, "playlist", "NORMAL PLAYLIST",
+        const auto c = studio_card_begin(menu, "playlist", "DEFAULT PLAYLIST",
                                          now.playing.empty() ? std::string("none on") : std::format("{}: {} in it", now.playing, now.entries));
         setting_row(menu, anim_studio::settings_rows::playing_playlist(playlists, tell));
         setting_row(menu, anim_studio::settings_rows::which_version_plays(playlists, tell));
@@ -338,7 +534,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
         studio_card_end(c);
     }
     if (!now.packs.empty()) {
-        const auto c = studio_card_begin(menu, "packs", "PACKS", "ON: in the playlist that is on, and it plays");
+        const auto c = studio_card_begin(menu, "packs", "PACKS IN THE DEFAULT PLAYLIST", "ON: in the playlist that plays by default");
         for (const auto& pack : now.packs) {
             ImGui::PushID(pack.name.c_str());
             bool in = pack.in;
@@ -352,6 +548,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
         }
         studio_card_end(c);
     }
+    if (!update_first) updates_card(menu, model);
     ImGui::EndChild();
 }
 }

@@ -10,6 +10,8 @@ namespace dingosdk::game::build::v20260929::skater_state {
 // The physics state the core's selector chose this step (no_bail.h: choose_physics_state; its
 // offboard_physics_state is the one on foot and through a whole bail).
 inline constexpr std::uintptr_t physics_state_offset = 0x1414; // uint32, context
+// The length of the step being simulated, seconds (copied from the core's step input every update; skater_body.h).
+inline constexpr std::uintptr_t step_seconds_offset = 0x17ec; // float, context
 inline constexpr std::array<std::uint32_t, 2> board_air_states{200, 201}; // PHYSICS_AIR, KNOWN_AIR
 
 // The core's trick state (its vtable slot +0xb0 returns core+0x3b8) holds the offboard state
@@ -41,6 +43,15 @@ inline constexpr std::uintptr_t body_owner_offset = 0x10;
 inline constexpr std::uintptr_t body_velocity_offset = 0x70;
 inline constexpr std::uintptr_t body_spin_offset = 0x90;
 inline constexpr std::uint32_t board_body_count = 9, rig_body_count = 26;
+// A body's pending flags (uint32 at +0x60): what the sync above pushes into the physics world next, 8 the
+// velocity, 0x20 the spin (noclip, the push hold and the dive boost set them beside their writes).
+inline constexpr std::uintptr_t body_pending_offset = 0x60;
+inline constexpr std::uint32_t body_pending_velocity = 8, body_pending_spin = 0x20;
+// The off-board state machine (Engine/Game/Build/20260929/offboard_flight.h) hangs off the core at +0x3b0; its
+// substate running now at +0x48, a pointer into the machine itself, so the substate is known by its offset there
+// (offboard_flight.h's offboard_ragdoll_states and offboard_flight_states list them).
+inline constexpr std::uintptr_t offboard_machine_offset = 0x3b0; // core
+inline constexpr std::uintptr_t offboard_active_offset = 0x48;   // machine
 inline constexpr std::size_t board_root_body = 0;
 inline constexpr std::uintptr_t board_physics_vtable = client_source_spawn::board_physics_vtable;
 inline constexpr std::uintptr_t rig_physics_vtable = client_source_spawn::rig_physics_vtable;

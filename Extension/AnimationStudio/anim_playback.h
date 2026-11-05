@@ -26,13 +26,15 @@ inline MotionState motion_state(std::optional<std::uint32_t> state) noexcept {
     return MotionState::unknown;
 }
 enum class EntryKind { unknown, ground, rail };
-enum class PlaybackPhase { idle, air, landing, rail_release };
+// before_pop: the game named its trick at the flick (trick_flicked) and plays its clip up to the pop on the ground; the
+// air goes on from there as the same attempt.
+enum class PlaybackPhase { idle, before_pop, air, landing, rail_release };
 inline const char* entry_name(EntryKind value) noexcept {
     return value == EntryKind::ground ? "ground" : value == EntryKind::rail ? "rail" : "unknown";
 }
 inline const char* phase_name(PlaybackPhase value) noexcept {
     return value == PlaybackPhase::air ? "air" : value == PlaybackPhase::landing ? "landing" :
-           value == PlaybackPhase::rail_release ? "rail_release" : "idle";
+           value == PlaybackPhase::rail_release ? "rail_release" : value == PlaybackPhase::before_pop ? "before_pop" : "idle";
 }
 struct PlaybackSample { float time{-1}, weight{}; bool finished{}; };
 // A trick fitted to the game's air, never slower than it was recorded. Seconds into the recording's air for
@@ -76,25 +78,44 @@ struct PlaybackEpisode {
     EntryKind entry{EntryKind::unknown};
     std::uint64_t id{};
     double takeoff{}, landing{-1}, release_at{}, selected_at{-1}, last_observed{-1};
+    double flicked{-1}; // the flick this attempt began at (begin_before_pop); -1: it began at the takeoff
     float release_weight{}, last_weight{};
     float last_time{-1};   // the recording's time last sampled
     float landed_from{-1}; // where the recording was when the game touched down (-1 while in the air)
+    bool took_off{};       // this update the board left the ground under an attempt begun at the flick (the same attempt goes on)
     ContactWindow contact;
     GameplayClipClock clock;
     void reset() noexcept { const auto next_id = id; *this = {}; id = next_id; }
-    // True only when a new airborne episode begins. A rail exit cannot inherit the entry trick.
+    // The game named its trick at the flick (trick_flicked), rolling on the ground: an attempt begins now, before the pop, so
+    // what was keyed before the pop plays as the game plays its clip up to it. Not over one already in the air or before its
+    // pop; over a landing it is the next trick (a combo). True when it began.
+    bool begin_before_pop(double now, MotionState motion) noexcept {
+        if (!std::isfinite(now) || motion != MotionState::riding || previous != MotionState::riding ||
+            (phase != PlaybackPhase::idle && phase != PlaybackPhase::landing))
+            return false;
+        ++id; phase = PlaybackPhase::before_pop; flicked = takeoff = now; landing = -1; selected_at = -1; landed_from = -1; last_time = -1;
+        entry = EntryKind::ground; clock.reset(); contact.since.reset(); last_weight = 0; took_off = false;
+        return true;
+    }
+    // True only when a new airborne episode begins. A rail exit cannot inherit the entry trick. An attempt begun at the flick
+    // takes off as the same attempt (took_off), with its trick kept.
     bool observe(double now, MotionState motion) noexcept {
+        took_off = false;
         if (!std::isfinite(now) || (last_observed >= 0 && now < last_observed)) { reset(); return false; }
         last_observed = now;
         if (motion == MotionState::unknown || motion == MotionState::offboard) {
             reset(); previous = motion; return false;
         }
         bool started = false;
-        if (motion == MotionState::air && phase != PlaybackPhase::air) {
+        if (motion == MotionState::air && phase == PlaybackPhase::before_pop) {
+            phase = PlaybackPhase::air; takeoff = now; landing = -1; landed_from = -1; contact.since.reset(); took_off = true;
+        } else if (motion == MotionState::air && phase != PlaybackPhase::air) {
             const auto from = previous;
-            ++id; phase = PlaybackPhase::air; takeoff = now; landing = -1; selected_at = -1; landed_from = -1; last_time = -1;
+            ++id; phase = PlaybackPhase::air; takeoff = now; landing = -1; selected_at = -1; landed_from = -1; last_time = -1; flicked = -1;
             entry = from == MotionState::rail ? EntryKind::rail : from == MotionState::riding ? EntryKind::ground : EntryKind::unknown;
             clock.reset(); contact.since.reset(); last_weight = 0; started = true;
+        } else if (phase == PlaybackPhase::before_pop && (motion != MotionState::riding || now - flicked > before_pop_patience)) {
+            phase = PlaybackPhase::idle; // no pop came of the flick (or it went onto a rail): the game's own from here
         } else if (motion == MotionState::rail && (phase == PlaybackPhase::air || phase == PlaybackPhase::landing)) {
             phase = selected_at >= 0 && clock.time >= 0 ? PlaybackPhase::rail_release : PlaybackPhase::idle;
             release_at = now; release_weight = last_weight; contact.since.reset();
@@ -105,7 +126,11 @@ struct PlaybackEpisode {
         previous = motion;
         return started;
     }
-    bool selection_open(double now) const noexcept { return phase == PlaybackPhase::air && now >= takeoff && now - takeoff < 0.35; }
+    // A trick may still be chosen (or chosen again, when the game names another or grades its pop): from the flick, and for a
+    // moment after the takeoff.
+    bool selection_open(double now) const noexcept {
+        return phase == PlaybackPhase::before_pop || (phase == PlaybackPhase::air && now >= takeoff && now - takeoff < 0.35);
+    }
     void select(double now) noexcept {
         if (!std::isfinite(now)) return;
         selected_at = now;
@@ -119,6 +144,9 @@ struct PlaybackEpisode {
     PlaybackSample sample(double now, float up, float down, float duration, float speed, float predicted_air,
                           bool source_timing = false, bool fit_air = false) noexcept {
         PlaybackSample out;
+        // Before the pop only the game's clip says where the trick is (NativeClock): no clock of its own runs from a takeoff
+        // that has not come yet.
+        if (phase == PlaybackPhase::before_pop) return out;
         if (selected_at < 0 || up < 0 || duration <= 0 || up > duration || down > duration ||
             !std::isfinite(now) || !std::isfinite(up) || !std::isfinite(down) ||
             !std::isfinite(duration) || !std::isfinite(speed) || speed <= 0 || !std::isfinite(predicted_air)) return out;
@@ -219,6 +247,14 @@ struct EditTransition {
     bool restarted{}; // this evaluation starts a different animation or releases the current one
     static constexpr float jump_fade = 0.1f;
     void reset() { *this = {}; }
+    // What a handover drew this frame (hand_over_body, the board's pass): whatever plays next fades in from it, even the
+    // same trick back after a frame or two with no packet, instead of snapping to its keys.
+    void hold_drawn(std::span<const Offset> drawn) {
+        current.assign(drawn.begin(), drawn.end());
+        from = current;
+        from_left = 0;
+        started = -1;
+    }
     // Any joint whose wanted turn is more than `degrees` from the one drawn, or moved more than 25 cm.
     static bool jumps(std::span<const Offset> drawn, std::span<const Offset> wanted, float degrees) noexcept {
         const float most = std::cos(degrees * 0.5f * 3.14159265f / 180);
@@ -262,15 +298,11 @@ struct EditTransition {
         return current;
     }
 };
-// How long a change of what plays fades, on the game's live pose (the body and the board alike: EditTransition's keys go on
-// the game's pose as it is now, never on a pose held from before). Into a trick of yours, or with the game in the air doing
-// its own move, quickly: the game's pop and flip go on under the fade, and keys still easing in over half a long Crossfade
-// (0.4 s at 0.8) left the board turned short and the legs behind it - the feet through the board. Back to the game on the
-// ground over `blend` (half the Crossfade), as the Crossfade says. A grind has its own ease (grind_ease_min/max).
-inline constexpr float quick_key_fade = 0.12f;
-inline float key_fade_seconds(float blend, bool into_trick, bool in_air) noexcept {
-    return into_trick || in_air ? std::min(blend, quick_key_fade) : blend;
-}
+// A change of what plays fades over half the trick's Crossfade, as its maker set it, on the game's live pose: the body and
+// the board alike (EditTransition's keys go on the game's pose as it is now, never on a pose held from before), so the
+// game's pop and flip go on under the fade and the feet stay with the board. A trick handing back to the game goes over in
+// the SMOOTH handover (Handover, hand_over_body), on a rail or off it: at its landing, over a gap, into the next pop. A
+// grind has its own ease (grind_ease_min/max).
 // On a rail the board's pass gives the board back to the game at once, but the body fades the trick out over the
 // crossfade. The game drops the board into the grind, and the fade kept the legs as they were for the landing: the feet
 // stood up to 35 cm off the board for 0.18 s (kickflip to BS crooked and BS noseslide, 2026-10-26). Cutting the fade
@@ -296,10 +328,44 @@ inline float handover_seconds(std::uint16_t joint) noexcept {
     default: return handover_middle; // the hips, the shoulders and arms
     }
 }
+// A board that meets a rail before the trick's catch - the flip still turning - the game takes over with another blend: a
+// pivot blend about the hips over 30 ticks (TrickInAir to Grinding, the transition with no branch window: Team A and the 1.2
+// scout, transitions_scout.md 1.3). The board and legs still go in 8 (the feet have to be on the board on the rail); the
+// hips, arms, back and head take the 30, not the 15 and 24 they take after the catch.
+inline constexpr float handover_before_catch = 30.0f / 60;
+inline float handover_seconds(std::uint16_t joint, bool before_catch) noexcept {
+    const float s = handover_seconds(joint);
+    return before_catch && s > handover_legs ? handover_before_catch : s;
+}
+// How long the whole handover runs (its slowest part).
+inline float handover_longest(bool before_catch) noexcept { return before_catch ? handover_before_catch : handover_torso; }
 // How much of the trick it leaves joint `joint` still shows, `elapsed` seconds into the handover (1 to 0, eased).
-inline float handover_left(std::uint16_t joint, float elapsed) noexcept {
-    const float u = std::clamp(elapsed / handover_seconds(joint), 0.0f, 1.0f);
+inline float handover_left(std::uint16_t joint, float elapsed, bool before_catch = false) noexcept {
+    const float u = std::clamp(elapsed / handover_seconds(joint, before_catch), 0.0f, 1.0f);
     return 1 - u * u * (3 - 2 * u);
+}
+// Which handover runs (the bug report's handover_kind): onto a rail after the trick's catch, onto one before it (the flip
+// still turning: the slow pivot blend), into the next pop (the trick held as drawn as it let go), or anywhere else (its end on
+// the ground, out of a grind loop).
+enum class HandoverKind { none, rail, rail_before_catch, next_pop, ground };
+inline const char* handover_kind_name(HandoverKind k) noexcept {
+    return k == HandoverKind::rail ? "rail" : k == HandoverKind::rail_before_catch ? "rail_before_catch" :
+           k == HandoverKind::next_pop ? "next_pop" : k == HandoverKind::ground ? "ground" : "";
+}
+// `time`: where the trick it leaves was; `caught`: its catch (below 0: not known, taken as caught).
+inline HandoverKind handover_kind(bool rail, float time, float caught, bool held_for_next_pop) noexcept {
+    if (rail) return caught > 0 && time >= 0 && time < caught ? HandoverKind::rail_before_catch : HandoverKind::rail;
+    return held_for_next_pop ? HandoverKind::next_pop : HandoverKind::ground;
+}
+// Onto a rail or a ledge (raised_release): how far ahead of the contact the board, hips and legs start going to the game's.
+// After the trick's catch, `lead` (the studio's 0.25 s). Before it only the game's own 8 ticks and the probe's lag
+// (`late_lead`): the probe sees a rail 0.13 to 0.43 s ahead, often right after the pop, and the flip's legs and board went
+// to the game's for most of a short air while the upper body kept the trick (the 2026-11-03 session, scout 3 #4). A contact
+// that comes before the catch still gets its late lead before it, so the feet are on the deck at the lock.
+inline constexpr float raised_late_lead = 0.18f;
+inline float raised_lead_for(float time, float caught, float lead, bool wait_for_catch) noexcept {
+    if (!wait_for_catch || !(caught > 0) || !(time >= 0) || time >= caught) return lead;
+    return std::min(lead, raised_late_lead);
 }
 // In the air before a grind the game turns the board to the rail's angle - 70 degrees in the last 0.1 to 0.13 s before the
 // lock, at up to 14 degrees a frame - with the board caught and flat and the skater not turning with it (its own grinds,
@@ -314,6 +380,258 @@ inline Joint foot_sliding_to_the_games(const Joint& at_the_lock, const Joint& ga
     foot.rotation = slerp(games.rotation, at_the_lock.rotation, k);
     for (std::size_t i = 0; i < 3; ++i) foot.position[i] = games.position[i] + (at_the_lock.position[i] - games.position[i]) * k;
     return foot;
+}
+// ---- inertialization from the pose that was shown ------------------------------------------------------------------------
+// A change of what plays (a trick into a grind, a manual, a landing, the next pop; a grind or a manual into a trick) used to
+// fade the trick's keys out over the game's pose as the game blended from its own trick pose into its grind: mid-way the
+// drawn pose was the game's in-between pose plus keys made for another one, and a foot went through the deck (a tweaked high
+// kickflip into a tailslide, 1.2 test). The game does its own changes by inertialization (InertializationBlendAsset, Team A
+// and the 1.2 scout; David Bollo, "Inertialization: High-Performance Animation Transitions in Gears of War", GDC 2018):
+// at the change it keeps how far the pose it showed is from the new pose, and how fast that was changing, and lets that
+// difference die away by a fifth-order curve over the blend - drawn = the new pose, live, plus what is left of the difference.
+// So does the studio now (inertialize_from_the_shown_pose): from the pose it drew, never from the game's pose under it.
+//
+// One number's way to nothing: `x0` how far off it is, `v0` how fast that is changing (per second), over `length` seconds.
+// Bollo's curve: it starts at x0 with v0, ends at 0 with no speed and no acceleration; a speed away from 0 is dropped, and one
+// towards it shortens the blend so it never overshoots.
+struct InertialCurve {
+    float x0{}, v0{}, a0{}, A{}, B{}, C{}, length{};
+    static InertialCurve make(float x0, float v0, float length) noexcept {
+        InertialCurve c;
+        if (!std::isfinite(x0) || !std::isfinite(v0) || !std::isfinite(length) || !(length > 1e-4f) || x0 == 0) return c;
+        if (x0 * v0 > 0) v0 = 0;
+        if (v0 != 0) length = std::min(length, -5 * x0 / v0);
+        if (!(length > 1e-4f)) return c;
+        const float t2 = length * length, t3 = t2 * length, t4 = t3 * length, t5 = t4 * length;
+        c.x0 = x0; c.v0 = v0; c.length = length;
+        c.a0 = (-8 * v0 * length - 20 * x0) / t2;
+        c.A = -(c.a0 * t2 + 6 * v0 * length + 12 * x0) / (2 * t5);
+        c.B = (3 * c.a0 * t2 + 16 * v0 * length + 30 * x0) / (2 * t4);
+        c.C = -(3 * c.a0 * t2 + 12 * v0 * length + 20 * x0) / (2 * t3);
+        return c;
+    }
+    float at(float t) const noexcept {
+        if (!(length > 0) || !std::isfinite(t)) return 0;
+        if (t <= 0) return x0;
+        if (t >= length) return 0;
+        return (((((A * t + B) * t + C) * t + a0 * 0.5f) * t + v0) * t) + x0;
+    }
+};
+// How much of a difference with no speed of its own is left `elapsed` into a blend of `length` (1 to 0, the same curve).
+inline float inertial_left(float elapsed, float length) noexcept {
+    if (!(length > 1e-4f)) return 0;
+    const float u = std::clamp(elapsed / length, 0.0f, 1.0f);
+    return 1 + u * u * (-10 + u * (20 + u * (-15 + u * 4)));
+}
+// A turn as an axis times its angle (radians), the short way, and back.
+inline Vec3 turn_vector(const Quat& q) noexcept {
+    Quat r = q[3] < 0 ? Quat{-q[0], -q[1], -q[2], -q[3]} : q;
+    const float s = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    if (!(s > 1e-7f)) return {r[0] * 2, r[1] * 2, r[2] * 2};
+    const float angle = 2 * std::atan2(s, r[3]);
+    return {r[0] / s * angle, r[1] / s * angle, r[2] / s * angle};
+}
+inline Quat turn_of(const Vec3& v) noexcept {
+    const float angle = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!(angle > 1e-7f)) return normalised(Quat{v[0] * 0.5f, v[1] * 0.5f, v[2] * 0.5f, 1});
+    const float s = std::sin(angle * 0.5f) / angle;
+    return {v[0] * s, v[1] * s, v[2] * s, std::cos(angle * 0.5f)};
+}
+// The pose's difference, joint by joint, dying away: each joint's turn about one axis and its move along one line, by
+// InertialCurve. Edits here are the studio's (pose_edit_deltas: a joint's turn after its own, a move added), so a drawn pose
+// is `target` with the offset after it: drawn = target * offset.
+struct PoseInertia {
+    static constexpr float fastest_turn = 25, fastest_move = 4; // rad/s and m/s a frame's change is believed up to
+    double started{-1};
+    float longest{};
+    std::vector<Vec3> axis, dir;
+    std::vector<InertialCurve> turn, move;
+    bool running(double now) const noexcept { return started >= 0 && now - started < longest; }
+    void stop() noexcept { started = -1; }
+    // From the deltas drawn on the last frame (`shown`, over the game's pose then) and the frame before (`before`, `step`
+    // seconds earlier; none or an old one: no speed), to `target` (the deltas wanted now), joint `i` over `length(i)` seconds.
+    template <class Length>
+    void begin(double now, std::span<const Offset> shown, std::span<const Offset> before, float step, std::span<const Offset> target,
+               Length&& length) {
+        const std::size_t n = std::min(shown.size(), target.size());
+        axis.assign(n, Vec3{}); dir.assign(n, Vec3{});
+        turn.assign(n, InertialCurve{}); move.assign(n, InertialCurve{});
+        longest = 0;
+        const bool speed = before.size() >= n && step > 1e-3f && step < 0.05f && std::isfinite(step);
+        for (std::size_t i = 0; i < n; ++i) {
+            const float t1 = length(i);
+            if (!(t1 > 1e-4f)) continue;
+            // Its turn: from the target to what was shown, about one axis.
+            const Vec3 r = turn_vector(multiply(conjugate(target[i].rotation), shown[i].rotation));
+            const float angle = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+            if (angle > 1e-5f) {
+                axis[i] = {r[0] / angle, r[1] / angle, r[2] / angle};
+                float v = 0;
+                if (speed) {
+                    const Vec3 w = turn_vector(multiply(conjugate(before[i].rotation), shown[i].rotation));
+                    v = (w[0] * axis[i][0] + w[1] * axis[i][1] + w[2] * axis[i][2]) / step;
+                    v = std::clamp(v, -fastest_turn, fastest_turn);
+                }
+                turn[i] = InertialCurve::make(angle, v, t1);
+            }
+            // Its move.
+            const Vec3 d{shown[i].offset[0] - target[i].offset[0], shown[i].offset[1] - target[i].offset[1], shown[i].offset[2] - target[i].offset[2]};
+            const float apart = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); // (not `far`: a Windows macro)
+            if (apart > 1e-6f) {
+                dir[i] = {d[0] / apart, d[1] / apart, d[2] / apart};
+                float v = 0;
+                if (speed) {
+                    const Vec3 m{shown[i].offset[0] - before[i].offset[0], shown[i].offset[1] - before[i].offset[1], shown[i].offset[2] - before[i].offset[2]};
+                    v = std::clamp((m[0] * dir[i][0] + m[1] * dir[i][1] + m[2] * dir[i][2]) / step, -fastest_move, fastest_move);
+                }
+                move[i] = InertialCurve::make(apart, v, t1);
+            }
+            longest = std::max({longest, turn[i].length, move[i].length});
+        }
+        started = longest > 0 ? now : -1;
+    }
+    // `deltas` (the target now) with what is left of the difference after them.
+    void apply(double now, std::span<Offset> deltas) const noexcept {
+        if (started < 0) return;
+        const float t = static_cast<float>(now - started);
+        for (std::size_t i = 0; i < deltas.size() && i < turn.size(); ++i) {
+            if (const float a = turn[i].at(t); a != 0)
+                deltas[i].rotation = normalised(multiply(deltas[i].rotation, turn_of({axis[i][0] * a, axis[i][1] * a, axis[i][2] * a})));
+            if (const float m = move[i].at(t); m != 0)
+                for (std::size_t k = 0; k < 3; ++k) deltas[i].offset[k] += dir[i][k] * m;
+        }
+    }
+    // The size of the difference it began with over `joints` (the largest turn, degrees, and the largest move, metres).
+    template <class Joints> std::pair<float, float> began_with(const Joints& joints) const noexcept {
+        float most_turn = 0, most_move = 0;
+        for (const auto j : joints)
+            if (static_cast<std::size_t>(j) < turn.size()) {
+                most_turn = std::max(most_turn, turn[j].x0 * 57.2957795f);
+                most_move = std::max(most_move, move[j].x0);
+            }
+        return {most_turn, most_move};
+    }
+};
+// ---- the deck under a foot ------------------------------------------------------------------------------------------------
+// The deck in its mount's frame (x across, y up, z along; deck_guard's numbers): the grip 1.9 cm over the mount, the kicks
+// rising 4.5 cm from 0.29 m out to the tips at 0.40 m, 10.5 cm either side, rounded from 0.30 m.
+inline constexpr float deck_grip = 0.019f, deck_tip = 0.40f, deck_half_width = 0.105f, deck_kick_from = 0.29f, deck_kick_rise = 0.045f,
+                       deck_round_from = 0.30f, deck_thickness = 0.016f;
+inline float deck_top_at(float along) noexcept {
+    const float x = std::clamp((std::abs(along) - deck_kick_from) / (deck_tip - deck_kick_from), 0.0f, 1.0f);
+    return deck_grip + deck_kick_rise * x * x;
+}
+inline float deck_half_width_at(float along) noexcept {
+    const float a = std::abs(along);
+    if (a <= deck_round_from) return deck_half_width;
+    if (a >= deck_tip) return 0;
+    const float x = (a - deck_round_from) / (deck_tip - deck_round_from);
+    return deck_half_width * std::sqrt(std::max(0.0f, 1 - x * x));
+}
+// The sole of a shoe in its foot joint's frame (deck_guard's shoe: the ankle 8.5 cm over the sole): heel, middle, ball and toe,
+// both edges.
+inline const std::array<Vec3, 11>& sole_points() noexcept {
+    static const std::array<Vec3, 11> points = [] {
+        constexpr Vec3 down{0.5408f, 0.8412f, 0}, forward{0.8412f, -0.5408f, 0};
+        const auto shoe = [&](float ahead, float side, float over_sole) {
+            const float d = 0.085f - over_sole;
+            return Vec3{down[0] * d + forward[0] * ahead, down[1] * d + forward[1] * ahead, side};
+        };
+        return std::array<Vec3, 11>{shoe(-0.07f, 0.035f, 0),     shoe(-0.07f, -0.035f, 0),   shoe(0.015f, 0.048f, 0),
+                                    shoe(0.015f, -0.048f, 0),    shoe(0.094f, 0.055f, 0),    shoe(0.094f, -0.055f, 0),
+                                    shoe(0.165f, 0.035f, 0.008f), shoe(0.165f, -0.035f, 0.008f), shoe(0.19f, 0.018f, 0.014f),
+                                    shoe(0.19f, -0.018f, 0.014f), shoe(-0.075f, 0, 0.004f)};
+    }();
+    return points;
+}
+// A foot (its joint, in the deck's mount frame) against the deck: how far its sole's lowest point over the deck is above the
+// grip there (below 0: in the deck; empty when no point of it is over the deck), and how far up along the deck's up it has to
+// go to be on it. Only a foot on top - its ankle over the deck's middle - is lifted: one under the board (a flip turning
+// under him) is never pulled up through it.
+struct SoleOnDeck {
+    std::optional<float> lowest; // metres over the grip, of the lowest sole point over the deck
+    float lift{};                // metres to move it up so none is in the deck
+};
+inline SoleOnDeck sole_on_deck(const Joint& foot) noexcept {
+    SoleOnDeck out;
+    if (!std::isfinite(foot.position[0]) || !std::isfinite(foot.position[1]) || !std::isfinite(foot.position[2])) return out;
+    for (const auto& p : sole_points()) {
+        const auto w = rotate(foot.rotation, p);
+        const Vec3 at{foot.position[0] + w[0], foot.position[1] + w[1], foot.position[2] + w[2]};
+        if (std::abs(at[2]) >= deck_tip || std::abs(at[0]) >= deck_half_width_at(at[2])) continue;
+        const float over = at[1] - deck_top_at(at[2]);
+        if (!out.lowest || over < *out.lowest) out.lowest = over;
+    }
+    const bool on_top = foot.position[1] > deck_top_at(foot.position[2]) - deck_thickness * 0.5f;
+    // (Not for a millimetre: a sole resting on the grip reads a hair either side of it.)
+    if (out.lowest && *out.lowest < -0.001f && on_top && *out.lowest > -0.12f) out.lift = -*out.lowest;
+    return out;
+}
+// ---- starting early: the game says what comes next ------------------------------------------------------------------------
+// The game says ahead of time what it does next: its time to land (Float.Physics.TimeToLand, landings and rails), the grind
+// probe, its aim at a grind. Over the last `lead` seconds before that contact the feet the game stands on its board go onto
+// the drawn board where the game has them (ride_feet_on_the_board), so what is left to blend at the contact is small. 0 far
+// off or not known, 1 at the contact, eased.
+inline constexpr float contact_lead = 0.2f;
+inline float contact_ahead(float seconds_to_contact, float lead = contact_lead) noexcept {
+    if (!std::isfinite(seconds_to_contact) || seconds_to_contact < 0 || !(lead > 0)) return 0;
+    const float u = std::clamp(1 - seconds_to_contact / lead, 0.0f, 1.0f);
+    return u * u * (3 - 2 * u);
+}
+// ---- a trick on its own clock, as far as the game is on its clip ---------------------------------------------------------
+// When the game's clip for a trick is not found (the pose clock had nothing within 4.5 degrees in a quarter of a second) the
+// trick plays on its own clock - and its keys went on whatever the game was doing in full: out of a grind (the game blends its
+// grind pose into the trick over 24 ticks), out of a manual, or a trick whose clip the game was not playing at all (16.7 and
+// 17.5 degrees off in the 2026-11-03 session). Keys made on one pose bent on another are the "weird bone placements". So on its
+// own clock a trick's keys go on as far as the game's pose is near the trick's own clip at that time: in full within 6
+// degrees (the pose clock's own good range), not at all past 12, eased between - they come in as the game arrives on its
+// clip, as the game's own blend does. `error`: degrees (180 or more: nothing to compare with, so in full, as before).
+inline float pose_fit_share(float error_degrees) noexcept {
+    if (!std::isfinite(error_degrees) || error_degrees >= 180) return 1;
+    const float u = std::clamp((error_degrees - 6.0f) / 6.0f, 0.0f, 1.0f);
+    return 1 - u * u * (3 - 2 * u);
+}
+// ---- the feet ride on the board (the game's own foot warp) --------------------------------------------------------------
+// The game holds the feet in the board's frame from the catch: in the user's own grinds (custom tricks off) each foot stayed
+// within 0.5 cm of one spot on the deck while the board turned 50 to 70 degrees under him into the lock, and its grind
+// entries warp the feet onto the board (MovableLimbFootWarp) across a pose gap of up to 20 cm. The studio's keys go on the
+// game's pose joint by joint, which puts a foot where the maker had it only while the game's pose is the trick's clip - and
+// it leaves that clip at the catch on most airs (36 of 47 tricks in a session of rails and ledges, 0.40 to 0.68 s in). From
+// there a knee keyed for the clip's landing, bent on the game's held catch, drew the foot through the deck or off it.
+// So where the studio shows a foot standing on the deck, it goes where the game has it on the game's board, moved as the
+// keys move it on the studio's board, onto the board drawn this frame (the transitions scout, C2). Where the studio's foot is
+// off the deck - a flick, a kick-out, a lifted foot - nothing changes. Not the "feet magnet" taken out on 2026-10-25: that
+// seated every foot near the board from the pop; this goes by the maker's own foot on the deck, frame by frame.
+// How much a foot stands on the deck in the studio, from its ankle in the board's frame: `height` over the deck's mount
+// along the board's up (standing, 0.104 m), how far `along` it and `across` it from its middle, and how far its sole is tipped
+// from the deck (degrees). 1 standing on it, 0 off it, eased between so it never steps.
+inline float foot_on_deck_share(float height, float along, float across, float tilt_degrees) noexcept {
+    if (!std::isfinite(height) || !std::isfinite(along) || !std::isfinite(across) || !std::isfinite(tilt_degrees)) return 0;
+    const auto band = [](float x, float full, float none) { // 1 up to `full`, 0 from `none`, eased
+        const float u = std::clamp((x - full) / (none - full), 0.0f, 1.0f);
+        return 1 - u * u * (3 - 2 * u);
+    };
+    const float h = height < 0.08f ? band(-height, -0.08f, -0.055f) : band(height, 0.13f, 0.16f);
+    return h * band(std::abs(along), 0.36f, 0.42f) * band(std::abs(across), 0.12f, 0.17f) * band(tilt_degrees, 25.0f, 40.0f);
+}
+// Where a foot goes, in the frame of the board drawn this frame: the game's foot in the game's board's frame (`game`), moved
+// and turned as the studio's keys move the studio's foot on the studio's board (`made`: the studio's foot without its keys on
+// the board without its keys; `keyed`: with them on the board with them).
+// `keep`: how much of the keys' move it keeps (1 all of it; 0 the game's foot as it is, for a foot the game is about to stand on
+// the board that the studio does not have on it).
+inline Joint foot_on_the_board(const Joint& game, const Joint& made, const Joint& keyed, float keep = 1) noexcept {
+    Joint out = game;
+    keep = std::clamp(keep, 0.0f, 1.0f);
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] = game.position[i] + (keyed.position[i] - made.position[i]) * keep;
+    out.rotation = normalised(multiply(game.rotation, slerp(Quat{0, 0, 0, 1}, normalised(multiply(conjugate(made.rotation), keyed.rotation)), keep)));
+    return out;
+}
+// A foot (its joint in a deck's mount frame: x across, y up, z along) standing on that deck: foot_on_deck_share by its ankle and
+// its sole (deck_guard's down, 0.54 0.84 0 in the foot's frame, against the deck's).
+inline float foot_stands_on(const Joint& foot) noexcept {
+    const Vec3 sole = rotate(foot.rotation, Vec3{0.5408f, 0.8412f, 0});
+    const float tilt = std::acos(std::clamp(-sole[1], -1.0f, 1.0f)) * 57.2957795f;
+    return foot_on_deck_share(foot.position[1], foot.position[2], foot.position[0], tilt);
 }
 // ---- the board's keys ---------------------------------------------------------------------------------------------------
 // A trick's board keys turn the board about its own axes as it lay on the ground before the pop (the studio: start_frame).

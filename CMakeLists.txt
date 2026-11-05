@@ -81,6 +81,11 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
         target_link_libraries(dingosdk_https_download_timeout_tests PRIVATE winhttp)
         add_test(NAME https_download_timeout COMMAND dingosdk_https_download_timeout_tests
             "${CMAKE_CURRENT_BINARY_DIR}/https-download-fixtures")
+        # https::fetch: large downloads resumed with Range after a drop or a stall, tried again, checked, never partial.
+        add_executable(dingosdk_https_fetch_tests Engine/Vfs/Test/https_fetch_tests.cpp)
+        target_include_directories(dingosdk_https_fetch_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_https_fetch_tests PRIVATE winhttp)
+        add_test(NAME https_fetch COMMAND dingosdk_https_fetch_tests "${CMAKE_CURRENT_BINARY_DIR}/https-fetch-fixtures")
         add_executable(dingosdk_map_download_timeout_tests Extension/Assets/Test/map_download_timeout_tests.cpp
             Engine/Vfs/thunderstore_package.cpp)
         target_include_directories(dingosdk_map_download_timeout_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -202,7 +207,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
         add_executable(dingosdk_external_player_probe Extension/Music/Test/external_player_probe.cpp Extension/Music/external_player.cpp
             Extension/Music/Test/external_player_probe_stubs.cpp)
         target_include_directories(dingosdk_external_player_probe PRIVATE "${PROJECT_SOURCE_DIR}")
-        add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp)
+        add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp
+            Extension/Music/audio_dsp.cpp)
         target_include_directories(dingosdk_app_audio_probe PRIVATE "${PROJECT_SOURCE_DIR}")
     endif()
     add_executable(dingosdk_word_filter_tests Engine/Core/Text/Test/word_filter_tests.cpp)
@@ -252,6 +258,9 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     target_include_directories(dingosdk_physics_tuning_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_physics_tuning_tests PRIVATE dingosdk_game_archives)
     add_test(NAME physics_tuning COMMAND dingosdk_physics_tuning_tests "${DINGOSDK_TEST_GAME_ROOT}")
+    add_executable(dingosdk_real_bails_tests Extension/Skater/Test/real_bails_model_tests.cpp Extension/Skater/real_bails_model.cpp)
+    target_include_directories(dingosdk_real_bails_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME real_bails_model COMMAND dingosdk_real_bails_tests)
     add_executable(dingosdk_camera_observer_tests Extension/Skater/Test/camera_observer_tests.cpp)
     add_test(NAME camera_observer_recovery COMMAND dingosdk_camera_observer_tests)
     add_executable(dingosdk_linear_transform_tests Engine/Game/Abi/Test/linear_transform_tests.cpp)
@@ -299,7 +308,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     target_include_directories(dingosdk_custom_throwdown_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME custom_throwdowns COMMAND dingosdk_custom_throwdown_tests)
     add_executable(dingosdk_multiplayer_native_tests
-        Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp)
+        Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Remote/stand_ins.cpp)
     add_test(NAME multiplayer_native_layout COMMAND dingosdk_multiplayer_native_tests)
     add_executable(dingosdk_multiplayer_lobby_tests
         Extension/Multiplayer/Test/lobby_tests.cpp Extension/Multiplayer/Steam/steam_lobbies.cpp
@@ -344,11 +354,13 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp
+        Server/server_plugins.cpp)
     target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
+        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm
+        dingosdk_plugins)
 endif()
 # The route and logging tests live in the local, untracked tests/ folder.
 option(DINGOSDK_BUILD_ROUTE_TESTS "Build native route cycle regression tests" OFF)
@@ -424,6 +436,16 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     add_executable(dingosdk_studio_pack_file_tests Extension/AnimationStudio/Test/pack_file_tests.cpp)
     target_include_directories(dingosdk_studio_pack_file_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME studio_pack_files COMMAND dingosdk_studio_pack_file_tests)
+    # A trick locked by its creator: preview only, never edited, copied, renamed or shared; COPY TO's new names.
+    add_executable(dingosdk_trick_lock_tests Extension/AnimationStudio/Test/trick_lock_tests.cpp Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_trick_lock_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_trick_lock_tests PRIVATE dingosdk_json)
+    add_test(NAME trick_lock COMMAND dingosdk_trick_lock_tests)
+    # TOP OF THE MONTH's numbers and the developers' VERIFIED list.
+    add_executable(dingosdk_marketplace_month_tests Extension/AnimationStudio/Test/marketplace_month_tests.cpp)
+    target_include_directories(dingosdk_marketplace_month_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_marketplace_month_tests PRIVATE dingosdk_json)
+    add_test(NAME marketplace_month COMMAND dingosdk_marketplace_month_tests)
     # studio-settings.json, read and written back.
     add_executable(dingosdk_studio_settings_file_tests Extension/AnimationStudio/Test/studio_settings_file_tests.cpp)
     target_include_directories(dingosdk_studio_settings_file_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -435,6 +457,10 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_studio_settings_rows_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_studio_settings_rows_tests PRIVATE dingosdk_json)
     add_test(NAME studio_settings_rows COMMAND dingosdk_studio_settings_rows_tests)
+    # TRICKS > MY TRICKS as a folder: kinds, filters, order, groups, rows on screen, choosing.
+    add_executable(dingosdk_trick_browser_tests Extension/AnimationStudio/Test/trick_browser_tests.cpp)
+    target_include_directories(dingosdk_trick_browser_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME trick_browser COMMAND dingosdk_trick_browser_tests)
     if(WIN32 AND NOT TARGET dingosdk_native_tools_view_tests)
         add_executable(dingosdk_native_tools_view_tests Extension/UI/NativeMenu/Test/native_tools_view_tests.cpp)
         target_include_directories(dingosdk_native_tools_view_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -475,6 +501,12 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_pose_place_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_pose_place_tests PRIVATE dingosdk_json)
     add_test(NAME pose_place COMMAND dingosdk_pose_place_tests)
+    # A joint moved on top of the pose as it is drawn (reskate.skater.pose's offsets), not the animation's.
+    add_executable(dingosdk_pose_offset_tests Extension/Skater/Test/pose_offset_tests.cpp Extension/Skater/pose_offset.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_pose_offset_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_pose_offset_tests PRIVATE dingosdk_json)
+    add_test(NAME pose_offset COMMAND dingosdk_pose_offset_tests)
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)
 if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
@@ -528,6 +560,11 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     # It also runs the test plugins in contrib/plugins.
     target_compile_definitions(dingosdk_plugin_tests PRIVATE "RESKATE_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
     add_test(NAME plugins COMMAND dingosdk_plugin_tests)
+    # The item grids' search and order (Extension/Customization/item_browser_order.h), pure, so it
+    # runs on Linux too.
+    add_executable(dingosdk_item_browser_order_tests Extension/Customization/Test/item_browser_order_tests.cpp)
+    target_include_directories(dingosdk_item_browser_order_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME item_browser_order COMMAND dingosdk_item_browser_order_tests)
     # reskate.viewmodel's file and clips (Extension/UI/Overlay/viewmodel_model.h), and the FPS plugin's
     # exported pistol when contrib/plugins has it.
     add_executable(dingosdk_viewmodel_tests Extension/UI/Overlay/Test/viewmodel_model_tests.cpp Extension/UI/Overlay/viewmodel_model.cpp)
@@ -563,6 +600,10 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
     target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME trick_watch COMMAND dingosdk_trick_watch_tests)
+    # Which trick list writes are a trick's (Extension/Skater/trick_feed_gate.h): never the song's title.
+    add_executable(dingosdk_trick_feed_gate_tests Extension/Skater/Test/trick_feed_gate_tests.cpp)
+    target_include_directories(dingosdk_trick_feed_gate_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME trick_feed_gate COMMAND dingosdk_trick_feed_gate_tests)
     # The board's shader parameters (Extension/Customization/board_material.h): the walk over a board
     # laid out as the game holds it, what plugins may set, and holding and putting back.
     add_executable(dingosdk_board_material_tests Extension/Customization/Test/board_material_tests.cpp)

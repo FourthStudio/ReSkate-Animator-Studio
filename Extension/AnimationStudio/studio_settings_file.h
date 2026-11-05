@@ -11,6 +11,18 @@ namespace dingosdk::anim_studio {
 // The first-start guide's version: a guide that changed opens once again for everyone (studio-settings.json "guide_read"
 // keeps the one read). 2: no ACTIVE, your own tricks straight into playlists, pop heights.
 inline constexpr int guide_version = 3; // 3: the LIBRARY
+// The editor's first-open tour, the same way ("editor_tour_read"): a tour that changes much shows once again.
+inline constexpr int editor_tour_version = 1;
+// TRICKS > MY TRICKS as a folder: how it was last shown, kept for the next time (trick_browser.h's ViewMode, GroupBy and
+// Column, by their numbers). FROM PACKS has its own grouping: by pack, as it always was.
+struct TricksView {
+    int view{1};        // 0 icons, 1 list, 2 details
+    int group_mine{};   // 0 by trick, 1 by type, 2 by pack, 3 none
+    int group_packs{2};
+    int sort{};         // the column sorted by
+    bool descending{};
+    bool operator==(const TricksView&) const = default;
+};
 // What studio-settings.json keeps, apart from the studio's state: the studio reads it into its state at start and
 // writes it back whole after each change. A key the file does not have keeps the value it is given.
 struct SettingsFile {
@@ -29,6 +41,8 @@ struct SettingsFile {
     bool play_in_game{true};
     bool catch_marker{true};                     // SETTINGS > STUDIO: the catch's tools shown
     bool guide_seen{};                           // this first-start guide (guide_version) was read
+    bool editor_tour_seen{};                     // the editor's first-open tour (editor_tour_version) was gone through or skipped
+    TricksView tricks_view;                      // TRICKS > MY TRICKS: icons, list or details, its groups and its order
     bool smooth_transitions{true};               // SETTINGS > TRICKS > Transitions: SMOOTH (the handover) or CLASSIC
     bool advanced_bones{}, finger_bones{};                                  // SETTINGS > SKATER: their rows shown
     int open_combo{};                                                       // SETTINGS > STUDIO > Controller combo
@@ -65,6 +79,16 @@ inline void read_settings_file(const Json& root, SettingsFile& f) {
     f.catch_marker = root.value("catch_marker", f.catch_marker);
     f.guide_seen = root.value("guide_read", 0) >= guide_version; // "guide_seen" was the first guide's: it opens again
     f.smooth_transitions = root.value("smooth_transitions", f.smooth_transitions);
+    f.editor_tour_seen = root.value("editor_tour_read", 0) >= editor_tour_version;
+    if (root.contains("my_tricks") && root.at("my_tricks").is_object()) {
+        const auto& t = root.at("my_tricks");
+        auto& v = f.tricks_view;
+        v.view = std::clamp(t.value("view", v.view), 0, 2);
+        v.group_mine = std::clamp(t.value("group", v.group_mine), 0, 3);
+        v.group_packs = std::clamp(t.value("group_packs", v.group_packs), 0, 3);
+        v.sort = std::clamp(t.value("sort", v.sort), 0, 7);
+        v.descending = t.value("descending", v.descending);
+    }
 }
 inline Json settings_file_json(const SettingsFile& f) {
     Json root = Json::object();
@@ -92,6 +116,14 @@ inline Json settings_file_json(const SettingsFile& f) {
     root["catch_marker"] = f.catch_marker;
     root["guide_read"] = f.guide_seen ? guide_version : 0;
     root["smooth_transitions"] = f.smooth_transitions;
+    root["editor_tour_read"] = f.editor_tour_seen ? editor_tour_version : 0;
+    Json tricks = Json::object();
+    tricks["view"] = f.tricks_view.view;
+    tricks["group"] = f.tricks_view.group_mine;
+    tricks["group_packs"] = f.tricks_view.group_packs;
+    tricks["sort"] = f.tricks_view.sort;
+    tricks["descending"] = f.tricks_view.descending;
+    root["my_tricks"] = tricks;
     return root;
 }
 }

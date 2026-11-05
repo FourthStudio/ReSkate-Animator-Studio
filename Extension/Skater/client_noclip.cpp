@@ -261,6 +261,7 @@ void noclip_apply_velocity(std::uintptr_t core) noexcept {
 }
 // Trainer: called after each physics update (see set_physics_step_callback).
 std::atomic<void (*)() noexcept> physics_step_callback{};
+std::atomic<void (*)(std::uintptr_t) noexcept> body_motion_callback{}; // Real Bails
 struct JumpScale {
     std::atomic<bool> pending{};
     std::uintptr_t client{}, entity{}, core{};
@@ -1136,6 +1137,7 @@ void noclip_physics_update(std::uintptr_t core) {
     trainer_air_gravity(core);
     trainer_revert_boost(core);
     trainer_transition(core);
+    if (const auto callback = body_motion_callback.load(std::memory_order_acquire)) callback(core);
 }
 bool noclip_motion_target(std::uintptr_t rig, std::uintptr_t context,
     const std::array<float,16>* supplied, std::array<float,16>& target) noexcept {
@@ -1256,6 +1258,9 @@ bool queue_skater_push_velocity(std::uintptr_t client,std::uintptr_t entity,cons
     }catch(...){return false;}
 }
 void set_physics_step_callback(void (*callback)() noexcept) noexcept { physics_step_callback.store(callback, std::memory_order_release); }
+void set_body_motion_callback(void (*callback)(std::uintptr_t) noexcept) noexcept {
+    body_motion_callback.store(callback, std::memory_order_release);
+}
 bool queue_jump_scale(std::uintptr_t client, std::uintptr_t entity, float factor) noexcept {
     SourceLastError error;
     try {
