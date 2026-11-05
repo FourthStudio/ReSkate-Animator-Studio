@@ -35,8 +35,10 @@ std::string_view ease_name(Ease ease) noexcept {
     return ease == Ease::linear ? "linear" : ease == Ease::step ? "step" : "smooth";
 }
 
-constexpr std::array<EditableJoint, 55> joints{{
+constexpr std::array<EditableJoint, 57> joints{{
     {board_joint, "Board", true},
+    {front_truck_joint, "Front truck", false},
+    {back_truck_joint, "Back truck", false},
     {7, "Hips", true},
     {42, "Lower back", false},
     {44, "Chest", false},
@@ -1436,6 +1438,17 @@ Joint mirror_board_pose(const Joint& board) noexcept {
 // the one through the board's middle along its length, so across is what reflects.
 Quat mirror_board_rotation(const Quat& q) noexcept { return {q[0], -q[1], -q[2], q[3]}; }
 Vec3 mirror_board_vector(const Vec3& v) noexcept { return {-v[0], v[1], v[2]}; }
+// A truck's own y runs across the board (the rig's rest: +x for the back truck, -x for the front one), its x and z in the
+// plane along the board that the game mirrors in. A turn about an axis square to a mirror stays; about one lying in it, it
+// goes the other way.
+Quat mirror_truck_rotation(const Quat& q) noexcept { return {-q[0], q[1], -q[2], q[3]}; }
+Quat truck_turn(const Animation& edits, std::uint16_t truck, float seconds, bool mirror) {
+    if (!std::isfinite(seconds) || seconds < edits.start || (edits.end >= 0 && seconds > edits.end)) return {0, 0, 0, 1};
+    const auto* track = edits.track(truck);
+    if (!truck_joint(truck) || !track || track->hidden || track->keys.empty()) return {0, 0, 0, 1};
+    const auto turn = normalised(evaluate(*track, seconds).rotation);
+    return mirror ? mirror_truck_rotation(turn) : turn;
+}
 Clip mirror_clip(const Clip& clip) {
     if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
     Clip out = clip;
@@ -1784,10 +1797,10 @@ Animation mirror_animation(const Animation& animation) {
     if (animation.clip.joints) out.clip = mirror_clip(animation.clip); // the profile alone has no clip
     for (auto& track : out.tracks) {
         if (track.joint < skeleton_joints) track.joint = mirror_joint[track.joint];
-        const bool board = track.joint == board_joint;
+        const bool board = track.joint == board_joint, truck = truck_joint(track.joint);
         for (auto& key : track.keys) {
-            key.rotation = board ? mirror_board_rotation(key.rotation) : mirror_rotation(key.rotation);
-            key.offset = board ? mirror_board_vector(key.offset) : mirror_vector(key.offset);
+            key.rotation = truck ? mirror_truck_rotation(key.rotation) : board ? mirror_board_rotation(key.rotation) : mirror_rotation(key.rotation);
+            key.offset = truck ? Vec3{} : board ? mirror_board_vector(key.offset) : mirror_vector(key.offset);
         }
     }
     return out;

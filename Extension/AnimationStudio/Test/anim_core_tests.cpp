@@ -1380,9 +1380,12 @@ void preview_trajectory_uses_the_whole_clip() {
 }
 void timing_and_stance_edge_cases() {
     check(!gameplay_body_joint(50) && !gameplay_body_joint(283), "Gameplay does not replace native hand attachment transforms with recorded rest positions");
-    check(!gameplay_body_joint(placement_joint) && !gameplay_body_joint(board_joint), "Gameplay body ownership excludes placement and board");
+    check(!gameplay_body_joint(placement_joint) && !gameplay_body_joint(board_joint) && !gameplay_body_joint(front_truck_joint) &&
+              !gameplay_body_joint(back_truck_joint),
+          "Gameplay body ownership excludes placement, the board and its trucks");
     for (const auto& joint : editable_joints())
-        if (joint.index != board_joint) check(gameplay_body_joint(joint.index), "Every editable body joint retains gameplay ownership");
+        if (joint.index != board_joint && !truck_joint(joint.index))
+            check(gameplay_body_joint(joint.index), "Every editable body joint retains gameplay ownership");
     for (std::uint16_t j = 0; j < skeleton_joints; ++j)
         check(gameplay_body_joint(j) == gameplay_body_joint(mirror_joint[j]), "Gameplay ownership is symmetric across left and right");
     GameplayClipClock clock;
@@ -3457,6 +3460,51 @@ void tricks_begin_at_the_flick_and_hand_over_the_games_way() {
     }
 }
 // Inertialization from the pose that was shown (Bollo, GDC 2018), the deck under a foot, and the early start.
+// The trucks' keys (front_truck_joint, back_truck_joint): a turn in each truck's own axes. The board rig's rests below are
+// board_pose.cpp's; each truck's y lies across the board, so the game's mirror (the plane along the board, x -> -x in the
+// deck's axes) reverses its turns about x and z and keeps its turn about y - for both trucks.
+void trucks_turn_in_their_own_axes() {
+    const std::array<Quat, 2> rests{Quat{-0.6061674f, 0.6061674f, 0.3640894f, 0.3640894f}, Quat{-0.3641458f, -0.3641458f, -0.6061335f, 0.6061335f}};
+    const auto flip_x = [](const Vec3& v) { return Vec3{-v[0], v[1], v[2]}; };
+    for (const auto& rest : rests) {
+        const auto across = rotate(normalised(rest), Vec3{0, 1, 0});
+        check(near(std::abs(across[0]), 1.0f, 1e-3f), "A truck's own y lies across the board");
+        const auto key = normalised(from_euler({17, -23, 31}));
+        const auto mirrored = mirror_truck_rotation(key);
+        // Any point of the truck, turned by its key and then mirrored, is where the mirrored key turns its mirror image
+        // (the truck is the same on both sides, so that image is a point of it too).
+        for (const Vec3 p : {Vec3{0.02f, 0.05f, -0.01f}, Vec3{-0.03f, 0.0f, 0.04f}, Vec3{0.0f, -0.06f, 0.0f}}) {
+            const auto made = flip_x(rotate(normalised(rest), rotate(key, p)));
+            const auto image = rotate(conjugate(normalised(rest)), flip_x(rotate(normalised(rest), p)));
+            const auto played = rotate(normalised(rest), rotate(mirrored, image));
+            check(near(made[0], played[0]) && near(made[1], played[1]) && near(made[2], played[2]),
+                  "A truck's key mirrored turns the truck as the mirror shows it");
+        }
+        check(same_turn(mirror_truck_rotation(mirrored), key), "A truck's key mirrored twice is the key");
+    }
+    Animation animation;
+    animation.start = 0.1f;
+    animation.end = 0.9f;
+    set_key(animation, front_truck_joint, 0.2f, {from_euler({0, 0, 0}), {}});
+    set_key(animation, front_truck_joint, 0.6f, {from_euler({20, 0, 0}), {0.1f, 0, 0}});
+    check(editable(front_truck_joint) && editable(back_truck_joint) && !editable(front_truck_joint)->moves,
+          "The trucks are rows of their own, turned and never moved");
+    check(same_turn(truck_turn(animation, front_truck_joint, 0.6f), from_euler({20, 0, 0})), "A truck turns as its key says");
+    check(truck_turn(animation, front_truck_joint, 0.05f) == Quat{0, 0, 0, 1} && truck_turn(animation, back_truck_joint, 0.6f) == Quat{0, 0, 0, 1},
+          "Outside the animation, or with no keys, a truck is as the game has it");
+    check(same_turn(truck_turn(animation, front_truck_joint, 0.6f, true), mirror_truck_rotation(from_euler({20, 0, 0}))),
+          "A truck's key plays mirrored for the other stance");
+    const auto goofy = mirror_animation(animation);
+    const auto* track = goofy.track(front_truck_joint);
+    check(track && track->keys.size() == 2 && same_turn(track->keys[1].rotation, mirror_truck_rotation(from_euler({20, 0, 0}))) &&
+              track->keys[1].offset == Vec3{},
+          "A mirrored trick keeps the front truck's keys on the front truck, mirrored, never moved");
+    auto whole = animation; // a file's window and keys are checked against its clip's length
+    whole.clip.times = {0, 1.0f};
+    const auto back = from_json(to_json(whole));
+    const auto* saved = back.track(front_truck_joint);
+    check(saved && saved->keys.size() == 2 && same_turn(saved->keys[1].rotation, from_euler({20, 0, 0})), "A truck's keys are saved and read back");
+}
 void transitions_go_from_the_shown_pose() {
     // The curve: from x0 with v0, to nothing with no speed and no acceleration at its end.
     {
@@ -3571,6 +3619,7 @@ void transitions_go_from_the_shown_pose() {
 int main(int argc, char** argv) {
     try {
         transitions_go_from_the_shown_pose();
+        trucks_turn_in_their_own_axes();
         tricks_begin_at_the_flick_and_hand_over_the_games_way();
         check(fill_pop_rank(0, 1) > playback_pop_rank("high", "") && fill_pop_rank(0, 2) > fill_pop_rank(0, 1) &&
               fill_pop_rank(-1, 1) == -1 && fill_pop_rank(0, 0) == 0,

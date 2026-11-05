@@ -532,30 +532,47 @@ Joint joint_of(const NativeBone& b) noexcept {
 }
 // The frame bone 2 hangs in, in the world.
 Joint board_parent(const std::array<NativeBone, board_bones>& b) noexcept { return compose(joint_of(b[0]), joint_of(b[1])); }
+// The board rig's trucks (board_pose.cpp's truck_rests): each truck's bone and its baseplate's (its effector, which a deck
+// pack's truck model hangs the baseplate on; the game's own model has it on the deck), how the truck is turned on the deck
+// at rest and where it sits, and the effector on it at rest. Front is the nose's truck: the studio draws the board nose
+// forward, so front_truck_joint's keys go to it.
+struct TruckRest { std::size_t truck, plate; Quat facing; Vec3 at, effector; };
+constexpr std::array<TruckRest, 2> truck_rests{{
+    {8, 9, {-0.6061674f, 0.6061674f, 0.3640894f, 0.3640894f}, {0.0005361f, -0.0182917f, 0.2346680f}, {0.0395677f, 0, 0}},
+    {4, 5, {-0.3641458f, -0.3641458f, -0.6061335f, 0.6061335f}, {0.0005361f, -0.0183003f, -0.2344986f}, {0.0395021f, 0, 0}},
+}};
+constexpr std::array<std::uint16_t, 2> truck_joints{front_truck_joint, back_truck_joint};
+// A truck turned by its key (`turn`, in its own axes, on top of how it is turned now), its baseplate left where it is on the
+// deck: the plate hangs on the truck's bone, so the truck's turn is taken back from it. Only the hanger, its axle and its
+// wheels turn (the user, 2026-11-05: "only twist the axles of the trucks, not the baseplate").
+template <class Bone> void turn_truck(Bone& truck, Bone& plate, const Quat& turn) noexcept {
+    if (turn == Quat{0, 0, 0, 1} || !std::isfinite(turn[0] + turn[1] + turn[2] + turn[3])) return;
+    const auto back = conjugate(turn);
+    const Quat truck_now{truck.rotation[0], truck.rotation[1], truck.rotation[2], truck.rotation[3]};
+    const Quat plate_now{plate.rotation[0], plate.rotation[1], plate.rotation[2], plate.rotation[3]};
+    const auto truck_turned = normalised(multiply(truck_now, turn));
+    const auto plate_turned = normalised(multiply(back, plate_now));
+    const auto plate_at = rotate(back, Vec3{plate.position[0], plate.position[1], plate.position[2]});
+    for (std::size_t k = 0; k < 4; ++k) truck.rotation[k] = truck_turned[k], plate.rotation[k] = plate_turned[k];
+    for (std::size_t k = 0; k < 3; ++k) plate.position[k] = plate_at[k];
+}
 // The trucks upright on the deck, as they are at rest (board_break_model.h), with their baseplates on the deck as
-// Board Break keeps them. In the studio the game goes on steering its trucks from its own board, lying wherever it
-// is, so the trucks of the board drawn in the studio turned about by themselves. Each truck keeps where the game
-// has it (a wide deck's sit further out); only its lean and steer are taken off. Bones 4 and 8 the trucks, 5 and
-// 9 their baseplates.
-void hold_trucks_at_rest(std::array<NativeBone, board_bones>& b) noexcept {
-    // Preview rest transforms only; Board Break itself now belongs to a plugin.
-    struct TruckRest { Quat facing; Vec3 at, effector; };
-    static constexpr TruckRest back{{-0.3641458f, -0.3641458f, -0.6061335f, 0.6061335f},
-                                    {0.0005361f, -0.0183003f, -0.2344986f}, {0.0395021f, 0, 0}};
-    static constexpr TruckRest front{{-0.6061674f, 0.6061674f, 0.3640894f, 0.3640894f},
-                                     {0.0005361f, -0.0182917f, 0.2346680f}, {0.0395677f, 0, 0}};
-    struct Truck { std::size_t truck, plate; const TruckRest* rest; };
-    for (const Truck t : {Truck{4, 5, &back}, Truck{8, 9, &front}}) {
-        const Quat facing = normalised(t.rest->facing);
+// Board Break keeps them, then turned by their keys (`turns`: front, back). In the studio the game goes on steering its
+// trucks from its own board, lying wherever it is, so the trucks of the board drawn in the studio turned about by
+// themselves. Each truck keeps where the game has it (a wide deck's sit further out); only its lean and steer are taken off.
+void hold_trucks_at_rest(std::array<NativeBone, board_bones>& b, const std::array<Quat, 2>& turns) noexcept {
+    for (std::size_t i = 0; i < truck_rests.size(); ++i) {
+        const auto& t = truck_rests[i];
+        const Quat facing = normalised(t.facing);
         const Vec3 at{b[t.truck].position[0], b[t.truck].position[1], b[t.truck].position[2]};
-        const Vec3 rest_at = t.rest->at;
-        const auto effector = rotate(facing, t.rest->effector);
-        const auto plate = rotate(conjugate(facing), Vec3{rest_at[0] + effector[0] - at[0], rest_at[1] + effector[1] - at[1],
-                                                          rest_at[2] + effector[2] - at[2]});
+        const auto effector = rotate(facing, t.effector);
+        const auto plate = rotate(conjugate(facing), Vec3{t.at[0] + effector[0] - at[0], t.at[1] + effector[1] - at[1],
+                                                          t.at[2] + effector[2] - at[2]});
         if (!finite(Joint{{1, 1, 1}, facing, plate})) continue;
         for (std::size_t k = 0; k < 4; ++k) b[t.truck].rotation[k] = facing[k];
         b[t.plate].rotation = {0, 0, 0, 1};
         for (std::size_t k = 0; k < 3; ++k) b[t.plate].position[k] = plate[k];
+        turn_truck(b[t.truck], b[t.plate], turns[i]);
     }
 }
 
@@ -744,6 +761,7 @@ struct PreviewPacket {
     Joint mount;
     float weight{};
     std::uintptr_t holder{};
+    std::array<Quat, 2> trucks{{{0, 0, 0, 1}, {0, 0, 0, 1}}}; // the trucks' turns from their keys (front, back)
 };
 struct GameplayPacket {
     std::uint64_t generation{}, episode{}, sequence{}, epoch{};
@@ -2435,13 +2453,13 @@ std::size_t pin_brackets_locked(State& s) {
         }
     return pinned;
 }
-// A finger keyed for the first time gets its brackets (0, 0, 0 at the start and the end), so its key comes in from the
-// game's pose and goes back to it as every other joint's does (key_all_at leaves fingers without keys out).
+// A finger or a truck keyed for the first time gets its brackets (0, 0, 0 at the start and the end), so its key comes in
+// from the game's pose and goes back to it as every other joint's does (key_all_at leaves them out until they have keys).
 void bracket_keyed_fingers_locked(State& s) {
     if (!s.clip || s.clip->empty()) return;
     const float from = s.edits.start, to = s.edits.end < 0 ? s.clip->duration() : s.edits.end;
     for (const auto& joint : editable_joints()) {
-        if (joint.group != JointGroup::fingers) continue;
+        if (joint.group != JointGroup::fingers && !truck_joint(joint.index)) continue;
         const auto* track = s.edits.track(joint.index);
         if (!track || track->keys.empty() || track->locked) continue;
         for (const float at : {from, to}) {
@@ -2508,8 +2526,9 @@ void key_all_at(Animation& animation, float seconds) {
         // trick already has it (board_edited) and the brackets anchor the board like any limb.
         const auto* track = animation.track(joint.index);
         if (track && track->locked) continue;
-        // A finger only once it has keys (bracket_keyed_fingers_locked): thirty empty tracks on every trick otherwise.
-        if (joint.group == JointGroup::fingers && (!track || track->keys.empty())) continue;
+        // A finger or a truck only once it has keys (bracket_keyed_fingers_locked): thirty empty tracks on every trick
+        // otherwise, and a trick nobody keyed a truck on saved as it always was.
+        if ((joint.group == JointGroup::fingers || truck_joint(joint.index)) && (!track || track->keys.empty())) continue;
         bool has = false;
         if (track)
             for (const auto& key : track->keys) has |= std::abs(key.time - seconds) <= 1.0f / 120;
@@ -2552,11 +2571,31 @@ std::string current_trick(std::uintptr_t component) noexcept {
     }
     return name.size() >= 2 ? trick_key(name) : std::string{}; // one name however the game spells it
 }
-void publish_joints(std::span<const Joint> pose, const Joint& placement, const std::optional<Joint>& board, const Quat& board_frame) {
+void publish_joints(std::span<const Joint> pose, const Joint& placement, const std::optional<Joint>& board, const Quat& board_frame,
+                    const std::array<NativeBone, board_bones>* rig, const std::array<Quat, 2>& trucks) {
     std::vector<JointView> views;
     views.reserve(editable_joints().size());
     for (const auto& e : editable_joints()) {
         JointView v;
+        if (truck_joint(e.index)) {
+            // A truck, on the board as drawn: the deck's bone on the mount, the truck where the game has it on the deck, turned
+            // as at rest and then by its keys (hold_trucks_at_rest). Its rings turn it about its own axes.
+            if (!board || !rig) continue;
+            const std::size_t t = e.index == front_truck_joint ? 0 : 1;
+            const auto& rest = truck_rests[t];
+            const auto deck = compose(*board, joint_of((*rig)[3]));
+            Joint local;
+            local.rotation = normalised(multiply(rest.facing, trucks[t]));
+            local.position = {(*rig)[rest.truck].position[0], (*rig)[rest.truck].position[1], (*rig)[rest.truck].position[2]};
+            const auto truck = compose(deck, local);
+            if (!finite(truck)) continue;
+            v.joint = e.index;
+            v.position = truck.position;
+            v.rotation = truck.rotation;
+            v.parent_rotation = deck.rotation;
+            views.push_back(v);
+            continue;
+        }
         if (e.index == board_joint) {
             // The board: its keys turn and move it in the frame of its start (start_frame).
             if (!board) continue;
@@ -3888,6 +3927,7 @@ void on_animation(std::uintptr_t component) noexcept {
         std::size_t first = 0, last = 0; // Studio snapshots only. Gameplay publishes an edit schedule.
         std::shared_ptr<const GameplayPacket> scheduled;
         Joint board_target;
+        std::array<Quat, 2> truck_turns{{{0, 0, 0, 1}, {0, 0, 0, 1}}}; // the studio's trucks, turned by their keys (front, back)
         bool mirrored_body = false; // he is being shown the other way round, so his board is too
         Quat board_frame{0, 0, 0, 1}; // the turn of the board's start (start_frame): its keys work in it
         float board_weight = 0;
@@ -4091,6 +4131,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 const auto unedited = compose(live_placement, rel);
                 const auto origin = start_frame(*shown, live_placement, (l.floor_valid ? l.floor : live_placement.position[1]) + deck, fit_preview_contact);
                 board_target = board_edited(unedited, shown_edits, shown_time, origin.rotation);
+                for (std::size_t t = 0; t < truck_turns.size(); ++t) truck_turns[t] = truck_turn(shown_edits, truck_joints[t], shown_time);
                 // Never into the floor: the board is held up on it, and he is lifted with it - as a board tipped onto
                 // its tail lifts its rider - so his feet stay on the deck.
                 if (has_trick && l.floor_valid)
@@ -4886,6 +4927,7 @@ void on_animation(std::uintptr_t component) noexcept {
             auto& pb = *preview;
             pb.weight = snap->open && board_weight > 0 && finite(board_target) ? board_weight : 0;
             pb.mount = board_target;
+            pb.trucks = truck_turns;
             pb.at = at;
             pb.generation = generation;
             pb.holder = l.board_holder.load(std::memory_order_acquire);
@@ -4899,7 +4941,7 @@ void on_animation(std::uintptr_t component) noexcept {
             std::optional<Joint> board;
             if (board_weight > 0 && finite(board_target)) board = board_target;
             else if (l.board_ok) board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
-            publish_joints(l.pose, live_placement, board, board_frame);
+            publish_joints(l.pose, live_placement, board, board_frame, l.board_ok ? &l.board : nullptr, truck_turns);
         }
         if (l.failure_shown) {
             auto& s = state();
@@ -6674,6 +6716,20 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
             edited[1] = relative(native[0], compose(want, relative(native[board_mount], Joint{})));
             edited[1].scale = native[1].scale;
         }
+        // The trucks by their keys, over the game's own steer and faded in and out with the trick, their baseplates left on
+        // the deck. On a rail too, unlike the board's keys: a pinch is the truck on the rail twisted while the deck presses
+        // on. The keys came mirrored with the stance (mirror_animation); with the deck turned round under him the nose's
+        // truck is the one behind, so the front truck's keys go to the tail's (the two rests are a half turn apart).
+        if (packet && packet->edits && packet->board_holder == holder && overrides_allowed.load() &&
+            motion != MotionState::unknown && motion != MotionState::offboard) {
+            const float weight = std::clamp(packet->weight, 0.0f, 1.0f);
+            for (std::size_t t = 0; t < truck_rests.size() && weight > 0; ++t) {
+                const auto turn = truck_turn(*packet->edits, truck_joints[t], packet->time);
+                if (turn == Quat{0, 0, 0, 1}) continue;
+                const auto& rest = truck_rests[packet->board_backwards ? 1 - t : t];
+                turn_truck(edited[rest.truck], edited[rest.plate], scaled_turn(turn, weight));
+            }
+        }
         if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
             (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) continue;
         if (!finite(edited[1])) throw std::runtime_error("Native board edit produced an invalid transform");
@@ -6682,6 +6738,15 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
             std::memcpy(root.position.data(), edited[1].position.data(), 12);
             if (!poke(layout.buffer + sizeof(NativeBone), &root, sizeof(root))) throw std::runtime_error("Cannot publish board edits");
         }
+        for (const auto& rest : truck_rests)
+            for (const std::size_t bone : {rest.truck, rest.plate}) {
+                // Against what the buffer holds now: a pass that turned it on this same update left that turn there.
+                if (!finite(edited[bone]) || edited[bone] == joint_of(bones[bone])) continue;
+                auto& b = bones[bone];
+                b.rotation = edited[bone].rotation;
+                std::memcpy(b.position.data(), edited[bone].position.data(), 12);
+                if (!poke(layout.buffer + bone * sizeof(NativeBone), &b, sizeof(b))) throw std::runtime_error("Cannot publish truck edits");
+            }
         if (diagnostics_capture) {
             auto& shot = render_shot(); std::lock_guard shot_lock(shot.mutex);
             shot.edited_board = compose(compose(edited[0], edited[1]), edited[board_mount]);
@@ -6773,7 +6838,7 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
                         if (!poke(layout.buffer + sizeof(NativeBone), &r, sizeof(NativeBone)))
                             throw std::runtime_error("Cannot publish studio board");
                         // The trucks at rest on the deck, not steered by the game's own board.
-                        hold_trucks_at_rest(b);
+                        hold_trucks_at_rest(b, packet->trucks);
                         for (const std::size_t bone : {std::size_t{4}, std::size_t{5}, std::size_t{8}, std::size_t{9}})
                             if (!poke(layout.buffer + bone * sizeof(NativeBone), &b[bone], sizeof(NativeBone)))
                                 throw std::runtime_error("Cannot publish studio trucks");
