@@ -1,6 +1,6 @@
 # animator studio 1.2
 
-A big update: smoother transitions in and out of tricks, a new bail logic, the TRICKS tab as a folder, an easier LIBRARY, the MARKET as a magazine and shop, fixes for the bugs reported on Discord, fewer frame spikes, and an updater that installs itself. Built for **ReSkate 2.1.4**. Your packs and saved tricks need no changes.
+A big update: smoother transitions in and out of tricks, a new bail logic, the TRICKS tab as a folder, an easier LIBRARY, the MARKET as a magazine and shop, fixes for the bugs reported on Discord, fewer frame spikes, and an updater that installs itself. Built for **ReSkate 2.1.4-2**. Your packs and saved tricks need no changes.
 
 ## transitions
 
@@ -64,7 +64,7 @@ Rewritten after measuring 70 recorded bails. The game holds a joint that turns s
 
 ## install or update
 
-1. Use a working **ReSkate 2.1.4** installation.
+1. Use a working **ReSkate 2.1.4-2** installation.
 2. Close the game and launcher. Back up `ReSkate.dll`.
 3. Download **ReSkate.dll** from this release and replace the DLL beside `ReSkateLauncher.exe`.
 4. Launch through `ReSkateLauncher.exe`.
