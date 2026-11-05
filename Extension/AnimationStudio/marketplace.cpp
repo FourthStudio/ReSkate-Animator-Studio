@@ -816,8 +816,10 @@ void readme_worker() {
 constexpr std::size_t previews_kept = 5;
 std::filesystem::path previews_folder() { return folder() / L"previews"; }
 std::wstring preview_stem(const Pack& pack) { return widen(pack.owner + "-" + pack.name + "-" + pack.version); }
-// The ones looked at longest ago go, with their tricks, past the last few.
+// The ones looked at longest ago go, with their tricks, past the last few. A preview stopped for another pack keeps its
+// part file (up to 512 MB) to resume. Old parts go after 72 hours, as in downloads.
 void prune_previews(const std::filesystem::path& keep) {
+    prune_parts(previews_folder());
     std::error_code error;
     std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> zips;
     for (const auto& entry : std::filesystem::directory_iterator(previews_folder(), error))
