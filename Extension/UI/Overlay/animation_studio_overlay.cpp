@@ -12430,7 +12430,7 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     y += row;
     if (tool("##snap", "SNAP", key_of("snap").c_str(), u.snap, "A foot you move lands on the deck and slides along it.")) u.snap = !u.snap;
     y += row;
-    if (tool("##lock", "LOCK", key_of("lock").c_str(), u.board_lock, "The skater is locked to the board: turn or move the board and he goes with it."))
+    if (tool("##boardlock", "LOCK", key_of("lock").c_str(), u.board_lock, "The skater is locked to the board: turn or move the board and he goes with it."))
         u.board_lock = !u.board_lock;
     y += row;
     if (tool("##limits", "LIMITS", key_of("limits").c_str(), v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
