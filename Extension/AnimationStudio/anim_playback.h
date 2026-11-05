@@ -547,12 +547,14 @@ inline const std::array<Vec3, 11>& sole_points() noexcept {
 // A foot (its joint, in the deck's mount frame) against the deck: how far its sole's lowest point over the deck is above the
 // grip there (below 0: in the deck; empty when no point of it is over the deck), and how far up along the deck's up it has to
 // go to be on it. Only a foot on top - its ankle over the deck's middle - is lifted: one under the board (a flip turning
-// under him) is never pulled up through it.
+// under him) is never pulled up through it. `floor` (0 or below): how far into the deck a sole may be - the game's own pose's
+// depth there (shown_pose_body) - so only what is deeper than that is lifted.
 struct SoleOnDeck {
     std::optional<float> lowest; // metres over the grip, of the lowest sole point over the deck
-    float lift{};                // metres to move it up so none is in the deck
+    float lift{};                // metres to move it up so none is deeper in the deck than `floor`
 };
-inline SoleOnDeck sole_on_deck(const Joint& foot) noexcept {
+inline SoleOnDeck sole_on_deck(const Joint& foot, float floor = 0) noexcept {
+    floor = std::isfinite(floor) ? std::clamp(floor, -0.12f, 0.0f) : 0.0f;
     SoleOnDeck out;
     if (!std::isfinite(foot.position[0]) || !std::isfinite(foot.position[1]) || !std::isfinite(foot.position[2])) return out;
     for (const auto& p : sole_points()) {
@@ -564,7 +566,7 @@ inline SoleOnDeck sole_on_deck(const Joint& foot) noexcept {
     }
     const bool on_top = foot.position[1] > deck_top_at(foot.position[2]) - deck_thickness * 0.5f;
     // (Not for a millimetre: a sole resting on the grip reads a hair either side of it.)
-    if (out.lowest && *out.lowest < -0.001f && on_top && *out.lowest > -0.12f) out.lift = -*out.lowest;
+    if (out.lowest && *out.lowest < floor - 0.001f && on_top && *out.lowest > -0.12f) out.lift = floor - *out.lowest;
     return out;
 }
 // ---- starting early: the game says what comes next ------------------------------------------------------------------------

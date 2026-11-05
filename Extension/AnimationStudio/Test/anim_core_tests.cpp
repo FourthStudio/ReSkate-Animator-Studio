@@ -3582,6 +3582,14 @@ void transitions_go_from_the_shown_pose() {
         check(sole_on_deck(under).lift == 0, "A foot under the board (a flip turning under him) is never pulled up through it");
         auto kick = standing(0.0f, 0.104f, 0.36f);
         check(deck_top_at(0.36f) > deck_grip && sole_on_deck(kick).lift >= 0, "The kicks rise towards the tips");
+        // As deep as the game's own pose stands it, and no deeper: a shoe the game has 5 mm in the deck stays there (lifted
+        // for a handover and dropped at its end, the feet jumped after every trick); one the studio has 3 cm in goes up to 5 mm.
+        auto games = on; games.position[1] -= 0.005f;
+        const float game_depth = *sole_on_deck(games).lowest;
+        check(game_depth < -0.003f && sole_on_deck(games, game_depth).lift == 0, "A sole as deep as the game's own is left there");
+        check(near(sole_on_deck(in, game_depth).lift, game_depth - *sunk.lowest), "A deeper one is lifted to the game's depth, not the grip");
+        check(sole_on_deck(in, 0.02f).lift == sunk.lift && sole_on_deck(in, std::nanf("")).lift == sunk.lift,
+              "A floor over the grip, or none, is the grip");
     }
     // The deck's hold as the body's pass does it: a leg whose foot is drawn 3 cm into a level deck is bent by its IK until the
     // sole is on the grip, the foot keeping its turn, the hip where it was.
