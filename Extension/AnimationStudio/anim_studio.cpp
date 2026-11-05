@@ -1696,6 +1696,16 @@ std::map<std::filesystem::path, ListedFile>& listed_files() {
     static auto* files = new std::map<std::filesystem::path, ListedFile>;
     return *files;
 }
+// A label or a pop is not a save. The file keeps its old time, because the newest save of a trick is the one that plays.
+// The time and often the size then stay the same, so the listing would keep its old parse: the edit drops it.
+// Under the studio's lock only.
+void write_keeping_saved_time(const std::filesystem::path& path, const std::string& text) {
+    std::error_code error;
+    const auto saved_when = std::filesystem::last_write_time(path, error);
+    write_preset_file(path, text);
+    if (!error) std::filesystem::last_write_time(path, saved_when, error);
+    listed_files().erase(path);
+}
 const Animation& listed_animation(const std::filesystem::path& json) {
     // Its time and size in one look at the disk (each look costs about 0.1 ms on a PC with an antivirus watching).
     WIN32_FILE_ATTRIBUTE_DATA data{};
@@ -1735,7 +1745,8 @@ void read_library_locked(State& s) {
         try {
             if (listed_animation(json).upgraded == current_upgrade) continue;
         } catch (...) {}
-        upgrade_saved(json);
+        // The upgrade keeps the file's time too.
+        if (upgrade_saved(json)) listed_files().erase(json);
     }
     try {
         s.packs_on = packs_on();
@@ -8666,11 +8677,7 @@ bool set_label(const std::string& animation, const std::string& label_in, std::s
         auto root = Json::parse(text);
         if (!root.is_object()) throw std::runtime_error(animation + " is not a saved animation.");
         root["label"] = label;
-        // A label is not a save: which of a kind plays goes by when it was saved.
-        std::error_code error;
-        const auto saved_when = std::filesystem::last_write_time(path, error);
-        write_preset_file(path, root.dump(2));
-        if (!error) std::filesystem::last_write_time(path, saved_when, error);
+        write_keeping_saved_time(path, root.dump(2));
         if (s.saved_as == safe) s.edits.label = label;
         message = label.empty() ? animation + " is shown by its own name again." : animation + " is labelled " + label + ".";
         read_library_locked(s);
@@ -8711,11 +8718,7 @@ bool set_saved_pop(const std::string& animation, const std::string& pop_in, std:
         if (trick.empty()) throw std::runtime_error(animation + " has no trick, so it has no pop: it plays as a piece of the game's animation.");
         // Only the pop changes in the file, and not when it was saved (which of a kind plays goes by that).
         root["pop"] = pop;
-        const auto path = saved_json(safe);
-        std::error_code error;
-        const auto saved_when = std::filesystem::last_write_time(path, error);
-        write_preset_file(path, root.dump(2));
-        if (!error) std::filesystem::last_write_time(path, saved_when, error);
+        write_keeping_saved_time(saved_json(safe), root.dump(2));
         if (s.saved_as == safe) s.edits.pop = pop;
         read_library_locked(s);
         // Filed under its new pop in every pack it is in (keeping Fixed or Alternate and its place in the cycle).
