@@ -284,6 +284,7 @@ struct Ui {
     bool pack_page{};         // a pack is open on its own page (else MY PACKS, every pack)
     float hub_scroll{};       // MY PACKS' scroll
     float pack_tricks_scroll{};
+    float own_packs_scroll{}; // PACKS' front page
     bool pack_adding{};       // ADD TRICKS is open over the pack
     float adding_scroll{};
     bool conflicts_open{};    // the duplicate tricks card
@@ -2644,6 +2645,11 @@ bool other_cards_open(const studio::View& v) {
            !u.offer_pack.empty();
 }
 bool any_card_open(const studio::View& v) { return other_cards_open(v) || tour_wanted(v); }
+// The menu's tabs by number (menu_tabs below): 0 TRICKS, 1 LIBRARY, 2 MARKET, 3 SETTINGS, 4 ABOUT, and PACKS, which came back
+// later (2026-11-05: making and publishing your own packs) with the number after them, so every other tab kept its own. They
+// are shown, and Q / E go through them, in menu_order.
+constexpr int packs_tab = 5;
+constexpr std::array<int, 6> menu_order{0, packs_tab, 1, 2, 3, 4};
 void open_menu(int tab = -1) {
     auto& u = ui();
     u.menu = true;
@@ -2652,8 +2658,11 @@ void open_menu(int tab = -1) {
 }
 void switch_menu_tab(int by) {
     auto& u = ui();
-    constexpr int tabs = 5; // TRICKS, PACKS, MARKET, SETTINGS, ABOUT (menu_tabs)
-    u.menu_tab = (u.menu_tab + by + tabs) % tabs;
+    constexpr int tabs = static_cast<int>(menu_order.size());
+    int at = 0;
+    for (int i = 0; i < tabs; ++i)
+        if (menu_order[static_cast<std::size_t>(i)] == u.menu_tab) at = i;
+    u.menu_tab = menu_order[static_cast<std::size_t>((at + by % tabs + tabs) % tabs)];
 }
 // Every duplicate trick not decided yet is left to take turns at random: the card asked once, and was answered.
 void conflicts_done(const studio::View& v) {
@@ -2737,7 +2746,7 @@ void menu_back(const studio::View& v) {
             return;
         }
     }
-    if (u.menu_tab == 1 && u.pack_page) {
+    if ((u.menu_tab == 1 || u.menu_tab == packs_tab) && u.pack_page) {
         u.pack_page = false;
         return;
     }
@@ -3291,8 +3300,8 @@ void keyboard(const studio::View& v) {
 // skate.'s own full-screen menus, in the studio's colours: the tabs in the middle at the top (Q / E, LB / RB), the
 // page under them, and what the buttons do along the bottom. TRICKS is where a trick is picked to edit, PACKS where
 // your packs are kept, SETTINGS how the studio works.
-constexpr std::array<const char*, 5> menu_tabs{"TRICKS", "LIBRARY", "MARKET", "SETTINGS", "ABOUT"};
-static_assert(menu_tabs.size() == 5, "switch_menu_tab counts the tabs");
+constexpr std::array<const char*, 6> menu_tabs{"TRICKS", "LIBRARY", "MARKET", "SETTINGS", "ABOUT", "PACKS"}; // by number
+static_assert(menu_tabs.size() == menu_order.size(), "menu_order shows every tab once");
 const studio::Preset* preset_named(const studio::View& v, const std::string& name) {
     const auto found = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == name; });
     return found == v.presets.end() ? nullptr : &*found;
@@ -7404,7 +7413,7 @@ float cover_section(ImDrawList* d, const Fonts& f, const studio::View& v, const 
         const float w1 = shop_button_width(f, "SHARE YOUR PACK", bh);
         if (shop_button(d, f, "##covershare", ImVec2(plan.words_x, buttons_y), ImVec2(w1, bh), "SHARE YOUR PACK",
                         look.page == PaperKind::blue ? ShopLook::black : ShopLook::accent)) {
-            u.menu_tab = 1;
+            u.menu_tab = packs_tab;
             u.pack_page = false;
         }
     }
@@ -7622,11 +7631,11 @@ float cta_section(ImDrawList* d, const Fonts& f, const ShopColumn& col, ImVec2 d
     const auto [bt, bf] = caps_of(big, 78 * k);
     d->AddText(sharp(big, 78 * k), 78 * k, ImVec2(cx, y + 70 * k - bt), IM_COL32_WHITE, "GOT A TRICK?");
     d->AddText(sharp(big, 78 * k), 78 * k, ImVec2(cx, y + 70 * k + (bf - bt) + 14 * k - bt), IM_COL32_WHITE, "PUT IT ON THE SHELF.");
-    const float bw = shop_button_width(f, "SHARE A PACK", 56 * k, 3);
+    const float bw = shop_button_width(f, "CREATE A PACK", 56 * k, 3);
     const ImVec2 at((col.x0 + col.width - 64) * k - bw, y + 120 * k);
     const std::array<std::array<const char*, 3>, 3> steps{{{"01", "MAKE IT", "Pose it, key it, test it in game, in the studio."},
-                                                           {"02", "PACK IT", "Put your tricks in a pack in the LIBRARY, and give it a cover."},
-                                                           {"03", "SHARE IT", "Publish it from there. It is in everyone's shop in a minute."}}};
+                                                           {"02", "PACK IT", "Put your tricks in a pack in PACKS, and give it a cover."},
+                                                           {"03", "SHARE IT", "Publish it from PACKS. It is in everyone's shop in a minute."}}};
     const float sx0 = std::max(cx + text_size(big, 78 * k, "PUT IT ON THE SHELF.").x + 50 * k, (col.x0 + 820) * k);
     const float pitch = std::min(245 * k, (at.x - 40 * k - sx0) / 3), para_w = pitch - 30 * k;
     float sx = sx0;
@@ -7643,10 +7652,9 @@ float cta_section(ImDrawList* d, const Fonts& f, const ShopColumn& col, ImVec2 d
         lines_text(d, body(f, 14 * k), 14 * k, ImVec2(sx, sy), para_w, IM_COL32(255, 255, 255, 235), step[2], 4);
         sx += pitch;
     }
-    if (shop_button(d, f, "##ctashare", at, ImVec2(bw, 56 * k), "SHARE A PACK", ShopLook::paper, true, 3)) {
-        u.menu_tab = 1;
+    if (shop_button(d, f, "##ctashare", at, ImVec2(bw, 56 * k), "CREATE A PACK", ShopLook::paper, true, 3)) {
+        u.menu_tab = packs_tab;
         u.pack_page = false;
-        say("Open one of your packs in the LIBRARY and press SHARE (or UPDATE) on its page: its cover is made there too.");
     }
     marker_words(d, f, ImVec2(at.x - 20 * k, at.y - 52 * k), "your trick here", 28 * k, -6, IM_COL32(246, 242, 232, 255));
     marker_arrow(d, ImVec2(at.x + 150 * k, at.y - 18 * k), ImVec2(at.x + bw * 0.6f, at.y - 2 * k), 14 * k, 3.5f * k, IM_COL32(246, 242, 232, 255), 121);
@@ -8262,13 +8270,13 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             const bool failed = !m.error.empty();
             y += empty_note(d, f, ImVec2(ix, y), iw, failed ? "couldn't reach the shop." : "the shelves are empty.",
                             failed ? m.error + " Packs you have got stay in your LIBRARY meanwhile."
-                                   : "No packs are out yet. Make some tricks, put them in a pack in the LIBRARY and press SHARE: yours is the first on "
+                                   : "No packs are out yet. Make some tricks, put them in a pack in PACKS and publish it: yours is the first on "
                                      "the shelf.",
-                            failed ? "TRY AGAIN" : "OPEN THE LIBRARY", &pressed, 17) +
+                            failed ? "TRY AGAIN" : "OPEN PACKS", &pressed, 17) +
                  40 * k;
             if (pressed) {
                 if (failed) studio::market::refresh(true);
-                else u.menu_tab = 1, u.pack_page = false;
+                else u.menu_tab = packs_tab, u.pack_page = false;
             }
         }
         y += cta_section(d, f, col, display, y, top, bottom) + 60 * k;
@@ -8583,8 +8591,8 @@ void browse_page(ImDrawList* d, const Fonts& f, const studio::View& v, const stu
                             [&u] { u.market_query.fill(0); });
         else
             gh = grid_empty(d, f, m, ImVec2(gx, gy), gw, "the shelves are empty.",
-                            "No packs out yet. Be the first: open a pack in the LIBRARY and press SHARE.", "OPEN THE LIBRARY", [&u] {
-                                u.menu_tab = 1;
+                            "No packs out yet. Be the first: make a pack in PACKS and publish it.", "OPEN PACKS", [&u] {
+                                u.menu_tab = packs_tab;
                                 u.pack_page = false;
                             });
     } else gh = shop_grid(d, f, v, m, list, ImVec2(gx, gy), gw, y, bottom, covers, 250);
@@ -9355,8 +9363,8 @@ void market_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     for (const auto* p : all)
         if (p->full_name == u.market_open) open = p;
     if (!open) u.market_open.clear();
-    const auto to_library = [&u] {
-        u.menu_tab = 1;
+    const auto to_packs = [&u] {
+        u.menu_tab = packs_tab;
         u.pack_page = false;
     };
     if (open) pack_page_market(d, f, v, m, *open, all, display, top, bottom, covers);
@@ -9391,9 +9399,9 @@ void market_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         PackList list;
         for (const auto* p : all)
             if (p->mine) list.push_back(p);
-        grid_page(d, f, v, m, "MY UPLOADS", "Your team's packs on Thunderstore. To put out a new version, open the pack in the LIBRARY and press UPDATE.",
-                  sorted(std::move(list), "new"), "nothing out yet.", "Nothing out from " + m.team + " yet: open a pack in the LIBRARY and press SHARE.",
-                  "OPEN THE LIBRARY", to_library, display, top, bottom, covers);
+        grid_page(d, f, v, m, "MY UPLOADS", "Your team's packs on Thunderstore. To put out a new version, open the pack in PACKS and press PUBLISH AN UPDATE.",
+                  sorted(std::move(list), "new"), "nothing out yet.", "Nothing out from " + m.team + " yet: make a pack in PACKS and publish it.",
+                  "OPEN PACKS", to_packs, display, top, bottom, covers);
     } else home_page(d, f, v, m, all, display, top, bottom, covers);
     covers.ask();
     (void)a;
@@ -9578,7 +9586,7 @@ void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         x += cap + cap_gap * 2;
     };
     key("Q", Glyph::lb);
-    for (int i = 0; i < static_cast<int>(menu_tabs.size()); ++i) {
+    for (const int i : menu_order) {
         const char* name = menu_tabs[static_cast<std::size_t>(i)];
         const float tw = spaced_width(font, size, name, 1.5f * k);
         const ImVec2 a(x, y), b(x + tw + side * 2, y + h);
@@ -9612,17 +9620,25 @@ void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     }
 }
 
+void create_own_pack(const studio::View& v); // studio_packs_page.inl
 // The LIBRARY's code (after the MARKET's drawings: it is drawn in the same look).
 #include "studio_library_workspace.inl"
 // TRICKS' folder of saved tricks, and the editor's first-open tour: in the same look.
 #include "studio_tricks_shelf.inl"
 #include "studio_editor_tour.inl"
+// PACKS: your own packs, made and published.
+#include "studio_packs_page.inl"
 // The Library workspace separates destination editing, collection browsing and explicit playback roles.
 void packs_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     want_pack_pictures(v);
     if (u.pack_page)
         if (const auto* pack = pack_named(v, v.open_pack)) {
+            // Your own pack is edited in PACKS; one you got keeps its page here.
+            if (!pack->installed) {
+                u.menu_tab = packs_tab;
+                return;
+            }
             pack_page(d, f, v, *pack, a, b);
             return;
         }
@@ -14435,6 +14451,7 @@ void draw_animation_studio() {
         switch (u.menu_tab) {
         case 0: tricks_page(d, f, v, ca, cb); break;
         case 1: packs_page(d, f, v, ca, cb); break;
+        case packs_tab: own_packs_page(d, f, v, ca, cb); break;
         case 2: market_page(d, f, v, ca, cb); break;
         case 3: settings_page(d, f, v, ca, cb); break;
         default: about_page(d, f, v, ca, cb); break;

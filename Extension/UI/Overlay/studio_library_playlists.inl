@@ -621,7 +621,7 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
         text(d, anton(f, 34 * k), 34 * k, {body_a.x + 4 * k, body_a.y + 14 * k}, white, "YOUR COLLECTION");
         marker_underline(d, {body_a.x + 4 * k, body_a.y + 58 * k}, text_size(anton(f, 34 * k), 34 * k, "YOUR COLLECTION").x + 20 * k, 4 * k, blue, 377);
         const float pack_w = lib_w(f, "+ MAKE A PACK", 38 * k, 162 * k);
-        if (lib_button(d, f, "##librarynewpack", {b.x - pack_w, body_a.y + 14 * k}, {pack_w, 38 * k}, "+ MAKE A PACK", Look::ghost)) { make_pack(v); u.pack_page = true; }
+        if (lib_button(d, f, "##librarynewpack", {b.x - pack_w, body_a.y + 14 * k}, {pack_w, 38 * k}, "+ MAKE A PACK", Look::ghost)) create_own_pack(v); // made and edited in PACKS
         library_browser(d, f, v, index, {}, {body_a.x, body_a.y + 78 * k}, b); return;
     }
     const float nav_w = 266 * k, gap = 18 * k;
