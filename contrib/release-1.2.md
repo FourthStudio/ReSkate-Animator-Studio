@@ -4,11 +4,13 @@ A big update: smoother transitions in and out of tricks, a new bail logic, the T
 
 ## transitions
 
-- **From what you see into what comes next.** Every change of what plays now starts from the pose on screen and its speed, and eases onto the game's live pose. This covers a trick into a grind, slide, manual, landing or the next pop, and a grind or manual into a trick. The game's own pose in between never shows. Your Crossfade still sets how long it takes. SMOOTH only; CLASSIC is unchanged.
-- **Feet on the board.** During a change, a standing foot moves in the frame of the board as it is drawn. The soles are checked against the deck, kicks included, and never go into the grip.
-- **Ready before the contact.** In the last moment before a landing or a rail, the feet go onto the board where the game wants them, so a lock or a touchdown has little left to cover.
+- **From what you see into what comes next.** Every change of what plays now starts from the pose on screen and its speed, and eases onto the game's live pose. This covers a trick into a grind, slide, manual, landing or the next pop, and a grind or manual into a trick. The game's own pose in between never shows. Your Crossfade still sets how long it takes. SMOOTH only.
+- **Feet on the board.** During a change, a standing foot moves in the frame of the board as it is drawn. The soles are checked against the deck, kicks included, and never go into the grip. SMOOTH only.
+- **Ready before the contact.** In the last moment before a landing or a rail, the feet go onto the board where the game wants them. Then a lock or a touchdown has little left to cover.
+- **Letting go on time.** A trick lets go at the flick of the next pop, not 0.1 s later at the crouch. What it hands back stays as drawn. Into a manual, it lets go at the touchdown. Its landing keys no longer go onto the manual's pose first.
+- **CLASSIC gets these too:** ready before the contact, letting go on time, keys before the pop, and on rails the drawn board and the hand-over after the catch. SMOOTH only: the change from the pose on screen, the feet and soles during it, and the rail changes marked SMOOTH.
 - **Keys before the pop.** A trick can start at the flick, before takeoff, so a wind-up keyed before the pop plays in game. The timeline marks what never plays.
-- **Rails.** Body and feet use the same board as the one drawn (a grind loop's tilted board seated the feet on a flat one). Legs and board hand over no earlier than the trick's catch. A lock before the catch takes the game's slower blend for the arms and back.
+- **Rails.** Body and feet use the same board as the one drawn (a grind loop's tilted board seated the feet on a flat one). Legs and board hand over no earlier than the trick's catch. A lock before the catch takes the game's slower blend for the arms and back (SMOOTH). The lean onto a rail waits until the game aims at one (SMOOTH).
 - Each change has its own switch in `anim_studio.cpp`. Bug reports gain columns for it: how far apart the poses were at each change, and how close each sole came to the deck.
 
 ## bails

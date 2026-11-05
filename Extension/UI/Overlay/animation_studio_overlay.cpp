@@ -10715,7 +10715,8 @@ void dev_key_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
     const Said said = market.dev_state == 2   ? Said{"Linked: " + market.dev_login + " can verify packs.", IM_COL32(36, 190, 96, 255)}
                       : market.dev_state == 1 ? Said{"Asking GitHub whether the key can write to the repository...", soft}
                       : market.dev_state == 3 ? Said{market.dev_error.empty() ? std::string("GitHub said no to this key.") : market.dev_error, skate_theme::warning}
-                      : market.dev_state == 4 ? Said{"GitHub could not be reached: " + market.dev_error, soft}
+                      : market.dev_state == 4 ? Said{market.dev_error.empty() ? std::string("Not checked yet. Paste it again and LINK to check it, or REMOVE it.")
+                                                                              : "GitHub could not be reached: " + market.dev_error, soft}
                                               : Said{"No key on this PC.", faint};
     y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, said.colour, said.words) + 12 * k;
     text(d, f.heading, 13 * k, ImVec2(x, y), blue_light, "GITHUB TOKEN");

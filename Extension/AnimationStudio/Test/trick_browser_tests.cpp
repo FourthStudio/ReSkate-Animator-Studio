@@ -252,6 +252,17 @@ void a_click_chooses_one_ctrl_adds_shift_runs() {
     check(s.names == std::set<std::string>{"c", "e"}, "A deleted trick stays chosen");
 }
 
+void a_bulk_action_takes_only_the_chosen_tricks_shown() {
+    std::vector<Item> items{item("K1", "kickflip", Type::flip), item("H1", "heelflip", Type::flip), item("S1", "popshuvit", Type::shuv)};
+    Filter flips_only;
+    flips_only.types = 1u << static_cast<unsigned>(Type::flip);
+    const Selection several{{"K1", "H1", "S1"}, "S1"};
+    check(shown_choice(several, arrange(items, flips_only, {}, GroupBy::none), items) == std::vector<std::string>{"H1", "K1"},
+          "A trick the filter hides is in the bulk action, so a bulk DELETE would take it too");
+    check(shown_choice(several, arrange(items, {}, {}, GroupBy::none), items).size() == 3,
+          "A trick chosen before the filter is not in the bulk action when it shows again");
+}
+
 void the_table_gives_up_columns_when_narrow() {
     const auto wide = fit_columns(2000, 1);
     check(wide.size() == column_count, "A wide table leaves a column out");
@@ -293,6 +304,7 @@ int main() {
         rows_lay_out_headings_lists_and_icons();
         only_the_rows_on_screen_are_drawn();
         a_click_chooses_one_ctrl_adds_shift_runs();
+        a_bulk_action_takes_only_the_chosen_tricks_shown();
         the_table_gives_up_columns_when_narrow();
         a_mark_changes_with_what_it_is_made_of();
     } catch (const std::exception& e) {

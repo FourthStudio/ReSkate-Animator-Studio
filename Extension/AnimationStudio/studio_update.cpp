@@ -277,12 +277,17 @@ void run_download() {
     // The SHA-256 to check it against: GitHub's own, else the release's .sha256 file.
     if (digest.empty() && !sum_url.empty())
         if (const auto text = https::get_text(wide(sum_url), 4096, 20, agent)) digest = lower_hex(*text);
+    // Without a SHA-256 nothing shows the file is the one the release published, and it replaces the DLL the game loads.
+    if (digest.empty())
+        return fail(Step::download_failed, 1,
+                    "GitHub gave no SHA-256 for this release's ReSkate.dll, and its .sha256 file could not be read, so it was not downloaded. "
+                    "TRY AGAIN reads the .sha256 file again, or get it from the releases page");
     const auto folder = updates_folder(current, version);
     const auto final_path = folder / L"ReSkate.dll";
     // 1. Downloading: patiently (a dropped or stalled connection goes on from where it got to), checked against its SHA-256
     // before it takes its name; downloaded before and whole, nothing to fetch.
     std::error_code error;
-    if (digest.empty() || !std::filesystem::exists(final_path, error) || files::sha256_of(final_path) != digest) {
+    if (!std::filesystem::exists(final_path, error) || files::sha256_of(final_path) != digest) {
         s.watch.cancel.store(false);
         s.watch.received.store(0);
         s.watch.total.store(size);
@@ -294,7 +299,7 @@ void run_download() {
         options.stall_ms = 60000;
         options.tries = 8;
         options.keep_partial = true; // TRY AGAIN goes on from what came
-        if (!digest.empty()) options.verify = [&digest](const std::filesystem::path& file) { return files::sha256_of(file) == digest; };
+        options.verify = [&digest](const std::filesystem::path& file) { return files::sha256_of(file) == digest; };
         const auto got = https::fetch(wide(url), final_path, options, agent, &s.watch);
         if (!got.ok) return fail(Step::download_failed, got.error == ERROR_INVALID_DATA ? 1 : 0, download_failure(got));
         logging::log(Level::info, Channel::runtime, "Animator Studio {} downloaded to {} ({} request{}{})", version, files::path_text(final_path),
@@ -305,7 +310,7 @@ void run_download() {
         st.step = Step::verifying;
         st.saved_to = final_path;
     });
-    if (!digest.empty() && files::sha256_of(final_path) != digest) {
+    if (files::sha256_of(final_path) != digest) {
         std::filesystem::remove(final_path, error);
         return fail(Step::install_failed, 1, "the download did not match its SHA-256, so it was thrown away. TRY AGAIN downloads it again");
     }
@@ -323,11 +328,11 @@ void run_download() {
         st.saved_to = final_path;
         st.installed_to = current;
         st.can_restart = restartable;
-        st.checked = !digest.empty();
+        st.checked = true;
     });
     logging::log(Level::info, Channel::runtime, "Animator Studio {} installed in place of {}{} ({})", version, files::path_text(current),
                  swap.earlier_update ? " (over the update installed earlier this session)" : ", the old one kept as ReSkate.dll.previous",
-                 digest.empty() ? "no SHA-256 to check it against" : "SHA-256 checked");
+                 "SHA-256 checked");
 }
 
 void start_thread(void (*work)()) {
