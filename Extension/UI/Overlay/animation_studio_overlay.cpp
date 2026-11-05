@@ -165,6 +165,7 @@ struct Ui {
     float ring_from{};         // the angle round the ring where a ring drag began
     bool drag_moved{};         // the mouse has gone far enough for the drag to count
     bool snap{};               // a foot moved in the air lands on the deck
+    bool board_lock{};         // LOCK: the skater goes with the board when it is turned or moved (begin_group)
     bool own_lead_right{};     // the skater's own stance leads with the right foot (View::own_lead_right), for the stance tags
     // More joints chosen with the one the gizmo is on (Ctrl + click): they are turned and moved with it (move_group).
     std::vector<std::uint16_t> also;
@@ -174,6 +175,7 @@ struct Ui {
         studio::Vec3 point{};
         studio::Quat world{0, 0, 0, 1}, parent{0, 0, 0, 1};
         float scale{1};
+        bool on_board{}; // LOCK's hips: carried round the board's mount, so the whole skater goes with the board
     };
     std::vector<GroupStart> group_start; // each of them as it was when the turn began
     studio::Vec3 board_point{};          // the board's mount then: the feet on it turn about it
@@ -909,6 +911,16 @@ void begin_group(const studio::View& v) {
         if (!view || joint == u.selected) continue;
         u.group_start.push_back({joint, studio::offset_of(joint), view->position, view->rotation, view->parent_rotation, view->parent_scale});
     }
+    // LOCK (the user, 2026-11-05: "lock the skater to the board ... rotate the board the skater follows"): the board turned or
+    // moved takes the hips with it, round its mount, and everything else hangs off the hips, his feet on the deck included.
+    // Hips chosen with it already, or locked, are left as they are.
+    if (u.board_lock && u.selected == studio::board_joint && !std::count(u.also.begin(), u.also.end(), studio::hips_joint)) {
+        const auto* hips = joint_view(v, studio::hips_joint);
+        const auto* track = track_view(v, studio::hips_joint);
+        if (hips && !(track && track->locked))
+            u.group_start.push_back({studio::hips_joint, studio::offset_of(studio::hips_joint), hips->position, hips->rotation,
+                                     hips->parent_rotation, hips->parent_scale, true});
+    }
 }
 // `turn`: how the chosen joint turned in the world since the turn began; `shift`: how far it moved in the world.
 void move_group(const studio::Quat& turn, const studio::Vec3& shift) {
@@ -934,6 +946,20 @@ void move_group(const studio::Quat& turn, const studio::Vec3& shift) {
             continue;
         }
         studio::Offset next = g.offset;
+        if (g.on_board) {
+            // Turned as the board turned, and carried round its mount: where the hips were from the mount, turned, then moved
+            // as far as the board moved.
+            next.rotation = studio::normalised(studio::multiply(g.offset.rotation, studio::multiply(studio::multiply(studio::conjugate(g.world), turn), g.world)));
+            studio::Vec3 from{};
+            for (int i = 0; i < 3; ++i) from[i] = g.point[i] - u.board_point[i];
+            const auto turned = studio::rotate(turn, from);
+            studio::Vec3 moved{};
+            for (int i = 0; i < 3; ++i) moved[i] = turned[i] - from[i] + shift[i];
+            const auto local = studio::rotate(studio::conjugate(g.parent), moved);
+            for (int i = 0; i < 3; ++i) next.offset[i] += local[i] / std::max(g.scale, 0.01f);
+            studio::set_offset(g.joint, next);
+            continue;
+        }
         if (g.joint == studio::board_joint)
             // The board's keys turn it in the ground frame (on the left), about its mount.
             next.rotation = studio::normalised(studio::multiply(studio::multiply(studio::multiply(studio::conjugate(g.parent), turn), g.parent), g.offset.rotation));
@@ -2959,7 +2985,7 @@ struct KeyAction {
     const char* label; // as SETTINGS lists it
     ImGuiKey key;      // its own
 };
-constexpr std::array<KeyAction, 32> key_actions{{
+constexpr std::array<KeyAction, 33> key_actions{{
     {"key", "Key the pose", ImGuiKey_K},
     {"delete", "Delete the key", ImGuiKey_Delete},
     {"play", "Play / pause", ImGuiKey_Space},
@@ -2977,6 +3003,7 @@ constexpr std::array<KeyAction, 32> key_actions{{
     {"gizmo", "Gizmo: object or world", ImGuiKey_L},
     {"solo", "Solo", ImGuiKey_O},
     {"snap", "Snapping", ImGuiKey_N},
+    {"lock", "Skater on the board", ImGuiKey_B},
     {"limits", "Limits", ImGuiKey_M},
     {"clear", "Keep clear", ImGuiKey_C},
     {"joints", "Joints on the skater", ImGuiKey_J},
@@ -3214,6 +3241,10 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(bound("snap"))) {
         u.snap = !u.snap;
         say(u.snap ? "Snapping on: a foot you move lands on the deck." : "Snapping off.");
+    }
+    if (!ctrl && pressed(bound("lock"))) {
+        u.board_lock = !u.board_lock;
+        say(u.board_lock ? "Lock on: turn or move the board and the skater goes with it." : "Lock off: the board moves on its own.");
     }
     if (pressed(bound("shortcuts"))) u.controls_open = !u.controls_open;
     auto orbit = v.orbit;
@@ -9912,6 +9943,10 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               [](float amount) { ui().ground_force = amount; }));
         rows.push_back(on_off("Snapping", u.snap, "A foot you move lands on the deck, at the height the feet ride at, and slides along the board. Key: " + key_of("snap") + ".",
                               [](bool on) { ui().snap = on; }));
+        rows.push_back(on_off("Lock to the board", u.board_lock,
+                              "The skater is locked to the board: turning or moving the board takes him with it, round the board's middle, "
+                              "his feet staying on the deck. Key: " + key_of("lock") + ".",
+                              [](bool on) { ui().board_lock = on; }));
         rows.push_back(on_off("Solo", v.solo,
                               "A turn moves that joint alone: the joints hanging off it are turned back by as much, so the limb below keeps "
                               "the way it faces. Key: " + key_of("solo") + ".",
@@ -12394,6 +12429,9 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     if (tool("##solo", "SOLO", key_of("solo").c_str(), v.solo, "A turn moves that joint alone: the limb below keeps the way it faces.")) studio::set_solo(!v.solo);
     y += row;
     if (tool("##snap", "SNAP", key_of("snap").c_str(), u.snap, "A foot you move lands on the deck and slides along it.")) u.snap = !u.snap;
+    y += row;
+    if (tool("##lock", "LOCK", key_of("lock").c_str(), u.board_lock, "The skater is locked to the board: turn or move the board and he goes with it."))
+        u.board_lock = !u.board_lock;
     y += row;
     if (tool("##limits", "LIMITS", key_of("limits").c_str(), v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
         studio::set_joint_limits(!v.limits);
