@@ -6992,7 +6992,7 @@ float set_cover_title(ImDrawList* d, const Fonts& f, Headline style, ImVec2 at, 
     }
     return y - at.y;
 }
-// A round sticker in the studio's blue with a word on it (FREE, NEW), its white edge and a shadow.
+// A round sticker in the studio's blue with a word on it (NEW), its white edge and a shadow.
 void cover_sticker(ImDrawList* d, const Fonts& f, ImVec2 c, float r, std::string_view word, float deg) {
     const int start = d->VtxBuffer.Size;
     d->AddCircleFilled(ImVec2(c.x + r * 0.06f, c.y + r * 0.1f), r * 1.06f, IM_COL32(0, 0, 0, 110), 48);
@@ -7359,12 +7359,11 @@ float cover_section(ImDrawList* d, const Fonts& f, const studio::View& v, const 
         if (e < 1 && u.spotlight_prev >= 0 && u.spotlight_prev < n && u.spotlight_prev != u.spotlight) draw_pick(u.spotlight_prev, 1 - e, -36 * k * e);
         draw_pick(u.spotlight, e, 36 * k * (1 - e));
     }
-    // Stickers by the pack's cover: FREE (every pack is), NEW for one out this week.
+    // A sticker by the pack's cover: NEW for one out this week.
     if ((look.extras & extra_stickers) && n > 0 && !plan.contact) {
         const auto& p = *picks[static_cast<std::size_t>(u.spotlight)];
         const ImVec2 c(plan.print_at.x + plan.print_side + 20 * k, plan.print_at.y + 6 * k);
-        cover_sticker(d, f, c, 40 * k, "FREE", -12);
-        if (is_new(p)) cover_sticker(d, f, ImVec2(c.x - 28 * k, c.y + plan.print_side + 30 * k), 32 * k, "NEW", 9);
+        if (is_new(p)) cover_sticker(d, f, c, 36 * k, "NEW", -12);
     }
     // The buttons stay put: only what they act on changes.
     const float bh = 58 * k;
@@ -8209,7 +8208,7 @@ float explore_band(ImDrawList* d, const Fonts& f, const PackList& all, const Sho
     if (shop_button(d, f, "##exploreall", ImVec2(ix + iw - bw, ty + (bf - bt) * 0.5f - 28 * k), ImVec2(bw, 56 * k), "BROWSE ALL PACKS", ShopLook::accent, true, 3))
         browse_by("top");
     const float lead_x = ix + text_size(big, 64 * k, "THAT'S NOT ALL.").x + 30 * k;
-    const auto line = std::to_string(all.size()) + " PACKS FROM " + std::to_string(makers.size()) + " MAKERS. ALL FREE, ALL MADE IN THE STUDIO.";
+    const auto line = std::to_string(all.size()) + " PACKS FROM " + std::to_string(makers.size()) + " MAKERS. ALL MADE IN THE STUDIO.";
     if (lead_x < ix + iw - bw - 40 * k)
         d->AddText(sharp(mont(f, 14 * k), 14 * k), 14 * k, ImVec2(lead_x, ty + (bf - bt) * 0.5f - 8 * k), soft,
                    elide(mont(f, 14 * k), 14 * k, line, ix + iw - bw - 40 * k - lead_x).c_str());
@@ -9050,15 +9049,13 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         }
         ry += (nb - nt) + 46 * k;
     }
-    // The box a shop puts what it costs and BUY in: FREE, its version and when, GET, PREVIEW, LIKE, Thunderstore.
+    // The box a shop puts BUY in: its version and when, GET, PREVIEW, LIKE, Thunderstore.
     {
         const float pad = 24 * k, bh = 56 * k;
         const ImVec2 ba(x, ry);
         float by = ry + pad;
         // Worked out first, drawn after the box (it is as tall as what is in it).
-        ImFont* ff = anton(f, 44 * k);
-        const auto [ft, fb] = caps_of(ff, 44 * k);
-        const float free_w = text_size(ff, 44 * k, "FREE").x;
+        const float facts_h = 13 * k + 22 * k;
         const auto age = days_old(p);
         std::string facts = "VERSION " + p.version;
         if (const auto updated = days_since(p.updated); updated >= 0) facts += "  /  UPDATED " + age_words(updated, p.updated);
@@ -9107,14 +9104,12 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         ImFont* nf = body(f, 14 * k);
         for (const auto& [words, colour] : notes) notes_h += sharp(nf, 14 * k)->CalcTextSizeA(14 * k, FLT_MAX, inner, words.c_str()).y + 10 * k;
         const float open_h = here ? 52 * k : 0;
-        const float box_h = pad + (fb - ft) + 28 * k + rows_h + (notes.empty() ? 0 : 20 * k + notes_h) + open_h + pad;
+        const float box_h = pad + facts_h + rows_h + (notes.empty() ? 0 : 20 * k + notes_h) + open_h + pad;
         d->AddRectFilled(ImVec2(ba.x + 8 * k, ba.y + 10 * k), ImVec2(ba.x + w + 8 * k, ba.y + box_h + 10 * k), IM_COL32(0, 0, 0, 100));
         d->AddRectFilled(ba, ImVec2(ba.x + w, ba.y + box_h), IM_COL32(14, 15, 18, 242));
         d->AddRectFilled(ba, ImVec2(ba.x + w, ba.y + 3 * k), look_now->accent);
-        d->AddText(sharp(ff, 44 * k), 44 * k, ImVec2(ba.x + pad, by - ft), IM_COL32_WHITE, "FREE");
-        d->AddText(sharp(mont(f, 13 * k), 13 * k), 13 * k, ImVec2(ba.x + pad + free_w + 20 * k, by + (fb - ft) * 0.5f - 8 * k), soft,
-                   elide(mont(f, 13 * k), 13 * k, facts, inner - free_w - 20 * k).c_str());
-        by += (fb - ft) + 28 * k;
+        d->AddText(sharp(mont(f, 13 * k), 13 * k), 13 * k, ImVec2(ba.x + pad, by), soft, elide(mont(f, 13 * k), 13 * k, facts, inner).c_str());
+        by += facts_h;
         for (std::size_t i = 0; i < buttons.size(); ++i) {
             const auto& b = buttons[i];
             if (shop_button(d, f, b.id, ImVec2(ba.x + pad + spots[i].x, by + spots[i].y), ImVec2(b.w, bh), b.label, b.look, b.enabled, b.icon)) {
@@ -9641,6 +9636,16 @@ void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
 }
 
 void create_own_pack(const studio::View& v); // studio_packs_page.inl
+// The button a playlist plays on, as its tags say it ("HOLD RB / R1"); "" when it has none. Each playlist can have one.
+std::string button_words(const studio::ModifierBindings& all, const std::string& playlist) {
+    const auto* b = studio::binding_of(all, playlist);
+    if (!b || b->button <= 0 || static_cast<std::size_t>(b->button) >= studio::modifier_button_names.size()) return {};
+    return std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(b->button)];
+}
+std::string lowered(std::string text) {
+    for (auto& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return text;
+}
 // The LIBRARY's code (after the MARKET's drawings: it is drawn in the same look).
 #include "studio_library_workspace.inl"
 // TRICKS' folder of saved tricks, and the editor's first-open tour: in the same look.
@@ -9997,11 +10002,8 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(studio::settings_rows::trick_matching(now));
         rows.push_back(studio::settings_rows::transitions(now));
         {
-            const auto binding = studio::modifier_binding();
-            rows.push_back(studio::settings_rows::modifier_button(binding));
-            rows.push_back(studio::settings_rows::modifier_playlist(studio::playlists_now(), binding));
-            rows.push_back(studio::settings_rows::modifier_native_button(binding));
-            rows.push_back(button_row("Modifier setup in Library", "See the two playback roles, choose animations and learn how the modifier works.",
+            for (auto& row : studio::settings_rows::button_playlists(studio::playlists_now(), studio::modifier_bindings())) rows.push_back(std::move(row));
+            rows.push_back(button_row("Playlists on buttons in the LIBRARY", "Put playlists on buttons, choose what is in them and see how it works.",
                 [] { ui().library.modifier_setup = true; ui().library.settings_scroll = 0; open_menu(1); }));
         }
         {
@@ -11231,7 +11233,7 @@ void playlist_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         whole ? "Press a playlist to put the whole pack in it, or to take it out. Tricks its maker adds later go in too. Your packs and tricks stay as they are."
               : "Press a playlist to put this trick in it, or to take it out of just that one. Your packs and tricks stay as they are.");
     const auto included = whole ? studio::playlists_with_pack(u.playlist_for_entry.pack) : studio::playlists_containing(name);
-    const auto binding = studio::modifier_binding();
+    const auto bindings = studio::modifier_bindings();
     const ImVec2 la(x, a.y + 184 * k), lb(b.x - 28 * k, b.y - 86 * k);
     begin_region(205, la, lb, u.library_modal_scroll, k);
     float y = la.y - u.library_modal_scroll;
@@ -11260,8 +11262,8 @@ void playlist_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
             d->AddRectFilled(aa, ab, have ? IM_COL32(233, 230, 221, 255) : blue);
             text(d, mont(f, 13 * k), 13 * k, ImVec2(aa.x + 12 * k, aa.y + (ab.y - aa.y - 13 * k) * 0.5f), have ? shop_ink : white, act);
             float tx = aa.x - 8 * k;
-            for (const auto* role : {list.name == binding.playlist ? "ON THE BUTTON" : "", list.name == v.playlist_playing ? "PLAYS BY DEFAULT" : ""}) {
-                if (!*role) continue;
+            for (const std::string role : {button_words(bindings, list.name), std::string(list.name == v.playlist_playing ? "PLAYS BY DEFAULT" : "")}) {
+                if (role.empty()) continue;
                 tx -= tag_width(f, role);
                 tag(d, f, ImVec2(tx, ra.y + 13 * k), role, IM_COL32(70, 72, 80, 255));
                 tx -= 6 * k;

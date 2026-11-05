@@ -130,11 +130,12 @@ void library_playlist_settings(ImDrawList* d, const Fonts& f, const studio::View
         std::string m; studio::duplicate_playlist(v.playlist_open, m); say(m); route.settings = false;
     }
     y += 58 * k;
-    const auto binding = studio::modifier_binding();
-    if (v.playlist_open == binding.playlist && lib_button(d, f, "##unassignmodifier", {x, y}, {w - 8 * k, 38 * k}, "TAKE IT OFF THE BUTTON", Look::ghost)) {
-        auto live = studio::modifier_binding(); live.playlist.clear(); studio::set_modifier_binding(live);
+    const auto binding = studio::modifier_binding(v.playlist_open);
+    const bool on_button = binding.button > 0;
+    if (on_button && lib_button(d, f, "##unassignmodifier", {x, y}, {w - 8 * k, 38 * k}, "TAKE IT OFF ITS BUTTON", Look::ghost)) {
+        auto off = binding; off.button = 0; studio::set_modifier_binding(off);
     }
-    if (v.playlist_open == binding.playlist) y += 52 * k;
+    if (on_button) y += 52 * k;
     y += 16 * k;
     const float half = (w - 20 * k) * 0.5f;
     if (lib_button(d, f, "##libraryclear", {x, y}, {half, 38 * k}, "CLEAR IT...", Look::ghost, !v.playlist.empty())) route.confirmation = "clear:" + v.playlist_open;
@@ -267,8 +268,8 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
         // None open (the workspace opens the default one, so this is a moment at most): the playlists themselves, to open.
         text(d, anton(f, 34 * k), 34 * k, {x, a.y + 24 * k}, lib_ink, "OPEN A PLAYLIST");
         paragraph(d, body(f, 16 * k), 16 * k, {x, a.y + 74 * k}, w, lib_ink_soft,
-                  "One plays by default; another can play while you hold a button. Open one to change what is in it.");
-        const auto binding = studio::modifier_binding();
+                  "One plays by default; others can play while you hold a button, each on its own. Open one to change what is in it.");
+        const auto bindings = studio::modifier_bindings();
         const float gap = 16 * k;
         const int columns = std::max(1, static_cast<int>((w + gap) / (340 * k + gap)));
         const float cw = (w - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
@@ -287,9 +288,11 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
                 lib_caps(d, f, {ta.x + 18 * k, ta.y + 16 * k}, 12 * k, IM_COL32(70, 72, 80, 255),
                          lib_caps_fit(f, 12 * k, std::to_string(list.size) + (list.size == 1 ? " ENTRY" : " ENTRIES"), room));
                 text(d, anton(f, 30 * k), 30 * k, {ta.x + 18 * k, ta.y + 36 * k}, shop_ink, elide(anton(f, 30 * k), 30 * k, upper(list.name), room));
-                const bool normal = list.name == v.playlist_playing, held = list.name == binding.playlist;
-                const char* role = normal && held ? "plays by default + on the button" : normal ? "plays by default" : held ? "on the button" : "not playing";
-                marker_words(d, f, {ta.x + 18 * k, ta.y + 86 * k}, role, 20 * k, -1.5f, normal || held ? IM_COL32(0, 98, 214, 255) : IM_COL32(70, 72, 80, 255));
+                const auto button = button_words(bindings, list.name);
+                const bool normal = list.name == v.playlist_playing, held = !button.empty();
+                const std::string held_words = held ? lowered(button) : std::string{};
+                const std::string role = normal && held ? "plays by default + " + held_words : normal ? "plays by default" : held ? held_words : "not playing";
+                marker_words(d, f, {ta.x + 18 * k, ta.y + 86 * k}, role.c_str(), 20 * k, -1.5f, normal || held ? IM_COL32(0, 98, 214, 255) : IM_COL32(70, 72, 80, 255));
                 if (lit && nav().keys) chosen_outline(d, ta, tb, k);
             }
             ImGui::PopID();
@@ -317,8 +320,8 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     if (lib_button(d, f, "##librarysettings", {r - set_w, a.y + 24 * k}, {set_w, 42 * k}, "SETTINGS", Look::ghost)) {
         route.settings = true; route.settings_scroll = 0;
     }
-    const auto binding = studio::modifier_binding();
-    const bool normal = v.playlist_open == v.playlist_playing, modifier = v.playlist_open == binding.playlist;
+    const auto binding = studio::modifier_binding(v.playlist_open);
+    const bool normal = v.playlist_open == v.playlist_playing;
     const float ry = a.y + 92 * k, rh = 36 * k;
     const ImVec2 default_a(x, ry);
     const char* default_label = normal ? "PLAYS BY DEFAULT" : "SET AS DEFAULT";
@@ -330,12 +333,13 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     if (lib_guide_on && lib_guide_now == 2 && v.playlist_playing.empty()) lib_pulse(d, default_a, {default_a.x + default_w, default_a.y + rh}, k);
     // Says what it does: "+ ADD A BUTTON" until this playlist has a button (it read "ON OFF / SET UP" with none chosen),
     // then the button it plays on, held.
-    const bool has_button = modifier && binding.button > 0 && static_cast<std::size_t>(binding.button) < studio::modifier_button_names.size();
+    const bool has_button = binding.button > 0 && static_cast<std::size_t>(binding.button) < studio::modifier_button_names.size();
     const std::string button_label =
         has_button ? std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(binding.button)] + "  -  CHANGE" : "+ ADD A BUTTON";
     const float button_x = x + default_w + 10 * k, button_w = lib_w(f, button_label, rh, 214 * k);
     if (lib_button(d, f, "##librarymodifierrole", {button_x, ry}, {button_w, rh}, button_label, has_button ? Look::paper : Look::ghost)) {
-        if (!modifier) { auto live = studio::modifier_binding(); live.playlist = v.playlist_open; studio::set_modifier_binding(live); }
+        // Its own button, set on the page for buttons: no other playlist's is taken until one is chosen there.
+        route.modifier_list = v.playlist_open;
         route.modifier_setup = true; route.settings_scroll = 0;
     }
     const float undo_w = lib_w(f, "UNDO", rh, 112 * k);
@@ -350,7 +354,7 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
         const bool good = (normal || has_button) && v.play_in_game;
         const float role_x = button_x + button_w + 14 * k, room = r - undo_w - 12 * k - role_x;
         text(d, body(f, 13 * k), 13 * k, {role_x, ry + 10 * k}, good ? lib_blue : lib_warn,
-             elide(body(f, 13 * k), 13 * k, (good || v.play_in_game || !(normal || modifier) ? role : role + " / playback is off"), room));
+             elide(body(f, 13 * k), 13 * k, (good || v.play_in_game || !(normal || has_button) ? role : role + " / playback is off"), room));
     }
     const float clear_w = lib_w(f, "CLEAR", 34 * k, 74 * k);
     field(f, "##playlistcontentsearch", route.content_query, {x, a.y + 142 * k}, w - clear_w - 10 * k, "Search inside this playlist...");
@@ -626,7 +630,7 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
     const ImVec2 new_a(na.x + 12 * k, na.y + 58 * k);
     if (lib_button(d, f, "##librarynewlist", new_a, {nav_w - 24 * k, 38 * k}, "+ NEW PLAYLIST", Look::blue)) library_start_create();
     if (lib_guide_on && lib_guide_now == 0) lib_pulse(d, new_a, {new_a.x + nav_w - 24 * k, new_a.y + 38 * k}, k);
-    const auto binding = studio::modifier_binding();
+    const auto bindings = studio::modifier_bindings();
     const ImVec2 la(na.x + 10 * k, na.y + 112 * k), lb(nb.x - 10 * k, nb.y - 12 * k);
     begin_region(201, la, lb, route.playlists_scroll, k);
     float y = la.y - route.playlists_scroll;
@@ -652,8 +656,12 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
                      lib_caps_fit(f, 11 * k, (selected ? "OPEN / " : "") + std::to_string(list.size) + (list.size == 1 ? " ENTRY" : " ENTRIES"),
                                   room - how_w - 12 * k));
             text(d, anton(f, 22 * k), 22 * k, {ta.x + 16 * k, ta.y + 30 * k}, ink, elide(anton(f, 22 * k), 22 * k, upper(list.name), room));
-            const bool normal = list.name == v.playlist_playing, held = list.name == binding.playlist;
-            const char* role = normal && held ? "default + button" : normal ? "plays by default" : held ? "on the button" : "not playing";
+            const auto button = button_words(bindings, list.name);
+            const bool normal = list.name == v.playlist_playing, held = !button.empty();
+            // Its button by name ("hold rb / r1"): more than one playlist can be on one now.
+            const std::string held_words = held ? lowered(button) : std::string{};
+            const std::string role_words = normal && held ? "default + " + held_words.substr(5) : normal ? "plays by default" : held ? held_words : "not playing";
+            const char* role = role_words.c_str();
             // What it does, in marker: blue when it plays, grey when it is only saved; smaller if it would run off the card.
             float role_size = 20 * k;
             while (role_size > 12 * k && sharp(marker(f, role_size), role_size)->CalcTextSizeA(role_size, FLT_MAX, 0, role).x > room)

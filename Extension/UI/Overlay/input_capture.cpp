@@ -27,7 +27,8 @@ namespace dingosdk::overlay::detail {
 thread_local HRAWINPUT noted_raw_input = nullptr;
 std::atomic<ULONGLONG> mode_input_paused_until{};
 std::atomic<std::uint16_t> mode_hidden_buttons{}, mode_held_buttons{};
-// Mask, held/block flags and a 32-bit timestamp in one publication: no stale mask survives a stopped client tick.
+// The buttons kept from the game (low 16 bits), the ones held (the next 16) and a 32-bit timestamp in one publication: no
+// stale mask survives a stopped client tick.
 std::atomic<std::uint64_t> studio_modifier_input{};
 std::uint64_t live_modifier_input() noexcept {
     const auto value = studio_modifier_input.load(std::memory_order_acquire);
@@ -38,8 +39,7 @@ std::uint64_t live_modifier_input() noexcept {
 }
 std::uint16_t modifier_hidden_buttons() noexcept {
     if (overlay_input_access) return 0;
-    const auto value = live_modifier_input();
-    return (value & (1ull << 17)) ? static_cast<std::uint16_t>(value) : 0;
+    return static_cast<std::uint16_t>(live_modifier_input());
 }
 std::atomic<int> mode_mouse_wheel{};
 std::atomic<bool> challenge_menu_capture{};
@@ -1290,21 +1290,18 @@ namespace dingosdk::overlay {
 // every caller uses this one.)
 void set_plugin_dialog_active(bool active) noexcept { detail::state().plugin_dialog_visible.store(active); }
 bool interface_open() noexcept { return detail::interactive_visible(detail::state()); }
-void update_trick_modifier(std::uint16_t mask, bool block, bool gameplay) {
+void update_trick_modifier(std::uint16_t mask, std::uint16_t block, bool gameplay) {
     const auto pad = gameplay && mask ? read_gamepad() : Gamepad{};
     std::uint64_t value = 0;
     if (gameplay && mask && pad.valid) {
-        value = mask;
-        if (pad.buttons & mask) value |= 1ull << 16;
-        if (block) value |= 1ull << 17;
+        value = static_cast<std::uint64_t>(block & mask);
+        value |= static_cast<std::uint64_t>(pad.buttons & mask) << 16;
         value |= static_cast<std::uint64_t>(static_cast<DWORD>(GetTickCount64())) << 32;
     }
     detail::studio_modifier_input.store(value, std::memory_order_release);
 }
-bool trick_modifier_held(std::uint16_t mask) noexcept {
-    const auto value = detail::live_modifier_input();
-    return static_cast<std::uint16_t>(value) == mask && (value & (1ull << 16)) != 0;
-}
+std::uint16_t trick_modifier_buttons() noexcept { return static_cast<std::uint16_t>(detail::live_modifier_input() >> 16); }
+bool trick_modifier_held(std::uint16_t mask) noexcept { return mask && (trick_modifier_buttons() & mask) == mask; }
 void hide_game_buttons(std::uint16_t buttons) noexcept { detail::mode_hidden_buttons.store(buttons, std::memory_order_relaxed); }
 void capture_challenge_menu_input(bool active,bool native_panel,bool opening_key_down) noexcept {
     detail::challenge_menu_release.store(game::owned_menu_release_latch(

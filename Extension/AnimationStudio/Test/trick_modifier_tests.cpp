@@ -38,6 +38,24 @@ int main() {
         check(!hold.held, "Leaving the hold clears its modifier");
         hold.observe(3, 2, true, true, true);
         check(!hold.held, "TEST IN GAME also has priority over native holds");
+        // Several playlists on buttons, each on its own (2026-11-05).
+        ModifierBindings all;
+        put_binding(all, {"Street", 1, true});
+        put_binding(all, {"Park", 2, false});
+        check(all.size() == 2 && modifier_masks(all) == (0x0200 | 0x0100) && modifier_blocks(all) == 0x0200, "Two playlists do not play on two buttons");
+        check(held_route(all, 0x0100) == 0x0100 && held_route(all, 0) == 0 && held_route(all, 0x0300) == 0x0200,
+              "The button held does not pick its own playlist, or the first one's when both are held");
+        put_binding(all, {"Park", 1, true});
+        check(all.size() == 1 && all[0].playlist == "Park" && all[0].button == 1, "A button moved to another playlist stayed on the one it was on");
+        put_binding(all, {"Park", 0, true});
+        check(all.empty(), "Button 0 did not take a playlist off its button");
+        attempt.begin(0x0100, true, false);
+        check(attempt.held && attempt.button == 0x0100, "An attempt does not keep the button whose playlist it takes");
+        NativeModifierHold two;
+        two.observe(1, 0, 0x0200, true, false);
+        check(two.held && two.button == 0x0200, "A grind does not keep the button whose playlist it takes");
+        two.observe(0, 0, 0, true, false);
+        check(!two.held && two.button == 0, "Leaving the hold did not clear its button");
         std::vector<NativeLoopCandidate> loops{{0, "manual", false, false, 0, 0.01f}, {1, "manual", true, false, 0, 0.01f},
             {2, "manual", true, false, 0, 0.01f}, {3, "another grab", true, false, -1, 0.001f}};
         check(native_loop_candidates(loops, false, true) == std::vector<std::size_t>{0}, "Without a modifier only the normal native loop is eligible");

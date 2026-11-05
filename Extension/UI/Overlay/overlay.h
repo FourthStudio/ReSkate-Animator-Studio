@@ -38,8 +38,11 @@ void set_plugin_dialog_active(bool active) noexcept;
 // and the mouse wheel's notches since the last call.
 void hide_game_buttons(std::uint16_t buttons) noexcept;
 // Experimental Studio modifier input is independent of plugin masks. Client thread refreshes its short lease.
-void update_trick_modifier(std::uint16_t mask, bool block, bool gameplay);
+// `mask`: every button a playlist plays on; `block`: the ones of those the game does not get while playing.
+void update_trick_modifier(std::uint16_t mask, std::uint16_t block, bool gameplay);
 bool trick_modifier_held(std::uint16_t mask) noexcept;
+// Which of the buttons a playlist plays on are held now.
+std::uint16_t trick_modifier_buttons() noexcept;
 // Keys (virtual key codes) the game does not see go down until this is called again: their presses
 // are dropped from every way it reads the keyboard, releases pass. ReSkate's own reads see them. Any thread.
 void hide_game_keys(std::span<const std::uint8_t> keys) noexcept;

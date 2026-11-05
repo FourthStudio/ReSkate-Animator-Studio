@@ -219,32 +219,72 @@ Setting playing_playlist(const studio::PlaylistsNow& now, Tell tell) {
     s.enabled = !now.lists.empty();
     return s;
 }
-Setting modifier_button(const ModifierBinding& binding) {
-    std::vector<std::string> options(modifier_button_names.begin(), modifier_button_names.end());
-    const int selected = binding.button >= 0 && binding.button < static_cast<int>(options.size()) ? binding.button : 0;
-    return one_of("Modifier button", std::move(options), selected,
-        "Hold before a trick or held move begins to use the modifier playlist. Releasing during the move does not swap animations. OFF restores normal controls. L3/R3 may also be part of your Studio opening shortcut.",
-        [](int picked) { auto live = studio::modifier_binding(); live.button = picked; studio::set_modifier_binding(live); });
-}
-Setting modifier_playlist(const studio::PlaylistsNow& now, const ModifierBinding& binding) {
-    std::vector<std::string> options{"NONE"}, names{""};
-    int selected = 0;
-    for (const auto& list : now.lists) {
-        if (list.name == binding.playlist) selected = static_cast<int>(options.size());
-        options.push_back(std::format("{} ({})", list.name, list.size));
-        names.push_back(list.name);
+std::vector<Setting> button_playlists(const studio::PlaylistsNow& now, const ModifierBindings& bindings) {
+    std::vector<Setting> rows;
+    std::vector<std::string> names;
+    for (const auto& list : now.lists) names.push_back(list.name);
+    const auto button_ok = [](int b) { return b > 0 && static_cast<std::size_t>(b) < modifier_button_names.size(); };
+    // Each button on a playlist: which one, or OFF.
+    for (const auto& binding : bindings) {
+        if (!button_ok(binding.button)) continue;
+        std::vector<std::string> options;
+        int selected = -1;
+        for (const auto& list : now.lists) {
+            if (list.name == binding.playlist) selected = static_cast<int>(options.size());
+            options.push_back(std::format("{} ({})", list.name, list.size));
+        }
+        if (selected < 0) continue; // its playlist is gone
+        options.push_back("OFF");
+        rows.push_back(one_of(std::format("Hold {}", modifier_button_names[static_cast<std::size_t>(binding.button)]), std::move(options), selected,
+            "The playlist that plays while this button is held as a trick or a held move begins; releasing it during the move does not "
+            "change what plays. Another playlist takes the button over. OFF takes it off the button.",
+            [binding, names](int picked) {
+                if (picked < 0) return;
+                auto to = binding;
+                if (static_cast<std::size_t>(picked) >= names.size()) to.button = 0;
+                else to.playlist = names[static_cast<std::size_t>(picked)];
+                studio::set_modifier_binding(to);
+            }));
     }
-    return one_of("Modifier playlist", std::move(options), selected,
-        "Normal input keeps the default playlist. Input + modifier uses an eligible animation from this playlist, falling back to normal when none fits. Editing a playlist never changes this assignment.",
-        [names](int picked) {
-            if (picked < 0 || static_cast<std::size_t>(picked) >= names.size()) return;
-            auto live = studio::modifier_binding(); live.playlist = names[static_cast<std::size_t>(picked)]; studio::set_modifier_binding(live);
+    // Another button: the first playlist with no button (not the default one, while there is another) goes on it.
+    std::vector<int> free;
+    for (int b = 1; b < static_cast<int>(modifier_button_names.size()); ++b)
+        if (std::none_of(bindings.begin(), bindings.end(), [&](const ModifierBinding& m) { return m.button == b; })) free.push_back(b);
+    std::string target;
+    for (const bool not_default : {true, false}) {
+        for (const auto& list : now.lists)
+            if (!binding_of(bindings, list.name) && (!not_default || list.name != now.on)) { target = list.name; break; }
+        if (!target.empty()) break;
+    }
+    std::vector<std::string> options{"CHOOSE..."};
+    for (const int b : free) options.push_back(modifier_button_names[static_cast<std::size_t>(b)]);
+    Setting add = one_of(bindings.empty() ? "Play a playlist on a button" : "Add another button", std::move(options), 0,
+        target.empty() ? std::string("Every playlist is on a button already: make another playlist in the LIBRARY to put on one.")
+                       : "Puts " + target + " on the button chosen; choose another playlist for it in its own row after. Each playlist "
+                         "can have a button of its own.",
+        [free, target](int picked) {
+            if (picked <= 0 || static_cast<std::size_t>(picked) > free.size() || target.empty()) return;
+            ModifierBinding to;
+            to.playlist = target;
+            to.button = free[static_cast<std::size_t>(picked - 1)];
+            studio::set_modifier_binding(to);
         });
-}
-Setting modifier_native_button(const ModifierBinding& binding) {
-    return on_off("Replace native button", binding.block_native,
-        "During gameplay, reserve the modifier button for Studio. With RB/R1 this prevents the native darkcatch. Menus and Studio keep their normal controls.",
-        [](bool on) { auto live = studio::modifier_binding(); live.block_native = on; studio::set_modifier_binding(live); });
+    add.enabled = !free.empty() && !target.empty();
+    rows.push_back(std::move(add));
+    // The game's own use of those buttons, for all of them.
+    const bool all_kept = !bindings.empty() && std::all_of(bindings.begin(), bindings.end(), [](const ModifierBinding& b) { return b.block_native; });
+    Setting keep = on_off("Replace native buttons", bindings.empty() || all_kept,
+        "While playing, the buttons your playlists are on are the studio's alone: with RB / R1 the game's darkcatch does not come. "
+        "Menus and the studio keep their usual controls.",
+        [bindings](bool on) {
+            for (auto b : bindings) {
+                b.block_native = on;
+                studio::set_modifier_binding(b);
+            }
+        });
+    keep.enabled = !bindings.empty();
+    rows.push_back(std::move(keep));
+    return rows;
 }
 Setting which_version_plays(const studio::PlaylistsNow& now, Tell tell) {
     const auto on = std::find_if(now.lists.begin(), now.lists.end(), [&](const auto& list) { return list.name == now.on; });
