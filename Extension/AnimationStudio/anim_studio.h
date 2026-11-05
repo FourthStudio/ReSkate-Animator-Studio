@@ -155,6 +155,7 @@ struct View {
     std::vector<PlaylistEntry> playlist;
     bool playlist_can_undo{}, playlist_redo{};
     std::uint64_t library_request{};
+    std::uint64_t dev_key_request{}; // `animstudio devkey`: the DEVELOPER KEY card asked for (request_dev_key)
     bool library_modifier_help{};
     bool modifier_ready{};
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
@@ -486,6 +487,9 @@ std::vector<std::string> playlists_with_pack(const std::string& pack);
 // playlists, where playlists_containing for each of hundreds would take the lock and walk them all once a trick.
 std::map<std::string, std::vector<std::string>> playlists_by_animation();
 void request_library(bool modifier_help = false);
+// Opens the studio on SETTINGS with its DEVELOPER KEY card (console: animstudio devkey). For its developers whose Thunderstore
+// team is not BUILT BY's (22sh, Norms): SETTINGS shows that row only to those teams and THE CREW's, or once a key is on the PC.
+void request_dev_key();
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
 // The LIBRARY's drag: `entry` of playlist `target` goes to place `to` and those between shift by one (an insert, not a

@@ -346,6 +346,7 @@ struct Ui {
     // The LIBRARY's setup guide this session: begun (a step was not done when the page was seen), finished (TRY IT), put away.
     bool library_guide_started{}, library_guide_finished{}, library_guide_hidden{};
     std::uint64_t library_request_seen{};
+    std::uint64_t dev_key_request_seen{};
     studio::LibraryNavigation library;
     std::optional<studio::PlaylistEntry> library_pending_source;
     // The LIBRARY's reorder: an entry of the open playlist picked up by its grip, dragged with the mouse or carried with the
@@ -14365,6 +14366,13 @@ void draw_animation_studio() {
         u.pack_page = false;
         u.library.modifier_setup = v.library_modifier_help;
         u.library.settings_scroll = 0;
+    }
+    // `animstudio devkey`: SETTINGS > STUDIO, its DEVELOPER KEY card up.
+    if (v.dev_key_request != u.dev_key_request_seen) {
+        u.dev_key_request_seen = v.dev_key_request;
+        open_menu(3);
+        u.settings_page = 0;
+        u.dev_key = true;
     }
     if (!v.has_clip) u.menu = true;
     studio::advance(ImGui::GetIO().DeltaTime);

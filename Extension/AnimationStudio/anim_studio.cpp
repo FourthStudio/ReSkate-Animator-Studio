@@ -339,6 +339,7 @@ struct State {
     TemporaryPlayback test_playback;
     PlaylistEditHistory playlist_history;
     std::uint64_t library_request{};
+    std::uint64_t dev_key_request{};
     bool library_modifier_help{};
     ModifierBinding modifier, loaded_modifier;
     PlaylistMode normal_mode{PlaylistMode::fixed};
@@ -7797,6 +7798,7 @@ View view() {
     }
     v.hover_preview = s.hover_preview;
     v.library_request = s.library_request;
+    v.dev_key_request = s.dev_key_request;
     v.library_modifier_help = s.library_modifier_help;
     v.modifier_ready = modifier_mask(s.loaded_modifier) != 0;
     v.catch_marker = s.catch_marker;
@@ -7888,6 +7890,13 @@ void request_library(bool modifier_help) {
     std::lock_guard lock(s.mutex);
     ++s.library_request;
     s.library_modifier_help = modifier_help;
+    s.open_requested = true;
+    s.open_request_pending = true;
+}
+void request_dev_key() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    ++s.dev_key_request;
     s.open_requested = true;
     s.open_request_pending = true;
 }
