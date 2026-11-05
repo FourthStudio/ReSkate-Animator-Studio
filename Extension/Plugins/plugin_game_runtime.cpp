@@ -1,4 +1,5 @@
 #include "plugin_game_runtime.h"
+#include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
 #include "Extension/Skater/skater_movement.h"
@@ -182,6 +183,9 @@ std::filesystem::path game_folder() {
 class RealGame final : public Game {
 public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
+    std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
+        return ui_values::publish(base_, plugin, values);
+    }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }
@@ -450,6 +454,16 @@ public:
     }
     std::string local_chat(std::string_view plugin, std::string_view text, std::uint32_t colour) override {
         return multiplayer::plugin_chat(plugin, text, colour);
+    }
+    void set_chat_commands(std::vector<ChatCommandInfo> commands) override {
+        std::vector<multiplayer::PluginChatCommand> list;
+        for (auto& c : commands) list.push_back({std::move(c.plugin), std::move(c.name), std::move(c.args), std::move(c.help)});
+        multiplayer::set_plugin_chat_commands(std::move(list));
+    }
+    std::vector<ChatCommandCall> take_chat_commands() override {
+        std::vector<ChatCommandCall> result;
+        for (auto& call : multiplayer::take_plugin_chat_commands()) result.push_back({std::move(call.name), std::move(call.arguments)});
+        return result;
     }
     ThrowdownState throwdowns() override {
         ThrowdownState state{multiplayer::local_throwdown_active(), multiplayer::local_throwdown_host(), {}};
@@ -1865,6 +1879,7 @@ public:
         grind_target::release(plugin);
         input::gameplay_options().release(plugin);
         placement_physics::release(plugin);
+        ui_values::release(base_, plugin);
         if (capture_owner_ == plugin) {
             capture::recorder().discard();
             capture_owner_.clear();

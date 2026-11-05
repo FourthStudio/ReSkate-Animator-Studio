@@ -1,4 +1,5 @@
 #pragma once
+#include "plugin_ui_values.h"
 #include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "plugin_object_physics.h"
@@ -203,6 +204,13 @@ struct ChatLine {
     std::string name, text;
     bool local{}, server{};
 };
+// A plugin's "/" command (reskate.chat.command), and one the player typed.
+struct ChatCommandInfo {
+    std::string plugin, name, args, help;
+};
+struct ChatCommandCall {
+    std::string name, arguments;
+};
 struct Track {
     bool available{}, playing{};
     std::string app, title, artist, album;
@@ -283,6 +291,8 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    // Publish incremental, plugin-owned float models for authored game UI; unavailable on dedicated servers.
+    virtual std::string publish_ui_values(std::string_view, const ui_values::Values&) { return unavailable; }
     // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
     // Owned by one VM instance, not by a reloadable plugin name. Client phase only; the typed
     // handles and epochs reach Lua only inside opaque userdata.
@@ -413,6 +423,11 @@ public:
     virtual std::string send_chat(std::string_view) { return unavailable; }
     // A line in this player's chat only, under the plugin's name with a "Plugin" tag.
     virtual std::string local_chat(std::string_view /*plugin*/, std::string_view, std::uint32_t /*colour, 0 the usual*/) { return unavailable; }
+    // The "/" commands the plugins have now, for /help and the chat's "/" list (the whole list each
+    // time it changes); and the ones the player typed since the last call. A typed one stays on this
+    // PC: it is not sent to the server.
+    virtual void set_chat_commands(std::vector<ChatCommandInfo>) {}
+    virtual std::vector<ChatCommandCall> take_chat_commands() { return {}; }
     virtual ThrowdownState throwdowns() { return {}; }
     // A drop the local player hosts where the skater stands, for chosen players of the session
     // (`series` "JamSession", "SpotBattle" or "ThrowdownSkate"): they see it and join it with the

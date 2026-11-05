@@ -866,6 +866,31 @@ struct WorldApi {
         if (!within(plugin.services_.now_ms(), plugin.local_chat_second_, plugin.local_chats_, 5)) return result(L, "more than 5 lines in a second");
         return result(L, game(plugin).local_chat(plugin.id(), text, colour));
     }
+    // ---- chat.commands --------------------------------------------------------------------------------
+    // command(name, help, function, args): "/name ..." typed in chat runs function(text, words) on this
+    // PC and is never sent. The chat's own commands and a dedicated server's stay theirs.
+    static int chat_command(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "chat.commands", "reskate.chat.command");
+        if (plugin.services_.authority()) luaL_error(L, "reskate.chat.command is for a player's game: a server copy hears /commands in the chat event");
+        const auto name = checked_text(L, 1, 24, "a chat command's name");
+        bool valid = name.size() >= 2 && name.front() >= 'a' && name.front() <= 'z';
+        for (const char c : name) valid = valid && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-');
+        if (!valid) luaL_error(L, "\"%s\" is not a chat command name: one lowercase word of 2 to 24 a-z, 0-9, _ and -, starting with a letter", name.c_str());
+        const auto help = checked_text(L, 2, 120, "a chat command's help");
+        luaL_checktype(L, 3, LUA_TFUNCTION);
+        const auto args = lua_isnoneornil(L, 4) ? std::string{} : checked_text(L, 4, 60, "a chat command's arguments");
+        for (const unsigned char c : help + args)
+            if (c < 0x20) luaL_error(L, "a chat command's help and arguments are one line of text");
+        if (plugin.chat_commands_.contains(name)) luaL_error(L, "the chat command \"/%s\" is registered already", name.c_str());
+        if (plugin.chat_commands_.size() >= plugin.limits_.chat_commands)
+            luaL_error(L, "more than %d chat commands", static_cast<int>(plugin.limits_.chat_commands));
+        if (const auto refusal = plugin.services_.claim_chat_command(plugin.id(), name); !refusal.empty()) luaL_error(L, "%s", refusal.c_str());
+        lua_pushvalue(L, 3);
+        plugin.chat_commands_[name] = {args, help, lua_ref(L, -1)};
+        lua_pop(L, 1);
+        return 0;
+    }
     // ---- skater.animation -----------------------------------------------------------------------------
     static std::size_t pose_bytes(const anim_studio::Clip& clip) { return clip.times.size() * clip.joints * 40 + clip.board.size() * 40; }
     // A clip by its path in the package (an Animation Studio clip file, FAS1 to FAS3), "data:<path>" in
@@ -874,6 +899,7 @@ struct WorldApi {
         const auto name = checked_text(L, index, 200, "a clip");
         if (const auto found = plugin.clips_.find(name); found != plugin.clips_.end()) return found->second;
         if (name.starts_with("rec:") || name.starts_with("clip:") || name.starts_with("edit:")) luaL_error(L, "there is no clip %s", name.c_str());
+        const Plugin::Untimed untimed{plugin}; // reading and decoding it (Plugin::Untimed)
         std::string error, bytes;
         // The game's own: read out of its data, not a file.
         if (name.starts_with("game:")) {
@@ -2085,7 +2111,7 @@ struct WorldApi {
     // stand_ins({pick = "first" | "random", parts = "both" | "skater" | "board", items = {...}, exclude = {...}, seed = n}):
     // what this PC shows in place of other players' items it does not have (their cosmetics mods).
     // No items: every installed item that fits the slot. exclude: never these (names, "*" for any run
-    // of characters), though a player who really wears one still shows it. Never a paid store item. stand_ins(nil): the
+    // of characters; up to 4096 names, 64 of them with a "*"), though a player who really wears one still shows it. Never a paid store item. stand_ins(nil): the
     // game's defaults again. Only what you see changes. true, or false and why not.
     static int outfit_stand_ins(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -2141,7 +2167,12 @@ struct WorldApi {
                 lua_pop(L, 1);
             };
             names("items", multiplayer::stand_ins::max_items, s.items);
-            names("exclude", multiplayer::stand_ins::max_exclude, s.exclude);
+            names("exclude", multiplayer::stand_ins::max_exclude_names, s.exclude);
+            // Rules with a "*" are matched against every candidate, so few of them; plain names are looked up.
+            if (const auto stars = std::count_if(s.exclude.begin(), s.exclude.end(),
+                                                 [](const std::string& rule) { return rule.find('*') != std::string::npos; });
+                stars > static_cast<std::ptrdiff_t>(multiplayer::stand_ins::max_exclude))
+                luaL_error(L, "exclude has at most %d names with \"*\"", static_cast<int>(multiplayer::stand_ins::max_exclude));
             wanted = std::move(s);
         }
         // Every change dresses the players you see again, which is heavy: not every frame.
@@ -2166,6 +2197,7 @@ struct WorldApi {
             found->second.played = ++plugin.wave_plays_;
             return found->second.wave;
         }
+        const Plugin::Untimed untimed{plugin}; // reading and decoding it (Plugin::Untimed)
         std::string error;
         const auto bytes = read_package_file(package_file(L, plugin, path), 8u << 20, error);
         if (bytes.empty()) luaL_error(L, "the sound %s cannot be read: %s", path.c_str(), error.empty() ? "it is empty" : error.c_str());
@@ -3253,7 +3285,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                  {"touching", session_touching}, {"hide", session_hide}, {"hidden", session_hidden},
                                  {"raycast", session_raycast}});
     add_functions(L, "voice", {{"set_volume", voice_volume}});
-    add_functions(L, "chat", {{"send", chat_send}, {"notice", chat_local}});
+    add_functions(L, "chat", {{"send", chat_send}, {"notice", chat_local}, {"command", chat_command}});
     add_functions(L, "animation", {{"play", animation_play}, {"stop", animation_stop}, {"playing", animation_playing}, {"replace", animation_replace},
                                    {"record", animation_record}, {"recorded", animation_recorded}, {"forget", animation_forget}, {"trick", animation_trick},
                                    {"seek", animation_seek}, {"pause", animation_pause}, {"time", animation_time}, {"info", animation_info},
