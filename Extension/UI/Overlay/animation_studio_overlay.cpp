@@ -166,7 +166,6 @@ struct Ui {
     bool drag_moved{};         // the mouse has gone far enough for the drag to count
     bool snap{};               // a foot moved in the air lands on the deck
     bool board_lock{};         // LOCK: the skater goes with the board when it is turned or moved (begin_group)
-    bool feet_on_deck{true};   // FEET: a foot standing on the deck stays on it when the board is turned or moved (begin_group)
     bool own_lead_right{};     // the skater's own stance leads with the right foot (View::own_lead_right), for the stance tags
     // More joints chosen with the one the gizmo is on (Ctrl + click): they are turned and moved with it (move_group).
     std::vector<std::uint16_t> also;
@@ -903,14 +902,6 @@ void toggle_in_group(std::uint16_t joint) {
     if (const auto at = std::find(u.also.begin(), u.also.end(), joint); at != u.also.end()) u.also.erase(at);
     else u.also.push_back(joint);
 }
-// Whether a foot stands on the deck: its ankle about as high over the board's mount as a rider's is (feet_above_board,
-// 0.104 m), and over the deck, not off its side or past its ends. In the board's axes: x across, y up, z along.
-bool standing_on_deck(const studio::JointView& board, const studio::JointView& foot) {
-    studio::Vec3 d{};
-    for (int i = 0; i < 3; ++i) d[i] = foot.position[i] - board.position[i];
-    const auto on = studio::rotate(studio::conjugate(board.rotation), d);
-    return on[1] > 0.03f && on[1] < 0.17f && std::abs(on[0]) < 0.16f && std::abs(on[2]) < 0.45f;
-}
 void begin_group(const studio::View& v) {
     auto& u = ui();
     u.group_start.clear();
@@ -930,18 +921,6 @@ void begin_group(const studio::View& v) {
             u.group_start.push_back({studio::hips_joint, studio::offset_of(studio::hips_joint), hips->position, hips->rotation,
                                      hips->parent_rotation, hips->parent_scale, true});
     }
-    // FEET (the user, 2026-11-05: "when you tilt the board he automatically adapts his foot position"): without LOCK, a foot
-    // standing on the deck when the board's drag begins goes with the board (move_group's foot on the deck), the leg bending
-    // to reach and the foot lying as the deck does. A foot off the deck (a flip, a foot lifted) is left where it is.
-    else if (u.feet_on_deck && u.selected == studio::board_joint)
-        if (const auto* board = joint_view(v, studio::board_joint))
-            for (const std::uint16_t foot : {std::uint16_t{343}, std::uint16_t{10}}) {
-                if (std::count(u.also.begin(), u.also.end(), foot)) continue;
-                const auto* view = joint_view(v, foot);
-                const auto* track = track_view(v, foot);
-                if (!view || (track && track->locked) || !standing_on_deck(*board, *view)) continue;
-                u.group_start.push_back({foot, studio::offset_of(foot), view->position, view->rotation, view->parent_rotation, view->parent_scale});
-            }
 }
 // `turn`: how the chosen joint turned in the world since the turn began; `shift`: how far it moved in the world.
 void move_group(const studio::Quat& turn, const studio::Vec3& shift) {
@@ -957,8 +936,7 @@ void move_group(const studio::Quat& turn, const studio::Vec3& shift) {
             const auto turned = studio::rotate(turn, from);
             studio::Vec3 to{};
             for (int i = 0; i < 3; ++i) to[i] = u.board_point[i] + turned[i] + shift[i];
-            // Turned with the board too, so its sole stays on the deck as the deck tilts.
-            studio::carry_foot(g.joint, to, studio::normalised(studio::multiply(turn, g.world)));
+            studio::drag_limb(g.joint, to);
             continue;
         }
         if (limb_end(g.joint) && (shift[0] != 0 || shift[1] != 0 || shift[2] != 0)) {
@@ -3007,7 +2985,7 @@ struct KeyAction {
     const char* label; // as SETTINGS lists it
     ImGuiKey key;      // its own
 };
-constexpr std::array<KeyAction, 34> key_actions{{
+constexpr std::array<KeyAction, 33> key_actions{{
     {"key", "Key the pose", ImGuiKey_K},
     {"delete", "Delete the key", ImGuiKey_Delete},
     {"play", "Play / pause", ImGuiKey_Space},
@@ -3026,7 +3004,6 @@ constexpr std::array<KeyAction, 34> key_actions{{
     {"solo", "Solo", ImGuiKey_O},
     {"snap", "Snapping", ImGuiKey_N},
     {"lock", "Skater on the board", ImGuiKey_B},
-    {"feet", "Feet stay on the deck", ImGuiKey_P},
     {"limits", "Limits", ImGuiKey_M},
     {"clear", "Keep clear", ImGuiKey_C},
     {"joints", "Joints on the skater", ImGuiKey_J},
@@ -3268,10 +3245,6 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(bound("lock"))) {
         u.board_lock = !u.board_lock;
         say(u.board_lock ? "Lock on: turn or move the board and the skater goes with it." : "Lock off: the board moves on its own.");
-    }
-    if (!ctrl && pressed(bound("feet"))) {
-        u.feet_on_deck = !u.feet_on_deck;
-        say(u.feet_on_deck ? "Feet on: a foot on the deck stays on it when you turn or move the board." : "Feet off: the board moves under the feet.");
     }
     if (pressed(bound("shortcuts"))) u.controls_open = !u.controls_open;
     auto orbit = v.orbit;
@@ -9974,11 +9947,6 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               "The skater is locked to the board: turning or moving the board takes him with it, round the board's middle, "
                               "his feet staying on the deck. Key: " + key_of("lock") + ".",
                               [](bool on) { ui().board_lock = on; }));
-        rows.push_back(on_off("Feet stay on the deck", u.feet_on_deck,
-                              "A foot standing on the deck stays on it when you turn or move the board: the leg bends to follow and the "
-                              "foot tilts with the deck. A foot off the deck is left where it is. LOCK takes the whole skater instead. "
-                              "Key: " + key_of("feet") + ".",
-                              [](bool on) { ui().feet_on_deck = on; }));
         rows.push_back(on_off("Solo", v.solo,
                               "A turn moves that joint alone: the joints hanging off it are turned back by as much, so the limb below keeps "
                               "the way it faces. Key: " + key_of("solo") + ".",
@@ -12464,9 +12432,6 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     y += row;
     if (tool("##boardlock", "LOCK", key_of("lock").c_str(), u.board_lock, "The skater is locked to the board: turn or move the board and he goes with it."))
         u.board_lock = !u.board_lock;
-    y += row;
-    if (tool("##feetondeck", "FEET", key_of("feet").c_str(), u.feet_on_deck, "A foot standing on the deck stays on it when you turn or move the board: the leg bends to follow."))
-        u.feet_on_deck = !u.feet_on_deck;
     y += row;
     if (tool("##limits", "LIMITS", key_of("limits").c_str(), v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
         studio::set_joint_limits(!v.limits);
