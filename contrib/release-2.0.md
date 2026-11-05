@@ -1,6 +1,12 @@
-# animator studio 1.2
+# animator studio 2.0
 
-A big update: smoother transitions in and out of tricks, a new bail logic, the TRICKS tab as a folder, an easier LIBRARY, the MARKET as a magazine and shop, fixes for the bugs reported on Discord, fewer frame spikes, and an updater that installs itself. Built for **ReSkate 2.1.4-2**. Your packs and saved tricks need no changes.
+A massive update: smoother transitions in and out of tricks, a new bail logic, trucks you can key, PACKS back as a tab for making and publishing your own packs, the TRICKS tab as a folder, an easier LIBRARY, the MARKET as a magazine and shop, fixes for the bugs reported on Discord and in review, fewer frame spikes, and an updater that installs itself. Built for **ReSkate 2.1.4-2**. Your packs and saved tricks need no changes.
+
+## the editor
+
+- **He steps off his board when the studio opens.** Rolling, he is stopped, steps off and stands still while you edit, so the hover previews and the room stay steady. When the studio closes he gets back on, if it took him off.
+- **FRONT TRUCK and BACK TRUCK.** Two new rows under BOARD turn a truck's hanger, axle and wheels; the baseplate stays bolted to the deck. They play in game too, on rails as well: turn the board into a pinch on a grind loop and twist the truck on the rail back onto it.
+- **LOCK** (B, in HELPERS): the skater is locked to the board, so turning or moving the board takes him with it, feet on the deck.
 
 ## transitions
 
@@ -22,6 +28,12 @@ Rewritten after measuring 70 recorded bails. The game holds a joint that turns s
 - Any arm or leg left up is brought down while it still moves.
 - SETTINGS > BAILS keeps its sliders.
 
+## packs
+
+- **PACKS is a tab again:** TRICKS / PACKS / LIBRARY / MARKET / SETTINGS / ABOUT. It is for your own packs: CREATE A PACK, your packs as prints, and DOWNLOADED PACKS for the ones you got (TRICKS > FROM PACKS).
+- **The pack editor** in the MARKET's look: the cover on a print with MAKE A COVER, its name with RENAME, its numbers, PUBLISH TO THE MARKET (or PUBLISH AN UPDATE), + ADD TRICKS, who can edit it, the pop it plays on, its tricks, and DELETE.
+- CREATE A PACK in the MARKET, and + MAKE A PACK in the LIBRARY, lead here.
+
 ## tricks tab
 
 - **A folder.** Show your tricks as ICONS (the trick cards, groups folded), a LIST or DETAILS with sortable columns. Group by trick, kind or pack, or not at all.
@@ -33,7 +45,10 @@ Rewritten after measuring 70 recorded bails. The game holds a joint that turns s
 ## library
 
 - **Drag to reorder.** Drag an entry by its dots: the others shift, nothing swaps. With a pad: A picks it up, up and down move it, A drops it. UNDO puts it back.
-- **WHAT PLAYS.** The strip at the top shows what plays by default and on a button, with a CHANGE for each, a PLAYBACK switch and a GUIDE.
+- **WHAT PLAYS.** The strip at the top shows what plays by default and on a button, with a CHANGE for each, and a GUIDE.
+- **Your playlists always play.** There is no playback switch any more, and one playlist always plays by default (the first, until you choose another).
+- Each playlist says how it plays a trick it has more than one of: PRIORITY, IN TURNS or SHUFFLE, on its tag.
+- A playlist's SETTINGS take the whole page.
 - **+ ADD A BUTTON** sets a playlist to play while a button is held.
 - **"Add it to a playlist?"** after you get a pack in the MARKET and after you save a new trick.
 - The default playlist opens on its own. The setup guide follows what is set.
@@ -42,6 +57,7 @@ Rewritten after measuring 70 recorded bails. The game holds a joint that turns s
 ## market
 
 - A magazine and shop front: the month's cover with GET IT, SHOP THE MARKET tiles (trending, new, most liked, verified, the crew), trick types with counts, MAKER OF THE MONTH, all-time lists.
+- **MAKER OF THE MONTH** goes to someone new: the all-time favorites have their place in the ALL-TIME lists, so the spotlight goes to the best of the rest that month.
 - Every card has a working GET / UPDATE button, likes and downloads.
 - **BROWSE** with a side list of sorts and filters, and removable filter tags.
 - **Pack pages** like a shop's product page: cover, made by, versions, what is in it, tricks by type, more from the maker, you might also like.
@@ -57,12 +73,17 @@ Rewritten after measuring 70 recorded bails. The game holds a joint that turns s
 - **Downloads.** A download only gives up when it truly stalls. It resumes where it stopped, retries a bad connection, and is checked before it is installed. Packs can be up to 512 MB.
 - **Frame spikes.** The check that matches game pieces in your playlists ran on every animation update and grew with the playlist: 7-14 ms with 100-200 pieces, now under 1.2 ms. Editing a playlist, pressing the modifier button and installing a pack no longer stall the game.
 - Many layout fixes: labels fitted to their buttons, brighter help text, lists that fade at their edges instead of cutting rows, nothing under the shortcuts or THIS TRICK at 16:10 and 4:3.
+- **Several tricks chosen** in TRICKS: DELETE, SET POP and the rest only touch the ones a search or a filter shows, and say how many more are chosen but hidden.
+- A new label or pop shows in the LIBRARY at once, not after a restart.
+- Unfinished MARKET preview downloads are cleaned up after 72 hours.
 
 ## updater
 
 - **UPDATE NOW** downloads, verifies and installs the new `ReSkate.dll` in the folder the game loaded it from. The card shows each step. The old DLL is kept as `ReSkate.dll.previous` and put back if anything fails.
 - Then **KEEP PLAYING** or **RESTART NOW**.
 - The same card is on the ReSkate menu's ANIMATOR STUDIO page and in SETTINGS > UPDATES.
+- A release with no SHA-256 for its `ReSkate.dll` is never installed.
+- The ReSkate menu's ANIMATOR STUDIO page opens the studio straight on TRICKS, PACKS, LIBRARY or MARKET.
 
 ## install or update
 
@@ -71,7 +92,7 @@ Rewritten after measuring 70 recorded bails. The game holds a joint that turns s
 3. Download **ReSkate.dll** from this release and replace the DLL beside `ReSkateLauncher.exe`.
 4. Launch through `ReSkateLauncher.exe`.
 
-From 1.2 on, the studio can update itself: SETTINGS > UPDATES.
+From 2.0 on, the studio can update itself: SETTINGS > UPDATES.
 
 Your saved animations, packs and playlists in `ReSkate.Tricks` stay as they are.
 
