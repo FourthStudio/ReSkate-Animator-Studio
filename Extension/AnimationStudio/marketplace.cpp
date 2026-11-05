@@ -553,15 +553,20 @@ void read_settings_locked(Market& m) {
         try {
             if (const auto text = read_file(folder() / L"verified.json"); !text.empty()) m.verified_list = read_verified(text);
         } catch (...) {}
-        // A developer key that GitHub said could write: remembered (VERIFY says so if it no longer can).
+        // What GitHub said of the developer key on this PC: it can write (VERIFY says so if it no longer can), or it was
+        // refused, and why. A key with neither is NOT CHECKED. Each keeps its row and its REMOVE.
         try {
             std::error_code missing;
-            if (std::filesystem::is_regular_file(folder() / L"dev.key", missing))
+            if (std::filesystem::is_regular_file(folder() / L"dev.key", missing)) {
+                m.dev_state = 4;
                 if (const auto text = read_file(folder() / L"dev.json"); !text.empty()) {
                     const auto root = Json::parse(text);
                     m.dev_login = root.value("login", "");
+                    m.dev_error = root.value("refused", "");
                     if (!m.dev_login.empty()) m.dev_state = 2;
+                    else if (!m.dev_error.empty()) m.dev_state = 3;
                 }
+            }
         } catch (...) {}
         if (const auto text = read_file(account_file()); !text.empty()) {
             const auto root = Json::parse(text);
@@ -1376,17 +1381,18 @@ bool link_dev_key(const std::string& token, std::string& message) {
         message = "The key could not be kept safely on this PC.";
         return false;
     }
-    try {
-        write_file(dev_key_file(), sealed);
-        std::error_code error;
-        std::filesystem::remove(dev_file(), error);
-    } catch (const std::exception& e) {
-        message = e.what();
-        return false;
-    }
     {
+        // Under the lock, as a key check's answer is: a check of the key before can then never write over this one.
         auto& m = market();
         std::lock_guard lock(m.mutex);
+        try {
+            write_file(dev_key_file(), sealed);
+            std::error_code error;
+            std::filesystem::remove(dev_file(), error);
+        } catch (const std::exception& e) {
+            message = e.what();
+            return false;
+        }
         m.dev_state = 0;
         m.dev_login.clear();
         m.dev_error.clear();
@@ -1421,7 +1427,8 @@ void check_dev_key(bool again) {
     std::thread([] {
         int state = 4;
         std::string login, why;
-        const auto token = protect(read_file(dev_key_file()), false);
+        const auto checked_key = read_file(dev_key_file());
+        const auto token = protect(checked_key, false);
         if (token.empty()) state = 3, why = "The key on this PC could not be read: add it again.";
         else {
             // The repository as the key's account sees it: whether it may push to it.
@@ -1452,13 +1459,14 @@ void check_dev_key(bool again) {
                      state == 2 ? "can verify packs" : state == 3 ? "cannot verify packs" : "could not be checked");
         auto& m = market();
         std::lock_guard lock(m.mutex);
+        // REMOVE, or LINK with another key, during the check: this answer is for a key that is no longer on this PC.
+        if (read_file(dev_key_file()) != checked_key) return;
         m.dev_state = state;
         m.dev_login = login;
         m.dev_error = why;
         try {
-            std::error_code error;
             if (state == 2) write_file(dev_file(), Json{{"login", login}}.dump(2));
-            else if (state == 3) std::filesystem::remove(dev_file(), error);
+            else if (state == 3) write_file(dev_file(), Json{{"refused", why}}.dump(2));
         } catch (...) {}
     }).detach();
 }
