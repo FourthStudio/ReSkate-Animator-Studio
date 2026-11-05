@@ -147,6 +147,7 @@ struct View {
     struct PlaylistView {
         std::string name;
         std::size_t size{};
+        PlaylistMode mode{PlaylistMode::fixed}; // how it plays a trick it has more than one of (its tag in the LIBRARY)
     };
     std::vector<PlaylistView> playlists;
     std::string playlist_open, playlist_playing;
@@ -156,6 +157,8 @@ struct View {
     bool playlist_can_undo{}, playlist_redo{};
     std::uint64_t library_request{};
     std::uint64_t dev_key_request{}; // `animstudio devkey`: the DEVELOPER KEY card asked for (request_dev_key)
+    std::uint64_t tab_request{};     // a tab of the menu asked for (request_tab), and which
+    int tab_requested{};
     bool library_modifier_help{};
     bool modifier_ready{};
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
@@ -490,6 +493,9 @@ void request_library(bool modifier_help = false);
 // Opens the studio on SETTINGS with its DEVELOPER KEY card (console: animstudio devkey). For its developers whose Thunderstore
 // team is not BUILT BY's (22sh, Norms): SETTINGS shows that row only to those teams and THE CREW's, or once a key is on the PC.
 void request_dev_key();
+// Opens the studio's menu on one of its tabs (the overlay's numbers: 0 TRICKS, 1 LIBRARY, 2 MARKET, 3 SETTINGS, 4 ABOUT,
+// 5 PACKS), for the ReSkate menu's ANIMATOR STUDIO page.
+void request_tab(int tab);
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
 // The LIBRARY's drag: `entry` of playlist `target` goes to place `to` and those between shift by one (an insert, not a

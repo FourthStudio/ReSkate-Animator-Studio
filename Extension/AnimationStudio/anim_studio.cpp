@@ -340,6 +340,8 @@ struct State {
     PlaylistEditHistory playlist_history;
     std::uint64_t library_request{};
     std::uint64_t dev_key_request{};
+    std::uint64_t tab_request{};
+    int tab_requested{};
     bool library_modifier_help{};
     ModifierBinding modifier, loaded_modifier;
     PlaylistMode normal_mode{PlaylistMode::fixed};
@@ -1104,7 +1106,8 @@ void load_settings(State& s) {
         s.crossfade = f.crossfade;
         s.keys = std::move(f.editor_keys);
         s.room = f.studio_room;
-        s.play_in_game = f.play_in_game;
+        // Always on (the user, 2026-11-05: playback has no switch any more); one saved off by an older build is on again.
+        s.play_in_game = true;
         s.catch_marker = f.catch_marker;
         s.guide_seen = f.guide_seen;
         s.editor_tour_seen = f.editor_tour_seen;
@@ -1242,6 +1245,7 @@ Playlists read_playlists() {
     if (!std::filesystem::exists(playlists_file(), error)) {
         auto made = migrate_playlists();
         move_packs_into_playlist(made);
+        if (!made.named(made.on)) made.on = made.lists.empty() ? std::string{} : made.lists.front().name; // one always by default
         return made;
     }
     Playlists out;
@@ -1260,7 +1264,8 @@ Playlists read_playlists() {
                 out.lists.push_back(std::move(list));
             }
         out.on = root.value("on", "");
-        if (!out.named(out.on)) out.on.clear();
+        // One always plays by default (the user, 2026-11-05): none named, or one that is gone, is the first.
+        if (!out.named(out.on)) out.on = out.lists.empty() ? std::string{} : out.lists.front().name;
         out.packs_moved = root.contains("packs_moved") && root.at("packs_moved").is_boolean() && root.at("packs_moved").get<bool>();
     } catch (...) {
         keep_unreadable_copy(playlists_file());
@@ -7786,7 +7791,7 @@ View view() {
     v.playlist_playing = s.playlists.on;
     v.playlist_open = s.playlist_open;
     v.playlists.clear();
-    for (const auto& l : s.playlists.lists) v.playlists.push_back({l.name, l.entries.size()});
+    for (const auto& l : s.playlists.lists) v.playlists.push_back({l.name, l.entries.size(), l.mode});
     if (const auto* open = s.playlists.named(s.playlist_open)) {
         v.playlist_mode = open->mode;
         v.playlist = open->entries;
@@ -7799,6 +7804,8 @@ View view() {
     v.hover_preview = s.hover_preview;
     v.library_request = s.library_request;
     v.dev_key_request = s.dev_key_request;
+    v.tab_request = s.tab_request;
+    v.tab_requested = s.tab_requested;
     v.library_modifier_help = s.library_modifier_help;
     v.modifier_ready = modifier_mask(s.loaded_modifier) != 0;
     v.catch_marker = s.catch_marker;
@@ -7890,6 +7897,14 @@ void request_library(bool modifier_help) {
     std::lock_guard lock(s.mutex);
     ++s.library_request;
     s.library_modifier_help = modifier_help;
+    s.open_requested = true;
+    s.open_request_pending = true;
+}
+void request_tab(int tab) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    ++s.tab_request;
+    s.tab_requested = tab;
     s.open_requested = true;
     s.open_request_pending = true;
 }

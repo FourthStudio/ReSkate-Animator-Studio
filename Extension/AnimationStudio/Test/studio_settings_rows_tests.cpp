@@ -169,16 +169,15 @@ void playing_lists_none_and_each_playlist_and_switches_by_name() {
     reset();
     std::string told;
     const auto row = playing_playlist(two_playlists("Park"), [&](const std::string& said) { told = said; });
-    check(row.options == std::vector<std::string>{"NONE", "Street (4)", "Park (0)"}, "Playing does not list NONE and each playlist with its size");
-    check(row.selected == 2 && row.value == "Park (0)" && row.enabled, "Playing does not show the playlist that is on");
-    row.pick(1);
-    check(anim_studio::given.playing == "Street" && told == "Street is on.", "Picking a playlist did not switch it on by its name");
+    check(row.options == std::vector<std::string>{"Street (4)", "Park (0)"}, "Playing does not list each playlist with its size (and no NONE)");
+    check(row.selected == 1 && row.value == "Park (0)" && row.enabled, "Playing does not show the playlist that is on");
     row.pick(0);
-    check(anim_studio::given.playing == "", "Picking NONE did not switch playlists off");
+    check(anim_studio::given.playing == "Street" && told == "Street is on.", "Picking a playlist did not switch it on by its name");
 }
 void playing_is_none_and_greyed_with_no_playlists() {
     const auto row = playing_playlist({}, [](const std::string&) {});
-    check(row.options == std::vector<std::string>{"NONE"} && row.selected == 0 && !row.enabled, "Playing is not NONE and greyed with no playlists");
+    check(row.options == std::vector<std::string>{"NO PLAYLISTS YET"} && row.selected == 0 && !row.enabled,
+          "Playing does not say there are no playlists, greyed, with none");
 }
 void the_catch_marker_is_on_by_default_and_sets_itself() {
     reset();

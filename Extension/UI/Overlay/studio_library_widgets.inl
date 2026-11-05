@@ -52,8 +52,8 @@ void library_member_row(ImDrawList* d, const Fonts& f, const studio::View& v, co
     ImGui::PopID();
 }
 // WHAT PLAYS, across the top of every part of the LIBRARY: the playlist that plays by default and the one a held button
-// plays, each a plate with its own CHANGE button (the links a new player could not find on the page before), playback on
-// or off, and the setup guide again. The words are 13 units and the names Anton 24, so they read at 720p. Each plate is as
+// plays, each a plate with its own CHANGE button (the links a new player could not find on the page before), and the setup
+// guide again. Playback has no switch: your playlists always play (the user, 2026-11-05). The words are 13 units and the names Anton 24, so they read at 720p. Each plate is as
 // wide as what is on it, and the strip as long as its plates and switches, against the page's right edge as the sheet
 // under it: no wide empty stretch between CHANGE and what it changes, or across the strip on a wide screen.
 std::size_t library_entries(const studio::View& v, const std::string& name) {
@@ -67,8 +67,7 @@ void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     const bool enabled = studio::modifier_mask(bind) != 0;
     const float caps = 13 * k, name_size = 24 * k, mid = (a.y + b.y) * 0.5f, gap = 12 * k;
     const float guide_w = lib_w(f, "GUIDE", 36 * k, 96 * k), change_w = lib_w(f, "CHANGE", 32 * k, 92 * k);
-    const float play_caps_w = spaced_width(mont(f, caps), caps, "PLAYBACK", 1.6f * k);
-    const float tail = 24 * k + play_caps_w + 10 * k + 64 * k + 22 * k + guide_w + 14 * k; // PLAYBACK, its switch, GUIDE
+    const float tail = 24 * k + guide_w + 14 * k; // GUIDE
     const float most = std::max(220 * k, (b.x - a.x - 14 * k - tail - gap) * 0.5f);
     // What each plate shows, and how wide that makes it.
     struct Plate {
@@ -125,15 +124,6 @@ void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     if (draw("##rolebutton", button)) {
         route.modifier_setup = true;
         route.settings_scroll = 0;
-    }
-    // PLAYBACK and its switch, then GUIDE.
-    x += 12 * k;
-    lib_caps(d, f, {x, mid - caps * 0.5f}, caps, v.play_in_game ? lib_ink_soft : lib_warn, "PLAYBACK");
-    x += play_caps_w + 10 * k;
-    if (toggle(d, f, "##playback", {x, mid - 15 * k}, v.play_in_game)) {
-        studio::set_play_in_game(!v.play_in_game);
-        say(v.play_in_game ? "Playback is off: the game's own tricks play until you switch it on again."
-                           : "Playback is on: your playlists play in game.");
     }
     if (lib_button(d, f, "##showguide", {b.x - 14 * k - guide_w, mid - 18 * k}, {guide_w, 36 * k}, "GUIDE", Look::ghost)) {
         u.library_guide_hidden = u.library_guide_finished = false;

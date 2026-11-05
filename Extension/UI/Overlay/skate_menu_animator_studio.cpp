@@ -449,6 +449,21 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     }
     if (const auto blocked = animator_studio_blocked_reason(model); !blocked.empty()) warn(blocked.c_str());
     ImGui::Dummy(ImVec2(0, px(6)));
+    // The studio's own tabs, as its menu has them: straight to the one wanted.
+    {
+        const bool can = animator_studio_openable(model);
+        const int picked = button_row(menu, "##studiotabs", {{"TRICKS", can, false, "Your tricks and the game's, to open and edit."},
+                                                             {"PACKS", can, false, "Make your own packs and publish them to the MARKET."},
+                                                             {"LIBRARY", can, false, "Your playlists: what plays by default and on a button."},
+                                                             {"MARKET", can, false, "Get packs other players made."}});
+        // The studio's numbers for them (animation_studio_overlay.cpp: packs_tab is 5).
+        static constexpr std::array<int, 4> tabs{0, 5, 1, 2};
+        if (picked >= 0 && picked < static_cast<int>(tabs.size())) {
+            anim_studio::request_tab(tabs[static_cast<std::size_t>(picked)]);
+            menu.close_requested = true;
+        }
+    }
+    ImGui::Dummy(ImVec2(0, px(6)));
     const anim_studio::settings_rows::Tell tell = [&menu](const std::string& said) { feedback(menu, said.c_str()); };
     switch (button_row(menu, "##studioactions", {{"HOW IT WORKS", true, false, "The guide from the first start: packs, stances, playlists, pop heights."},
                                                   {"REPORT A BUG", true, false, "The last 15 seconds, the log and your settings in one zip, for us."}})) {
@@ -491,7 +506,6 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     }
     {
         const auto c = studio_card_begin(menu, "in-game", "IN GAME");
-        setting_row(menu, anim_studio::settings_rows::custom_tricks_in_game(settings));
         setting_row(menu, anim_studio::settings_rows::transitions(settings));
         setting_row(menu, anim_studio::settings_rows::trick_matching(settings));
         setting_row(menu, anim_studio::settings_rows::crossfade(settings));
@@ -520,7 +534,7 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
         studio_card_end(c);
     }
     if (!now.packs.empty()) {
-        const auto c = studio_card_begin(menu, "packs", "PACKS", "ON: in the playlist that is on, and it plays");
+        const auto c = studio_card_begin(menu, "packs", "PACKS IN THE DEFAULT PLAYLIST", "ON: in the playlist that plays by default");
         for (const auto& pack : now.packs) {
             ImGui::PushID(pack.name.c_str());
             bool in = pack.in;

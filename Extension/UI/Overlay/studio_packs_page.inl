@@ -242,7 +242,7 @@ void own_pack_editor(ImDrawList* d, const Fonts& f, const studio::View& v, const
         const std::string confirm = "pack:" + pack.name;
         const bool asking = u.confirm_delete == confirm;
         if (shop_button(d, f, "##packdelete", ImVec2(a.x, ly), ImVec2(left_w, 44 * k), asking ? "PRESS AGAIN TO DELETE" : "DELETE THIS PACK",
-                        asking ? ShopLook::accent : ShopLook::line)) {
+                        ShopLook::danger)) {
             if (!asking) u.confirm_delete = confirm;
             else {
                 std::string said;

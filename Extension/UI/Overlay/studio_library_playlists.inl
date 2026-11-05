@@ -59,8 +59,8 @@ void library_confirm_page(ImDrawList* d, const Fonts& f, const studio::View& v, 
         say(m); route.confirmation.clear();
     }
 }
-// WHAT PLAYS > PLAYS BY DEFAULT: the playlist that plays whenever no button is held, chosen from the list (or none: the
-// game's own tricks).
+// WHAT PLAYS > PLAYS BY DEFAULT: the playlist that plays whenever no button is held, chosen from the list. One always plays
+// by default (read_playlists makes the first one it when none is), so there is no NONE.
 void library_default_chooser(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& route = ui().library; const float k = f.k;
     const float x = a.x + 20 * k, w = std::min(b.x - a.x - 40 * k, 1200 * k);
@@ -89,12 +89,11 @@ void library_default_chooser(ImDrawList* d, const Fonts& f, const studio::View& 
     };
     for (const auto& list : v.playlists)
         choose(list.name, upper(list.name), std::to_string(list.size) + (list.size == 1 ? " entry" : " entries")); // as its card says
-    choose({}, "NONE / THE GAME'S OWN TRICKS", "nothing of yours plays without a button");
     end_region(d, la, lb, y + route.modifier_lists_scroll - la.y, route.modifier_lists_scroll, k);
 }
 void library_playlist_settings(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui(); auto& route = u.library; const float k = f.k;
-    const float x = a.x + 20 * k, w = std::min(b.x - a.x - 40 * k, 1200 * k);
+    const float x = a.x + 20 * k, w = b.x - a.x - 40 * k; // the whole sheet, not a column in its middle
     library_sheet(d, f, a, b);
     text(d, anton(f, 28 * k), 28 * k, {x, a.y + 18 * k}, lib_ink, "PLAYLIST SETTINGS");
     const float done_w = lib_w(f, "DONE", 36 * k, 100 * k);
@@ -132,10 +131,6 @@ void library_playlist_settings(ImDrawList* d, const Fonts& f, const studio::View
     }
     y += 58 * k;
     const auto binding = studio::modifier_binding();
-    if (v.playlist_open == v.playlist_playing && lib_button(d, f, "##stopdefaultplaylist", {x, y}, {w - 8 * k, 38 * k}, "STOP PLAYING IT BY DEFAULT (THE GAME'S OWN TRICKS)", Look::ghost)) {
-        std::string m; studio::play_playlist({}, m); say(m);
-    }
-    if (v.playlist_open == v.playlist_playing) y += 52 * k;
     if (v.playlist_open == binding.playlist && lib_button(d, f, "##unassignmodifier", {x, y}, {w - 8 * k, 38 * k}, "TAKE IT OFF THE BUTTON", Look::ghost)) {
         auto live = studio::modifier_binding(); live.playlist.clear(); studio::set_modifier_binding(live);
     }
@@ -647,8 +642,15 @@ void library_workspace(ImDrawList* d, const Fonts& f, const studio::View& v, ImV
             // not read).
             const float room = tb.x - ta.x - 36 * k;
             const ImU32 ink = selected ? IM_COL32_WHITE : shop_ink, sub = selected ? IM_COL32_WHITE : IM_COL32(70, 72, 80, 255);
+            // How it plays a trick it has more than one of, on a tag at the top right.
+            const char* how = list.mode == studio::PlaylistMode::turns ? "IN TURNS" : list.mode == studio::PlaylistMode::shuffle ? "SHUFFLE" : "PRIORITY";
+            const float how_w = spaced_width(mont(f, 10 * k), 10 * k, how, 1.4f * k) + 14 * k;
+            const ImVec2 ha(ta.x + room - how_w + 10 * k, ta.y + 9 * k), hb(ha.x + how_w, ha.y + 19 * k);
+            d->AddRectFilled(ha, hb, selected ? IM_COL32(255, 255, 255, 235) : IM_COL32(11, 12, 15, 225));
+            lib_caps(d, f, {ha.x + 7 * k, ha.y + 4 * k}, 10 * k, selected ? IM_COL32(0, 98, 214, 255) : IM_COL32_WHITE, how, 1.4f);
             lib_caps(d, f, {ta.x + 16 * k, ta.y + 13 * k}, 11 * k, sub,
-                     lib_caps_fit(f, 11 * k, (selected ? "OPEN / " : "") + std::to_string(list.size) + (list.size == 1 ? " ENTRY" : " ENTRIES"), room - 50 * k));
+                     lib_caps_fit(f, 11 * k, (selected ? "OPEN / " : "") + std::to_string(list.size) + (list.size == 1 ? " ENTRY" : " ENTRIES"),
+                                  room - how_w - 12 * k));
             text(d, anton(f, 22 * k), 22 * k, {ta.x + 16 * k, ta.y + 30 * k}, ink, elide(anton(f, 22 * k), 22 * k, upper(list.name), room));
             const bool normal = list.name == v.playlist_playing, held = list.name == binding.playlist;
             const char* role = normal && held ? "default + button" : normal ? "plays by default" : held ? "on the button" : "not playing";

@@ -347,6 +347,7 @@ struct Ui {
     bool library_guide_started{}, library_guide_finished{}, library_guide_hidden{};
     std::uint64_t library_request_seen{};
     std::uint64_t dev_key_request_seen{};
+    std::uint64_t tab_request_seen{};
     studio::LibraryNavigation library;
     std::optional<studio::PlaylistEntry> library_pending_source;
     // The LIBRARY's reorder: an entry of the open playlist picked up by its grip, dragged with the mouse or carried with the
@@ -5817,7 +5818,7 @@ ImU32 mix(ImU32 a, ImU32 b, float t) {
 }
 void heart_icon(ImDrawList* d, ImVec2 c, float s, ImU32 colour, bool filled); // below
 // ---- the shop's own buttons: flat, as the mockup's; `accent` in the look's colour, `ink` outlined in black for cream paper ----
-enum class ShopLook { blue, line, paper, black, accent, ink };
+enum class ShopLook { blue, line, paper, black, accent, ink, danger };
 bool shop_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, std::string_view label, ShopLook look = ShopLook::line,
                  bool enabled = true, int icon = 0 /* 1 heart, 2 heart filled, 3 arrow */) {
     const float k = f.k;
@@ -5832,6 +5833,7 @@ bool shop_button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec
     case ShopLook::line: fill = lit ? IM_COL32(255, 255, 255, 26) : IM_COL32(5, 6, 8, 90); break;
     case ShopLook::accent: fill = lit ? mix(look_now->accent, IM_COL32_WHITE, 0.2f) : look_now->accent, ink = look_now->on_accent; break;
     case ShopLook::ink: fill = lit ? IM_COL32(0, 0, 0, 30) : IM_COL32(0, 0, 0, 0), ink = shop_ink; break;
+    case ShopLook::danger: fill = lit ? IM_COL32(220, 70, 70, 255) : IM_COL32(150, 38, 40, 245); break; // as Look::danger
     }
     if (!enabled) fill = IM_COL32(40, 42, 46, 200), ink = IM_COL32(150, 152, 158, 255);
     d->AddRectFilled(at, b, fill);
@@ -6312,6 +6314,7 @@ void shop_face(ImDrawList* d, const Fonts& f, ImVec2 at, ImVec2 size, std::strin
     case ShopLook::line: fill = lit ? IM_COL32(255, 255, 255, 26) : IM_COL32(5, 6, 8, 90); break;
     case ShopLook::accent: fill = lit ? mix(look_now->accent, IM_COL32_WHITE, 0.2f) : look_now->accent, ink = look_now->on_accent; break;
     case ShopLook::ink: fill = lit ? IM_COL32(0, 0, 0, 30) : IM_COL32(0, 0, 0, 0), ink = shop_ink; break;
+    case ShopLook::danger: fill = lit ? IM_COL32(220, 70, 70, 255) : IM_COL32(150, 38, 40, 245); break; // as Look::danger
     }
     if (!enabled) fill = IM_COL32(40, 42, 46, 200), ink = IM_COL32(150, 152, 158, 255);
     d->AddRectFilled(at, b, fill);
@@ -7981,7 +7984,23 @@ float maker_section(ImDrawList* d, const Fonts& f, const studio::market::View& m
     if (all.empty()) return 0;
     if (y > bottom || y + h < top) return h;
     const auto makers = makers_of(all);
-    const auto& mk = makers.front();
+    // The all-time favorites have their place in ALL-TIME, so this one goes to someone else (the user, 2026-11-05: "put others
+    // in the spotlight instead of always the same ones"): the maker with the most downloads ever, and the makers of the
+    // number ones of MOST LIKED and MOST DOWNLOADED, are passed over for the best of the rest this month. Theirs only when
+    // there is no one else.
+    std::vector<std::string> favorites;
+    if (const auto most = std::max_element(makers.begin(), makers.end(), [](const Maker& a, const Maker& b) { return a.downloads < b.downloads; });
+        most != makers.end())
+        favorites.push_back(most->team);
+    for (const char* by : {"liked", "downloads"})
+        if (const auto list = sorted(all, by); !list.empty()) favorites.push_back(list.front()->owner);
+    const Maker* chosen = &makers.front();
+    for (const auto& candidate : makers)
+        if (std::none_of(favorites.begin(), favorites.end(), [&](const std::string& t) { return same_team(t, candidate.team); })) {
+            chosen = &candidate;
+            break;
+        }
+    const auto& mk = *chosen;
     const bool by_month = mk.month > 0;
     const MarketPack* best = mk.packs.front();
     for (const auto* p : mk.packs)
@@ -9974,7 +9993,6 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 2: {
-        rows.push_back(studio::settings_rows::custom_tricks_in_game(now));
         rows.push_back(studio::settings_rows::crossfade(now));
         rows.push_back(studio::settings_rows::trick_matching(now));
         rows.push_back(studio::settings_rows::transitions(now));
@@ -14366,6 +14384,12 @@ void draw_animation_studio() {
         u.pack_page = false;
         u.library.modifier_setup = v.library_modifier_help;
         u.library.settings_scroll = 0;
+    }
+    // A tab asked for from the ReSkate menu's ANIMATOR STUDIO page.
+    if (v.tab_request != u.tab_request_seen) {
+        u.tab_request_seen = v.tab_request;
+        open_menu(std::clamp(v.tab_requested, 0, static_cast<int>(menu_tabs.size()) - 1));
+        u.pack_page = false;
     }
     // `animstudio devkey`: SETTINGS > STUDIO, its DEVELOPER KEY card up.
     if (v.dev_key_request != u.dev_key_request_seen) {

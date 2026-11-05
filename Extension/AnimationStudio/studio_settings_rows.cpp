@@ -198,19 +198,22 @@ Setting pack_folder(const studio::Settings& now, bool exporting) {
     return s;
 }
 
+// One always plays by default once there is a playlist (the user, 2026-11-05), so there is no NONE to pick.
 Setting playing_playlist(const studio::PlaylistsNow& now, Tell tell) {
-    std::vector<std::string> options{"NONE"};
+    std::vector<std::string> options;
     int selected = 0;
     for (const auto& list : now.lists) {
         if (list.name == now.on) selected = static_cast<int>(options.size());
         options.push_back(std::format("{} ({})", list.name, list.size));
     }
+    if (options.empty()) options.push_back("NO PLAYLISTS YET");
     Setting s = one_of("Playing", std::move(options), selected,
-                       "The playlist that decides what of yours plays in game, from the top down. One plays at a time; NONE: "
-                       "nothing of yours plays. Playlists are made in the studio: the LIBRARY.",
+                       "The playlist that decides what of yours plays in game, from the top down. One plays at a time, and one always "
+                       "does. Playlists are made in the studio: the LIBRARY.",
                        [lists = now.lists, tell = std::move(tell)](int picked) {
+                           if (picked < 0 || static_cast<std::size_t>(picked) >= lists.size()) return;
                            std::string m;
-                           studio::play_playlist(picked == 0 ? std::string{} : lists[static_cast<std::size_t>(picked - 1)].name, m);
+                           studio::play_playlist(lists[static_cast<std::size_t>(picked)].name, m);
                            tell(m);
                        });
     s.enabled = !now.lists.empty();
