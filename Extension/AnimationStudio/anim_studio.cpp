@@ -10,6 +10,7 @@
 #include "saved_trick_files.h"
 #include "pop_grades.h"
 #include "Extension/Trainer/trainer_gamestate.h"
+#include "Extension/World/level_loading.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
 #include "reskate_version.h"
@@ -669,6 +670,8 @@ struct Live {
     std::uint64_t states_generation{~std::uint64_t{0}};
     double states_search_at{-1};
     int states_searches{};
+    std::uint64_t states_level{~std::uint64_t{0}}; // the level load the states were looked for in (level_loads_started)
+    bool states_grind_retried{};                   // looked again this level because the grind could not be read
     // A trick's keys the other way round, kept so the mirror is made once rather than every frame.
     std::map<const Animation*, std::shared_ptr<const Animation>> mirrored_edits;
     bool playback_front_foot{true};
@@ -3865,7 +3868,25 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.states_searches = 0;
                 l.states_search_at = at + 3;
             }
-            if (!trainer::studio_states_found() && l.states_searches < 4 && at >= l.states_search_at) {
+            // A new level (a map change, a reload) brings its own copies of them, and the old level's stay readable in freed
+            // memory under the same names: they looked found, nothing searched again, and the grind could no longer be read
+            // - custom grinds stopped playing after a map change. Once the new level is in, the old places are forgotten and
+            // looked for again.
+            if (const auto loads = level_loads_started(); loads != l.states_level && level_content_active()) {
+                l.states_level = loads;
+                l.states_grind_retried = false;
+                trainer::forget_studio_states();
+                l.states_searches = 0;
+                l.states_search_at = at + 3;
+            }
+            // Found, and still the grind cannot be read (a copy not yet bound to him when it was looked for): once more a level.
+            const bool grind_read = l.game.anim_grind_type || l.game.skate_grind_type || l.game.grind_type;
+            const bool look_again = trainer::studio_states_found() && !grind_read && !l.states_grind_retried;
+            if ((!trainer::studio_states_found() || look_again) && l.states_searches < 4 && at >= l.states_search_at) {
+                if (look_again) {
+                    l.states_grind_retried = true;
+                    logging::log(Level::info, Channel::skater, "Animation Studio: the game's grind cannot be read on this level: looking for it again.");
+                }
                 trainer::find_studio_states();
                 ++l.states_searches;
                 l.states_search_at = at + 15;

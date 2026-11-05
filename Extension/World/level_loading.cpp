@@ -42,6 +42,7 @@ struct Observer {
     BeforeLevelTransition before_transition{};
     std::atomic<bool> active{};
     std::atomic<std::uint64_t> next_poll{}, dropped{};
+    std::atomic<std::uint64_t> loads{}; // progress.sequence, readable without the lock (level_loads_started)
     bool drops_reported{};
     std::mutex mutex;
     Progress progress;
@@ -231,6 +232,7 @@ bool observe(std::uintptr_t client, unsigned next, unsigned previous, std::uint6
         const auto was_running = o.progress.running;
         const auto started = o.progress.started;
         o.progress.observe(sample, exact, &emit);
+        o.loads.store(o.progress.sequence, std::memory_order_release);
         trace_progress(o.progress, was_running, started, sample.at);
         if (o.dropped.load() && !o.drops_reported) {
             o.drops_reported = true;
@@ -409,6 +411,13 @@ std::string last_level_destination() noexcept {
         return o.progress.destination;
     } catch (...) {
         return {};
+    }
+}
+std::uint64_t level_loads_started() noexcept {
+    try {
+        return observer().loads.load(std::memory_order_acquire);
+    } catch (...) {
+        return 0;
     }
 }
 bool level_content_active() noexcept {
