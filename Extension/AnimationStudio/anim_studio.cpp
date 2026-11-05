@@ -6374,8 +6374,33 @@ bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept {
         return false;
     }
 }
+// The board a trick's keys go on: the game's, or - a trick playing whole, as made (match_rest: on another pop's clip) - the
+// recording's, nose-forward as the game draws it, mirrored with him when he is, so his feet and the deck flip together as
+// they do in the studio. With the deck turned round under him the game turns its trick board too: the recording's board is
+// turned the same way, so the real deck keeps its nose where it is and nothing spins when the trick hands back at the landing.
+// Both passes start from it (apply_gameplay_board, drawn_board_now): the body's feet are kept on the board that is drawn.
+Joint trick_board_base(const GameplayPacket& packet, const Joint& placement, const Joint& native_mount) noexcept {
+    Joint base = native_mount;
+    if (packet.match_rest > 0 && packet.clip && !packet.clip->board.empty()) {
+        Joint rel;
+        if (packet.clip->sample_board(std::clamp(packet.time, 0.0f, packet.clip->duration()), rel)) {
+            rel = nose_forward(*packet.clip, rel);
+            if (packet.mirrored) rel = mirror_board_pose(rel);
+            if (packet.board_backwards) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
+            const auto recorded = compose(placement, rel);
+            if (finite(recorded)) {
+                const float k = std::min(packet.match_rest, 1.0f);
+                base.rotation = slerp(native_mount.rotation, recorded.rotation, k);
+                for (std::size_t i = 0; i < 3; ++i) base.position[i] += (recorded.position[i] - native_mount.position[i]) * k;
+            }
+        }
+    }
+    return base;
+}
 // The board as its own pass will draw it this frame (apply_gameplay_board), worked out before the body is handed over:
-// the game's board this update, with the trick's board keys on it, as far as the trick is in.
+// the trick's board base (the game's, or the recording's on another pop) with the trick's board keys on it, as far as the
+// trick is in. (Without the recording's board, a trick played whole had its feet kept on the game's board at its handover
+// while the recording's was drawn: both feet went 10 to 23 cm through the deck for three frames, a 2026-11-05 report.)
 bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater, Joint& out) noexcept {
     try {
         auto& l = live();
@@ -6395,7 +6420,8 @@ bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater
         const auto placement = compose(skater[0], skater[1]);
         Joint frame;
         frame.rotation = normalised(multiply(placement.rotation, packet.board_frame_local));
-        auto target = board_edited(native_mount, *packet.edits, packet.time, ground_turn(frame));
+        const auto base = trick_board_base(packet, placement, native_mount);
+        auto target = board_edited(base, *packet.edits, packet.time, ground_turn(frame));
         const auto shape = board_shape(*packet.clip);
         if (motion == MotionState::riding) (void)keep_board_above(target, shape, lowest_point(native_mount, shape));
         // Ahead of a rail or a ledge the board goes to the game's with the legs (lower_release, raised_lead), and as far as it
@@ -6410,7 +6436,7 @@ bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater
             std::lock_guard hand_lock(h.mutex);
             if (auto raw = board_key(*packet.edits, packet.time)) key = key_its_own_way(h, *raw, packet.episode, false);
         }
-        out = part_of_the_trick_board(native_mount, native_mount, target, key, ground_turn(frame), w, smooth);
+        out = part_of_the_trick_board(native_mount, base, target, key, ground_turn(frame), w, smooth);
         // As the board's pass leaves it after its fade: on a rail (and rolling) never lower than the game's board.
         if (rail) (void)keep_board_above(out, shape, lowest_point(native_mount, shape));
         return finite(out);
@@ -6632,26 +6658,8 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
             if (body_layout.buffer && body_layout.count == skeleton_joints && peek(body_layout.buffer, placement_bones.data(), sizeof(placement_bones))) {
                 const auto placement = compose(joint_of(placement_bones[0]), joint_of(placement_bones[1]));
                 Joint frame; frame.rotation = normalised(multiply(placement.rotation, packet->board_frame_local));
-                // Whole body: the board is the recording's too - nose-forward as the game draws it, mirrored with him
-                // when he is - so his feet and the deck flip together as they do in the studio. Then the board keys.
-                Joint base = native_mount;
-                if (packet->match_rest > 0 && packet->clip && !packet->clip->board.empty()) {
-                    Joint rel;
-                    if (packet->clip->sample_board(std::clamp(packet->time, 0.0f, packet->clip->duration()), rel)) {
-                        rel = nose_forward(*packet->clip, rel);
-                        if (packet->mirrored) rel = mirror_board_pose(rel);
-                        // With the deck turned round under him the game turns its trick board too: the recording's
-                        // board is turned the same way, so the real deck keeps its nose where it is and nothing spins
-                        // when the trick hands back to the game at the landing.
-                        if (packet->board_backwards) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
-                        const auto recorded = compose(placement, rel);
-                        if (finite(recorded)) {
-                            const float k = std::min(packet->match_rest, 1.0f);
-                            base.rotation = slerp(native_mount.rotation, recorded.rotation, k);
-                            for (std::size_t i = 0; i < 3; ++i) base.position[i] += (recorded.position[i] - native_mount.position[i]) * k;
-                        }
-                    }
-                }
+                // Whole body: the board is the recording's too (trick_board_base). Then the board keys.
+                const auto base = trick_board_base(*packet, placement, native_mount);
                 auto target = board_edited(base, *packet->edits, packet->time, ground_turn(frame));
                 // Rolling on the ground the game's board stands on it, so the edited one goes no lower than it does.
                 if (packet->clip) {
