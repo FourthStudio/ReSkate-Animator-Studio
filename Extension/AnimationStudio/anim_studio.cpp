@@ -282,8 +282,10 @@ constexpr bool inertialize_from_the_shown_pose = true;
 // trick had it on its own - goes from where it was on the board as drawn to where the new pose puts it, on the board as drawn
 // now, by the same curve in the legs' time (two-bone IK).
 constexpr bool feet_blend_on_the_board = true;
-// THE DECK: through such a change, and as a contact comes (start_before_the_contact), no sole is ever drawn into the deck: a
-// foot over the deck from above is lifted to it (sole_on_deck). Never one under the board, never one beside it.
+// THE DECK: through such a change, and as a contact comes (start_before_the_contact), no sole is ever drawn deeper into the deck
+// than the game's own pose has it on its board: a foot over the deck from above is lifted to that (sole_on_deck). Never one
+// under the board, never one beside it. (Lifted to the grip itself, a shoe the game stands a little in the deck - 5 mm on the
+// right in the user's 2026-11-04 dump - rose for the handover and dropped back at its end: the feet jumped after every trick.)
 constexpr bool soles_never_in_the_deck = true;
 // START BEFORE THE CONTACT: over the last contact_lead before the game's next contact (its time to land, the grind probe), the
 // feet the game stands on its board go onto the board as drawn where the game has them (ride_feet_on_the_board), so what is
@@ -5692,7 +5694,7 @@ std::vector<Offset> shown_pose_body(BodyPublicationState& body, const std::share
             if (finite(want)) place_foot(edited, feet[i], want.position, &want.rotation, stand);
         }
     }
-    // The deck: through the change, and as the game's next contact comes, no sole in it.
+    // The deck: through the change, and as the game's next contact comes, no sole deeper in it than the game's own.
     const bool contact_coming = packet && packet->contact_ahead > 0.001f;
     if (soles_never_in_the_deck && board_ok && (blending || feet_blending || contact_coming)) {
         const auto placement = compose(edited[0], edited[1]);
@@ -5702,7 +5704,11 @@ std::vector<Offset> shown_pose_body(BodyPublicationState& body, const std::share
             float raw = 1, drawn = 1;
             for (const auto foot : feet) {
                 const auto now_foot = world(edited, foot);
-                const auto on = sole_on_deck(relative(board, now_foot));
+                // As deep as the game's own pose has this sole on its own board, and no deeper.
+                float game_depth = 0;
+                if (games_ok)
+                    if (const auto own = sole_on_deck(relative(games, world(native, foot))); own.lowest && *own.lowest < 0) game_depth = *own.lowest;
+                const auto on = sole_on_deck(relative(board, now_foot), game_depth);
                 if (!on.lowest) continue;
                 seen = true;
                 raw = std::min(raw, *on.lowest);
