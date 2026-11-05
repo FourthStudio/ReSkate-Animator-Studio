@@ -84,6 +84,9 @@ struct Fonts {
 
 inline float g_scale = 1.0f;
 inline float S(float value) { return value * g_scale; }
+// The interface size (Settings::interface_size) the window was built with: fonts and the
+// window's smallest size come from it at startup, so a new one takes a restart.
+inline int g_interface_size = 100;
 
 // Optional photo behind the launcher; zero id means the drawn background.
 struct Background {
@@ -202,6 +205,9 @@ struct Settings {
     int console_key{static_cast<int>(launcher::default_console_key)};
     int log_level{2};
     std::string arguments;
+    // The launcher's own text and layout, in percent of the size Windows' display scale gives
+    // (interface_sizes). A size that would not fit the screen is cut to the largest that does.
+    int interface_size{100};
     bool keep_open_after_launch{};
     // Off: never replace ReSkate.dll or the launcher (keeps a test build someone handed out).
     bool updates{true};
@@ -247,6 +253,10 @@ std::string build_name(update::Channel channel);
 // A release's runtime version as the player reads it: this build's "1.0.11+reskate.2.1.2" is
 // "ReSkate 2.1.2 + Animator Studio 1.0.11"; official ReSkate's "2.1.2" is "Base ReSkate 2.1.2".
 std::string build_version_name(update::Channel channel, const std::string& version);
+inline constexpr std::array<int, 7> interface_sizes{75, 90, 100, 115, 125, 150, 175};
+inline constexpr std::array<const char*, 7> interface_size_names{"75%", "90%", "100%", "115%", "125%", "150%", "175%"};
+// The interface size saved for this launcher, read before its window is made.
+int saved_interface_size(const launcher_app::Session& session);
 
 inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};
 
@@ -319,6 +329,9 @@ public:
     void answer(std::optional<std::string> value);
 
     void restart();
+    // Starts the launcher again from the main loop, as a launcher update does, for a setting
+    // that only applies at startup.
+    void request_restart() { settings_restart_ = true; restart_ = true; }
 
 private:
     launcher_app::Session session_;
@@ -343,6 +356,8 @@ private:
     std::atomic<bool> busy_{};
     std::atomic<bool> cancel_{};
     std::atomic<bool> restart_{};
+    // The restart is for a setting, not a launcher update: the new launcher checks for updates as usual.
+    std::atomic<bool> settings_restart_{};
     std::atomic<bool> ignore_mod_problems_{};
     std::atomic<DWORD> game_{};
     std::atomic<bool> launched_{};

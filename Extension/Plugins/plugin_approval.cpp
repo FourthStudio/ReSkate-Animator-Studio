@@ -34,6 +34,7 @@ constexpr Capability capabilities[] = {
     {"chat.send", "CHAT", Risk::red, "Send chat lines as you"},
     {"chat.read", "CHAT", Risk::grey, "Read the session's chat"},
     {"chat.local", "CHAT", Risk::grey, "Show chat notices on your screen"},
+    {"chat.commands", "CHAT", Risk::grey, "Add / commands to your chat"},
     {"server", "SERVER", Risk::red, "Moderate, chat and run polls on a server you host"},
     {"server.parks", "SERVER", Risk::red, "Add or remove a server's park mods"},
     {"skater.teleport", "SKATER", Risk::red, "Teleport your skater"},
@@ -69,6 +70,7 @@ constexpr Capability capabilities[] = {
     {"hud", "SCREEN", Risk::amber, "Hide your HUD and change the trick ticker"},
     {"overlay", "SCREEN", Risk::amber, "Draw on your screen, with screen effects, toasts and x-ray view"},
     {"ui.screen", "SCREEN", Risk::grey, "Open its own screens and dialogs"},
+    {"ui.models", "SCREEN", Risk::grey, "Send numbers to its own mod's menus and HUD"},
     {"menu", "SCREEN", Risk::grey, "Edit the game's menu and add its own menu page"},
     {"music", "SOUND", Risk::amber, "Read and control your music playback"},
     {"audio", "SOUND", Risk::grey, "Play, stop and adjust sounds"},
@@ -257,6 +259,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("chat.read")) actions.push_back("read chat");
             if (has("chat.send")) actions.push_back("send chat lines as you");
             if (has("chat.local")) actions.push_back("show chat notices on your screen");
+            if (has("chat.commands")) actions.push_back("add / commands to your chat");
         } else if (group.category == "SERVER") {
             if (has("server")) actions.push_back("moderate servers you host");
             if (has("server.parks")) actions.push_back("add or remove park mods on servers you host");
@@ -296,6 +299,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("hud")) actions.push_back("hide your HUD or change the trick ticker");
             if (has("overlay")) actions.push_back("draw on screen, including screen effects");
             if (has("ui.screen")) actions.push_back("open plugin screens and dialogs");
+            if (has("ui.models")) actions.push_back("send numbers to its own mod's menus and HUD");
             if (has("menu")) actions.push_back("edit the game's menu and add menu pages");
         } else if (group.category == "SOUND") {
             if (has("music")) actions.push_back("read and control music playback");
