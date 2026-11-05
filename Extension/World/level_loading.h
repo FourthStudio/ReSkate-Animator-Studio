@@ -18,6 +18,8 @@ void poll_level_loading(std::uintptr_t client) noexcept;
 std::string last_level_destination() noexcept;
 // The client reached an active level (in game), so its content loaded.
 bool level_content_active() noexcept;
+// How many level loads have started since the game did (a map change, a reload): a new number means a new level's assets.
+std::uint64_t level_loads_started() noexcept;
 // Words to append to a warning about `destination`: which mod a custom level
 // came from, what built it and what the mod merge could not use from it.
 // Empty for a level no mod registers.

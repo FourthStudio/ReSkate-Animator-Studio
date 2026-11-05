@@ -53,6 +53,10 @@ StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noex
 // one at a time; a few seconds). The trainer's own search finds them too.
 bool studio_states_found() noexcept;
 void find_studio_states() noexcept;
+// Forgets where the studio's states were (its own, the grind types and the manual), for a level that has just loaded: the
+// old level's copies stay readable in freed memory and keep their names, so they still looked found, and nothing searched
+// again (custom grinds stopped playing after a map change for players whose trainer never searched).
+void forget_studio_states() noexcept;
 // The skater's pages of game states (0 where there is none).
 std::array<std::uintptr_t, 6> state_pages(std::uintptr_t base, std::uintptr_t entity) noexcept;
 bool write_flip_speed(const FlipState &state, float speed) noexcept;

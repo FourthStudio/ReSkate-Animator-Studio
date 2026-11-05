@@ -47,7 +47,10 @@ struct Orbit {
     float yaw{0.6f}, pitch{0.18f}, distance{3.4f};
     Vec3 pan{}; // added to the skater's centre
 };
-ModifierBinding modifier_binding();
+// The playlists on buttons (trick_modifier.h), and one playlist's (button 0: it has none).
+ModifierBindings modifier_bindings();
+ModifierBinding modifier_binding(const std::string& playlist);
+// Puts `binding` on its playlist (put_binding): its button leaves any other playlist, and button 0 takes it off its button.
 void set_modifier_binding(ModifierBinding binding);
 void modifier_tick(bool gameplay);
 void set_modifier_hint(bool on);
@@ -160,7 +163,7 @@ struct View {
     std::uint64_t tab_request{};     // a tab of the menu asked for (request_tab), and which
     int tab_requested{};
     bool library_modifier_help{};
-    bool modifier_ready{};
+    std::uint16_t modifier_ready{}; // the buttons whose playlists are loaded and play (modifier_mask)
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
     // SETTINGS > STUDIO: the CATCH flag on the timeline shown or not; and whether the first-start guide has been read (it
     // opens by itself until it has).

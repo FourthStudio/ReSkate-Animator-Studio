@@ -10,6 +10,7 @@
 #include "saved_trick_files.h"
 #include "pop_grades.h"
 #include "Extension/Trainer/trainer_gamestate.h"
+#include "Extension/World/level_loading.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
 #include "reskate_version.h"
@@ -146,6 +147,7 @@ struct CustomTrick {
     // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
     bool modifier_route{};
+    std::uint16_t route_button{}; // on a modifier route: the button its playlist plays on
     PlaylistMode route_mode{PlaylistMode::fixed};
 };
 // The game's own stance setting (Options, DefaultStanceIsGoofy), kept for the animation thread.
@@ -310,7 +312,7 @@ struct Snapshot {
     bool limits{true};  // keyed joints are kept inside the range the game's own animation uses
     float crossfade{0.3f}; // the Crossfade setting: seconds to hand back to the game's next move
     std::shared_ptr<const CustomTricks> tricks;
-    ModifierBinding modifier;
+    ModifierBindings modifiers;
     PlaylistMode normal_mode{PlaylistMode::fixed};
 };
 struct History {
@@ -343,7 +345,7 @@ struct State {
     std::uint64_t tab_request{};
     int tab_requested{};
     bool library_modifier_help{};
-    ModifierBinding modifier, loaded_modifier;
+    ModifierBindings modifiers, loaded_modifiers; // as saved, and as loaded (a button plays once its playlist is read)
     PlaylistMode normal_mode{PlaylistMode::fixed};
     bool modifier_read{};
     std::mutex mutex;
@@ -669,6 +671,8 @@ struct Live {
     std::uint64_t states_generation{~std::uint64_t{0}};
     double states_search_at{-1};
     int states_searches{};
+    std::uint64_t states_level{~std::uint64_t{0}}; // the level load the states were looked for in (level_loads_started)
+    bool states_grind_retried{};                   // looked again this level because the grind could not be read
     // A trick's keys the other way round, kept so the mirror is made once rather than every frame.
     std::map<const Animation*, std::shared_ptr<const Animation>> mirrored_edits;
     bool playback_front_foot{true};
@@ -677,6 +681,7 @@ struct Live {
     PieceTracker pieces;
     NativeModifierHold native_modifier;
     bool piece_modifier_tracking{};
+    std::uint16_t piece_route_button{}; // the button whose playlist the pieces are watched for
     std::shared_ptr<const CustomTricks> pieces_for; // the saved tricks the tracker was set up from
     std::vector<const CustomTrick*> piece_tricks;   // the tracker's piece index -> the saved piece
     struct PiecePlay {
@@ -1921,8 +1926,9 @@ struct TrickCache {
         CustomTrick trick;
         std::vector<CustomTrick> heights; // on ANY pop: its versions for the other heights (load_custom_trick)
     };
-    // Separate selected sets, sharing clips/models: loading Specials must not evict the regular playlist.
-    std::array<std::map<std::filesystem::path, Loaded>, 2> loaded;
+    // Separate selected sets, sharing clips/models: loading Specials must not evict the regular playlist. By the playlist
+    // a button plays ("" the default one).
+    std::map<std::string, std::map<std::filesystem::path, Loaded>> loaded;
     std::shared_ptr<const std::vector<GameTrick>> catalog;      // the trick library they were read with
     std::map<std::string, std::shared_ptr<const Clip>> clips;   // the tricks' own clips, by what is in them
     std::map<std::string, std::vector<NativeModels::Model>> models; // a clip's models (native_models_of), by the same key
@@ -2216,7 +2222,7 @@ LoadedTricks read_custom_tricks(const std::string& test_trick, const std::string
     try { catalog = game_tricks(); } catch (...) {}
     if (catalog != cache.catalog) {
         cache.catalog = catalog;
-        for (auto& route : cache.loaded) route.clear();
+        cache.loaded.clear();
         cache.references.clear();
         // (These were kept across a rebuilt library: the boards, pops and maps of clips that were read again.)
         cache.reference_boards.clear();
@@ -2320,7 +2326,7 @@ LoadedTricks read_custom_tricks(const std::string& test_trick, const std::string
         const auto& entry = file->second;
         const auto& meta = cache.meta[entry];
         const std::string pop = p.pack_pop ? "pack:" + *p.pack_pop : std::string("own");
-        auto& loaded = cache.loaded[override_playlist.empty() ? 0 : 1][entry];
+        auto& loaded = cache.loaded[override_playlist][entry];
         used.insert(entry);
         if (!loaded.trick.clip || !(loaded.json == meta.json) || !(loaded.clip == meta.clip) || loaded.pop != pop) {
             loaded = {};
@@ -2346,7 +2352,7 @@ LoadedTricks read_custom_tricks(const std::string& test_trick, const std::string
         }
     }
     // What plays no more lets go of its memory: its trick, its clip when no other trick has it, its models.
-    std::erase_if(cache.loaded[override_playlist.empty() ? 0 : 1], [&](const auto& e) { return !used.contains(e.first); });
+    std::erase_if(cache.loaded[override_playlist], [&](const auto& e) { return !used.contains(e.first); });
     std::sort(tricks->begin(), tricks->end(), [](const CustomTrick& a, const CustomTrick& b) { return a.name < b.name; });
     std::map<std::string, std::size_t> kinds;
     for (const auto& t : *tricks) ++kinds[t.trick];
@@ -2412,7 +2418,7 @@ void publish_locked(State& s, bool edits_changed = true) {
     snap->clip = s.clip;
     snap->idle = s.idle_clip;
     snap->tricks = s.tricks;
-    snap->modifier = s.loaded_modifier;
+    snap->modifiers = s.loaded_modifiers;
     snap->normal_mode = s.normal_mode;
     if (edits_changed || !s.published_edits) s.published_edits = std::make_shared<const Animation>(s.edits);
     snap->edits = s.published_edits;
@@ -3041,7 +3047,8 @@ PieceMatch native_variant(Live& l, std::vector<PieceMatch> options) {
     if (mode == PlaylistMode::turns)
         std::stable_sort(options.begin(), options.end(), [&](const auto& a, const auto& b) { return l.piece_tricks[a.piece]->order < l.piece_tricks[b.piece]->order; });
     const bool live_right = first->leads_right != options.front().mirrored;
-    const std::string key = first->trick + (first->modifier_route ? "|native-modifier" : "|native-normal") + (live_right ? "|right" : "|left");
+    const std::string key = first->trick + (first->modifier_route ? "|native-modifier" + std::to_string(first->route_button) : "|native-normal") +
+                            (live_right ? "|right" : "|left");
     auto& previous = l.variant_counts[key];
     static thread_local std::mt19937 random{static_cast<std::uint32_t>(GetTickCount64())};
     // Fixed priority was resolved when loading. Remaining same-slot variants may be a pack's Alternate group.
@@ -3049,14 +3056,18 @@ PieceMatch native_variant(Live& l, std::vector<PieceMatch> options) {
     previous = pick + 1;
     return options[pick];
 }
-std::optional<PieceMatch> native_piece_version(Live& l, const Snapshot& snap, PieceMatch reference, bool wanted) {
+// A trick on the route asked for: the default playlist's, or that of the button held.
+bool on_route(const CustomTrick& t, bool modified, std::uint16_t button) noexcept {
+    return modified ? t.modifier_route && t.route_button == button : !t.modifier_route;
+}
+std::optional<PieceMatch> native_piece_version(Live& l, const Snapshot& snap, PieceMatch reference, bool wanted, std::uint16_t button) {
     if (reference.piece >= l.piece_tricks.size()) return std::nullopt;
     const auto* base = l.piece_tricks[reference.piece];
     auto options = choose_trick_route(wanted, [&](bool modified) {
         std::vector<PieceMatch> out;
         for (std::size_t i = 0; i < l.piece_tricks.size(); ++i) {
             const auto* t = l.piece_tricks[i];
-            if (t->modifier_route != modified || t->trick != base->trick) continue;
+            if (!on_route(*t, modified, button) || t->trick != base->trick) continue;
             const bool mirror = reference.mirrored != (base->leads_right != t->leads_right);
             if (!snap.front_foot && mirror) continue;
             out.push_back({i, mirror, reference.time, reference.score});
@@ -3091,7 +3102,7 @@ std::optional<PieceMatch> said_loop(Live& l, const Snapshot& snap, float dt, Liv
     if (g.playing >= 0 && named && !named(static_cast<std::size_t>(g.playing))) return play_on(true);
     for (const bool modified : {true, false}) {
         if (modified && !l.native_modifier.held) continue;
-        const auto routed_rank = [&](std::size_t i) { return l.piece_tricks[i]->modifier_route == modified ? rank(i) : -1; };
+        const auto routed_rank = [&](std::size_t i) { return on_route(*l.piece_tricks[i], modified, l.native_modifier.button) ? rank(i) : -1; };
         const auto choice = held_loop_ranks<Live::HeldKind>(l.held_loops, kind, g.playing, routed_rank);
         if (choice.best < 0) continue;
         if (choice.keep && (snap.front_foot || !g.mirrored)) {
@@ -3198,7 +3209,8 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
     std::vector<const Clip*> clips;
     std::set<std::string> seen_poses;
     for (const auto& [index, k] : l.held_loops)
-        if ((!l.piece_tricks[index]->modifier_route || l.piece_modifier_tracking) && seen_poses.insert(l.piece_tricks[index]->trick).second && k == kind && (!grinding || grind_allows(l, index, grind)) &&
+        if ((!l.piece_tricks[index]->modifier_route || (l.piece_modifier_tracking && l.piece_tricks[index]->route_button == l.piece_route_button)) &&
+            seen_poses.insert(l.piece_tricks[index]->trick).second && k == kind && (!grinding || grind_allows(l, index, grind)) &&
             !(manuals_by_game && index < l.piece_manuals.size() && l.piece_manuals[index].manual) &&
             !(grabs_by_game && index < l.piece_grabs.size() && l.piece_grabs[index].family)) {
             pieces.push_back(index);
@@ -3273,7 +3285,8 @@ std::optional<PieceMatch> held_play(Live& l, const Snapshot& snap, double at, fl
         return std::nullopt;
     }
     if (at - g.candidate_since < 0.2) return std::nullopt; // held a moment, not passed through
-    const auto chosen = native_piece_version(l, snap, {static_cast<std::size_t>(nearest), loop->mirrored, loop->time, loop->score}, l.piece_modifier_tracking);
+    const auto chosen = native_piece_version(l, snap, {static_cast<std::size_t>(nearest), loop->mirrored, loop->time, loop->score}, l.piece_modifier_tracking,
+                                             l.piece_route_button);
     if (!chosen) return std::nullopt;
     g.playing = static_cast<int>(chosen->piece);
     g.mirrored = chosen->mirrored;
@@ -3287,18 +3300,22 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                  const Joint& live_placement, std::shared_ptr<const GameplayPacket>& scheduled, Joint& board_target,
                  float& board_weight, MotionState motion, std::optional<std::uint32_t> state) {
     const std::uint32_t grind = l.grind_now_at >= 0 && at - l.grind_now_at < 0.5 ? l.grind_now : 0;
-    const auto modifier = modifier_mask(snap.modifier);
+    const auto modifier = modifier_masks(snap.modifiers);
     const bool ready = modifier != 0 && !testing_tricks.load();
-    const bool down = ready && overlay::trick_modifier_held(modifier);
+    // The button held whose playlist this takes (the first binding's, when more than one is held).
+    const std::uint16_t route = ready ? held_route(snap.modifiers, overlay::trick_modifier_buttons()) : std::uint16_t{};
+    const bool down = route != 0;
     int native_kind = 0, native_identity = 0;
     if (motion == MotionState::rail) { native_kind = 1; native_identity = static_cast<int>(grind); }
     else if ((motion == MotionState::riding || (motion == MotionState::unknown && state && *state < 300)) && (l.manual_now == 1 || l.manual_now == 2)) {
         native_kind = 2; native_identity = l.manual_now + (l.fakie_now.value_or(false) ? 4 : 0);
     } else if (motion == MotionState::air && l.grab_now > 0) { native_kind = 3; native_identity = l.grab_now; }
     const bool old_route = l.native_modifier.held;
-    const bool began_hold = l.native_modifier.observe(native_kind, native_identity, down, ready, testing_tricks.load());
-    if (began_hold && old_route != l.native_modifier.held) l.held = {};
+    const auto old_button = l.native_modifier.button;
+    const bool began_hold = l.native_modifier.observe(native_kind, native_identity, route, ready, testing_tricks.load());
+    if (began_hold && (old_route != l.native_modifier.held || old_button != l.native_modifier.button)) l.held = {};
     const bool wanted = native_kind ? l.native_modifier.held : !began_hold && l.piece_play.trick ? l.piece_play.trick->modifier_route : down;
+    const std::uint16_t button = native_kind ? l.native_modifier.button : !began_hold && l.piece_play.trick ? l.piece_play.trick->route_button : route;
     // A library reload applies at the next move boundary; keep the current clips alive through a held move.
     const bool pinned_hold = !began_hold && (native_kind ? static_cast<bool>(l.pieces_for) : l.piece_play.trick && l.piece_play.weight > 0);
     const bool sources_changed = l.pieces_for != snap.tricks && !pinned_hold;
@@ -3319,16 +3336,17 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                     if (kind != Live::HeldKind::none) l.held_loops.push_back({index, kind});
                 }
     }
-    if (sources_changed || (wanted != l.piece_modifier_tracking && !l.piece_play.trick)) {
+    if (sources_changed || ((wanted != l.piece_modifier_tracking || (wanted && button != l.piece_route_button)) && !l.piece_play.trick)) {
         l.piece_modifier_tracking = wanted;
+        l.piece_route_button = wanted ? button : std::uint16_t{};
         l.tracked.clear();
         std::vector<const Clip*> clips;
         std::set<std::string> overridden, seen;
-        if (wanted) for (const auto* t : l.piece_tricks) if (t->modifier_route) overridden.insert(t->trick);
+        if (wanted) for (const auto* t : l.piece_tricks) if (on_route(*t, true, button)) overridden.insert(t->trick);
         for (std::size_t i = 0; i < l.piece_tricks.size(); ++i) {
             const auto* t = l.piece_tricks[i];
             if (held_kind_of(t->trick) != Live::HeldKind::none) continue;
-            if (t->modifier_route != (wanted && overridden.contains(t->trick)) || !seen.insert(t->trick).second) continue;
+            if (!on_route(*t, wanted && overridden.contains(t->trick), button) || !seen.insert(t->trick).second) continue;
             l.tracked.push_back(i); clips.push_back(t->clip.get());
         }
         // Recognise a source only once: duplicate saves of its same native clip must not make recognition ambiguous.
@@ -3377,10 +3395,13 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
             match.reset();
         if (match) {
             bool version_wanted = wanted;
+            std::uint16_t version_button = button;
             if (!native_kind && l.piece_play.trick && match->piece < l.piece_tricks.size() &&
-                (l.piece_tricks[match->piece]->trick != l.piece_play.trick->trick || match->time < l.piece_play.time - 0.05f))
+                (l.piece_tricks[match->piece]->trick != l.piece_play.trick->trick || match->time < l.piece_play.time - 0.05f)) {
                 version_wanted = down; // a genuinely new moving piece samples a new choice, without resetting its tracker
-            match = native_piece_version(l, snap, *match, version_wanted);
+                version_button = route;
+            }
+            match = native_piece_version(l, snap, *match, version_wanted, version_button);
         }
         // Nothing moving through a piece: the loop of a move he holds, if one of them is saved.
         if (!match && any_held) match = held_play(l, snap, at, dt, holding, grind);
@@ -3865,7 +3886,25 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.states_searches = 0;
                 l.states_search_at = at + 3;
             }
-            if (!trainer::studio_states_found() && l.states_searches < 4 && at >= l.states_search_at) {
+            // A new level (a map change, a reload) brings its own copies of them, and the old level's stay readable in freed
+            // memory under the same names: they looked found, nothing searched again, and the grind could no longer be read
+            // - custom grinds stopped playing after a map change. Once the new level is in, the old places are forgotten and
+            // looked for again.
+            if (const auto loads = level_loads_started(); loads != l.states_level && level_content_active()) {
+                l.states_level = loads;
+                l.states_grind_retried = false;
+                trainer::forget_studio_states();
+                l.states_searches = 0;
+                l.states_search_at = at + 3;
+            }
+            // Found, and still the grind cannot be read (a copy not yet bound to him when it was looked for): once more a level.
+            const bool grind_read = l.game.anim_grind_type || l.game.skate_grind_type || l.game.grind_type;
+            const bool look_again = trainer::studio_states_found() && !grind_read && !l.states_grind_retried;
+            if ((!trainer::studio_states_found() || look_again) && l.states_searches < 4 && at >= l.states_search_at) {
+                if (look_again) {
+                    l.states_grind_retried = true;
+                    logging::log(Level::info, Channel::skater, "Animation Studio: the game's grind cannot be read on this level: looking for it again.");
+                }
                 trainer::find_studio_states();
                 ++l.states_searches;
                 l.states_search_at = at + 15;
@@ -4209,8 +4248,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             if (began) {
-                l.modifier_attempt.begin(overlay::trick_modifier_held(modifier_mask(snap->modifier)),
-                                         modifier_mask(snap->modifier) != 0, testing_tricks.load());
+                l.modifier_attempt.begin(held_route(snap->modifiers, overlay::trick_modifier_buttons()), modifier_masks(snap->modifiers) != 0,
+                                         testing_tricks.load());
                 l.normal_mode = snap->normal_mode;
                 l.playback_goofy = goofy_stance();
                 l.playback_front_foot = snap->front_foot;
@@ -4363,7 +4402,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (l.playback_switch.has_value())
                         for (const bool exact : {true, false}) {
                             for (const auto& t : *l.game_tricks) {
-                                if (t.modifier_route != modified || t.trick != name || (exact && t.edits->entry != entry_name(l.episode.entry))) continue;
+                                if (!on_route(t, modified, l.modifier_attempt.button) || t.trick != name ||
+                                    (exact && t.edits->entry != entry_name(l.episode.entry)))
+                                    continue;
                                 candidates.push_back(&t);
                                 int rank = playback_pop_rank(pop, t.edits->pop);
                                 if (pop.empty() && t.any_pop) rank = 1;
@@ -4388,7 +4429,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     // By pop too: the first choice of an air is often made on the air time's guess, before the game's grade.
                     // Keyed by the trick alone, a guess with one trick fixed the pick, and the real group then always
                     // played its first (cycling played one version).
-                    const std::string pick_key = name + "|" + pop + (variants.front()->modifier_route ? "|modifier" : "|normal");
+                    const std::string pick_key = name + "|" + pop +
+                                                 (variants.front()->modifier_route ? "|modifier" + std::to_string(variants.front()->route_button) : "|normal");
                     auto choice = l.attempt_variants.find(pick_key);
                     if (choice == l.attempt_variants.end()) {
                         // Which plays this attempt: any of them at random, but not the one that played last.
@@ -6892,7 +6934,7 @@ void run_trick_loader() {
     for (;;) {
         auto& s = state();
         std::string test;
-        const auto modifier = modifier_binding();
+        const auto modifiers = modifier_bindings();
         {
             std::lock_guard lock(s.mutex);
             test = s.test_trick;
@@ -6900,18 +6942,26 @@ void run_trick_loader() {
         LoadedTricks loaded;
         try {
             loaded = read_custom_tricks(test);
-            if (modifier_mask(modifier) && !loaded.testing) {
-                const auto extra = read_custom_tricks({}, modifier.playlist);
-                if (extra.tricks && loaded.tricks) {
-                    auto combined = std::make_shared<CustomTricks>(*loaded.tricks);
+            // Each playlist on a button, read as its own set, its tricks marked with the button.
+            std::set<std::string> kept{std::string{}};
+            if (!loaded.testing && loaded.tricks) {
+                std::shared_ptr<CustomTricks> combined;
+                for (const auto& binding : modifiers) {
+                    const auto mask = modifier_mask(binding);
+                    if (!mask || !kept.insert(binding.playlist).second) continue;
+                    const auto extra = read_custom_tricks({}, binding.playlist);
+                    if (!extra.tricks) continue;
+                    if (!combined) combined = std::make_shared<CustomTricks>(*loaded.tricks);
                     for (auto trick : *extra.tricks) {
                         trick.modifier_route = true;
+                        trick.route_button = mask;
                         trick.route_mode = extra.mode;
                         combined->push_back(std::move(trick));
                     }
-                    loaded.tricks = std::move(combined);
                 }
-            } else trick_cache().loaded[1].clear();
+                if (combined) loaded.tricks = std::move(combined);
+            }
+            std::erase_if(trick_cache().loaded, [&](const auto& e) { return !kept.contains(e.first); });
             // Release unused shared data after both playlists have updated their selected sets.
             auto& cache = trick_cache();
             std::erase_if(cache.clips, [](const auto& e) { return e.second.use_count() == 1; });
@@ -6923,13 +6973,17 @@ void run_trick_loader() {
         } catch (...) {}
         if (loaded.tricks) {
             std::lock_guard lock(s.mutex);
-            if (s.modifier == modifier && s.test_trick == test) {
+            if (s.modifiers == modifiers && s.test_trick == test) {
                 playlist_turns_mode.store(static_cast<int>(loaded.mode), std::memory_order_release); // with the set it is for
                 testing_tricks.store(loaded.testing, std::memory_order_release);
-                s.loaded_modifier = modifier;
+                // A button plays once its playlist brought something to play.
+                s.loaded_modifiers.clear();
+                for (const auto& binding : modifiers)
+                    if (const auto mask = modifier_mask(binding);
+                        mask && std::any_of(loaded.tricks->begin(), loaded.tricks->end(),
+                                            [&](const CustomTrick& t) { return t.modifier_route && t.route_button == mask; }))
+                        s.loaded_modifiers.push_back(binding);
                 s.normal_mode = loaded.mode;
-                if (std::none_of(loaded.tricks->begin(), loaded.tricks->end(), [](const CustomTrick& t) { return t.modifier_route; }))
-                    s.loaded_modifier.button = 0;
                 s.tricks = std::move(loaded.tricks);
                 publish_locked(s);
             }
@@ -7807,7 +7861,7 @@ View view() {
     v.tab_request = s.tab_request;
     v.tab_requested = s.tab_requested;
     v.library_modifier_help = s.library_modifier_help;
-    v.modifier_ready = modifier_mask(s.loaded_modifier) != 0;
+    v.modifier_ready = modifier_masks(s.loaded_modifiers);
     v.catch_marker = s.catch_marker;
     v.guide_seen = s.guide_seen;
     v.editor_tour_seen = s.editor_tour_seen;
@@ -9243,34 +9297,65 @@ void set_playlist_mode(PlaylistMode mode, std::string& message) {
 }
 namespace {
 std::filesystem::path modifier_file() { return library_folder() / L"presets" / L"modifier-input.local"; }
-void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBinding& binding,
+void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBindings& bindings,
                                       const std::string& opened, const std::string& message);
+// The file: every binding under "bindings", and the first also as the one binding older builds read.
+std::string modifiers_json(const ModifierBindings& all) {
+    Json list = Json::array();
+    for (const auto& b : all) list.push_back(Json{{"playlist", b.playlist}, {"button", b.button}, {"block_native", b.block_native}});
+    const ModifierBinding first = all.empty() ? ModifierBinding{} : all.front();
+    return Json{{"playlist", first.playlist}, {"button", first.button}, {"block_native", first.block_native}, {"bindings", list}}.dump(2);
+}
+// A loaded button stays on while its binding is unchanged; a changed one is let go while its playlist is read.
+void keep_loaded_locked(State& s) {
+    std::erase_if(s.loaded_modifiers, [&](const ModifierBinding& b) { return std::find(s.modifiers.begin(), s.modifiers.end(), b) == s.modifiers.end(); });
+}
 // Keep local input preferences out of pack JSON discovery and pack imports/exports.
-void save_modifier_locked(State& s, const ModifierBinding& binding) {
-    write_preset_file(modifier_file(),
-        Json{{"playlist", binding.playlist}, {"button", binding.button}, {"block_native", binding.block_native}}.dump(2));
-    s.modifier = binding;
+void save_modifiers_locked(State& s, const ModifierBindings& all) {
+    write_preset_file(modifier_file(), modifiers_json(all));
+    s.modifiers = all;
     s.modifier_read = true;
-    s.loaded_modifier.button = 0; // release the old button while the replacement playlist loads
+    keep_loaded_locked(s);
     publish_locked(s, false);
 }
-}
-ModifierBinding modifier_binding() {
-    auto& s = state(); std::lock_guard lock(s.mutex);
+ModifierBindings& modifiers_locked(State& s) {
     if (!s.modifier_read) {
         s.modifier_read = true;
         try {
             std::ifstream in(modifier_file());
             if (in) {
                 const auto j = Json::parse(std::string(std::istreambuf_iterator<char>(in), {}));
-                s.modifier.playlist = utf8_prefix(j.value("playlist", ""), 48);
-                const auto button = j.value("button", 0);
-                s.modifier.button = button >= 0 && button < static_cast<int>(modifier_buttons.size()) ? button : 0;
-                s.modifier.block_native = j.value("block_native", true);
+                const auto one = [](const Json& b) {
+                    ModifierBinding out;
+                    out.playlist = utf8_prefix(b.value("playlist", ""), 48);
+                    const auto button = b.value("button", 0);
+                    out.button = button >= 0 && button < static_cast<int>(modifier_buttons.size()) ? button : 0;
+                    out.block_native = b.value("block_native", true);
+                    return out;
+                };
+                ModifierBindings all;
+                // Written by 2.0.1 on: all of them. Before: the one.
+                if (const auto list = j.find("bindings"); list != j.end() && list->is_array()) {
+                    for (const auto& b : *list)
+                        if (b.is_object()) put_binding(all, one(b));
+                } else put_binding(all, one(j));
+                s.modifiers = std::move(all);
             }
         } catch (...) {}
     }
-    return s.modifier;
+    return s.modifiers;
+}
+}
+ModifierBindings modifier_bindings() {
+    auto& s = state(); std::lock_guard lock(s.mutex);
+    return modifiers_locked(s);
+}
+ModifierBinding modifier_binding(const std::string& playlist) {
+    auto& s = state(); std::lock_guard lock(s.mutex);
+    if (const auto* b = binding_of(modifiers_locked(s), playlist)) return *b;
+    ModifierBinding none;
+    none.playlist = playlist;
+    return none;
 }
 void set_modifier_binding(ModifierBinding binding) {
     if (binding.button < 0 || binding.button >= static_cast<int>(modifier_buttons.size())) binding.button = 0;
@@ -9278,18 +9363,23 @@ void set_modifier_binding(ModifierBinding binding) {
     {
         std::lock_guard lock(s.mutex);
         const auto lists = read_playlists();
-        if (!binding.playlist.empty() && !lists.named(binding.playlist)) return;
+        if (binding.playlist.empty() || !lists.named(binding.playlist)) return;
+        auto all = modifiers_locked(s);
+        const bool on = binding.button > 0;
+        put_binding(all, binding);
+        if (all == s.modifiers) return;
         try {
-            save_modifier_locked(s, binding);
+            save_modifiers_locked(s, all);
         } catch (const std::exception& e) { s.status = e.what(); return; }
-        s.status = "Loading the modifier playlist. Its animations will be available for the next trick or held move.";
+        s.status = on ? "Loading " + binding.playlist + " for its button. Its animations will be available for the next trick or held move."
+                      : binding.playlist + " is off its button.";
     }
     load_custom_tricks();
 }
 void modifier_tick(bool gameplay) {
     const auto snap = snapshot();
-    const std::uint16_t mask = snap ? modifier_mask(snap->modifier) : std::uint16_t{};
-    overlay::update_trick_modifier(mask, snap && snap->modifier.block_native,
+    const std::uint16_t mask = snap ? modifier_masks(snap->modifiers) : std::uint16_t{};
+    overlay::update_trick_modifier(mask, snap ? modifier_blocks(snap->modifiers) : std::uint16_t{},
         gameplay && snap && snap->play_in_game && !snap->open && !testing_tricks.load());
 }
 void set_modifier_hint(bool on) {
@@ -9315,10 +9405,8 @@ void playlist_from_modifier_tags(std::string& message) {
     if (list.entries.empty()) { message = "No saved animations have the modifier hint yet."; return; }
     auto lists = s.playlists;
     lists.lists.push_back(list);
-    auto binding = s.modifier;
-    binding.playlist = list.name;
-    message = "Created " + list.name + " from tagged tricks and assigned it as the modifier playlist. Choose a bind to use it.";
-    try { commit_playlist_structure_locked(s, lists, binding, list.name, message); }
+    message = "Created " + list.name + " from tagged tricks. Choose a button for it to play on.";
+    try { commit_playlist_structure_locked(s, lists, modifiers_locked(s), list.name, message); }
     catch (const std::exception& e) { message = e.what(); return; }
 }
 void play_playlist(const std::string& name, std::string& message) {
@@ -9569,7 +9657,7 @@ void open_playlist(const std::string& name) {
     publish_locked(s, false);
 }
 namespace {
-void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBinding& binding,
+void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBindings& bindings,
                                       const std::string& opened, const std::string& message);
 }
 bool new_playlist(std::string& message) {
@@ -9590,21 +9678,20 @@ bool new_playlist(const std::string& wanted, std::string& message) {
     if (lists.named(name)) { say_locked(s, message, "There is already a playlist called " + name + "."); return false; }
     lists.lists.push_back({name, PlaylistMode::shuffle, {}});
     message = "Made " + name + ": add whole packs or single tricks to it, then SET AS DEFAULT to play it.";
-    try { commit_playlist_structure_locked(s, lists, s.modifier, name, message); }
+    try { commit_playlist_structure_locked(s, lists, modifiers_locked(s), name, message); }
     catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     return true;
 }
 namespace {
 // Names and playback assignments are one edit: an interrupted rename/delete must not leave a dangling modifier bind.
-void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBinding& binding,
+void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBindings& bindings,
                                       const std::string& opened, const std::string& message) {
-    const bool changed_binding = s.modifier != binding;
+    const bool changed_binding = modifiers_locked(s) != bindings;
     PackFileTransaction transaction(library_folder());
     transaction.write(playlists_file(), playlists_json(lists).dump(2));
-    if (changed_binding)
-        transaction.write(modifier_file(), Json{{"playlist", binding.playlist}, {"button", binding.button}, {"block_native", binding.block_native}}.dump(2));
+    if (changed_binding) transaction.write(modifier_file(), modifiers_json(bindings));
     transaction.commit();
-    if (changed_binding) { s.modifier = binding; s.modifier_read = true; s.loaded_modifier.button = 0; }
+    if (changed_binding) { s.modifiers = bindings; s.modifier_read = true; keep_loaded_locked(s); }
     s.playlist_open = opened;
     s.tricks_read = false;
     read_library_locked(s);
@@ -9626,11 +9713,11 @@ bool rename_playlist(const std::string& wanted, std::string& message) {
     if (lists.named(to)) { say_locked(s, message, "There is a playlist called " + to + " already."); return false; }
     const auto old = open->name;
     if (lists.on == old) lists.on = to;
-    auto binding = s.modifier;
-    if (binding.playlist == old) binding.playlist = to;
+    auto bindings = modifiers_locked(s);
+    for (auto& b : bindings) if (b.playlist == old) b.playlist = to;
     open->name = to;
     message = "Renamed " + old + " to " + to + ". Its playback roles are kept.";
-    try { commit_playlist_structure_locked(s, lists, binding, to, message); }
+    try { commit_playlist_structure_locked(s, lists, bindings, to, message); }
     catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     if (s.playlist_history.name == old) s.playlist_history.name = to;
     return true;
@@ -9648,11 +9735,11 @@ bool delete_playlist(const std::string& wanted, std::string& message) {
     const bool was_on = lists.on == name;
     std::erase_if(lists.lists, [&](const NamedPlaylist& l) { return l.name == name; });
     if (was_on) lists.on.clear();
-    auto binding = s.modifier;
-    if (binding.playlist == name) binding.playlist.clear();
+    auto bindings = modifiers_locked(s);
+    std::erase_if(bindings, [&](const ModifierBinding& b) { return b.playlist == name; });
     const auto opened = s.playlist_open != name ? s.playlist_open : lists.lists.empty() ? std::string{} : lists.lists.front().name;
     message = "Deleted " + name + ". Its playback assignments were removed; animation files and packs are kept.";
-    try { commit_playlist_structure_locked(s, lists, binding, opened, message); }
+    try { commit_playlist_structure_locked(s, lists, bindings, opened, message); }
     catch (const std::exception& e) { say_locked(s, message, e.what()); return false; }
     if (s.playlist_history.name == name) s.playlist_history = {};
     return true;
@@ -11961,8 +12048,13 @@ bool write_diagnostics_now(std::string& message) {
           summary["active_pack"] = on;
           summary["studio_open"] = s.open;
           summary["custom_playback_enabled"] = s.play_in_game;
-          summary["trick_modifier"] = Json{{"playlist", s.modifier.playlist}, {"button", s.modifier.button},
-              {"block_native", s.modifier.block_native}, {"loaded", modifier_mask(s.loaded_modifier) != 0}};
+          {
+              Json buttons = Json::array();
+              for (const auto& b : s.modifiers)
+                  buttons.push_back(Json{{"playlist", b.playlist}, {"button", b.button}, {"block_native", b.block_native},
+                                         {"loaded", binding_of(s.loaded_modifiers, b.playlist) != nullptr}});
+              summary["trick_modifier"] = buttons;
+          }
           summary["gameplay_body_binding"] = "anatomical_local";
           summary["gameplay_key_timing"] = "source_seconds_from_takeoff";
           summary["gameplay_clock_on_loss"] = "source_seconds_no_phase_extrapolation";

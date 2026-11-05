@@ -61,7 +61,7 @@ Setting pack_folder(const anim_studio::Settings&, bool exporting);
 // PLAYLIST: the one that plays, and which version of a trick in it plays.
 Setting playing_playlist(const anim_studio::PlaylistsNow&, Tell tell);
 Setting which_version_plays(const anim_studio::PlaylistsNow&, Tell tell);
-Setting modifier_button(const ModifierBinding&);
-Setting modifier_playlist(const anim_studio::PlaylistsNow&, const ModifierBinding&);
-Setting modifier_native_button(const ModifierBinding&);
+// PLAYLISTS ON BUTTONS: a row for each button a playlist plays on (its playlist, or OFF), one that puts another playlist on a
+// free button, and whether the game still gets those buttons.
+std::vector<Setting> button_playlists(const anim_studio::PlaylistsNow&, const ModifierBindings&);
 }

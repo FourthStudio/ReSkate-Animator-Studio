@@ -521,12 +521,11 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
         studio_card_end(c);
     }
     {
-        const auto binding = anim_studio::modifier_binding();
-        const auto c = studio_card_begin(menu, "modifier", "TRICK MODIFIER", "same input, another animation when you hold a button");
-        note("Kickflip input: your regular animation. Kickflip input + modifier: a variation from your modifier playlist. The same principle applies to grinds, manuals and grabs.");
-        setting_row(menu, anim_studio::settings_rows::modifier_button(binding));
-        setting_row(menu, anim_studio::settings_rows::modifier_playlist(anim_studio::playlists_now(), binding));
-        setting_row(menu, anim_studio::settings_rows::modifier_native_button(binding));
+        const auto c = studio_card_begin(menu, "modifier", "PLAYLISTS ON BUTTONS", "same input, another animation while you hold a button");
+        note("Kickflip input: your regular animation. Kickflip input while holding a button: the version in that button's playlist. Each "
+             "playlist can have a button of its own. Grinds, manuals and grabs work the same way.");
+        for (const auto& row : anim_studio::settings_rows::button_playlists(anim_studio::playlists_now(), anim_studio::modifier_bindings()))
+            setting_row(menu, row);
         if (button_row(menu, "##modifierlibrary", {{"SET UP IN LIBRARY", animator_studio_openable(model), true, "Choose animations, edit either playlist, and see how modifiers work."}}) == 0) {
             anim_studio::request_library(true);
             menu.close_requested = true;

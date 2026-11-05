@@ -21,6 +21,7 @@ struct LibraryNavigation {
     std::string selected, adding_to, confirmation;
     bool modifier_setup{}, settings{}, creating{};
     bool choosing_modifier_playlist{};
+    std::string modifier_list; // PLAYLISTS ON BUTTONS: the playlist whose button is being set ("" the one open)
     bool choosing_default{}; // WHAT PLAYS > PLAYS BY DEFAULT pressed: the playlists to choose from
     std::array<char, 64> new_name{};
     LibraryBrowseState collection, picker;

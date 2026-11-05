@@ -18,10 +18,13 @@ struct Given {
     std::optional<PlaylistMode> mode;
 };
 Given given;
-ModifierBinding current_modifier;
+ModifierBindings current_modifiers;
 }
-ModifierBinding modifier_binding() { return current_modifier; }
-void set_modifier_binding(ModifierBinding binding) { current_modifier = std::move(binding); }
+ModifierBinding modifier_binding(const std::string& playlist) {
+    if (const auto* b = binding_of(current_modifiers, playlist)) return *b;
+    return {playlist, 0, true};
+}
+void set_modifier_binding(ModifierBinding binding) { put_binding(current_modifiers, std::move(binding)); }
 void set_room(bool on) { given.room = on; }
 void set_grab(bool on) { given.grab = on; }
 void set_advanced_bones(bool on) { given.advanced = on; }
@@ -165,6 +168,33 @@ anim_studio::PlaylistsNow two_playlists(const std::string& on) {
     now.on = on;
     return now;
 }
+// Several playlists on buttons at once (2026-11-05): a row each, one to add another, and the game's use of them for all.
+void buttons_put_several_playlists_on_buttons() {
+    using anim_studio::current_modifiers;
+    current_modifiers.clear();
+    auto rows = button_playlists(two_playlists("Street"), current_modifiers);
+    check(rows.size() == 2 && rows[0].enabled && !rows[1].enabled, "With no button there is an add row and a greyed native row");
+    rows[0].pick(1); // RB / R1, for Park (not the default)
+    check(current_modifiers.size() == 1 && current_modifiers[0].playlist == "Park" && current_modifiers[0].button == 1,
+          "Adding a button did not put the playlist that is not the default on it");
+    rows = button_playlists(two_playlists("Street"), current_modifiers);
+    check(rows.size() == 3 && rows[0].label == "Hold RB / R1" && rows[0].value == "Park (0)", "The button's row does not say its playlist");
+    rows[1].pick(1); // the next free button, LB / L1, for Street
+    check(current_modifiers.size() == 2 && current_modifiers[1].playlist == "Street" && current_modifiers[1].button == 2,
+          "A second playlist did not get a button of its own");
+    check(anim_studio::modifier_masks(current_modifiers) == (0x0200 | 0x0100), "Both buttons do not play");
+    check(anim_studio::held_route(current_modifiers, 0x0100) == 0x0100 && anim_studio::held_route(current_modifiers, 0x0300) == 0x0200,
+          "The button held does not pick its own playlist, or the first one's when both are held");
+    rows = button_playlists(two_playlists("Street"), current_modifiers);
+    rows[0].pick(0); // RB / R1 to Street: Street's LB / L1 goes, Park has no button
+    check(current_modifiers.size() == 1 && current_modifiers[0].playlist == "Street" && current_modifiers[0].button == 1,
+          "Moving a button to a playlist with one did not leave it one button");
+    rows = button_playlists(two_playlists("Street"), current_modifiers);
+    rows[rows.size() - 1].pick(0);
+    check(!current_modifiers[0].block_native, "Replace native buttons did not reach the button");
+    rows[0].pick(2); // OFF
+    check(current_modifiers.empty(), "OFF did not take the playlist off its button");
+}
 void playing_lists_none_and_each_playlist_and_switches_by_name() {
     reset();
     std::string told;
@@ -214,15 +244,7 @@ void the_mode_is_the_playing_playlists_and_set_by_its_name() {
 }
 int main() {
     try {
-        anim_studio::current_modifier = {"Specials", 1, true};
-        const auto button_row = modifier_button(anim_studio::current_modifier);
-        const auto native_row = modifier_native_button(anim_studio::current_modifier);
-        button_row.pick(2);
-        native_row.pick(0);
-        check(anim_studio::current_modifier.button == 2 && !anim_studio::current_modifier.block_native && anim_studio::current_modifier.playlist == "Specials",
-              "Trainer and Studio modifier controls preserve changes made by another row");
-        modifier_playlist(two_playlists("Park"), anim_studio::current_modifier).pick(0);
-        check(anim_studio::current_modifier.playlist.empty() && anim_studio::current_modifier.button == 2, "Clearing the modifier playlist keeps the local button preference");
+        buttons_put_several_playlists_on_buttons();
         an_on_off_row_is_off_and_on_and_sets_its_setting();
         each_on_off_row_sets_its_own_setting();
         editing_stance_names_the_games_stance_and_goes_round();

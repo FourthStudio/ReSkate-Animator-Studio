@@ -289,8 +289,13 @@ void find_state_objects(std::uintptr_t start, std::size_t size) noexcept {
             const auto known = object.at.load(std::memory_order_relaxed), here = start + i * 4 + object_after_id;
             std::uint32_t old_handle{}, handle{};
             if (known == here || !is_object(object, start + i * 4)) return;
-            if (known && (!peek(known + object_handle, old_handle) || old_handle >> 24)) return;
-            if (known && (!peek(here + object_handle, handle) || !(handle >> 24))) return;
+            // The copy known is kept while it still is that object with its handle filled in. One that is no longer the
+            // object, or can no longer be read, is replaced by any copy (an old level's, unloaded, kept the place).
+            if (known && is_object(object, known - object_after_id)) {
+                const bool known_bound = peek(known + object_handle, old_handle) && (old_handle >> 24);
+                const bool here_bound = peek(here + object_handle, handle) && (handle >> 24);
+                if (known_bound || !here_bound) return;
+            }
             object.at.store(here, std::memory_order_relaxed);
         };
         const auto &filter = state_id_filter();
@@ -352,6 +357,12 @@ bool studio_states_found() noexcept {
     for (const auto &object : studio_objects)
         if (object.at.load(std::memory_order_relaxed)) return true;
     return false;
+}
+void forget_studio_states() noexcept {
+    for (auto &object : studio_objects) object.at.store(0, std::memory_order_relaxed);
+    grind_control_objects[8].at.store(0, std::memory_order_relaxed);
+    grind_control_objects[9].at.store(0, std::memory_order_relaxed);
+    manual_object.at.store(0, std::memory_order_relaxed);
 }
 StudioStates read_studio_states(std::uintptr_t base, std::uintptr_t entity) noexcept {
     StudioStates out;
