@@ -8354,6 +8354,42 @@ void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     limit_chain(s, joint, std::max<std::size_t>(limb_chain(joint), 2), at);
     changed_locked(s);
 }
+void carry_foot(std::uint16_t foot, const Vec3& target_view, const Quat& turn_view) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.previewing) return; // a preview is to watch only
+    if (!s.clip || s.clip->empty() || !editable(foot) || foot >= skeleton_joints || parent(foot) < 0) return;
+    if (const auto* t = s.edits.track(foot); t && t->locked) return;
+    const float at = key_time_locked(s);
+    std::vector<Joint> native(s.clip->joints);
+    editor_base(s, at, native);
+    if (foot >= native.size()) return;
+    std::vector<Joint> posed(native);
+    apply_edits(s.edits, at, posed);
+    // From the view's frame into the clip's, the placement joint the same in both (drag_limb).
+    const Joint clip_place = world(posed, placement_joint), view_place = s.joints_placement;
+    const auto into_clip = normalised(multiply(clip_place.rotation, conjugate(view_place.rotation)));
+    const Vec3 offset{target_view[0] - view_place.position[0], target_view[1] - view_place.position[1], target_view[2] - view_place.position[2]};
+    const Vec3 moved = rotate(into_clip, offset);
+    const Vec3 target{moved[0] + clip_place.position[0], moved[1] + clip_place.position[1], moved[2] + clip_place.position[2]};
+    const auto chain = std::max<std::size_t>(limb_chain(foot), 2);
+    try {
+        anim_studio::drag_joint(s.edits, native, at, foot, target, chain);
+    } catch (const std::exception& e) {
+        s.status = e.what();
+        return;
+    }
+    // The leg bent, the foot is turned to lie as the deck now does: its turn under the bent leg, keyed on top of the game's.
+    posed.assign(native.begin(), native.end());
+    apply_edits(s.edits, at, posed);
+    const auto above = world(posed, static_cast<std::uint16_t>(parent(foot))).rotation;
+    const auto local = normalised(multiply(conjugate(above), multiply(into_clip, turn_view)));
+    Offset key{normalised(multiply(conjugate(native[foot].rotation), local)), {}};
+    if (const auto* t = s.edits.track(foot)) key.offset = evaluate(*t, at).offset;
+    if (finite(Joint{{1, 1, 1}, key.rotation, key.offset})) set_key(s.edits, foot, at, key);
+    limit_chain(s, foot, chain, at);
+    changed_locked(s);
+}
 void delete_key(std::uint16_t joint, float time) {
     auto& s = state();
     std::lock_guard lock(s.mutex);

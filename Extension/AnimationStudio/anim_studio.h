@@ -289,6 +289,10 @@ void set_offset(std::uint16_t joint, const Offset& value); // keys it at the cur
 // Drags a limb: the joint goes to `target` (the skater's frame, as JointView::position is), the limb above it
 // bends, and the bend is keyed at the current time. Call begin_change once when the drag starts.
 void drag_limb(std::uint16_t joint, const Vec3& target);
+// A foot standing on the deck, carried with the board as it is turned or moved (the overlay's FEET): it goes to `target` by
+// the leg's bend, as drag_limb, and is turned to `turn` (in the frame the joints are shown in, as JointView::rotation) so
+// its sole stays on the deck as the deck tilts.
+void carry_foot(std::uint16_t foot, const Vec3& target, const Quat& turn);
 // Which bracket: 1 start, 2 end. `seconds` is where it goes, on a whole frame. Only the keys sitting on
 // that bracket travel with it; the keys between the brackets are left exactly where they are, so nothing
 // is stretched. A key the bracket is pulled back past stops applying until it is taken out over it again.
