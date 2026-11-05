@@ -691,7 +691,8 @@ void shelf_bulk(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
         shelf_clear_choice();
         return;
     }
-    const std::vector<std::string> names(s.picked.names.begin(), s.picked.names.end());
+    const auto names = tb::shown_choice(s.picked, s.groups, s.items);
+    const std::size_t hidden = s.picked.names.size() - names.size();
     std::size_t locked = 0, foreign = 0, pieces = 0;
     for (const auto& name : names)
         if (const auto* it = shelf_item(name)) {
@@ -704,6 +705,7 @@ void shelf_bulk(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
     title_text(d, f, 34 * k, ImVec2(x, y), white, std::format("{} TRICKS CHOSEN", names.size()), w - 50 * k);
     y += 44 * k;
     std::string about = "What you do here is done to every one of them.";
+    if (hidden) about += std::format(" {} more {} chosen but hidden by the search or the filters: left out until shown.", hidden, hidden == 1 ? "is" : "are");
     if (locked) about += std::format(" {} {} locked to {} maker: left out of copies and edits.", locked, locked == 1 ? "is" : "are", locked == 1 ? "its" : "their");
     y += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, y), w, soft, about) + 12 * k;
     begin_region(26, ImVec2(a.x, y), ImVec2(b.x, b.y - 10 * k), s.bulk_scroll, k);

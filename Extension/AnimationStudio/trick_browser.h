@@ -376,6 +376,17 @@ void keep_existing(Selection& s, Exists&& exists) {
     std::erase_if(s.names, [&](const std::string& n) { return !exists(n); });
     if (!s.anchor.empty() && !exists(s.anchor)) s.anchor.clear();
 }
+// What a bulk action (DELETE, SET POP, ...) acts on: the chosen tricks the groups show. A trick a search or a filter
+// hides stays chosen, out of the action, and is in it again when it shows again.
+inline std::vector<std::string> shown_choice(const Selection& s, const std::vector<Group>& groups, const std::vector<Item>& items) {
+    std::set<std::string_view> shown;
+    for (const auto& g : groups)
+        for (const auto i : g.items) shown.insert(items[i].name);
+    std::vector<std::string> out;
+    for (const auto& name : s.names)
+        if (shown.contains(name)) out.push_back(name);
+    return out;
+}
 
 // ---- the table's columns ------------------------------------------------------------------------------
 struct ColumnSpec {
