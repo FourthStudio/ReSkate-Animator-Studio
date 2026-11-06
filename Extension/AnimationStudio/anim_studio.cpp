@@ -4647,7 +4647,7 @@ void on_animation(std::uintptr_t component) noexcept {
                         if (landing_in >= 0 && found >= 0 && now_seconds() - found < 0.15)
                             to_ground = std::max(0.0f, landing_in - static_cast<float>(now_seconds() - found));
                     }
-                    if (!to_ground && l.game.time_to_land && *l.game.time_to_land >= 0) to_ground = *l.game.time_to_land;
+                    if (!to_ground && l.game.time_to_land && *l.game.time_to_land > 0) to_ground = *l.game.time_to_land; // (0: not known yet)
                     const bool was_on = l.stretch.on();
                     const float hold = trick->edits->catch_hold.value_or(default_catch_hold);
                     time = l.stretch.update(time, to_ground ? *to_ground : -1.0f, 1.0f / 60, clip.takeoff, caught, land, hold);
