@@ -4820,15 +4820,26 @@ void on_animation(std::uintptr_t component) noexcept {
                 // the air is the game's.
                 {
                     const auto* pops = trick->native ? &trick->native->other_pop : nullptr;
-                    // (Not before the pop: there the pops' clips are alike, and only the grade says which one the game plays.)
-                    const bool other = pops && !l.clock_fallback && !before_pop && reading.locked && reading.clip > 0 &&
-                                       static_cast<std::size_t>(reading.clip) < pops->size() && (*pops)[static_cast<std::size_t>(reading.clip)];
+                    // A pack's trick filling in for a pop its pack has nothing for (fill) plays whole, as made, on the game's clip of
+                    // that pop: so from the moment it is picked (at the flick, on the ground, where the game's crouch and the
+                    // recording's are alike), not from when the clock finds that clip in the air. Eased in there, mid-flight, the
+                    // body went from the game's pose to the recording's, 45 cm at the feet, in 0.15 s (5 to 10 cm a frame in a
+                    // 2026-11-05 report).
+                    const bool fills_in = pops && trick->fill > 0 && std::find(pops->begin(), pops->end(), true) != pops->end();
+                    // (Otherwise not before the pop: there the pops' clips are alike, and only the grade says which one the game plays.)
+                    const bool other = pops && !l.clock_fallback &&
+                                       (fills_in || (!before_pop && reading.locked && reading.clip > 0 &&
+                                                     static_cast<std::size_t>(reading.clip) < pops->size() && (*pops)[static_cast<std::size_t>(reading.clip)]));
                     constexpr float other_step = (1.0f / 60) / 0.15f;
                     l.other_pop = other ? std::min(1.0f, l.other_pop + other_step) : std::max(0.0f, l.other_pop - other_step);
                     if (other && !l.other_pop_said) {
                         l.other_pop_said = true;
-                        logging::log(Level::info, Channel::skater, "Animation Studio: {} is on the game's clip of another pop (clip {}): it plays whole, as made.",
-                                     trick->name, reading.clip);
+                        if (fills_in)
+                            logging::log(Level::info, Channel::skater, "Animation Studio: {} fills in for this pop: it plays whole, as made, from the flick.",
+                                         trick->name);
+                        else
+                            logging::log(Level::info, Channel::skater, "Animation Studio: {} is on the game's clip of another pop (clip {}): it plays whole, as made.",
+                                         trick->name, reading.clip);
                     }
                 }
                 // OWN CATCH + LANDING taking its own time (the catch latch): whole, as made - its catch and its landing, body and
