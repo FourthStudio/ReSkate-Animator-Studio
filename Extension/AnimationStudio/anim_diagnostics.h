@@ -53,6 +53,8 @@ struct DiagnosticSample {
     float raised{};
     float ride_left{}, ride_right{}; // how far each foot rode on the board on the last frame drawn (0 not at all, 1 fully)
     float own_clock_fit{-1};         // on its own clock: how far its keys went on, by the game's pose near its clip (-1 not on it)
+    float own_air{};                 // OWN CATCH + LANDING: how far it plays whole, as made, taking its own time off a drop (0..1)
+    bool marked{};                   // MARK (F7): the player marked this moment for a bug report
     // From the shown pose (inertialize_from_the_shown_pose): the change running ("" none; into, or out to rail / rail_before_catch
     // / ground / next_pop), how far into it (s), and how far the shown pose was from the new one when it began - the legs, the
     // arms and the back and head (the largest turn of a joint, degrees) and the hips (cm). The soles against the deck through
@@ -117,7 +119,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     timeline << std::setprecision(12);
     poses << std::setprecision(12);
     board << std::setprecision(12);
-    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land,guard_in_mm,guard_out_mm,guard_round_mm,flip_trick,flick,pop_grade,handover_kind,raised,ride_left,ride_right,own_clock_fit,inertia_kind,inertia_s,inertia_legs_deg,inertia_arms_deg,inertia_torso_deg,inertia_hips_cm,sole_raw_mm,sole_mm,contact_ahead\n";
+    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing,clock_state,clock_clip,clock_error_deg,pop,pop_source,decision,lean,handover_s,game_phase,trick_intent,targeting_grind,time_to_land,guard_in_mm,guard_out_mm,guard_round_mm,flip_trick,flick,pop_grade,handover_kind,raised,ride_left,ride_right,own_clock_fit,inertia_kind,inertia_s,inertia_legs_deg,inertia_arms_deg,inertia_torso_deg,inertia_hips_cm,sole_raw_mm,sole_mm,contact_ahead,own_air,marked\n";
     const std::string columns = "seconds,sequence,stage,joint,sx,sy,sz,qx,qy,qz,qw,px,py,pz\n";
     poses << columns; board << columns;
     rig << columns;
@@ -153,7 +155,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
                  << ',' << s.raised << ',' << s.ride_left << ',' << s.ride_right << ',' << s.own_clock_fit
                  << ',' << diagnostic_csv(s.inertia_kind) << ',' << s.inertia_s << ',' << s.inertia_legs_deg << ',' << s.inertia_arms_deg
                  << ',' << s.inertia_torso_deg << ',' << s.inertia_hips_cm << ',' << s.sole_raw_mm << ',' << s.sole_mm << ',' << s.contact_ahead
-                 << '\n';
+                 << ',' << s.own_air << ',' << (s.marked ? 1 : 0) << '\n';
         if (!s.native.empty()) ++captured;
         for (std::size_t j = 0; j < s.native.size(); ++j) joint_row(poses, s.at, s.sequence, "animation_native", j, s.native[j]);
         for (std::size_t j = 0; j < s.desired.size(); ++j) {

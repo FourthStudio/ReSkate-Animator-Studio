@@ -160,6 +160,7 @@ struct View {
     bool playlist_can_undo{}, playlist_redo{};
     std::uint64_t library_request{};
     std::uint64_t dev_key_request{}; // `animstudio devkey`: the DEVELOPER KEY card asked for (request_dev_key)
+    std::uint64_t report_request{};  // REPORT A BUG's form asked for (request_report_form)
     std::uint64_t tab_request{};     // a tab of the menu asked for (request_tab), and which
     int tab_requested{};
     bool library_modifier_help{};
@@ -185,6 +186,9 @@ struct View {
     std::vector<std::uint16_t> keys_past_landing;
     // THIS TRICK: its own Crossfade (empty: the main one).
     std::optional<float> trick_crossfade;
+    // THIS TRICK > BIG DROPS: OWN CATCH + LANDING (Animation::own_landing), and whether it has a catch to keep (else it hands
+    // back to the game's as before).
+    bool trick_own_landing{}, trick_has_catch{};
     // The open trick's stance (THIS TRICK > STANCE): 0 your own, 1 fakie, 2 switch, 3 switch fakie; -1 none (a game piece).
     int trick_stance{-1};
     bool can_undo{}, can_redo{};
@@ -307,6 +311,8 @@ void set_catch(float seconds);
 // THIS TRICK > STANCE: the open trick as its normal (0), fakie (1), switch (2) or switch fakie (3) version, saved so.
 void set_trick_stance(int version);
 void set_trick_crossfade(float seconds);
+// THIS TRICK > BIG DROPS: on, the trick keeps its own catch and landing off a bigger drop or a higher pop; off, the game's.
+void set_trick_own_landing(bool on);
 // The joints that can be put somewhere rather than only turned, and how much of the limb above them bends
 // to reach: 3 for a hand or a foot (the elbow or knee and the limb above it bend), 2 for an elbow or a
 // knee (only the upper arm or the thigh turns, so placing a knee never swings the hips). 0 for the rest.
@@ -496,6 +502,13 @@ void request_library(bool modifier_help = false);
 // Opens the studio on SETTINGS with its DEVELOPER KEY card (console: animstudio devkey). For its developers whose Thunderstore
 // team is not BUILT BY's (22sh, Norms): SETTINGS shows that row only to those teams and THE CREW's, or once a key is on the PC.
 void request_dev_key();
+// REPORT A BUG: opens its form in the studio (from SETTINGS, or from the ReSkate menu, which the studio opens for it).
+void request_report_form();
+// MARK (F7 while skating): this moment, for a bug report. REPORT A BUG's form then picks the trick done last before it, the
+// recording's timeline marks the frame (marked), and report.txt says when it was.
+void mark_moment() noexcept;
+// The moments marked, seconds ago: the newest first, at most 5, of the last two minutes.
+std::vector<double> marks_ago();
 // Opens the studio's menu on one of its tabs (the overlay's numbers: 0 TRICKS, 1 LIBRARY, 2 MARKET, 3 SETTINGS, 4 ABOUT,
 // 5 PACKS), for the ReSkate menu's ANIMATOR STUDIO page.
 void request_tab(int tab);
@@ -578,7 +591,14 @@ void stop_library_build();  // the build stops soon after; the library stays as 
 void build_library_when_needed(bool now);
 bool export_diagnostics(std::string& message);
 // REPORT A BUG: the last 25 seconds of play, the game's log, the studio's settings and the build in one zip in
-// ReSkate.Tricks\bug reports, shown in Explorer. Nothing is sent.
+// ReSkate.Tricks\bug reports, shown in Explorer. Nothing is sent. `note`: what its form says - the trick picked (as the form
+// shows it), what looked wrong, and the player's own words - written at the top of the report's report.txt.
+struct BugNote {
+    std::string trick;
+    std::vector<std::string> looked;
+    std::string words;
+};
+bool report_bug(std::string& message, const BugNote& note);
 bool report_bug(std::string& message);
 bool load_game_trick(const GameTrick& trick, std::string& message);
 // A trick done by the skater himself for a look (TRICKS' hover preview), over whatever is open, which stays as it is:

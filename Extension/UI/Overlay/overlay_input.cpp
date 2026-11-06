@@ -291,6 +291,14 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        // F7 marks the moment for a bug report (MARK: anim_studio::mark_moment), while skating - not in the studio or a menu of
+        // ours, nor while something of ours takes typing.
+        if (wp == VK_F7 && wp != dingosdk::launcher::overlay_keys().menu && wp != dingosdk::launcher::overlay_keys().console &&
+            (key || release) && !s.console_visible.load() && !s.chat_visible.load() && !s.visible.load() &&
+            !s.editor_visible.load() && !s.studio_visible.load()) {
+            if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) dingosdk::anim_studio::mark_moment();
+            return 0;
+        }
         if (wp == dingosdk::launcher::overlay_keys().menu && (key || release)) {
             if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
                 if (s.editor_visible.load()) s.editor_exit_requested.store(true);

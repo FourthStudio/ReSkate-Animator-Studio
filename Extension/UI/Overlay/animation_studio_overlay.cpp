@@ -245,6 +245,13 @@ struct Ui {
     float ticker_run{};        // how far the news ticker has run
     int market_look{};         // the look the MARKET was drawn in last (front_looks): the wall behind it takes its wash
     bool dev_key{};            // the DEVELOPER KEY card
+    // REPORT A BUG's form (report_card): the trick picked (its place among the last done, newest first; -1 SOMETHING ELSE, -2
+    // none), what looked wrong (its chips' words) and the player's own words.
+    bool report_form{};
+    int report_pick{-2};
+    std::uint64_t report_request_seen{};
+    std::vector<std::string> report_looked;
+    std::array<char, 160> report_words{};
     std::array<char, 512> dev_token{};
     bool market_verified_only{}, market_section_only{}; // BROWSE: only VERIFIED makers' packs, only the Animation Packs section's
     bool market_fresh_only{};  // BROWSE: only packs not installed here yet
@@ -2100,7 +2107,8 @@ bool active_toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImV
     return pressed;
 }
 // A typed field, chosen like anything else; pressing it (A, Enter) puts the keyboard in it. Returns true on Enter.
-bool field(const Fonts& f, const char* id, std::array<char, 64>& buffer, ImVec2 at, float width, const char* hint, bool* edited = nullptr) {
+template <std::size_t N>
+bool field(const Fonts& f, const char* id, std::array<char, N>& buffer, ImVec2 at, float width, const char* hint, bool* edited = nullptr) {
     const float k = f.k;
     const ImVec2 b(at.x + width, at.y + 34 * k);
     auto& n = nav();
@@ -2644,7 +2652,7 @@ bool other_cards_open(const studio::View& v) {
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
            !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account || !u.reshare_pack.empty() ||
            !u.playlist_for.empty() || !u.binding.empty() || v.loop_offer.has_value() || !v.guide_seen || studio::update::popup_wanted() || u.dev_key ||
-           !u.offer_pack.empty();
+           !u.offer_pack.empty() || u.report_form;
 }
 bool any_card_open(const studio::View& v) { return other_cards_open(v) || tour_wanted(v); }
 // The menu's tabs by number (menu_tabs below): 0 TRICKS, 1 LIBRARY, 2 MARKET, 3 SETTINGS, 4 ABOUT, and PACKS, which came back
@@ -12327,6 +12335,126 @@ void update_card(ImDrawList* d, const Fonts& f, ImVec2 display) {
         if (action(d, f, "##updateclose", right_button, ImVec2(bw, bh), "CLOSE", Look::ghost)) up::close_popup();
     }
 }
+// REPORT A BUG: which trick (the last ones done; the one before the newest MARK picked), what looked wrong, and a line of
+// the player's own, then SAVE REPORT writes them at the top of the report's report.txt with the last 25 seconds of play.
+// A report with none of it said left us to work out from the recording which trick it was (2026-11-05).
+struct ReportLine {
+    std::string line, note; // as the form shows it, and as report.txt says it
+    bool marked{};
+};
+std::vector<ReportLine> report_lines() {
+    std::vector<ReportLine> out;
+    const auto summary = studio::menu_summary();
+    const auto marks = studio::marks_ago();
+    // The trick a mark is for: the last one done before it.
+    std::vector<std::size_t> marked;
+    for (const double mark : marks)
+        for (std::size_t i = 0; i < summary.recent.size(); ++i)
+            if (summary.recent[i].ago >= mark) {
+                marked.push_back(i);
+                break;
+            }
+    for (std::size_t i = 0; i < summary.recent.size(); ++i) {
+        const auto& d = summary.recent[i];
+        const std::string pop = d.pop.empty() ? std::string() : d.pop + " pop";
+        const std::string who = d.played.empty() ? std::string("the game's own") : "yours: " + d.played;
+        ReportLine r;
+        r.marked = std::find(marked.begin(), marked.end(), i) != marked.end();
+        r.line = upper(d.label) + (pop.empty() ? "" : "  -  " + upper(pop)) + "  -  " + upper(who) +
+                 std::format("  -  {:.0f} S AGO", std::max(0.0, d.ago)) + (r.marked ? "  -  MARKED" : "");
+        r.note = std::format("{}{} ({}), {:.1f} s before the report{}", d.label, pop.empty() ? "" : ", " + pop, who, std::max(0.0, d.ago),
+                             r.marked ? ", marked" : "");
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+void open_report_form() {
+    auto& u = ui();
+    u.report_form = true;
+    u.report_looked.clear();
+    u.report_words.fill('\0');
+    // The trick before the newest mark, else the last one done.
+    const auto lines = report_lines();
+    u.report_pick = lines.empty() ? -2 : 0;
+    for (std::size_t i = 0; i < lines.size(); ++i)
+        if (lines[i].marked) {
+            u.report_pick = static_cast<int>(i);
+            break;
+        }
+}
+void report_card(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2 display) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto lines = report_lines();
+    // As tall as its list of tricks (up to 5 and SOMETHING ELSE).
+    const auto [a, b] = card_box(d, f, display, 980 * k, 500 * k + 44 * k * static_cast<float>(std::max<std::size_t>(lines.size(), 1) + 1), "REPORT A BUG");
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 92 * k;
+    y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, soft,
+                   "Which trick, and what looked wrong? SAVE REPORT then puts the last 25 seconds of play, the game's log and your settings "
+                   "in one zip, and Explorer shows it. Nothing is sent by itself.") + 14 * k;
+    text(d, f.heading, 13 * k, ImVec2(x, y), blue_light, "WHICH TRICK");
+    y += 24 * k;
+    if (lines.empty()) {
+        y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint, "No tricks done yet this time the game is open.") + 8 * k;
+    }
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const bool picked = u.report_pick == static_cast<int>(i);
+        ImGui::PushID(static_cast<int>(i));
+        if (action(d, f, "##reporttrick", ImVec2(x, y), ImVec2(w, 38 * k), lines[i].line, picked ? Look::blue : Look::ghost, true, picked))
+            u.report_pick = static_cast<int>(i);
+        ImGui::PopID();
+        y += 44 * k;
+    }
+    if (action(d, f, "##reportelse", ImVec2(x, y), ImVec2(w, 38 * k), "SOMETHING ELSE", u.report_pick == -1 ? Look::blue : Look::ghost, true,
+               u.report_pick == -1))
+        u.report_pick = -1;
+    y += 54 * k;
+    text(d, f.heading, 13 * k, ImVec2(x, y), blue_light, "WHAT LOOKED WRONG");
+    y += 24 * k;
+    static constexpr std::array<const char*, 8> looks{"FEET", "BOARD", "ARMS", "LEGS", "BODY / HIPS", "A SNAP OR A JUMP", "IT DID NOT PLAY",
+                                                      "THE WRONG TRICK PLAYED"};
+    float cx = x;
+    for (std::size_t i = 0; i < looks.size(); ++i) {
+        const std::string word = looks[i];
+        const float cw = chip_width(f, word);
+        if (cx + cw > x + w) cx = x, y += 38 * k;
+        const auto at = std::find(u.report_looked.begin(), u.report_looked.end(), word);
+        const bool on = at != u.report_looked.end();
+        ImGui::PushID(static_cast<int>(i));
+        if (chip(d, f, "##reportlook", ImVec2(cx, y), word, on, nullptr, 32 * k)) {
+            if (on) u.report_looked.erase(at);
+            else u.report_looked.push_back(word);
+        }
+        ImGui::PopID();
+        cx += cw + 8 * k;
+    }
+    y += 50 * k;
+    text(d, f.heading, 13 * k, ImVec2(x, y), blue_light, "IN YOUR OWN WORDS (IF YOU LIKE)");
+    y += 24 * k;
+    field(f, "##reportwords", u.report_words, ImVec2(x, y), w, "e.g. the feet went through the board as it landed off the stairs");
+    y += 50 * k;
+    const auto marks = studio::marks_ago();
+    std::string marked;
+    for (const double ago : marks) marked += (marked.empty() ? "" : ", ") + std::format("{:.0f} s", ago);
+    paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
+              marks.empty() ? "Next time press F7 (MARK) while skating the moment something looks wrong: this form then picks that trick."
+                            : "Marked with F7: " + marked + " ago. The recording shows the moment too.");
+    const float bw = 220 * k, by = b.y - 70 * k;
+    if (action(d, f, "##reportsave", ImVec2(b.x - 30 * k - bw, by), ImVec2(bw, 46 * k), "SAVE REPORT", Look::blue)) {
+        studio::BugNote note;
+        if (u.report_pick == -1) note.trick = "something else";
+        else if (u.report_pick >= 0 && u.report_pick < static_cast<int>(lines.size())) note.trick = lines[static_cast<std::size_t>(u.report_pick)].note;
+        note.looked = u.report_looked;
+        note.words = u.report_words.data();
+        std::string m;
+        studio::report_bug(m, note);
+        say(m);
+        u.report_form = false;
+    }
+    if (action(d, f, "##reportcancel", ImVec2(x, by), ImVec2(160 * k, 46 * k), "CANCEL", Look::ghost) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        u.report_form = false;
+}
 void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     if (!other_cards_open(v)) {
@@ -12338,7 +12466,8 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     }
     begin_card(display);
     auto* d = ImGui::GetWindowDrawList();
-    if (u.browser.open) browser_card(d, f, v, display);
+    if (u.report_form) report_card(d, f, v, display);
+    else if (u.browser.open) browser_card(d, f, v, display);
     else if (u.pack_adding) adding_card(d, f, v, display);
     else if (u.conflicts_open) conflicts_card(d, f, v, display);
     else if (!u.stance_pack.empty()) stance_card(d, f, v, display);
@@ -12956,8 +13085,8 @@ void copy_open_trick_to_stance(const studio::View& v, int version) {
     if (!studio::load(made, opened)) m = opened;
     say(m);
 }
-// The pill at the top right of the view opens it: the trick's stance and its own Crossfade (OWN on: the main one in SETTINGS
-// is skipped for it). Closed, nothing of it covers the skater.
+// The pill at the top right of the view opens it: the trick's stance, its own Crossfade (OWN on: the main one in SETTINGS
+// is skipped for it) and what it does off a big drop (BIG DROPS). Closed, nothing of it covers the skater.
 void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corner) {
     auto& u = ui();
     const float k = f.k;
@@ -12971,7 +13100,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     const float w = 420 * k, row = 82 * k;
     // (DROP PREVIEW is gone, 2026-10-29: it played the trick as off a drop here, which read as a setting of the trick and led to
     // wrong keys.)
-    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 4 * row);
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 5 * row);
     skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
     const float x = a.x + 20 * k, bw = w - 40 * k;
@@ -13062,6 +13191,29 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         if (began) studio::begin_change();
         if (amount >= 0) studio::set_trick_crossfade(0.1f + amount * 0.7f);
         note(own ? "This trick hands over to the game's next move at its own pace." : "OWN: a crossfade for this trick alone. Off: the main one in SETTINGS.");
+        y += row;
+    }
+    // BIG DROPS: off a bigger drop or a higher pop than its own, the game's catch and landing take over at its catch (the
+    // default), or it keeps its own (Animation::own_landing: its catch held through the extra air, its landing as made). Only
+    // for a trick with a catch on its timeline.
+    {
+        const bool can = v.trick_has_catch && !v.previewing;
+        const bool own = v.trick_own_landing;
+        text(d, f.bold, 14 * k, ImVec2(x, y), can ? white : faint, "BIG DROPS");
+        const float gap = 6 * k, sw = (bw - gap) / 2;
+        if (action(d, f, "##bigdropgame", ImVec2(x, y + 22 * k), ImVec2(sw, 28 * k), "GAME'S CATCH", !own ? Look::blue : Look::ghost, can, !own) && own) {
+            studio::begin_change();
+            studio::set_trick_own_landing(false);
+        }
+        if (action(d, f, "##bigdropown", ImVec2(x + sw + gap, y + 22 * k), ImVec2(sw, 28 * k), "OWN CATCH + LANDING", own ? Look::blue : Look::ghost, can, own) &&
+            !own) {
+            studio::begin_change();
+            studio::set_trick_own_landing(true);
+        }
+        const char* says = !v.trick_has_catch ? "No catch on its timeline: the game's catch and landing."
+                           : own ? "Bigger drop or higher pop: it holds its catch, lands as made."
+                                 : "Bigger drop or higher pop: the game's catch and landing.";
+        text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint, elide(f.bold, 11 * k, says, bw));
         y += row;
     }
     // The rest of the panel takes the mouse, so a click on it does not reach the skater behind it.
@@ -14392,6 +14544,11 @@ void draw_animation_studio() {
         u.tab_request_seen = v.tab_request;
         open_menu(std::clamp(v.tab_requested, 0, static_cast<int>(menu_tabs.size()) - 1));
         u.pack_page = false;
+    }
+    // REPORT A BUG (SETTINGS > STUDIO, or the ReSkate menu): its form up.
+    if (v.report_request != u.report_request_seen) {
+        u.report_request_seen = v.report_request;
+        open_report_form();
     }
     // `animstudio devkey`: SETTINGS > STUDIO, its DEVELOPER KEY card up.
     if (v.dev_key_request != u.dev_key_request_seen) {

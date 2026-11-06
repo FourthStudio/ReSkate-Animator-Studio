@@ -344,6 +344,7 @@ struct State {
     PlaylistEditHistory playlist_history;
     std::uint64_t library_request{};
     std::uint64_t dev_key_request{};
+    std::uint64_t report_request{};
     std::uint64_t tab_request{};
     int tab_requested{};
     bool library_modifier_help{};
@@ -620,6 +621,13 @@ struct Live {
     // made (its own body and board, its keys on them), on the game's height and air.
     float other_pop{};
     bool other_pop_said{};
+    // OWN CATCH + LANDING (Animation::own_landing), off a bigger drop or a higher pop than its own: the trick's own clock from
+    // its catch (AirStretch, the catch latch), the time it was at on the touchdown and its last time; and how far it plays
+    // whole, as made, meanwhile (own_air, 0..1, eased like other_pop).
+    AirStretch stretch;
+    float latch_touch_from{-1}, latch_last{-1};
+    float own_air{};
+    bool own_air_said{};
     float crossfade_now{-1}; // the playing trick's Crossfade (its own, or the main one)
     // The board's shape, for the look ahead at a rail or a ledge (raised_lead).
     BoardShape latch_shape;
@@ -678,6 +686,7 @@ struct Live {
     double states_search_at{-1};
     int states_searches{};
     std::uint64_t states_level{~std::uint64_t{0}}; // the level load the states were looked for in (level_loads_started)
+    std::uint64_t marks_seen{}; // MARK: the marks the recording has (Marks::count), so the next frame takes a new one
     bool states_grind_retried{};                   // looked again this level because the grind could not be read
     // A trick's keys the other way round, kept so the mirror is made once rather than every frame.
     std::map<const Animation*, std::shared_ptr<const Animation>> mirrored_edits;
@@ -3825,6 +3834,41 @@ float ramp_frame(bool in_room, bool plant, const Joint& placement, const std::ar
         return 0;
     }
 }
+// MARK (F7 while skating, mark_moment): moments a player marked as "that one", for REPORT A BUG. Its form picks the trick
+// done last before the newest, the recording's timeline has the frame (marked), and report.txt says when each was.
+// (A report with nothing filled in left us to guess the trick from 25 seconds of play, 2026-11-05.)
+struct Marks {
+    std::mutex mutex;
+    std::deque<double> made; // when (now_seconds), the newest first
+    std::atomic<std::uint64_t> count{};
+};
+Marks& marks() {
+    static auto* value = new Marks;
+    return *value;
+}
+void mark_moment() noexcept {
+    try {
+        auto& m = marks();
+        {
+            std::lock_guard lock(m.mutex);
+            m.made.push_front(now_seconds());
+            while (m.made.size() > 5) m.made.pop_back();
+        }
+        m.count.fetch_add(1, std::memory_order_acq_rel);
+        logging::log(Level::info, Channel::skater, "Animation Studio: a moment marked for a bug report (MARK).");
+        overlay::notify(overlay::NoticeLevel::info, "Marked for a bug report",
+                        "REPORT A BUG (the studio's SETTINGS, or the ReSkate menu) now picks the trick you did just before.");
+    } catch (...) {}
+}
+std::vector<double> marks_ago() {
+    std::vector<double> out;
+    auto& m = marks();
+    std::lock_guard lock(m.mutex);
+    const double now = now_seconds();
+    for (const double at : m.made)
+        if (now - at < 120) out.push_back(now - at);
+    return out;
+}
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
     std::lock_guard animation_lock(l.animation_mutex);
@@ -3974,6 +4018,10 @@ void on_animation(std::uintptr_t component) noexcept {
             auto& history = snap->open ? preview_history() : diagnostic_history();
             { std::lock_guard lock(history.mutex); diagnostic_pose = history.buffer.pose_due(at); }
             diagnostic.at = at;
+            if (const auto marked = marks().count.load(std::memory_order_acquire); marked != l.marks_seen) {
+                l.marks_seen = marked;
+                diagnostic.marked = true;
+            }
             diagnostic.generation = generation;
             diagnostic.sequence = l.animation_updates.load();
             diagnostic.failures = l.failures;
@@ -4289,7 +4337,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.mirrored_edits.clear();
                 }
                 l.game_tricks = snap->tricks;
-                l.native_clock.reset(); l.clock_weight = 0; l.other_pop = 0;
+                l.native_clock.reset(); l.clock_weight = 0; l.other_pop = 0; l.own_air = 0; l.stretch.reset();
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.used_pop.clear(); l.used_pop_source.clear(); l.decision.clear();
                 l.takeoff_mount_ok = false; l.raised_release = 0; l.raised_said = false; l.raised_asked_at = -1;
@@ -4520,7 +4568,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (found) l.native_clock.start(found->native);
                     l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0;
                     l.other_pop = 0; l.other_pop_said = false;
-                    // The board's shape for the probe ahead of a rail (raised_lead).
+                    l.stretch.reset(); l.latch_touch_from = l.latch_last = -1; l.own_air = 0; l.own_air_said = false;
+                    // The board's shape for the probe ahead of a rail (raised_lead), and the catch latch's ground.
                     l.latch_shape_ok = false;
                     if (found) {
                         l.latch_shape = board_shape(*found->clip);
@@ -4587,7 +4636,60 @@ void on_animation(std::uintptr_t component) noexcept {
                 NativeClock::Reading reading;
                 bool held_for_next_pop = false; // let go into the next pop: drawn as it was then (hand_back_at_the_flick)
                 bool phase_clock = false;       // timed by the game's trick phase before the pop (clock_before_the_pop_by_trick_phase)
-                // Fourth's source-time fix: no separate catch slowdown beside the native board's clock.
+                // OWN CATCH + LANDING (Animation::own_landing), off a bigger drop or a higher pop than its own: from its catch the
+                // trick takes its own time to the touchdown (AirStretch: slowed through the catch by its CATCH HOLD, on to its
+                // landing as the ground comes), and its landing then plays on the touchdown at its own pace - its catch and its
+                // landing, not the game's big-drop ones. On flat ground, in step with the game, it is the game's clock as before.
+                // The time to the ground: the probe along the board's path, else the game's own TimeToLand. (Every trick did this
+                // until 2026-11-01, when the catch slowdown was taken out for the source-time fix; back for the tricks that ask
+                // for it - troyski's big drops, 2026-11-05.) Not for a trick with no catch to hold: it hands back as before.
+                const bool own_landing = trick->edits && trick->edits->own_landing && trick->caught > clip.takeoff &&
+                                         trick->caught < clip.landing && l.latch_shape_ok;
+                std::optional<double> touch_at;
+                if (l.episode.contact.since) touch_at = *l.episode.contact.since;
+                else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch_at = l.episode.landing;
+                const auto catch_latch = [&](float time) -> float {
+                    if (!own_landing || time < 0) return time;
+                    const float caught = trick->caught, land = clip.landing;
+                    if (touch_at) {
+                        if (!l.stretch.on()) return time;
+                        if (l.latch_touch_from < 0) l.latch_touch_from = l.latch_last >= 0 ? l.latch_last : l.stretch.time;
+                        return landed_time(static_cast<float>(at - *touch_at), land, l.latch_touch_from);
+                    }
+                    std::optional<float> to_ground;
+                    if (l.board_ok) {
+                        const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+                        const float lowest = lowest_point(mount, l.latch_shape);
+                        auto& probe = ground_probe();
+                        const float landing_in = probe.to_ground.load(std::memory_order_acquire);
+                        const double found = probe.found_at.load(std::memory_order_acquire);
+                        const auto velocity = board_velocity(base, component);
+                        if (finite(mount) && std::isfinite(lowest) && velocity) {
+                            probe.x.store(mount.position[0], std::memory_order_release);
+                            probe.z.store(mount.position[2], std::memory_order_release);
+                            probe.low.store(lowest, std::memory_order_release);
+                            probe.vx.store((*velocity)[0], std::memory_order_release);
+                            probe.vy.store((*velocity)[1], std::memory_order_release);
+                            probe.vz.store((*velocity)[2], std::memory_order_release);
+                            probe.wanted.store(true, std::memory_order_release);
+                        }
+                        // Worked out on the client thread a moment ago (along the board's path): less the time since.
+                        if (landing_in >= 0 && found >= 0 && now_seconds() - found < 0.15)
+                            to_ground = std::max(0.0f, landing_in - static_cast<float>(now_seconds() - found));
+                    }
+                    if (!to_ground && l.game.time_to_land && *l.game.time_to_land > 0) to_ground = *l.game.time_to_land; // (0: not known yet)
+                    const bool was_on = l.stretch.on();
+                    const float hold = trick->edits->catch_hold.value_or(default_catch_hold);
+                    time = l.stretch.update(time, to_ground ? *to_ground : -1.0f, 1.0f / 60, clip.takeoff, caught, land, hold);
+                    if (l.stretch.on() && !was_on)
+                        logging::log(Level::info, Channel::skater,
+                                     "Animation Studio: {} keeps its own catch and landing (OWN CATCH + LANDING) from {:.2f} s ({} catch at {:.2f} s, "
+                                     "hold {:.0f}%): {:.2f} s to the ground, {:.2f} s in the timeline.", trick->name, l.stretch.time,
+                                     trick->edits->catch_at && *trick->edits->catch_at == caught ? "its maker's" : "the studio's", caught, hold * 100,
+                                     to_ground ? *to_ground : -1.0f, land - l.stretch.time);
+                    l.latch_last = time;
+                    return time;
+                };
                 if (!l.clock_fallback) {
                     reading = l.native_clock.update(l.pose, 1.0f / 60); // the game's own pose, before any edit
                     // Before the pop the game's pose leaving the clip is the game doing something else with the flick: the trick
@@ -4638,7 +4740,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     // holds its catch and lands as it does. Played to its landing it stood still in the air until the game's
                     // touchdown, then let go in one frame.
                     float hand_back = -1;
-                    if (reading.locked && reading.clip > 0 && trick->native) {
+                    if (reading.locked && reading.clip > 0 && trick->native && !own_landing) {
                         const auto c = static_cast<std::size_t>(reading.clip);
                         if (c < trick->native->higher_pop.size() && trick->native->higher_pop[c] && up >= 0 && down > up)
                             // The later of its catch and 85% of its air: an ollie's catch comes just after the pop, and handed
@@ -4672,8 +4774,11 @@ void on_animation(std::uintptr_t component) noexcept {
                             }
                         }
                     }
+                    time = catch_latch(time);
                     if (time >= 0 && l.clock_last_time >= 0) time = std::max(time, l.clock_last_time);
                     if (time >= 0) l.clock_last_time = time;
+                    // Taking its own time it is no longer on the game's clip: what the game's pose does says nothing about it.
+                    const bool stretched = own_landing && l.stretch.on();
                     // Letting go when the game starts something new: the next pop (its crouch), a grind, the end of the
                     // trick (its end bracket, or its clip's end), or - after the landing, off the clip - its pose going a
                     // long way from the trick (a push, a turn into something else).
@@ -4696,8 +4801,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     else if (hand_back >= 0 && time >= hand_back) why = higher_pop_hand_back;
                     // Followed through the landing and lost well after it: that is the game going into its next
                     // animation (a push), not its landing.
-                    else if (reading.locked && reading.lost && touch && l.clock_lost_at - *touch > 0.3) why = "the game's next animation";
-                    else if (reading.locked && reading.lost && touch) {
+                    else if (!stretched && reading.locked && reading.lost && touch && l.clock_lost_at - *touch > 0.3) why = "the game's next animation";
+                    else if (!stretched && reading.locked && reading.lost && touch) {
                         // Quick to notice (two updates), so the crossfade into a manual or the next move starts while the
                         // game is still blending into it.
                         if (l.drift_since < 0) { l.drift_since = at; l.drift_base = reading.error; l.drift_count = 0; }
@@ -4739,7 +4844,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     // Always at x1 in game: the speed is the studio's, for watching a trick (it was the saved one, so a trick
                     // saved while watched at x.5 played at half speed on its own clock).
                     sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), 1.0f, l.predicted_air, true, fit_keys_to_air);
-                    if (sampled.time >= 0) sampled.time = std::min(clip.duration(), sampled.time);
+                    if (sampled.time >= 0) sampled.time = std::min(clip.duration(), catch_latch(sampled.time));
                     // As far as the game's pose is on the trick's own clip there (own_clock_follows_the_pose), eased so one odd
                     // pose does not flicker it.
                     if (own_clock_follows_the_pose && sampled.time >= 0) {
@@ -4756,16 +4861,35 @@ void on_animation(std::uintptr_t component) noexcept {
                 // the air is the game's.
                 {
                     const auto* pops = trick->native ? &trick->native->other_pop : nullptr;
-                    // (Not before the pop: there the pops' clips are alike, and only the grade says which one the game plays.)
-                    const bool other = pops && !l.clock_fallback && !before_pop && reading.locked && reading.clip > 0 &&
-                                       static_cast<std::size_t>(reading.clip) < pops->size() && (*pops)[static_cast<std::size_t>(reading.clip)];
+                    // A pack's trick filling in for a pop its pack has nothing for (fill) plays whole, as made, on the game's clip of
+                    // that pop: so from the moment it is picked (at the flick, on the ground, where the game's crouch and the
+                    // recording's are alike), not from when the clock finds that clip in the air. Eased in there, mid-flight, the
+                    // body went from the game's pose to the recording's, 45 cm at the feet, in 0.15 s (5 to 10 cm a frame in a
+                    // 2026-11-05 report).
+                    const bool fills_in = pops && trick->fill > 0 && std::find(pops->begin(), pops->end(), true) != pops->end();
+                    // (Otherwise not before the pop: there the pops' clips are alike, and only the grade says which one the game plays.)
+                    const bool other = pops && !l.clock_fallback &&
+                                       (fills_in || (!before_pop && reading.locked && reading.clip > 0 &&
+                                                     static_cast<std::size_t>(reading.clip) < pops->size() && (*pops)[static_cast<std::size_t>(reading.clip)]));
                     constexpr float other_step = (1.0f / 60) / 0.15f;
                     l.other_pop = other ? std::min(1.0f, l.other_pop + other_step) : std::max(0.0f, l.other_pop - other_step);
                     if (other && !l.other_pop_said) {
                         l.other_pop_said = true;
-                        logging::log(Level::info, Channel::skater, "Animation Studio: {} is on the game's clip of another pop (clip {}): it plays whole, as made.",
-                                     trick->name, reading.clip);
+                        if (fills_in)
+                            logging::log(Level::info, Channel::skater, "Animation Studio: {} fills in for this pop: it plays whole, as made, from the flick.",
+                                         trick->name);
+                        else
+                            logging::log(Level::info, Channel::skater, "Animation Studio: {} is on the game's clip of another pop (clip {}): it plays whole, as made.",
+                                         trick->name, reading.clip);
                     }
+                }
+                // OWN CATCH + LANDING taking its own time (the catch latch): whole, as made - its catch and its landing, body and
+                // board, not its keys on the game's big-drop pose - eased in as other_pop is, until it lets go.
+                {
+                    const bool own = own_landing && l.stretch.on() && l.clock_why.empty();
+                    constexpr float own_step = (1.0f / 60) / 0.15f;
+                    l.own_air = own ? std::min(1.0f, l.own_air + own_step) : std::max(0.0f, l.own_air - own_step);
+                    diagnostic.own_air = l.own_air;
                 }
                 // Off a low pop onto a rail or a ledge the board meets it while the trick is still mid-flip: locked on under
                 // legs still keyed apart, the feet would be off the deck. The ground probe looks along the board's path;
@@ -4840,10 +4964,10 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
                     // The edits ride on the game's own pose (its IK, its height, its board), at its clip's time: nothing of
                     // the studio's pose is forced over it except the explicit other-pop source fallback below.
-                    const float whole = l.other_pop * l.other_pop * (3 - 2 * l.other_pop);
+                    const float whole = std::max(l.other_pop * l.other_pop * (3 - 2 * l.other_pop), l.own_air * l.own_air * (3 - 2 * l.own_air));
                     packet->mirrored = l.played_mirrored; packet->match = whole;
                     packet->board_backwards = l.playback_backwards;
-                    packet->match_rest = whole; // on another pop's clip: body and board as made (other_pop)
+                    packet->match_rest = whole; // on another pop's clip, or its own catch and landing: body and board as made
                     packet->limits = snap->limits;
                     packet->lower_release = l.raised_release;
                     packet->motion = motion;
@@ -7916,6 +8040,7 @@ View view() {
     v.hover_preview = s.hover_preview;
     v.library_request = s.library_request;
     v.dev_key_request = s.dev_key_request;
+    v.report_request = s.report_request;
     v.tab_request = s.tab_request;
     v.tab_requested = s.tab_requested;
     v.library_modifier_help = s.library_modifier_help;
@@ -7943,6 +8068,8 @@ View view() {
         v.keys_past_landing = keys_past_landing(s.edits, s.clip->takeoff, s.clip->landing, s.clip->duration());
     }
     v.trick_crossfade = s.edits.crossfade;
+    v.trick_own_landing = s.edits.own_landing;
+    v.trick_has_catch = v.catch_at > 0;
     v.can_undo = !s.undo.empty();
     v.can_redo = !s.redo.empty();
     v.orbit = s.orbit;
@@ -8024,6 +8151,13 @@ void request_dev_key() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     ++s.dev_key_request;
+    s.open_requested = true;
+    s.open_request_pending = true;
+}
+void request_report_form() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    ++s.report_request;
     s.open_requested = true;
     s.open_request_pending = true;
 }
@@ -8468,6 +8602,16 @@ void set_trick_crossfade(float seconds) {
         if (!s.edits.crossfade) s.status = "This trick hands over at its own Crossfade: the main one is skipped for it.";
         s.edits.crossfade = own;
     }
+    changed_locked(s);
+}
+
+void set_trick_own_landing(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.previewing || !s.clip || s.clip->empty() || s.edits.own_landing == on) return;
+    s.edits.own_landing = on;
+    s.status = on ? "Off a bigger drop or a higher pop this trick keeps its own catch and landing."
+                  : "Off a bigger drop or a higher pop this trick hands back to the game's catch and landing.";
     changed_locked(s);
 }
 
@@ -12242,6 +12386,9 @@ std::optional<std::string> read_tail(const std::filesystem::path& path, std::uin
 // (export_diagnostics), the end of the game's log, the studio's settings and which build this is - saved in
 // ReSkate.Tricks\bug reports and shown in Explorer, to send with what happened. Nothing is sent from here.
 namespace {
+// What REPORT A BUG's form said, for the report being written (report_bug sets it before the report's thread starts).
+std::mutex bug_note_mutex;
+BugNote bug_note;
 bool write_bug_report_now(std::string& message) {
     try {
         std::string diagnostics;
@@ -12320,9 +12467,24 @@ bool write_bug_report_now(std::string& message) {
             about += std::format("Packs taken for someone else's on this PC: {}{}\r\nTricks taken for someone else's on this PC: {}\r\n",
                                  not_mine.empty() ? "none" : std::to_string(listed), not_mine, foreign);
         }
-        about += "\r\nThe recording (diagnostics) is the last 25 seconds of play before the pause menu or the studio came up.\r\n"
-                 "What happened (write it here, or in your message): the trick, your stance (normal / switch / fakie / nollie), "
-                 "and what you saw.\r\n";
+        // What the form said, at the top where it is read first, and the moments marked.
+        {
+            BugNote note;
+            {
+                std::lock_guard lock(bug_note_mutex);
+                note = bug_note;
+            }
+            std::string looked;
+            for (const auto& what : note.looked) looked += (looked.empty() ? "" : ", ") + what;
+            std::string marked;
+            for (const double ago : marks_ago()) marked += (marked.empty() ? "" : ", ") + std::format("{:.1f} s", ago);
+            about = std::format("What happened (the report's form)\r\n  Trick: {}\r\n  Looked wrong: {}\r\n  In their words: {}\r\n"
+                                "  Marked (MARK, F7): {}\r\n\r\n",
+                                note.trick.empty() ? "not picked" : note.trick, looked.empty() ? "not said" : looked,
+                                note.words.empty() ? "-" : note.words, marked.empty() ? "nothing" : marked + " before this report (the timeline's marked column)") +
+                    about;
+        }
+        about += "\r\nThe recording (diagnostics) is the last 25 seconds of play before the pause menu or the studio came up.\r\n";
         files.emplace_back("report.txt", about);
         const auto zip = library / L"bug reports" / std::filesystem::path("ReSkate bug report " + stamp + ".zip");
         write_whole(zip, stored_zip(files));
@@ -12379,9 +12541,19 @@ bool write_off_the_game_threads(std::string& message, const char* saying, bool (
 bool export_diagnostics(std::string& message) {
     return write_off_the_game_threads(message, "Saving the diagnostics. The studio says when they are saved.", write_diagnostics_now);
 }
-bool report_bug(std::string& message) {
+bool report_bug(std::string& message, const BugNote& note) {
+    if (report_being_written.load(std::memory_order_acquire)) {
+        message = "A report is being saved: wait for it to finish.";
+        return false;
+    }
+    {
+        std::lock_guard lock(bug_note_mutex);
+        bug_note = note;
+        bug_note.words = utf8_prefix(note.words, 400);
+    }
     return write_off_the_game_threads(message, "Saving the bug report. Explorer shows it when it is saved.", write_bug_report_now);
 }
+bool report_bug(std::string& message) { return report_bug(message, BugNote{}); }
 void rename(const std::string& name) {
     auto& s = state();
     std::lock_guard lock(s.mutex);

@@ -1,5 +1,6 @@
 #include "studio_update.h"
 #include "studio_update_files.h"
+#include "anim_studio.h"
 #include "reskate_version.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -30,6 +31,11 @@ constexpr const wchar_t* agent = L"ReSkate Animator Studio";
 constexpr std::wstring_view latest_url = L"https://api.github.com/repos/FourthStudio/ReSkate-Animator-Studio/releases/latest";
 constexpr const char* saved_checking = "AnimatorStudio.CheckUpdates";
 constexpr std::uint64_t most_dll_bytes = 256ull * 1024 * 1024;
+// While the game stays open it looks again: every hour (a quarter of an hour after a look that failed), and on opening the
+// studio when the last look is over ten minutes old. Looked for only at the start, players who kept the game open all
+// evening heard of an update at their next start (2.0.1 to 2.0.3 came out within hours, 2026-11-05). GitHub answers 60
+// unsigned questions an hour from one address: this asks at most 7.
+constexpr std::chrono::minutes look_again_every{60}, look_again_after_failing{15}, look_again_on_opening{10};
 
 struct Shared {
     std::mutex mutex;
@@ -39,6 +45,9 @@ struct Shared {
     std::chrono::steady_clock::time_point restart_asked;
     std::atomic<bool> loaded{}, checking{true}, dirty{}, started{}, busy{}, popup_closed{};
     https::Watch watch;
+    std::chrono::steady_clock::time_point looked_at{}; // when the last look ended (guarded by mutex)
+    bool looked{}, open_before{};                     // a look has ended; the studio was open at the last tick
+    std::string said;                                 // the version the corner notice last told of: told once
 };
 Shared& shared() {
     static auto* value = new Shared;
@@ -175,7 +184,15 @@ void set(const std::function<void(State&)>& change) {
     change(s.state);
 }
 
+void run_check_once();
 void run_check() {
+    run_check_once();
+    auto& s = shared();
+    std::lock_guard lock(s.mutex);
+    s.looked_at = std::chrono::steady_clock::now();
+    s.looked = true;
+}
+void run_check_once() {
     auto& s = shared();
     set([](State& st) {
         st.step = Step::checking;
@@ -236,7 +253,13 @@ void run_check() {
         }
         logging::log(Level::info, Channel::runtime, "Animator Studio update check: running {}, newest release {}{}", running_version_of_build(), tag,
                      is_newer ? " (newer)" : "");
-        if (is_newer)
+        bool tell = false;
+        if (is_newer) {
+            std::lock_guard lock(s.mutex);
+            tell = s.said != tag;
+            s.said = tag;
+        }
+        if (tell)
             overlay::notify(overlay::NoticeLevel::info, "Animator Studio " + tag + " is out",
                             "You have " + running_version_of_build() + ". Open the studio (F8) to see what is new and update in one click.");
     } catch (...) {
@@ -376,6 +399,22 @@ void tick() noexcept {
         }
         if (s.loaded.load() && s.dirty.exchange(false)) profile_runtime::set_local_preference(saved_checking, s.checking.load());
         if (s.loaded.load() && s.checking.load() && !s.started.exchange(true)) start_thread(&run_check);
+        // Again while the game stays open (look_again_every): only from a look that found nothing newer or failed - one that
+        // found an update has offered it, and the download and install steps keep their own state.
+        const bool open = is_open();
+        bool again = false;
+        {
+            std::lock_guard lock(s.mutex);
+            const bool opened = open && !s.open_before;
+            s.open_before = open;
+            if (s.looked && s.loaded.load() && s.checking.load() && !s.busy.load() &&
+                (s.state.step == Step::current || s.state.step == Step::failed)) {
+                const auto since = std::chrono::steady_clock::now() - s.looked_at;
+                again = since >= (s.state.step == Step::failed ? look_again_after_failing : look_again_every) ||
+                        (opened && since >= look_again_on_opening);
+            }
+        }
+        if (again) start_thread(&run_check);
     } catch (...) {}
 }
 void check_now() noexcept {

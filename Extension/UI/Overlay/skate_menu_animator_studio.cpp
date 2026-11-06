@@ -466,13 +466,16 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     ImGui::Dummy(ImVec2(0, px(6)));
     const anim_studio::settings_rows::Tell tell = [&menu](const std::string& said) { feedback(menu, said.c_str()); };
     switch (button_row(menu, "##studioactions", {{"HOW IT WORKS", true, false, "The guide from the first start: packs, stances, playlists, pop heights."},
-                                                  {"REPORT A BUG", true, false, "The last 15 seconds, the log and your settings in one zip, for us."}})) {
+                                                  {"REPORT A BUG", true, false, "Which trick and what looked wrong, then the last 25 seconds, the log and your settings in one zip."}})) {
     case 0:
         anim_studio::set_guide_seen(false);
         anim_studio::request_open(true);
         menu.close_requested = true;
         break;
-    case 1: anim_studio::settings_rows::report_a_bug(tell).act(); break;
+    case 1: // its form is in the studio, which opens for it
+        anim_studio::settings_rows::report_a_bug(tell).act();
+        menu.close_requested = true;
+        break;
     default: break;
     }
     ImGui::Dummy(ImVec2(0, px(12)));

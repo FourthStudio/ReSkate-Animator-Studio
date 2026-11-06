@@ -4,7 +4,7 @@ Edit skate animations in game, build your own trick packs, and choose how they p
 
 Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
 
-> **Version 2.0.5:** Animator Studio on ReSkate 2.1.4-2. See the [2.0.5 notes](contrib/release-2.0.5.md), the [2.0.4 notes](contrib/release-2.0.4.md), the [2.0.3 notes](contrib/release-2.0.3.md), the [2.0.2 notes](contrib/release-2.0.2.md), the [2.0.1 notes](contrib/release-2.0.1.md), the [2.0 release notes](contrib/release-2.0.md), the [1.1.1 hotfix notes](contrib/release-1.1.1.md), the [1.1 release notes](contrib/release-1.1.md) and [integration record](contrib/studio-library-integration.md).
+> **Version 2.1.0:** Animator Studio on ReSkate 2.1.4-2. See the [2.1.0 notes](contrib/release-2.1.0.md), the [2.0.5 notes](contrib/release-2.0.5.md), the [2.0.4 notes](contrib/release-2.0.4.md), the [2.0.3 notes](contrib/release-2.0.3.md), the [2.0.2 notes](contrib/release-2.0.2.md), the [2.0.1 notes](contrib/release-2.0.1.md), the [2.0 release notes](contrib/release-2.0.md), the [1.1.1 hotfix notes](contrib/release-1.1.1.md), the [1.1 release notes](contrib/release-1.1.md) and [integration record](contrib/studio-library-integration.md).
 >
 > This is a fan project, unaffiliated with Electronic Arts or Full Circle. You need your own copy of skate. on Steam. The game is not included.
 
@@ -66,7 +66,8 @@ Imported packs retain their maker's ownership settings. A verified publishing te
 
 - Native inventory includes clips, graph states, transitions and parameters. An indexed item is not necessarily editable or bound to live gameplay.
 - Saved manual, grind and grab loops can play through recognized native movement contexts. Other moving native pieces require successful pose recognition; an indexed transition or graph parameter is not a guaranteed live replacement.
-- Gameplay follows the native animation clock, or continues at source pace when matching is lost. There is no separate catch slowdown or airborne foot magnet; **CATCH HOLD** and **DROP PREVIEW** controls are removed. The optional **CATCH** marker remains on the timeline.
+- Gameplay follows the native animation clock, or continues at source pace when matching is lost. There is no airborne foot magnet, and the **CATCH HOLD** and **DROP PREVIEW** controls are removed. The optional **CATCH** marker remains on the timeline.
+- Off a bigger drop or a higher pop than its own, a trick hands back to the game's catch and landing. **THIS TRICK > BIG DROPS > OWN CATCH + LANDING** (off by default, saved with the trick) keeps its own instead: from its **CATCH** it takes its own time to the touchdown and lands as made. Off, nothing of it runs.
 - Into an unmodified grind, contact protection hands the lower body back to the native board. A compatible saved grind loop is selected separately from that handoff.
 - Older goofy saves with incorrect stance metadata are not automatically repaired in every case; recreate an affected version if its tags or limb behavior are wrong.
 - Windows is the tested build target. Studio operation on Proton, Steam Deck and macOS is not release-validated.
@@ -91,7 +92,7 @@ Deleting your own pack keeps its tricks. Deleting an imported pack recycles unsh
 
 ## Report a problem
 
-Use **SETTINGS > STUDIO > REPORT A BUG** and attach the resulting ZIP, with the trick name, pop, stance, and whether the problem occurs in the preview, gameplay, or both. Include whether you were offline or online.
+Press **F7** while skating the moment something looks wrong (MARK). Then use **SETTINGS > STUDIO > REPORT A BUG** (or the ReSkate menu's ANIMATOR STUDIO page): its form asks which trick (the one before your mark is picked) and what looked wrong, and puts that at the top of the ZIP's `report.txt`. Attach the ZIP, and say whether the problem occurs in the preview, gameplay, or both, and whether you were offline or online.
 
 The ZIP is created locally; sending it is your choice. It contains recent diagnostics, relevant animation data, settings, build details and the end of the game log. Standard export does not collect the market's `account.key`. ReSkate's automatic crash reporting is separate: control **Send crash reports** in launcher settings, or use `RESKATE_CRASH_REPORTING=0`.
 
@@ -104,7 +105,7 @@ cmake --preset ci-windows
 cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher --parallel 4
 ```
 
-Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 2.0.5 / ReSkate 2.1.4-2 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
+Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 2.1.0 / ReSkate 2.1.4-2 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
 
 See the [Studio implementation notes](contrib/animator-studio.md), [repository structure](STRUCTURE.md), and [release checklist](contrib/studio-release-checklist.md). Keep gameplay changes, tests and UI descriptions together; use focused PRs and wait for review before merging.
 
