@@ -2042,6 +2042,23 @@ void native_clips_pop_where_the_game_does() {
     check(!place_native_marks(boardless) && near(boardless.takeoff, 0.283f), "A clip without its board keeps its mark");
     auto piece = make(-1, -1);
     check(!place_native_marks(piece) && piece.takeoff < 0, "and a piece with no pop gets none");
+    // Played as a trick (the quick pop), a piece gets the marks its library file left out: the pop as the board tips, the
+    // landing where it comes down.
+    auto quick = make(-1, -1);
+    check(find_native_pop(quick) && near(quick.takeoff, 8.0f / 60 + 0.05f) && near(quick.landing, 38.0f / 60),
+          "A piece played as a trick pops as its board tips and lands where it comes down");
+    auto flat = make(-1, -1);
+    for (auto& b : flat.board) b.rotation = {0, 0, 0, 1};
+    check(!find_native_pop(flat) && flat.takeoff < 0 && flat.landing < 0, "and one whose board never tips is left with none");
+    auto flat_landed = make(-1, 0.5f);
+    for (auto& b : flat_landed.board) b.rotation = {0, 0, 0, 1};
+    check(!find_native_pop(flat_landed) && flat_landed.takeoff < 0 && near(flat_landed.landing, 0.5f), "and keeps the landing it had");
+    auto no_low = make(-1, -1);
+    for (auto& b : no_low.board) b.position = {0, 0, 0};
+    check(find_native_pop(no_low) && near(no_low.takeoff, 8.0f / 60 + 0.05f) && near(no_low.landing, 8.0f / 60 + 0.05f + 27.0f / 60),
+          "A board that tips with no low to land on lands 27 frames at 60 after the pop");
+    auto marked = make(0.183f, 0.617f);
+    check(!find_native_pop(marked) && near(marked.takeoff, 0.183f), "A clip with a pop already keeps it");
 }
 // SMOOTH transitions (2026-10-29): part of a flip past half a turn goes on round, a jump inside one trick is eased, and in
 // a handover the legs go over first, then the hips and arms, then the back and head.
@@ -3318,6 +3335,26 @@ void tricks_begin_at_the_flick_and_hand_over_the_games_way() {
     check(flip_trick_key("None").empty() && flip_trick_key("Wallie").empty() && flip_trick_key("FSWallie").empty() &&
               flip_trick_key("LateFlipTrick").empty() && flip_trick_key("HeldFlipTrick").empty(),
           "No trick, a wallie and a late or held flip start nothing at the flick");
+    // The quick pop: its flick name is its trick, and in game a piece made from its clip plays as that trick (its file keeps
+    // the piece's name, "native:...").
+    check(flip_trick_key("OlliePop") == "olliepop" && flip_trick_key("N_OlliePop") == "n_olliepop", "A quick pop has its own flick name");
+    check(quick_pop_trick("animation/dingo/c_proto_onb_trick_o_ollie_quickpop") == "olliepop" &&
+              quick_pop_trick("animation/dingo/c_proto_onb_trick_n_nollie_quickpop") == "n_olliepop" &&
+              quick_pop_trick("native:animation/dingo/c_proto_onb_trick_o_ollie_quickpop") == "olliepop",
+          "A piece of the library's quick pop clips plays as the trick olliepop or n_olliepop, by its asset or its name");
+    check(quick_pop_trick("animation/dingo/c_proto_onb_trick_o_kickflip_quickpop").empty() &&
+              quick_pop_trick("animation/dingo/c_proto_onb_trick_o_ollie_mid").empty() &&
+              quick_pop_trick("animation/dingo/c_proto_onb_curbhop_quickpop").empty() &&
+              quick_pop_trick("animation/dingo/c_proto_onb_grind_5050_rail_loop").empty(),
+          "and no other clip does");
+    check(quick_pop_air_name("olliepop") == "ollie" && quick_pop_air_name("n_olliepop") == "nollie" && quick_pop_air_name("ollie").empty() &&
+              quick_pop_air_name("native:animation/dingo/c_proto_onb_trick_o_ollie_quickpop").empty(),
+          "In the air the game calls a quick pop an ollie or a nollie");
+    check(quick_pop_in_the_air("olliepop", "ollie") && quick_pop_in_the_air("n_olliepop", "nollie"),
+          "The ollie the game says in the air after a quick pop's flick is the quick pop");
+    check(!quick_pop_in_the_air("ollie", "ollie") && !quick_pop_in_the_air("olliepop", "kickflip") &&
+              !quick_pop_in_the_air("olliepop", "nollie") && !quick_pop_in_the_air("olliepop", "olliepop") && !quick_pop_in_the_air("", "ollie"),
+          "and nothing else is");
 
     // Before the pop the trick's time is the game's trick phase times its clip's length (kickflip low: 1.97 s, its pop at 0.183):
     // 0.0247 at the flick is 0.049 s in; past the pop it says nothing, and an idle 5 or a missing phase neither.

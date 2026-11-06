@@ -676,6 +676,9 @@ struct Live {
     std::optional<std::uint32_t> flip_trick;
     bool flicked{};
     std::string flick_name;
+    // This quick pop plays a saved ollie: no saved quick pop fitted it (its playlist, stance or pop), so the attempt is the
+    // ollie the game says in the air.
+    bool quick_pop_as_ollie{};
     bool chosen_ungraded{}; // chosen before the game graded the pop: chosen again once it has
     bool flick_said{};      // the first attempt played from the flick was logged
     std::string flick_checked; // the name at the flick, until the game's name in the air was compared with it
@@ -1967,13 +1970,17 @@ std::string content_key(const std::vector<std::uint8_t>& bytes, bool native, con
 }
 // A trick's own clip from its file's bytes: the one in memory already when another trick's file has the same (`native`:
 // its pop and landing placed where the game has them, as a trick edited from the game's clip has).
-std::shared_ptr<const Clip> shared_clip(TrickCache& cache, const std::filesystem::path& file, bool native, std::string& key) {
+// `find_pop`: a piece of the game's clips played as a trick (the quick pop) gets the pop its library file left out.
+std::shared_ptr<const Clip> shared_clip(TrickCache& cache, const std::filesystem::path& file, bool native, std::string& key, bool find_pop) {
     const auto bytes = file_bytes(file);
-    key = content_key(bytes, native, file);
+    key = content_key(bytes, native, file) + (find_pop ? "|pop" : "");
     auto& kept = cache.clips[key];
     if (!kept) {
         auto clip = std::make_shared<Clip>(trick_clip_from_bytes(bytes));
-        if (native && place_native_marks(*clip))
+        if (find_pop && find_native_pop(*clip))
+            logging::log(Level::info, Channel::skater, "Animation Studio: a piece played as a trick pops at {:.2f} s and lands at {:.2f} s.",
+                         clip->takeoff, clip->landing);
+        else if (native && place_native_marks(*clip))
             logging::log(Level::info, Channel::skater, "Animation Studio: a trick's clip pops at {:.2f} s, where the game has it.", clip->takeoff);
         kept = std::move(clip);
     }
@@ -2052,12 +2059,17 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
     if (const auto& asset = animation->source.asset; animation->source.kind == "native_asset" && asset.starts_with("animation/dingo/c_proto_onb_trick_"))
         if (const auto cut = asset.rfind('_'); cut != std::string::npos)
             if (const auto end = asset.substr(cut + 1); end == "low" || end == "mid" || end == "high") made_pop = end;
-    if (p.pack_pop) animation->pop = *p.pack_pop; // the pop its pack's rules (or a test) say it plays on
-    std::string key;
-    const auto clip = shared_clip(cache, clip_path, animation->source.kind == "native_asset", key);
     // A piece of the game's animation (a setup, a loop, the clip a trick is blended from) has no pop of its own: it is
-    // found by its pose while it plays, not by a takeoff.
-    const bool piece = animation->trick.starts_with("native:");
+    // found by its pose while it plays, not by a takeoff. A quick pop is the exception: the game names it at the flick, so
+    // in game it plays as the trick quick_pop_trick names.
+    const auto quick_pop = animation->trick.starts_with("native:") ? quick_pop_trick(animation->trick) : std::string{};
+    const auto trick = !quick_pop.empty() ? quick_pop : trick_key(animation->trick); // a trick saved under an older spelling still plays
+    const bool piece = trick.starts_with("native:");
+    // The pop its pack's rules (or a test) say it plays on. Not for a quick pop: the game grades every quick pop low and its
+    // card has no pop, so a pack's MID or HIGH would stop it from playing, with nothing on the card to say why.
+    if (p.pack_pop && quick_pop.empty()) animation->pop = *p.pack_pop;
+    std::string key;
+    const auto clip = shared_clip(cache, clip_path, animation->source.kind == "native_asset", key, !quick_pop.empty());
     // Said, not dropped without a word: a trick got from the MARKET that never played left nothing in the log to go by.
     if (clip->joints != skeleton_joints) {
         logging::log(Level::warning, Channel::skater, "Animation Studio: {} does not play: its clip is for another skeleton ({} joints).", p.name, clip->joints);
@@ -2068,7 +2080,6 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
                      p.name);
         return std::nullopt;
     }
-    const auto trick = trick_key(animation->trick); // a trick saved under an older spelling still plays
     const bool goofy = authored_goofy(*animation);
     // Its lead foot from the clip, its label only when the clip cannot tell: labels have been wrong (one made with the
     // right foot leading was labelled regular normal and played on the wrong leg).
@@ -2311,7 +2322,11 @@ LoadedTricks read_custom_tricks(const std::string& test_trick, const std::string
             const auto stance_of = [](const Preset& p) { return std::pair<bool, bool>{preset_leads_right(p), p.fakie.value_or(false)}; };
             std::map<std::pair<bool, bool>, Preset*> others;
             for (auto& p : requested) {
-                if (p.trick != t->trick) continue;
+                // A saved quick pop takes the game's quick pops (quick_pop_trick), which are ollies to the trick tested.
+                if (p.trick != t->trick) {
+                    if (const auto quick = quick_pop_trick(p.trick); !quick.empty() && quick_pop_air_name(quick) == t->trick) p.active = false;
+                    continue;
+                }
                 p.active = false;
                 if (p.name == t->name || p.pop != t->pop || stance_of(p) == stance_of(*t)) continue;
                 if (p.foreign != t->foreign || p.made_by != t->made_by) continue;
@@ -4329,7 +4344,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.raised_contact_at = -1; l.raised_last = -1;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
-                l.flick_name = flick_name; l.chosen_ungraded = false;
+                l.flick_name = flick_name; l.chosen_ungraded = false; l.quick_pop_as_ollie = false;
                 if (l.board_ok) {
                     const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
                     if (finite(mount)) {
@@ -4374,6 +4389,7 @@ void on_animation(std::uintptr_t component) noexcept {
             const bool airborne = l.episode.phase == PlaybackPhase::air || l.episode.phase == PlaybackPhase::landing;
             const bool before_pop = l.episode.phase == PlaybackPhase::before_pop;
             auto name = airborne ? current_trick(component) : std::string{};
+            const auto said_in_the_air = name;
             // Whether the trick the game named at the flick is the one it names in the air: said once for each pair (the first
             // time they agree, every time they do not), so a report shows whether CurrentFlipTrick is right at the flick.
             if (airborne && !name.empty() && !l.flick_checked.empty()) {
@@ -4389,6 +4405,10 @@ void on_animation(std::uintptr_t component) noexcept {
             if (name.empty() && !l.flick_name.empty() &&
                 (before_pop || (l.episode.phase == PlaybackPhase::air && at - l.episode.takeoff < 0.1)))
                 name = l.flick_name;
+            // A quick pop stays a quick pop in the air, where the game says "ollie" (l.flick_name is only kept when a quick pop
+            // is saved). When no saved quick pop fits it, the saved ollie is chosen instead, as before (quick_pop_as_ollie).
+            const bool quick_pop_air = !l.quick_pop_as_ollie && quick_pop_in_the_air(l.flick_name, name);
+            if (quick_pop_air) name = l.flick_name;
             // A change after we had settled on one is the game doing something else: the layer stands back
             // over 120 ms, and only then takes up the new trick, so nothing jumps between the two.
             if (!name.empty() && l.game_trick && l.episode.phase == PlaybackPhase::air && !l.episode.selection_open(at) &&
@@ -4448,30 +4468,40 @@ void on_animation(std::uintptr_t component) noexcept {
                 bool route_has_candidates = false;
                 // Override candidates get the same pop/stance/entry rules. If none fit, try the normal playlist.
                 auto variants = choose_trick_route(l.modifier_attempt.held, [&](bool modified) {
-                    std::vector<const CustomTrick*> candidates;
-                    std::vector<StanceCandidate> described;
-                    if (l.playback_switch.has_value())
-                        for (const bool exact : {true, false}) {
-                            for (const auto& t : *l.game_tricks) {
-                                if (!on_route(t, modified, l.modifier_attempt.button) || t.trick != name ||
-                                    (exact && t.edits->entry != entry_name(l.episode.entry)))
-                                    continue;
-                                candidates.push_back(&t);
-                                int rank = playback_pop_rank(pop, t.edits->pop);
-                                if (pop.empty() && t.any_pop) rank = 1;
-                                rank = fill_pop_rank(rank, t.fill);
-                                described.push_back({t.leads_right, t.fakie, rank});
+                    const auto eligible_for = [&](std::string_view trick) {
+                        std::vector<const CustomTrick*> candidates;
+                        std::vector<StanceCandidate> described;
+                        if (l.playback_switch.has_value())
+                            for (const bool exact : {true, false}) {
+                                for (const auto& t : *l.game_tricks) {
+                                    if (!on_route(t, modified, l.modifier_attempt.button) || t.trick != trick ||
+                                        (exact && t.edits->entry != entry_name(l.episode.entry)))
+                                        continue;
+                                    candidates.push_back(&t);
+                                    int rank = playback_pop_rank(pop, t.edits->pop);
+                                    if (pop.empty() && t.any_pop) rank = 1;
+                                    rank = fill_pop_rank(rank, t.fill);
+                                    described.push_back({t.leads_right, t.fakie, rank});
+                                }
+                                if (!candidates.empty()) break;
                             }
-                            if (!candidates.empty()) break;
-                        }
-                    route_has_candidates = route_has_candidates || !candidates.empty();
-                    std::vector<std::size_t> chosen;
-                    if (l.playback_front_foot && testing_tricks.load()) chosen = choose_stance_variants(described, live, false);
-                    if (chosen.empty()) chosen = choose_stance_variants(described, live, l.playback_front_foot);
-                    std::vector<const CustomTrick*> eligible;
-                    for (const auto i : chosen) eligible.push_back(candidates[i]);
+                        route_has_candidates = route_has_candidates || !candidates.empty();
+                        std::vector<std::size_t> chosen;
+                        if (l.playback_front_foot && testing_tricks.load()) chosen = choose_stance_variants(described, live, false);
+                        if (chosen.empty()) chosen = choose_stance_variants(described, live, l.playback_front_foot);
+                        std::vector<const CustomTrick*> eligible;
+                        for (const auto i : chosen) eligible.push_back(candidates[i]);
+                        return eligible;
+                    };
+                    // A quick pop no saved quick pop fits on this playlist: the saved ollie of this playlist, as before.
+                    auto eligible = eligible_for(name);
+                    if (eligible.empty() && quick_pop_air) eligible = eligible_for(said_in_the_air);
                     return eligible;
                 });
+                if (quick_pop_air && !variants.empty() && variants.front()->trick != name) {
+                    name = variants.front()->trick;
+                    l.quick_pop_as_ollie = true;
+                }
                 if (!variants.empty()) {
                     const bool in_turns = (variants.front()->modifier_route ? variants.front()->route_mode : l.normal_mode) == PlaylistMode::turns;
                     // The playlist's In turns: in the playlist's order, on every pass of the attempt (the pick is a place in it).
@@ -9647,11 +9677,15 @@ MenuSummary menu_summary() {
     if (!out.recent.empty()) {
         const auto tricks = game_tricks();
         for (auto& d : out.recent) {
+            // A quick pop by the ollie it is (the catalog has the quick pop only as a piece): "Ollie quick pop".
+            const auto quick_pop_of = quick_pop_air_name(d.trick);
+            const std::string_view looked_up = quick_pop_of.empty() ? std::string_view(d.trick) : quick_pop_of;
             for (const auto& t : *tricks)
-                if (t.trick == d.trick && !t.preview_only && !t.label.empty()) {
+                if (t.trick == looked_up && !t.preview_only && !t.label.empty()) {
                     d.label = t.label;
                     for (const char* pop : {" low", " mid", " high", " Low", " Mid", " High"})
                         if (d.label.size() > std::strlen(pop) && d.label.ends_with(pop)) d.label.resize(d.label.size() - std::strlen(pop));
+                    if (!quick_pop_of.empty()) d.label += " quick pop";
                     break;
                 }
             if (d.label.empty()) {
@@ -12286,8 +12320,13 @@ bool write_diagnostics_now(std::string& message) {
                     const auto key = trick_key(sample.trick);
                     if (std::find(done.begin(), done.end(), key) == done.end()) done.push_back(key);
                 }
+            // A saved quick pop with them: the game says "ollie" in the air for a quick pop (quick_pop_air_name).
+            const auto was_done = [&](const std::string& trick) {
+                const auto air = quick_pop_air_name(trick);
+                return std::find(done.begin(), done.end(), air.empty() ? std::string_view(trick) : air) != done.end();
+            };
             for (const auto& t : *tricks_on)
-                if (t.height.empty() && std::find(done.begin(), done.end(), t.trick) != done.end() &&
+                if (t.height.empty() && was_done(t.trick) &&
                     std::find(names.begin(), names.end(), t.name) == names.end())
                     names.push_back(t.name);
         }

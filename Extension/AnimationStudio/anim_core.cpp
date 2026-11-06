@@ -712,6 +712,21 @@ bool place_native_marks(Clip& clip) noexcept {
     }
     return moved;
 }
+bool find_native_pop(Clip& clip) {
+    if (clip.takeoff >= 0) return false;
+    // As native_library's trick_marks: place_native_marks moves a pop only earlier, so it is looked for from the clip's end,
+    // and only a board that tips moves it there. Worked out on the clip's times and board alone.
+    Clip marks;
+    marks.times = clip.times;
+    marks.board = clip.board;
+    marks.takeoff = marks.duration();
+    marks.landing = -1;
+    if (!place_native_marks(marks)) return false;
+    clip.takeoff = marks.takeoff;
+    // No low found to land on: 27 frames at 60 after the pop, as game_clips' rule for a clip with no landing low.
+    clip.landing = marks.landing >= 0 ? marks.landing : std::min(clip.duration(), clip.takeoff + 27.0f / 60);
+    return true;
+}
 namespace {
 const JointLimit* limit_of(std::uint16_t joint) noexcept {
     for (const auto& l : joint_limits)

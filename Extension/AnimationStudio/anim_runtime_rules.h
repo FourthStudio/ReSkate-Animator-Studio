@@ -138,6 +138,29 @@ inline std::string flip_trick_key(std::string_view game_name) {
     if (key == "n_impossible") return "n_fsimpossible";
     return key;
 }
+// ---- the quick pop: an ollie with its own flick name -----------------------------------------------------------------
+// At the flick the game names a quick pop "OlliePop" ("N_OlliePop" for a nollie), and in the air it says "ollie". Its clip
+// is a piece of the game's animation (c_proto_onb_trick_o_ollie_quickpop). A saved piece is found by the pose only, and the
+// pose cannot tell a quick pop from an ollie: on 2.0.3 six quick pops came 0.041 near the saved piece and two ollies 0.046.
+// A piece plays at 0.030 or nearer (2026-11-06). So in game a piece made from this clip plays as the trick "olliepop",
+// picked by name; its file keeps the piece's name ("native:..."). The library has two: c_proto_onb_trick_o_ollie_quickpop
+// and c_proto_onb_trick_n_nollie_quickpop. Takes the clip's asset or the piece's name. Empty for every other clip.
+inline std::string quick_pop_trick(std::string_view asset) {
+    if (asset.ends_with("_trick_o_ollie_quickpop")) return "olliepop";
+    if (asset.ends_with("_trick_n_nollie_quickpop")) return "n_olliepop";
+    return {};
+}
+// The name the game says in the air for a quick pop ("olliepop" -> "ollie"). Empty for any other trick.
+inline std::string_view quick_pop_air_name(std::string_view quick_pop) noexcept {
+    if (quick_pop == "olliepop") return "ollie";
+    if (quick_pop == "n_olliepop") return "nollie";
+    return {};
+}
+// Whether the name the game says in the air is the ollie of the quick pop it named at the flick.
+inline bool quick_pop_in_the_air(std::string_view flick, std::string_view air) noexcept {
+    const auto said = quick_pop_air_name(flick);
+    return !said.empty() && said == air;
+}
 // Where the game's trick clip is when the flick shows (TrickPhase 0.0246 of a 2 s clip): before it, even the game shows its
 // own blend from riding into the trick, never the clip.
 inline constexpr float flick_clip_time = 0.05f;
