@@ -49,11 +49,7 @@ void set_playlist_mode(const std::string& name, PlaylistMode mode, std::string& 
     given.mode = mode;
     message = "Mode set.";
 }
-bool report_bug(std::string& message) {
-    ++given.bug_reports;
-    message = "The bug report is in ReSkate.Tricks\\bug reports.";
-    return true;
-}
+void request_report_form() { ++given.bug_reports; }
 }
 
 using namespace dingosdk;
@@ -140,8 +136,8 @@ void report_a_bug_says_where_the_report_went() {
     reset();
     std::string told;
     report_a_bug([&](const std::string& said) { told = said; }).act();
-    check(anim_studio::given.bug_reports == 1, "Report a bug made no report");
-    check(told == "The bug report is in ReSkate.Tricks\\bug reports.", "Report a bug did not say what the report said");
+    check(anim_studio::given.bug_reports == 1, "Report a bug did not open its form");
+    check(told == "REPORT A BUG: which trick, and what looked wrong.", "Report a bug did not say its form is open");
 }
 void made_by_sets_the_name_and_says_so() {
     reset();

@@ -344,6 +344,7 @@ struct State {
     PlaylistEditHistory playlist_history;
     std::uint64_t library_request{};
     std::uint64_t dev_key_request{};
+    std::uint64_t report_request{};
     std::uint64_t tab_request{};
     int tab_requested{};
     bool library_modifier_help{};
@@ -681,6 +682,7 @@ struct Live {
     double states_search_at{-1};
     int states_searches{};
     std::uint64_t states_level{~std::uint64_t{0}}; // the level load the states were looked for in (level_loads_started)
+    std::uint64_t marks_seen{}; // MARK: the marks the recording has (Marks::count), so the next frame takes a new one
     bool states_grind_retried{};                   // looked again this level because the grind could not be read
     // A trick's keys the other way round, kept so the mirror is made once rather than every frame.
     std::map<const Animation*, std::shared_ptr<const Animation>> mirrored_edits;
@@ -3816,6 +3818,41 @@ float ramp_frame(bool in_room, bool plant, const Joint& placement, const std::ar
         return 0;
     }
 }
+// MARK (F7 while skating, mark_moment): moments a player marked as "that one", for REPORT A BUG. Its form picks the trick
+// done last before the newest, the recording's timeline has the frame (marked), and report.txt says when each was.
+// (A report with nothing filled in left us to guess the trick from 25 seconds of play, 2026-11-05.)
+struct Marks {
+    std::mutex mutex;
+    std::deque<double> made; // when (now_seconds), the newest first
+    std::atomic<std::uint64_t> count{};
+};
+Marks& marks() {
+    static auto* value = new Marks;
+    return *value;
+}
+void mark_moment() noexcept {
+    try {
+        auto& m = marks();
+        {
+            std::lock_guard lock(m.mutex);
+            m.made.push_front(now_seconds());
+            while (m.made.size() > 5) m.made.pop_back();
+        }
+        m.count.fetch_add(1, std::memory_order_acq_rel);
+        logging::log(Level::info, Channel::skater, "Animation Studio: a moment marked for a bug report (MARK).");
+        overlay::notify(overlay::NoticeLevel::info, "Marked for a bug report",
+                        "REPORT A BUG (the studio's SETTINGS, or the ReSkate menu) now picks the trick you did just before.");
+    } catch (...) {}
+}
+std::vector<double> marks_ago() {
+    std::vector<double> out;
+    auto& m = marks();
+    std::lock_guard lock(m.mutex);
+    const double now = now_seconds();
+    for (const double at : m.made)
+        if (now - at < 120) out.push_back(now - at);
+    return out;
+}
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
     std::lock_guard animation_lock(l.animation_mutex);
@@ -3965,6 +4002,10 @@ void on_animation(std::uintptr_t component) noexcept {
             auto& history = snap->open ? preview_history() : diagnostic_history();
             { std::lock_guard lock(history.mutex); diagnostic_pose = history.buffer.pose_due(at); }
             diagnostic.at = at;
+            if (const auto marked = marks().count.load(std::memory_order_acquire); marked != l.marks_seen) {
+                l.marks_seen = marked;
+                diagnostic.marked = true;
+            }
             diagnostic.generation = generation;
             diagnostic.sequence = l.animation_updates.load();
             diagnostic.failures = l.failures;
@@ -7944,6 +7985,7 @@ View view() {
     v.hover_preview = s.hover_preview;
     v.library_request = s.library_request;
     v.dev_key_request = s.dev_key_request;
+    v.report_request = s.report_request;
     v.tab_request = s.tab_request;
     v.tab_requested = s.tab_requested;
     v.library_modifier_help = s.library_modifier_help;
@@ -8054,6 +8096,13 @@ void request_dev_key() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     ++s.dev_key_request;
+    s.open_requested = true;
+    s.open_request_pending = true;
+}
+void request_report_form() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    ++s.report_request;
     s.open_requested = true;
     s.open_request_pending = true;
 }
@@ -12273,6 +12322,9 @@ std::optional<std::string> read_tail(const std::filesystem::path& path, std::uin
 // (export_diagnostics), the end of the game's log, the studio's settings and which build this is - saved in
 // ReSkate.Tricks\bug reports and shown in Explorer, to send with what happened. Nothing is sent from here.
 namespace {
+// What REPORT A BUG's form said, for the report being written (report_bug sets it before the report's thread starts).
+std::mutex bug_note_mutex;
+BugNote bug_note;
 bool write_bug_report_now(std::string& message) {
     try {
         std::string diagnostics;
@@ -12351,9 +12403,24 @@ bool write_bug_report_now(std::string& message) {
             about += std::format("Packs taken for someone else's on this PC: {}{}\r\nTricks taken for someone else's on this PC: {}\r\n",
                                  not_mine.empty() ? "none" : std::to_string(listed), not_mine, foreign);
         }
-        about += "\r\nThe recording (diagnostics) is the last 25 seconds of play before the pause menu or the studio came up.\r\n"
-                 "What happened (write it here, or in your message): the trick, your stance (normal / switch / fakie / nollie), "
-                 "and what you saw.\r\n";
+        // What the form said, at the top where it is read first, and the moments marked.
+        {
+            BugNote note;
+            {
+                std::lock_guard lock(bug_note_mutex);
+                note = bug_note;
+            }
+            std::string looked;
+            for (const auto& what : note.looked) looked += (looked.empty() ? "" : ", ") + what;
+            std::string marked;
+            for (const double ago : marks_ago()) marked += (marked.empty() ? "" : ", ") + std::format("{:.1f} s", ago);
+            about = std::format("What happened (the report's form)\r\n  Trick: {}\r\n  Looked wrong: {}\r\n  In their words: {}\r\n"
+                                "  Marked (MARK, F7): {}\r\n\r\n",
+                                note.trick.empty() ? "not picked" : note.trick, looked.empty() ? "not said" : looked,
+                                note.words.empty() ? "-" : note.words, marked.empty() ? "nothing" : marked + " before this report (the timeline's marked column)") +
+                    about;
+        }
+        about += "\r\nThe recording (diagnostics) is the last 25 seconds of play before the pause menu or the studio came up.\r\n";
         files.emplace_back("report.txt", about);
         const auto zip = library / L"bug reports" / std::filesystem::path("ReSkate bug report " + stamp + ".zip");
         write_whole(zip, stored_zip(files));
@@ -12410,9 +12477,19 @@ bool write_off_the_game_threads(std::string& message, const char* saying, bool (
 bool export_diagnostics(std::string& message) {
     return write_off_the_game_threads(message, "Saving the diagnostics. The studio says when they are saved.", write_diagnostics_now);
 }
-bool report_bug(std::string& message) {
+bool report_bug(std::string& message, const BugNote& note) {
+    if (report_being_written.load(std::memory_order_acquire)) {
+        message = "A report is being saved: wait for it to finish.";
+        return false;
+    }
+    {
+        std::lock_guard lock(bug_note_mutex);
+        bug_note = note;
+        bug_note.words = utf8_prefix(note.words, 400);
+    }
     return write_off_the_game_threads(message, "Saving the bug report. Explorer shows it when it is saved.", write_bug_report_now);
 }
+bool report_bug(std::string& message) { return report_bug(message, BugNote{}); }
 void rename(const std::string& name) {
     auto& s = state();
     std::lock_guard lock(s.mutex);

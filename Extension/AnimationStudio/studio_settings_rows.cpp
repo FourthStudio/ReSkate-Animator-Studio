@@ -94,14 +94,13 @@ Setting editor_tour() {
 }
 Setting report_a_bug(Tell tell) {
     return button_row("Report a bug",
-                      "Something went wrong? Press this afterwards, from the pause menu or the studio: the last 25 seconds of play "
-                      "before you opened them (kept however long you take), the game's log, your studio settings and which build "
-                      "this is go into one zip, and Explorer shows it. Send that zip to us with what happened, the trick and your "
-                      "stance. Nothing is sent by itself.",
+                      "Something went wrong? Press this afterwards, from the pause menu or the studio: a short form asks which "
+                      "trick and what looked wrong, then the last 25 seconds of play before you opened them (kept however long you "
+                      "take), the game's log, your studio settings and which build this is go into one zip, and Explorer shows it. "
+                      "Press F7 (MARK) while skating the moment it happens, and the form picks that trick. Nothing is sent by itself.",
                       [tell = std::move(tell)] {
-                          std::string m;
-                          studio::report_bug(m);
-                          tell(m);
+                          studio::request_report_form();
+                          tell("REPORT A BUG: which trick, and what looked wrong.");
                       });
 }
 
