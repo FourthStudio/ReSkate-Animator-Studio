@@ -308,6 +308,10 @@ std::optional<bool> clip_leads_right(const Clip& clip);
 // the board still turning, or 0.2 s after it was down). Not for a recording: its marks are the game's own.
 // Returns whether it moved either.
 bool place_native_marks(Clip& clip) noexcept;
+// The same marks for one of the game's clips the library kept as a piece, with no pop marked (the quick pop's): the pop
+// just after the board starts to tip, the landing as above (27 frames at 60 after the pop when the board has no low to land
+// on). Returns whether it found a pop; with none, the clip is as it was.
+bool find_native_pop(Clip& clip);
 // A zip with every file stored as it is (no compression), names as given (use '/'): for sharing packs.
 std::uint32_t crc32_of(const std::string& data) noexcept;
 std::string stored_zip(const std::vector<std::pair<std::string, std::string>>& files);
