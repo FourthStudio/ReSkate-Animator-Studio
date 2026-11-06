@@ -495,3 +495,8 @@ if(EXISTS "${dingosdk_startup_art}")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/startup_art.rc")
 endif()
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_capture)
+# The Animator Studio's playback and editor are one large file: past 65,279 sections (the default COFF limit) MSVC
+# stops with C1128, which a few more functions put it over (2026-11-06).
+if(MSVC)
+    set_source_files_properties(Extension/AnimationStudio/anim_studio.cpp PROPERTIES COMPILE_OPTIONS /bigobj)
+endif()
