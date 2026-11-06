@@ -628,6 +628,7 @@ struct Live {
     // its own pace, its landing on the game's touchdown, until the game starts something new.
     double clock_lost_at{-1}, clock_touch_at{-1};
     float clock_touch_from{-1}, clock_last_time{-1};
+    bool clock_lost_in_air{}; // the clip was lost before the touchdown: its landing goes on from the time shown then
     double drift_since{-1};      // measuring how far the game's pose is from the trick after the landing
     float drift_base{};
     int drift_count{};
@@ -4495,7 +4496,7 @@ void on_animation(std::uintptr_t component) noexcept {
                         l.latch_shape = board_shape(*found->clip);
                         l.latch_shape_ok = true;
                     }
-                    l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1;
+                    l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1; l.clock_lost_in_air = false;
                     l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear(); l.clock_why_time = -1;
                     l.own_clock_fit = -1;
                     l.clock_fallback = !found || !found->native || found->native->models.empty();
@@ -4614,7 +4615,15 @@ void on_animation(std::uintptr_t component) noexcept {
                             // back there it would leave 0.2 s into the air with its style hardly seen.
                             hand_back = std::max(trick->caught > up && trick->caught < down ? trick->caught : up, up + 0.85f * (down - up));
                     }
-                    if (reading.locked && touch && l.clock_touch_at < 0) { l.clock_touch_at = *touch; l.clock_touch_from = time; }
+                    if (reading.locked && touch && l.clock_touch_at < 0) {
+                        l.clock_touch_at = *touch;
+                        // Off the game's clip since the air, the trick was shown at its eased time (continued_air_time: held just
+                        // short of its landing down a longer air) while the clock's own time ran on past its landing. Taken from
+                        // that, the touchdown skipped the trick's landing: it reached its end on the touchdown frame and let go
+                        // (a bs 180 kickflip down a drop, 2026-11-06). Its landing goes on from where it was shown.
+                        l.clock_lost_in_air = reading.lost && l.clock_lost_at >= 0 && l.clock_lost_at <= *touch && l.clock_last_time >= 0;
+                        l.clock_touch_from = l.clock_lost_in_air ? l.clock_last_time : time;
+                    }
                     if (reading.locked && reading.lost) {
                         // Off the game's clip: the game's own landing animation, or a recording drifting off it near the
                         // landing. The trick goes on at its own pace - your landing too, on the game's touchdown - until
@@ -4627,8 +4636,10 @@ void on_animation(std::uintptr_t component) noexcept {
                         if (up >= 0 && down > up && hand_back < 0) { // (on a higher pop it keeps its own pace to its catch)
                             // Fourth's high-pop fix: source seconds keep advancing after pose matching is lost.
                             if (!touch && !before_pop) time = continued_air_time(time, up, down);
-                            else if (l.clock_touch_from >= 0 && l.clock_touch_from < down)
-                                time = std::max(time, landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from));
+                            else if (l.clock_touch_from >= 0 && l.clock_touch_from < down) {
+                                const float landed = landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from);
+                                time = l.clock_lost_in_air ? landed : std::max(time, landed);
+                            }
                         }
                     }
                     if (time >= 0 && l.clock_last_time >= 0) time = std::max(time, l.clock_last_time);
@@ -4810,7 +4821,10 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->held = held_for_next_pop;
                     // The game's next contact ahead: its own time to land, or the probe's rail or ledge, whichever is first.
                     if (start_before_the_contact && motion == MotionState::air) {
-                        float to_contact = l.game.time_to_land && *l.game.time_to_land >= 0 ? *l.game.time_to_land : -1.0f;
+                        // (TimeToLand reads 0 on the first frames of the air, before the game knows it: taken for a contact, the
+                        // feet were put on the board as the game has them and the deck's hold came on at every pop, for two
+                        // frames - a twitch of keyed feet as each trick began, in the 2026-11-05 and 11-06 reports.)
+                        float to_contact = l.game.time_to_land && *l.game.time_to_land > 0 ? *l.game.time_to_land : -1.0f;
                         if (l.raised_contact_at >= 0) {
                             const float probe = static_cast<float>(std::max(0.0, l.raised_contact_at - now_seconds()));
                             to_contact = to_contact < 0 ? probe : std::min(to_contact, probe);
