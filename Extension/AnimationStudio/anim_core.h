@@ -254,6 +254,10 @@ struct Animation {
     // CATCH HOLD (0 to 1): off a bigger drop than its own, where the extra air goes - 1 around the catch (the knees up
     // long, the legs reaching for the ground late), 0 evenly on to the landing. Empty: default_catch_hold.
     std::optional<float> catch_hold;
+    // OWN CATCH + LANDING (THIS TRICK > BIG DROPS): off a bigger drop or a higher pop than its own it keeps its catch (CATCH,
+    // CATCH HOLD) through the extra air and lands as made, rather than handing back to the game's catch and landing. Off: the
+    // game's (the default). Older builds ignore it.
+    bool own_landing{};
     Track* track(std::uint16_t joint) noexcept;
     const Track* track(std::uint16_t joint) const noexcept;
     std::size_t key_count() const noexcept;

@@ -185,6 +185,9 @@ struct View {
     std::vector<std::uint16_t> keys_past_landing;
     // THIS TRICK: its own Crossfade (empty: the main one).
     std::optional<float> trick_crossfade;
+    // THIS TRICK > BIG DROPS: OWN CATCH + LANDING (Animation::own_landing), and whether it has a catch to keep (else it hands
+    // back to the game's as before).
+    bool trick_own_landing{}, trick_has_catch{};
     // The open trick's stance (THIS TRICK > STANCE): 0 your own, 1 fakie, 2 switch, 3 switch fakie; -1 none (a game piece).
     int trick_stance{-1};
     bool can_undo{}, can_redo{};
@@ -307,6 +310,8 @@ void set_catch(float seconds);
 // THIS TRICK > STANCE: the open trick as its normal (0), fakie (1), switch (2) or switch fakie (3) version, saved so.
 void set_trick_stance(int version);
 void set_trick_crossfade(float seconds);
+// THIS TRICK > BIG DROPS: on, the trick keeps its own catch and landing off a bigger drop or a higher pop; off, the game's.
+void set_trick_own_landing(bool on);
 // The joints that can be put somewhere rather than only turned, and how much of the limb above them bends
 // to reach: 3 for a hand or a foot (the elbow or knee and the limb above it bend), 2 for an elbow or a
 // knee (only the upper arm or the thigh turns, so placing a knee never swings the hips). 0 for the rest.

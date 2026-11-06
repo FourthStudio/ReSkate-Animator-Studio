@@ -264,6 +264,10 @@ void packs_and_playlist() {
     check(tuned_back.crossfade && std::abs(*tuned_back.crossfade - 0.45f) < 1e-4f && tuned_back.catch_hold && std::abs(*tuned_back.catch_hold - 0.8f) < 1e-4f,
           "A trick keeps its own crossfade and catch hold");
     check(!read.crossfade && !read.catch_hold, "and one without them has the main crossfade and the default hold");
+    auto own = locked;
+    own.own_landing = true;
+    check(from_json(to_json(own)).own_landing && !read.own_landing && to_json(locked).find("own_landing") == std::string::npos,
+          "OWN CATCH + LANDING is kept with the trick, off when it was never set, and not written then");
 }
 
 // Every spelling the game has for a trick is one trick: what it says in the air, its scoring data, its flick list.

@@ -12956,8 +12956,8 @@ void copy_open_trick_to_stance(const studio::View& v, int version) {
     if (!studio::load(made, opened)) m = opened;
     say(m);
 }
-// The pill at the top right of the view opens it: the trick's stance and its own Crossfade (OWN on: the main one in SETTINGS
-// is skipped for it). Closed, nothing of it covers the skater.
+// The pill at the top right of the view opens it: the trick's stance, its own Crossfade (OWN on: the main one in SETTINGS
+// is skipped for it) and what it does off a big drop (BIG DROPS). Closed, nothing of it covers the skater.
 void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corner) {
     auto& u = ui();
     const float k = f.k;
@@ -12971,7 +12971,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     const float w = 420 * k, row = 82 * k;
     // (DROP PREVIEW is gone, 2026-10-29: it played the trick as off a drop here, which read as a setting of the trick and led to
     // wrong keys.)
-    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 4 * row);
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 5 * row);
     skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
     const float x = a.x + 20 * k, bw = w - 40 * k;
@@ -13062,6 +13062,29 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         if (began) studio::begin_change();
         if (amount >= 0) studio::set_trick_crossfade(0.1f + amount * 0.7f);
         note(own ? "This trick hands over to the game's next move at its own pace." : "OWN: a crossfade for this trick alone. Off: the main one in SETTINGS.");
+        y += row;
+    }
+    // BIG DROPS: off a bigger drop or a higher pop than its own, the game's catch and landing take over at its catch (the
+    // default), or it keeps its own (Animation::own_landing: its catch held through the extra air, its landing as made). Only
+    // for a trick with a catch on its timeline.
+    {
+        const bool can = v.trick_has_catch && !v.previewing;
+        const bool own = v.trick_own_landing;
+        text(d, f.bold, 14 * k, ImVec2(x, y), can ? white : faint, "BIG DROPS");
+        const float gap = 6 * k, sw = (bw - gap) / 2;
+        if (action(d, f, "##bigdropgame", ImVec2(x, y + 22 * k), ImVec2(sw, 28 * k), "GAME'S CATCH", !own ? Look::blue : Look::ghost, can, !own) && own) {
+            studio::begin_change();
+            studio::set_trick_own_landing(false);
+        }
+        if (action(d, f, "##bigdropown", ImVec2(x + sw + gap, y + 22 * k), ImVec2(sw, 28 * k), "OWN CATCH + LANDING", own ? Look::blue : Look::ghost, can, own) &&
+            !own) {
+            studio::begin_change();
+            studio::set_trick_own_landing(true);
+        }
+        const char* says = !v.trick_has_catch ? "No catch on its timeline: the game's catch and landing."
+                           : own ? "Bigger drop or higher pop: it holds its catch, lands as made."
+                                 : "Bigger drop or higher pop: the game's catch and landing.";
+        text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint, elide(f.bold, 11 * k, says, bw));
         y += row;
     }
     // The rest of the panel takes the mouse, so a click on it does not reach the skater behind it.

@@ -1080,6 +1080,7 @@ std::string to_json(const Animation& animation) {
     if (animation.catch_at) root["catch"] = *animation.catch_at;
     if (animation.crossfade) root["crossfade"] = *animation.crossfade;
     if (animation.catch_hold) root["catch_hold"] = *animation.catch_hold;
+    if (animation.own_landing) root["own_landing"] = true;
     root["fakie_upper"] = "mirrored"; // its keys are as a trick set to fakie mirrors its upper body (from_json)
     root["start"] = animation.start;
     root["end"] = animation.end;
@@ -1178,6 +1179,7 @@ Animation from_json(std::string_view text) {
         const float hold = root.at("catch_hold").get<float>();
         if (std::isfinite(hold)) result.catch_hold = std::clamp(hold, 0.0f, 1.0f);
     }
+    if (root.contains("own_landing") && root.at("own_landing").is_boolean()) result.own_landing = root.at("own_landing").get<bool>();
     // A window up to a frame past the clip's end (a bracket rounded onto a frame past it, by builds before 2026-10-23)
     // is put back on it rather than refusing the whole trick; anything else wrong is refused.
     constexpr float frame = 1.0f / key_fps + 0.01f;
