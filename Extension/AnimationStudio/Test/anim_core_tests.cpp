@@ -3454,6 +3454,29 @@ void tricks_begin_at_the_flick_and_hand_over_the_games_way() {
               foot_on_deck_share(0.02f, 0.1f, 0, 0) == 0 && foot_on_deck_share(std::nanf(""), 0, 0, 0) == 0,
           "A foot lifted off it, past its nose or its edge, tipped off it, or through it, is the keys' alone");
     {
+        // On the nose: the deck 2.4 cm up and tipped 20 degrees at 0.37 m, a foot standing on it as high and as tipped.
+        const float along = 0.37f, rise = deck_top_at(along) - deck_grip, kick = std::atan(deck_kick_slope_at(along)) * 57.2957795f;
+        check(rise > 0.02f && kick > 15 && deck_kick_slope_at(0.2f) == 0 && deck_top_at(0.2f) == deck_grip,
+              "The kicks rise and tip from 0.29 m out; the middle is flat");
+        check(foot_on_deck_share(0.104f + rise, along, 0, kick) > 0.9f && foot_on_deck_share(0.104f + rise, -along, 0, kick + 5) > 0.9f,
+              "A foot standing on the nose or the tail stands on the deck, measured from the kick");
+        check(foot_on_deck_share(0.104f + rise + 0.08f, along, 0, kick) == 0, "and one lifted off the kick does not");
+    }
+    {
+        // Followed, not taken afresh: 1, 0.82, 0, 0.64, 0.97 a frame apart moves at most a sixth a frame (0.1 s for all of it).
+        float k = 1;
+        float most = 0;
+        for (const float target : {1.0f, 0.82f, 0.0f, 0.64f, 0.97f, 1.0f}) {
+            const float next = follow_share(k, target, 1.0f / 60, 0.1f);
+            most = std::max(most, std::abs(next - k));
+            k = next;
+        }
+        check(most <= 1.0f / 6 + 1e-4f && follow_share(0.2f, 0.25f, 1.0f / 60, 0.1f) == 0.25f && follow_share(0.5f, 0.0f, 1.0f, 0.1f) == 0,
+              "A foot's ride on the board follows its share a sixth a frame at most, reaches a near one, and lets go over 0.1 s");
+        check(follow_share(0.3f, std::nanf(""), 1.0f / 60, 0.1f) == 0.3f && follow_share(0.3f, 1.0f, 0, 0.1f) == 0.3f,
+              "and holds where it was when it is told nothing");
+    }
+    {
         float most = 0, last = foot_on_deck_share(0.03f, 0.1f, 0, 0);
         for (int mm = 31; mm <= 200; ++mm) {
             const float share = foot_on_deck_share(mm / 1000.0f, 0.1f, 0, 0);

@@ -5864,7 +5864,11 @@ std::vector<Offset> shown_pose_body(BodyPublicationState& body, const std::share
     }
     // The deck: through the change, and as the game's next contact comes, no sole deeper in it than the game's own.
     const bool contact_coming = packet && packet->contact_ahead > 0.001f;
-    if (soles_never_in_the_deck && board_ok && (blending || feet_blending || contact_coming)) {
+    // And while a trick or a loop plays on a rail or rolling. Only through a change, a grind loop's keys let a foot down into
+    // the deck once its ease-in was over and held it there, 1.7 cm in, for the whole grind - one foot stomping inside the board
+    // (218 frames of a 2026-11-07 report). Never deeper than the game's own, so a foot the game has on the deck stays on it.
+    const bool on_the_board = packet && (motion == MotionState::rail || motion == MotionState::riding);
+    if (soles_never_in_the_deck && board_ok && (blending || feet_blending || contact_coming || on_the_board)) {
         const auto placement = compose(edited[0], edited[1]);
         const Vec3 board_up = rotate(board.rotation, Vec3{0, 1, 0}), body_up = rotate(placement.rotation, Vec3{0, 1, 0});
         if (board_up[0] * body_up[0] + board_up[1] * body_up[1] + board_up[2] * body_up[2] > 0.5f) {
@@ -6682,8 +6686,22 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
 // on the deck at the trick's time goes where the game has it on the game's board, moved as the keys move it on the studio's
 // board, onto the board drawn this frame - as far as the studio's foot stands on its deck, the trick is in, the leg is the
 // trick's (limbs) and its legs have not gone to the game's ahead of a rail (lower_release). Returns whether a foot moved.
+// How far each foot rides the board, and how much of that is the keys' (foot_on_the_board's keep), followed over
+// ride_share_seconds (follow_share) for the trick they are for. Body pass only (under its publication's lock).
+struct RiddenFeet {
+    std::array<float, 2> share{}, keep{};
+    double at{-1};
+    std::uint64_t episode{~std::uint64_t{0}};
+};
+RiddenFeet& ridden_feet() noexcept {
+    static RiddenFeet value;
+    return value;
+}
+constexpr float ride_share_seconds = 0.1f;
 bool ride_feet_on_the_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept {
     for (auto& share : feet_ride_share) share.store(0, std::memory_order_relaxed);
+    auto& ridden = ridden_feet();
+    const auto let_go = [&ridden] { ridden.share = {}; ridden.keep = {}; };
     try {
         if (!feet_ride_the_board || !(packet.weight > 0) || !packet.clip || !packet.edits || packet.clip->joints != skeleton_joints ||
             packet.clip->board.empty() || edited.size() < skeleton_joints || native.size() < skeleton_joints)
@@ -6694,9 +6712,20 @@ bool ride_feet_on_the_board(const GameplayPacket& packet, std::span<const Joint>
         // Before the game's next contact (start_before_the_contact): a foot the game stands on its board goes there on the board
         // as drawn, as far as the contact has come - the game's own foot, never one pulled to the board by nearness.
         const float ahead = start_before_the_contact ? std::clamp(packet.contact_ahead, 0.0f, 1.0f) * std::min(packet.weight, 1.0f) : 0.0f;
-        if (!(share > 0.001f) && !(ahead > 0.001f)) return false;
+        if (!(share > 0.001f) && !(ahead > 0.001f)) {
+            let_go();
+            return false;
+        }
         Joint drawn, games;
         if (!drawn_board_now(packet, native, drawn) || !games_board_now(packet.board_holder, games)) return false;
+        const double now = now_seconds();
+        if (ridden.episode != packet.episode) {
+            ridden.episode = packet.episode;
+            let_go();
+            ridden.at = now;
+        }
+        const float dt = ridden.at >= 0 ? static_cast<float>(std::clamp(now - ridden.at, 0.0, 0.05)) : 1.0f / 60;
+        ridden.at = now;
         // The studio's skater and board at this time, as the studio shows them: the clip (mirrored with the keys when they are),
         // its board nose forward as the game draws it (turned round when the deck was), without and with the keys.
         thread_local std::vector<Joint> made, keyed;
@@ -6733,11 +6762,14 @@ bool ride_feet_on_the_board(const GameplayPacket& packet, std::span<const Joint>
                                                     p[0] * across[0] + p[1] * across[1] + p[2] * across[2], tilt);
             const float limb = std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
             const float by_keys = share * stands * limb, by_contact = ahead > 0 ? ahead * foot_stands_on(on_games) * limb : 0.0f;
-            const float k = std::max(by_keys, by_contact);
+            const float target = std::max(by_keys, by_contact);
+            // Followed, not taken afresh each frame (follow_share): it crossed back and forth and the foot flickered.
+            const float k = ridden.share[i] = follow_share(ridden.share[i], target, dt, ride_share_seconds);
+            if (target > 0.001f) ridden.keep[i] = follow_share(ridden.keep[i], by_keys / target, dt, ride_share_seconds);
             feet_ride_share[i].store(k, std::memory_order_relaxed);
             if (!(k > 0.001f)) continue;
             // The keys' move on the deck as far as it is the keys that put the foot there.
-            const auto want = compose(drawn, foot_on_the_board(on_games, on_made, on_keyed, by_keys / k));
+            const auto want = compose(drawn, foot_on_the_board(on_games, on_made, on_keyed, ridden.keep[i]));
             if (!finite(want)) continue;
             place_foot(edited, foot, want.position, &want.rotation, k);
             moved = true;
