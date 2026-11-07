@@ -521,6 +521,13 @@ inline float deck_top_at(float along) noexcept {
     const float x = std::clamp((std::abs(along) - deck_kick_from) / (deck_tip - deck_kick_from), 0.0f, 1.0f);
     return deck_grip + deck_kick_rise * x * x;
 }
+// How steeply the deck rises there along the board (metres up a metre along; 0 on its flat middle): the kick a foot on the
+// nose or the tail stands on.
+inline float deck_kick_slope_at(float along) noexcept {
+    const float span = deck_tip - deck_kick_from;
+    const float x = std::clamp((std::abs(along) - deck_kick_from) / span, 0.0f, 1.0f);
+    return deck_kick_rise * 2 * x / span;
+}
 inline float deck_half_width_at(float along) noexcept {
     const float a = std::abs(along);
     if (a <= deck_round_from) return deck_half_width;
@@ -613,8 +620,24 @@ inline float foot_on_deck_share(float height, float along, float across, float t
         const float u = std::clamp((x - full) / (none - full), 0.0f, 1.0f);
         return 1 - u * u * (3 - 2 * u);
     };
+    // On a kick the deck rises and tips: a foot standing on the nose or the tail is that much higher, and tipped with it, so it
+    // is measured from the deck there. Measured from the flat middle, a foot on the nose read as off the deck, and was neither
+    // ridden on the board nor kept out of it ("the nose has no collision", 2026-11-07).
+    height -= deck_top_at(along) - deck_grip;
+    tilt_degrees = std::max(0.0f, tilt_degrees - std::atan(deck_kick_slope_at(along)) * 57.2957795f);
     const float h = height < 0.08f ? band(-height, -0.08f, -0.055f) : band(height, 0.13f, 0.16f);
     return h * band(std::abs(along), 0.36f, 0.42f) * band(std::abs(across), 0.12f, 0.17f) * band(tilt_degrees, 25.0f, 40.0f);
+}
+// A share (0..1) followed over time: from `now` towards `target` by at most `dt` / `seconds` (dt taken up to 0.05 s). A share
+// worked out afresh every frame can jump: a foot about to land crosses the height band back and forth, and its ride on the
+// board went 1, 0.82, 0, 0.64, 0.97 on five frames - the foot jumped 6 to 10 cm to and fro, a flicker (a nollie's front foot,
+// 2026-11-07). Followed, it moves smoothly whatever the frames say.
+inline float follow_share(float now, float target, float dt, float seconds) noexcept {
+    if (!std::isfinite(target)) return std::isfinite(now) ? now : 0.0f;
+    if (!std::isfinite(now)) return target;
+    if (!(seconds > 0) || !std::isfinite(dt) || !(dt > 0)) return now;
+    const float step = std::min(dt, 0.05f) / seconds;
+    return target > now ? std::min(target, now + step) : std::max(target, now - step);
 }
 // Where a foot goes, in the frame of the board drawn this frame: the game's foot in the game's board's frame (`game`), moved
 // and turned as the studio's keys move the studio's foot on the studio's board (`made`: the studio's foot without its keys on

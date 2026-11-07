@@ -4,7 +4,7 @@ Edit skate animations in game, build your own trick packs, and choose how they p
 
 Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
 
-> **Version 2.1.0:** Animator Studio on ReSkate 2.1.4-2. See the [2.1.0 notes](contrib/release-2.1.0.md), the [2.0.5 notes](contrib/release-2.0.5.md), the [2.0.4 notes](contrib/release-2.0.4.md), the [2.0.3 notes](contrib/release-2.0.3.md), the [2.0.2 notes](contrib/release-2.0.2.md), the [2.0.1 notes](contrib/release-2.0.1.md), the [2.0 release notes](contrib/release-2.0.md), the [1.1.1 hotfix notes](contrib/release-1.1.1.md), the [1.1 release notes](contrib/release-1.1.md) and [integration record](contrib/studio-library-integration.md).
+> **Version 2.1.1:** Animator Studio on ReSkate 2.1.4-2. See the [2.1.1 notes](contrib/release-2.1.1.md), the [2.1.0 notes](contrib/release-2.1.0.md), the [2.0.5 notes](contrib/release-2.0.5.md), the [2.0.4 notes](contrib/release-2.0.4.md), the [2.0.3 notes](contrib/release-2.0.3.md), the [2.0.2 notes](contrib/release-2.0.2.md), the [2.0.1 notes](contrib/release-2.0.1.md), the [2.0 release notes](contrib/release-2.0.md), the [1.1.1 hotfix notes](contrib/release-1.1.1.md), the [1.1 release notes](contrib/release-1.1.md) and [integration record](contrib/studio-library-integration.md).
 >
 > This is a fan project, unaffiliated with Electronic Arts or Full Circle. You need your own copy of skate. on Steam. The game is not included.
 
@@ -105,7 +105,7 @@ cmake --preset ci-windows
 cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher --parallel 4
 ```
 
-Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 2.1.0 / ReSkate 2.1.4-2 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
+Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 2.1.1 / ReSkate 2.1.4-2 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
 
 See the [Studio implementation notes](contrib/animator-studio.md), [repository structure](STRUCTURE.md), and [release checklist](contrib/studio-release-checklist.md). Keep gameplay changes, tests and UI descriptions together; use focused PRs and wait for review before merging.
 
