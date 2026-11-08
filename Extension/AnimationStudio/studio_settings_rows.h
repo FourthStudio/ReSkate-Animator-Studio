@@ -5,7 +5,7 @@
 #include <vector>
 
 // The Animator Studio's settings as rows: what each is called, what it says about itself, what it is now and how it
-// is changed, written once. The studio's SETTINGS and the ReSkate menu's ADDONS > ANIMATOR STUDIO (the ones that act
+// is changed, written once. The studio's SETTINGS and the ReSkate menu's ANIMATOR page (the ones that act
 // in game) each draw the rows they want, in their own order and their own look, so the two never say or do different
 // things.
 namespace dingosdk::anim_studio::settings_rows {

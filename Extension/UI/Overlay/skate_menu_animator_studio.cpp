@@ -11,7 +11,7 @@
 #include <format>
 #include <string>
 
-// ADDONS > ANIMATOR STUDIO: the studio's settings that change how your tricks play in game and the playlist that plays,
+// The ReSkate menu's ANIMATOR page: the studio's settings that change how your tricks play in game and the playlist that plays,
 // changed without opening it, and a way into it - dressed as the studio is (its backdrop, grain, brush bar, Anton and the
 // brush face, the kickflipping board), with a banner that plays in each time the page opens, the last tricks done and who
 // played them, and the packs to switch in and out of the playlist. What only acts while editing stays in the studio. The

@@ -71,7 +71,7 @@ Setting studio_room(const studio::Settings& now) {
 Setting controller_combo(const studio::Settings& now) {
     return one_of("Controller combo", {studio::open_combo_names.begin(), studio::open_combo_names.end()}, std::clamp(now.open_combo, 0, 3),
                   "What you hold on a controller (half a second) to open the studio, and to close it again. Another mod using the "
-                  "same buttons: pick another, or OFF and open it with F8 or from the ReSkate menu (ADDONS > ANIMATOR STUDIO).",
+                  "same buttons: pick another, or OFF and open it with F8 or from the ReSkate menu (its ANIMATOR page).",
                   [](int picked) { studio::set_open_combo(picked); });
 }
 Setting catch_marker(const studio::Settings& now) {

@@ -267,7 +267,7 @@ void set_stance(int choice);
 void set_grab(bool on);
 void set_advanced_bones(bool on); // SETTINGS > SKATER > Advanced bones
 // SETTINGS > STUDIO > Controller combo: what held on a controller opens and closes the studio (another mod may want L3 + R3).
-// 0 L3 + R3 (the default), 1 LB + R3, 2 RB + L3, 3 none (F8, or the ReSkate menu's ADDONS > ANIMATOR STUDIO).
+// 0 L3 + R3 (the default), 1 LB + R3, 2 RB + L3, 3 none (F8, or the ReSkate menu's ANIMATOR page).
 inline constexpr std::array<const char*, 4> open_combo_names{"L3 + R3", "LB + R3", "RB + L3", "OFF"};
 inline constexpr std::array<std::uint16_t, 4> open_combo_buttons{0x0040 | 0x0080, 0x0100 | 0x0080, 0x0200 | 0x0040, 0};
 void set_open_combo(int combo);
