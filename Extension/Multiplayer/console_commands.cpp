@@ -7,7 +7,10 @@
 #include "Extension/Throwdowns/throwdown_lab.h"
 #include "Extension/Throwdowns/throwdown_debug_text.h"
 #include "Extension/Throwdowns/throwdown_relay.h"
+#if defined(DINGOSDK_DEV_TOOLS)
 #include "Extension/UI/NativeMenu/native_menu_dump.h"
+#endif
+#include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Assets/live_mods.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include <algorithm>
@@ -237,6 +240,8 @@ void register_multiplayer_commands(Commands &registry) {
                                              : "Coop challenges: off (every challenge is your own).");
     };
     registry.add(std::move(invite));
+#if defined(DINGOSDK_DEV_TOOLS)
+    // Research aids, in development builds only (DINGOSDK_DEV_TOOLS).
     // Research aid for multiplayer throwdowns (analysis/throwdowns-native-mp.md).
     auto lab_args = argument("verb_and_arguments", Type::text, true);
     lab_args.rest = true;
@@ -277,6 +282,19 @@ void register_multiplayer_commands(Commands &registry) {
         out(multiplayer::request_ui_dump(text, static_cast<unsigned>(seconds)));
     };
     registry.add(std::move(dump));
+#endif
+    // The game's menu room behind the Mod Manager tab (native_backdrop.cpp).
+    auto room = argument("off|cas|store|skatepass|skatepedia", Type::text, true);
+    room.complete = [](const Model &, auto) {
+        return std::vector<std::string>{"off", "cas", "store", "skatepass", "skatepedia"};
+    };
+    auto backdrop = action("ui modbackdrop", "Which of the game's menu rooms shows behind the Mod Manager tab "
+                           "(off, cas, store, skatepass, skatepedia; store by default, not saved)",
+                           Group::console, {std::move(room)});
+    backdrop.run = [](const Model &, const Values &values, const Output &out) {
+        out(multiplayer::set_mod_backdrop(values.empty() ? std::string{} : std::get<std::string>(values[0])));
+    };
+    registry.add(std::move(backdrop));
     auto then = argument("reload", Type::text, true);
     auto apply = action("mods apply", "Apply Mods/ and mods.json now; takes effect at the next level load, "
                         "or straight away with 'reload'", Group::console, {std::move(then)});

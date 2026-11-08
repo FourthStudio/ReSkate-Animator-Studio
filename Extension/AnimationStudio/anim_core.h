@@ -15,11 +15,12 @@
 #include <memory>
 #include "utf8_text.h"
 
-// FOURTH Animation Studio's own data: a trick recorded from the game, and the keyframes a player puts
-// on it. Nothing here touches the game. The game side (anim_studio.cpp) copies the pose the native
-// animation just wrote into a Clip, and writes the evaluated pose back over the same buffer, the way
-// first person shrinks the head (client_first_person.cpp): no native animation data, channel or
-// asset is created or changed, and the next native update writes the whole pose again.
+// Clips of the skater's animation and the keyframes put on them (reskate.animation): a trick
+// recorded from the game, played back, edited and saved. Nothing here touches the game; the
+// skater's animation layer (Extension/Skater/skater_animation.cpp) copies the pose the native
+// animation just wrote into a Clip, and writes the evaluated pose back over the same buffer: no
+// native animation data, channel or asset is created or changed, and the next native update
+// writes the whole pose again.
 //
 // A pose is parent-local per joint, {scale, Hamilton quaternion xyzw, translation}, in the numbering
 // of the 395-joint AnimBase_Default_Skeleton the skater's animation output uses (Hips 7, Spine 42,

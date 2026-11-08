@@ -8314,7 +8314,7 @@ void set_open_combo(int combo) {
     s.open_combo = std::clamp(combo, 0, 3);
     open_combo_now.store(s.open_combo, std::memory_order_release);
     save_settings_locked(s);
-    s.status = s.open_combo == 3 ? std::string("No controller combo opens the studio now: F8, or the ReSkate menu's ADDONS > ANIMATOR STUDIO.")
+    s.status = s.open_combo == 3 ? std::string("No controller combo opens the studio now: F8, or the ReSkate menu's ANIMATOR page.")
                                  : std::string("Hold ") + open_combo_names[static_cast<std::size_t>(s.open_combo)] + " on a controller to open and close the studio.";
     publish_locked(s);
 }

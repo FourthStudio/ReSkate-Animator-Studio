@@ -1,4 +1,5 @@
 #include "https_download.h"
+#include "Engine/Core/Platform/clock.h"
 #include <Windows.h>
 #include <winhttp.h>
 #include <algorithm>
@@ -17,10 +18,6 @@
 
 namespace dingosdk::https {
 namespace {
-std::uint64_t now_us() noexcept {
-    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
-}
 
 struct Handle {
     HANDLE value{INVALID_HANDLE_VALUE};
@@ -94,13 +91,13 @@ struct AsyncRequest {
 Download get(std::wstring_view url, const std::filesystem::path& destination,
     std::uint64_t max_bytes, std::uint32_t timeout_seconds, const wchar_t* agent, Watch* watch) {
     Download result;
-    const auto started = now_us();
+    const auto started = steady_us();
     const auto timeout_deadline = started + std::uint64_t{timeout_seconds} * 1000000;
     const auto stop = [&]() -> DWORD {
         if (watch && watch->cancel.load()) return ERROR_CANCELLED;
         const auto external = watch ? watch->deadline_us.load() : 0;
         const auto deadline = external && external < timeout_deadline ? external : timeout_deadline;
-        return now_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
+        return steady_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
     };
     const auto fail = [&](DWORD error) {
         const auto stopped = stop();
@@ -403,13 +400,13 @@ Download fetch(std::wstring_view url, const std::filesystem::path& destination, 
     Download result;
     auto part = destination;
     part += L".part";
-    const auto started = now_us();
+    const auto started = steady_us();
     const auto total_deadline = options.total_seconds ? started + std::uint64_t{options.total_seconds} * 1000000 : 0;
     const auto stall_us = std::uint64_t{std::max<std::uint32_t>(options.stall_ms, 1000)} * 1000;
     // Stopped: asked to, or out of time (its own limit or the caller's).
     const auto stopped = [&]() -> DWORD {
         if (watch->cancel.load()) return ERROR_CANCELLED;
-        const auto now = now_us();
+        const auto now = steady_us();
         const auto external = watch->deadline_us.load();
         if ((external && now >= external) || (total_deadline && now >= total_deadline)) return ERROR_TIMEOUT;
         return ERROR_SUCCESS;
@@ -451,11 +448,11 @@ Download fetch(std::wstring_view url, const std::filesystem::path& destination, 
         watch->retry_at_us.store(0);
         // Stalled: less than 16 KB in a stall's time (ERROR_WINHTTP_TIMEOUT, tried again from where it got to). Not a limit
         // on the whole download: a slow line that keeps moving finishes.
-        std::uint64_t mark = offset, moved_us = now_us();
+        std::uint64_t mark = offset, moved_us = steady_us();
         watch->received.store(offset);
         const auto stop = [&]() -> DWORD {
             if (const auto error = stopped()) return error;
-            const auto now = now_us();
+            const auto now = steady_us();
             if (const auto received = watch->received.load(); received >= mark + 16384 || received < mark) {
                 mark = received;
                 moved_us = now;
@@ -509,8 +506,8 @@ Download fetch(std::wstring_view url, const std::filesystem::path& destination, 
         if (barren >= std::max(options.tries, 1)) return give_up(attempt.result.error);
         // A wait that grows while nothing comes (1, 2, 4 ... to 30 s), short again after a request that brought bytes.
         const auto wait_ms = std::min<std::uint64_t>(30000, std::uint64_t{options.backoff_ms} << std::min(barren, 5));
-        watch->retry_at_us.store(now_us() + wait_ms * 1000);
-        while (now_us() < watch->retry_at_us.load()) {
+        watch->retry_at_us.store(steady_us() + wait_ms * 1000);
+        while (steady_us() < watch->retry_at_us.load()) {
             if (const auto error = stopped()) return give_up(error);
             Sleep(20);
         }
@@ -519,13 +516,13 @@ Download fetch(std::wstring_view url, const std::filesystem::path& destination, 
 
 std::optional<std::uint64_t> content_length(std::wstring_view url, std::uint32_t timeout_seconds,
     const wchar_t* agent, Watch* watch) {
-    const auto started = now_us();
+    const auto started = steady_us();
     const auto timeout_deadline = started + std::uint64_t{timeout_seconds} * 1000000;
     const auto stop = [&]() -> DWORD {
         if (watch && watch->cancel.load()) return ERROR_CANCELLED;
         const auto external = watch ? watch->deadline_us.load() : 0;
         const auto deadline = external && external < timeout_deadline ? external : timeout_deadline;
-        return now_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
+        return steady_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
     };
     if (stop() || url.empty() || url.size() >= 4096 || url.find_first_of(L"\r\n\t #") != std::wstring_view::npos)
         return std::nullopt;

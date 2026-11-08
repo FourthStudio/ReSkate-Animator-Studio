@@ -4,7 +4,7 @@ Edit skate animations in game, build your own trick packs, and choose how they p
 
 Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
 
-> **Version 2.1.1:** Animator Studio on ReSkate 2.1.4-2. See the [2.1.1 notes](contrib/release-2.1.1.md), the [2.1.0 notes](contrib/release-2.1.0.md), the [2.0.5 notes](contrib/release-2.0.5.md), the [2.0.4 notes](contrib/release-2.0.4.md), the [2.0.3 notes](contrib/release-2.0.3.md), the [2.0.2 notes](contrib/release-2.0.2.md), the [2.0.1 notes](contrib/release-2.0.1.md), the [2.0 release notes](contrib/release-2.0.md), the [1.1.1 hotfix notes](contrib/release-1.1.1.md), the [1.1 release notes](contrib/release-1.1.md) and [integration record](contrib/studio-library-integration.md).
+> **Version 2.1.2:** Animator Studio on ReSkate 2.1.4-4. See the [2.1.2 notes](contrib/release-2.1.2.md), the [2.1.1 notes](contrib/release-2.1.1.md), the [2.1.0 notes](contrib/release-2.1.0.md), the [2.0.5 notes](contrib/release-2.0.5.md), the [2.0.4 notes](contrib/release-2.0.4.md), the [2.0.3 notes](contrib/release-2.0.3.md), the [2.0.2 notes](contrib/release-2.0.2.md), the [2.0.1 notes](contrib/release-2.0.1.md), the [2.0 release notes](contrib/release-2.0.md), the [1.1.1 hotfix notes](contrib/release-1.1.1.md), the [1.1 release notes](contrib/release-1.1.md) and [integration record](contrib/studio-library-integration.md).
 >
 > This is a fan project, unaffiliated with Electronic Arts or Full Circle. You need your own copy of skate. on Steam. The game is not included.
 
@@ -12,14 +12,14 @@ Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio,
 
 **For now, the Animator Studio is one file: a `ReSkate.dll` that takes the place of ReSkate's own.** You swap the DLL and turn ReSkate's updates off. Once the ReSkate team brings the studio into ReSkate itself, none of this is needed: you will just update ReSkate.
 
-You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.4-2** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
+You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.4-4** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
 
-1. Install **ReSkate 2.1.4-2** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.4-2) and start it once the normal way, so it is set up and up to date.
+1. Install **ReSkate 2.1.4-4** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.4-4) and start it once the normal way, so it is set up and up to date.
 2. In the launcher, open **Settings > LAUNCHER** and turn **Install ReSkate updates** off. While it is on, the launcher puts the official `ReSkate.dll` back.
 3. Close the launcher and the game.
 4. Open your ReSkate folder (the one with `Skate.exe` and `ReSkateLauncher.exe`). Back up `ReSkate.dll`, and your `ReSkate.Tricks` folder if you already have one.
 5. Download `ReSkate.dll` from the [latest Studio release](https://github.com/FourthStudio/ReSkate-Animator-Studio/releases) and put it in that folder, replacing the old one.
-6. Start the game from `ReSkateLauncher.exe` as usual. Once it has loaded it says **Modified build: AnimatorStudio**. Press **F8** (or hold **L3 + R3**) to open the studio. You can also use **Open Animation Studio** under **Mod Options > PLAYER**, or on the ReSkate menu's **SKATER** page, once your skater is in game and Park Editor is closed.
+6. Start the game from `ReSkateLauncher.exe` as usual. Once it has loaded it says **Modified build: AnimatorStudio**. Press **F8** (or hold **L3 + R3**) to open the studio. You can also use **Open Animation Studio** on the ReSkate menu's **ANIMATOR** or **SKATER** page, once your skater is in game and Park Editor is closed.
 
 On the first start the studio builds its trick library from your own game: about a minute and 1.6 GB, and the game's files are only read, never changed. **TRICKS** shows how far it has got.
 
@@ -105,7 +105,7 @@ cmake --preset ci-windows
 cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher --parallel 4
 ```
 
-Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 2.1.1 / ReSkate 2.1.4-2 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
+Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 2.1.2 / ReSkate 2.1.4-4 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
 
 See the [Studio implementation notes](contrib/animator-studio.md), [repository structure](STRUCTURE.md), and [release checklist](contrib/studio-release-checklist.md). Keep gameplay changes, tests and UI descriptions together; use focused PRs and wait for review before merging.
 

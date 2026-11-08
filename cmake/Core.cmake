@@ -1,6 +1,7 @@
 if(WIN32)
     add_library(dingosdk_hooks STATIC
-        Engine/Core/Hooks/hooks.cpp)
+        Engine/Core/Hooks/hooks.cpp
+        Engine/Core/Hooks/patches.cpp)
     target_link_libraries(dingosdk_hooks PRIVATE dingosdk_detours)
 endif()
 
@@ -116,9 +117,6 @@ if(WIN32)
         Engine/Vfs/builtin_packs.cpp)
     target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache dingosdk_miniz dingosdk_zstd shell32 bcrypt)
 
-    add_library(dingosdk_custom_scripts STATIC Engine/Scripting/custom_scripts.cpp)
-    target_link_libraries(dingosdk_custom_scripts PUBLIC dingosdk_json PRIVATE dingosdk_initfs)
-
     # HTTPS downloads shared by the park preview and content cache packs.
     add_library(dingosdk_https STATIC Engine/Vfs/https_download.cpp)
     target_link_libraries(dingosdk_https PUBLIC winhttp)
@@ -148,6 +146,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_api_ui.cpp
     Extension/Plugins/plugin_api_more.cpp
     Extension/Plugins/plugin_api_world.cpp
+    Extension/Plugins/plugin_api_vehicles.cpp
     Extension/Plugins/plugin_api_physics.cpp
     Extension/Plugins/plugin_api_services.cpp
     Extension/Plugins/plugin_api_throwdowns.cpp
@@ -168,6 +167,7 @@ add_library(dingosdk_plugins STATIC
     Extension/AnimationStudio/anim_core.cpp
     Extension/Skater/pose_offset.cpp
     Extension/Skater/pose_place.cpp
+    Extension/Skater/pose_replay.cpp
     Extension/Plugins/plugin_wave.cpp)
 target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau dingosdk_launcher_support)
 if(WIN32)
