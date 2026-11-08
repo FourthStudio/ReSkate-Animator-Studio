@@ -30,6 +30,13 @@ set(reskate_mod_name "${DINGOSDK_MOD_NAME}")
 if(NOT reskate_mod_name)
     set(reskate_mod_name "${DINGOSDK_MOD_ID}")
 endif()
+# Research tools (the throwdown lab's console verbs, `ui dump`, `capture depth`, the memory
+# ledger's owner tracing, the trainer's self test, dumps and telemetry) are compiled in only
+# when this is on: releases leave it off, so ReSkate.dll does not carry them.
+option(DINGOSDK_DEV_TOOLS "Compile ReSkate's research tools into ReSkate.dll (development builds only)" OFF)
+if(DINGOSDK_DEV_TOOLS)
+    add_compile_definitions(DINGOSDK_DEV_TOOLS)
+endif()
 # The same version for code to show (generated/reskate_version.h).
 string(REPLACE "\\" "\\\\" reskate_version_escaped "${DINGOSDK_VERSION}")
 string(REPLACE "\"" "\\\"" reskate_version_escaped "${reskate_version_escaped}")

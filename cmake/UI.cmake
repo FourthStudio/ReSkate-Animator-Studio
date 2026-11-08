@@ -11,12 +11,13 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/item_browser_overlay.cpp
     Extension/UI/Overlay/animation_studio_overlay.cpp
     Extension/UI/Overlay/frame_grab.cpp
-    Extension/UI/Overlay/depth_probe.cpp
+    Extension/UI/Overlay/depth_tap.cpp
     Extension/UI/Overlay/overlay_notices.cpp
     Extension/UI/Overlay/chat_overlay.cpp
     Extension/UI/Overlay/map_download_card.cpp
     Extension/UI/Overlay/message_card.cpp
     Extension/UI/Overlay/hub_page.cpp
+    Extension/UI/Overlay/hub_home_page.cpp
     Extension/UI/Overlay/game_text_overlay.cpp
     Extension/UI/Overlay/perf_overlay.cpp
     Extension/UI/Overlay/skate_hud_overlay.cpp
@@ -44,6 +45,9 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/park_editor.cpp
     Extension/UI/Overlay/park_editor_actions.cpp
     Extension/UI/Overlay/park_editor_panels.cpp
+    Extension/UI/Overlay/park_editor_project.cpp
+    Extension/UI/Overlay/park_editor_hotbar.cpp
+    Extension/UI/Overlay/park_editor_rail.cpp
     Extension/UI/Overlay/park_editor_viewport.cpp
     Extension/UI/Overlay/park_previews.cpp
     Extension/UI/Overlay/gpu_diagnostics.cpp
@@ -64,7 +68,11 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/viewmodel.cpp
     Extension/UI/Overlay/viewmodel_model.cpp
 )
-target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
+# `capture depth` (DINGOSDK_DEV_TOOLS): the depth probe, a research tool.
+if(DINGOSDK_DEV_TOOLS)
+    target_sources(dingosdk_overlay PRIVATE Extension/UI/Overlay/depth_probe.cpp)
+endif()
+target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
 
 # The screen look's shader (reskate.screen.look) is built into the DLL as text and compiled when it is
 # first drawn. The build checks it with the Windows SDK's fxc when there is one, so a shader that would

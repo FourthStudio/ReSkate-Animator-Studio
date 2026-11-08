@@ -138,6 +138,10 @@ struct State {
     // keeps it. hub_typing: one of its text boxes has the keyboard, which the overlay takes
     // for that long, as for chat.
     std::atomic<bool> hub_pointer{false}, hub_typing{false};
+    // hub_nav: a plugin's page shows in it (the Mod Manager's PLUGINS tab), drawn with ImGui's own
+    // widgets, so the pad and the arrow keys go to ImGui's navigation for that long: its keys are
+    // kept from one frame to the next, and the pad fed to it, as while the ReSkate menu is open.
+    std::atomic<bool> hub_nav{false};
     // The map download card is asking (map_download_card.cpp): the overlay has the pointer, with
     // its own cursor, so the card's buttons can be clicked whatever is behind it.
     std::atomic<bool> prompt_pointer{false};
@@ -321,12 +325,25 @@ void destroy_graphics();
 bool frame_grab_pending();
 void grab_presented_frame(State& s, ID3D12Resource* buffer);
 void release_frame_grab();
-// The depth probe (depth_probe.cpp, `capture depth`): its hook, installed with the overlay's command
-// list; whether it needs this present; and its turn at it.
-void install_depth_probe(ID3D12GraphicsCommandList* list) noexcept;
+// The depth tap (depth_tap.cpp): its ResourceBarrier hook, installed with the overlay's command
+// list; whether the hook is on; and whether its buffers still want presents.
+using ResourceBarrierFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
+void install_depth_tap(ID3D12GraphicsCommandList* list) noexcept;
+bool depth_barrier_hooked() noexcept;
+bool depth_tap_pending();
+// A 2D, single-sample texture that can be a depth buffer.
+bool depth_capable(const D3D12_RESOURCE_DESC& d);
+// The depth probe (depth_probe.cpp, `capture depth`), in development builds only: its look at each
+// barrier the hook sees; whether it needs this present; and its turn at it.
+#if defined(DINGOSDK_DEV_TOOLS)
+void depth_probe_barrier(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers, ResourceBarrierFn original);
 bool depth_probe_pending();
 void depth_probe_present(State& s, std::uint32_t width, std::uint32_t height);
-// The depth tap (depth_probe.cpp): while a frame grab runs, the game's main depth buffer is copied
+#else
+inline bool depth_probe_pending() { return false; }
+inline void depth_probe_present(State&, std::uint32_t, std::uint32_t) {}
+#endif
+// The depth tap (depth_tap.cpp): while a frame grab runs, the game's main depth buffer is copied
 // every frame. depth_tap_present runs at each present (`wanted`: a grab is running); after the
 // frame's own work is known finished, depth_tap_latest maps the newest copy the GPU has made (or
 // gives null) until depth_tap_done.
@@ -370,6 +387,8 @@ void card_image_uploaded(ImTextureID texture, unsigned serial);
 void card_image_lost();
 // Decodes a PNG to RGBA; with `side`, scaled to a square of that many pixels.
 bool decode_picture(const std::string& png, CardPixels& out, UINT side);
+// Decodes a picture to RGBA no wider than `most_width` pixels, its shape kept (a news post's picture).
+bool decode_banner(const std::string& bytes, CardPixels& out, UINT most_width);
 // The menu's map pictures (menu_map_pictures.cpp), the same way, in the SRV heap's third slot.
 bool take_menu_map_pixels(CardPixels& pixels);
 void menu_map_pixels_uploaded(ImTextureID texture, unsigned serial);
@@ -392,6 +411,13 @@ void plugin_images_lost();
 // Thunderstore packages' icons for the pause menu's Mod Manager page (store_icons.cpp), the same way,
 // by their URL, in the SRV heap's slots from store_icon_first_slot on (descriptor_slots.h).
 ImTextureID store_icon(const std::string& url);
+// The same, and whether it is still on its way (`loading`: asked for and neither there nor failed),
+// so a page can show it loading rather than as missing.
+ImTextureID store_icon(const std::string& url, bool& loading);
+// A news post's picture from ReSkate's news repository (live_news.h), the same way and in the same
+// slots, kept on disk in %LOCALAPPDATA%\ReSkate\news\pictures and decoded no wider than 1024
+// pixels, its shape kept: `size` is its size in pixels once it is there.
+ImTextureID news_picture(const std::string& url, ImVec2& size);
 // Then a viewmodel's pictures (viewmodel.h): three for each of its at most eight materials (viewmodel_first_slot).
 struct StoreIconUpload {
     std::string url;
@@ -401,6 +427,11 @@ struct StoreIconUpload {
 std::optional<StoreIconUpload> take_store_icon();
 void store_icon_uploaded(const std::string& url, int slot, ImTextureID id, bool later = false);
 void store_icons_lost();
+// A picture made here rather than fetched (a Steam friend's avatar, hub_page.cpp), through the same
+// slots under a `key` of its own that is not a URL: `make` fills its pixels on one of the workers, or
+// returns false while it cannot yet, and is asked again a few seconds later while it is still drawn.
+using IconMaker = bool (*)(const std::string& key, CardPixels& pixels);
+ImTextureID made_icon(const std::string& key, IconMaker make);
 // Mods being applied with the pause menu closed (hub_page.cpp): whether its card is up, and drawing it.
 bool mod_apply_card_pending();
 void draw_mod_apply_card();
@@ -480,4 +511,11 @@ bool queue_multiplayer_action(const char* action, const std::string& argument, c
 // The pause menu's Multiplayer page (hub_page.cpp): polled every presented frame.
 bool hub_page_pending();
 void draw_hub_page();
+// ReSkate's front page over the game's own HUB tab (hub_home_page.cpp), drawn by draw_hub_page in
+// `a`..`z`. Returns true when Back closed the pause menu from it.
+bool draw_home_page(ImDrawList* draw, float u, ImVec2 a, ImVec2 z, bool input, const Model& model);
+// What the front page opens on ReSkate's other pages (hub_page.cpp): the Multiplayer page's FRIENDS
+// tab, the Mod Manager's UPDATES.
+void show_friends_tab();
+void show_mod_updates();
 }

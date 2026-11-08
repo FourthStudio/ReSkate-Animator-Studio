@@ -14,6 +14,7 @@
 #include "Engine/Game/World/world_layer_catalog.h"
 #include "Engine/Game/World/world_layer_types.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
+#include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_animation.h"
@@ -36,6 +37,8 @@
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Skater/xray.h"
 #include "Extension/UI/hud_corner.h"
+#include "Extension/UI/score_line_hud.h"
+#include "Extension/Progression/challenge_attempts.h"
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "plugin_camera.h"
@@ -54,9 +57,11 @@
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/Throwdowns/throwdown_debug_text.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/Trainer/trainer_gamestate.h"
 #include "Extension/Travel/local_location_travel.h"
 #include "Extension/World/world_entities.h"
 #include "Extension/World/owned_bodies.h"
+#include "Extension/World/traffic_vehicles.h"
 #include "Extension/Skater/bone_cam.h"
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Skater/trick_feed.h"
@@ -188,6 +193,10 @@ public:
     }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
+    std::string body_create_reusing(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h, bool reuse,
+                                    owned_body::CreateReport& report) override {
+        return owned_bodies::create(owner, d, h, reuse, report);
+    }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }
     body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
         return owned_bodies::probe_batch(owner, h, request, allowed);
@@ -324,9 +333,24 @@ public:
         return {{p.available, p.hit, p.position, p.fraction}, p.native_casts};
     }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3& to) override {
-        const auto pick = local_world_pick(from, to);
+        return convert_pick(local_world_pick(from, to));
+    }
+    std::string vehicle_take(std::uint64_t owner, std::uint64_t entity, std::uint64_t root, std::uint64_t& handle) override {
+        return traffic_vehicles::take(base_, owner, entity, root, handle);
+    }
+    traffic_vehicles::Sample vehicle_read(std::uint64_t owner, std::uint64_t handle) override {
+        return traffic_vehicles::read(owner, handle);
+    }
+    std::string vehicle_set_pose(std::uint64_t owner, std::uint64_t handle, const traffic_vehicles::Pose& pose) override {
+        return traffic_vehicles::set_pose(owner, handle, pose);
+    }
+    bool vehicle_release(std::uint64_t owner, std::uint64_t handle) override { return traffic_vehicles::release(owner, handle); }
+    void vehicle_release_all(std::uint64_t owner) override { traffic_vehicles::release_all(owner); }
+    static std::optional<WorldPick> convert_pick(const std::optional<dingosdk::WorldPick>& pick) {
         if (!pick) return std::nullopt;
         WorldPick out{pick->at, pick->entity != 0 || !pick->blueprint.empty(), std::nullopt, pick->blueprint};
+        out.vehicle_owner = pick->ecs_owner;
+        out.vehicle_root = pick->entity;
         if (pick->pose) {
             // The pose: scale xyz, -, rotation xyzw, position xyz. Rows: the rotated x, y and z axes
             // times their scale (the same rotation objects.list's heading reads), then position.
@@ -425,6 +449,23 @@ public:
         return plugin_feed::hide(std::string(plugin), player, hidden) ? std::string{} : "at most 256 players are hidden";
     }
     std::vector<std::uint64_t> hidden_players(std::string_view plugin) override { return plugin_feed::hidden_by(std::string(plugin)); }
+    std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
+        auto outfit = plugin_feed::outfit_of(player);
+        if (!outfit) return std::nullopt;
+        return PlayerOutfit{std::move(outfit->skater), std::move(outfit->board)};
+    }
+    std::string hide_items(std::string_view plugin, HiddenItems items) override {
+        const auto lower = [](std::string name) {
+            for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return name;
+        };
+        plugin_feed::HiddenItems hidden;
+        for (auto& name : items.everyone) hidden.everyone.insert(lower(std::move(name)));
+        for (auto& [player, names] : items.players)
+            for (auto& name : names) hidden.players[player].insert(lower(std::move(name)));
+        plugin_feed::hide_items(std::string(plugin), std::move(hidden));
+        return {};
+    }
     void set_nametag(std::string_view plugin, std::uint64_t player, std::string text, std::uint32_t colour) override {
         plugin_feed::set_tag(std::string(plugin), player, std::move(text), colour);
     }
@@ -718,6 +759,15 @@ public:
     std::string hud_corner(std::string_view plugin, bool hidden) override {
         hud_corner::ask(plugin, hidden);
         return {};
+    }
+    std::string score_line(std::string_view plugin, const std::optional<ScoreLine>& line) override {
+        if (line) {
+            if (auto why = score_line_refusal(); !why.empty()) {
+                score_line::ask(plugin, std::nullopt); // a refused line does not stay up
+                return why;
+            }
+        }
+        return score_line::ask(plugin, line);
     }
     std::string game_speed(std::string_view plugin, float speed) override {
         if (speed < 1.0f && multiplayer_session_active()) return "never in a multiplayer session";
@@ -1031,6 +1081,22 @@ public:
         if (owner != source) { owner = source; ++serial; }
         result.serial = serial; result.backwards = backwards != 0; result.mirrored = flags[2] != 0; result.fakie = flags[4] != 0; result.basis = flags[0] != 0;
         return result;
+    }
+    std::optional<FlipState> flip_state() override {
+        NoBailSkater skater{}, after{};
+        if (!no_bail_skater(skater)) return std::nullopt;
+        const auto state = trainer::read_flip_state(skater.base, skater.entity);
+        // Reject a despawn or local rider change during the read. No addresses leave the runtime.
+        if (!state || !no_bail_skater(after) || skater.base != after.base ||
+            skater.core != after.core || skater.entity != after.entity || skater.context != after.context)
+            return std::nullopt;
+        const auto flag = [](std::int8_t value) -> std::optional<bool> {
+            if (value == 0) return false;
+            if (value == 1) return true;
+            return std::nullopt;
+        };
+        return FlipState{state.trick, flag(state.underflip_anim), flag(state.underflip_state),
+                         flag(state.underflip_window)};
     }
     std::vector<AnimationValue> animation_values() override {
         NoBailSkater skater;
@@ -1419,6 +1485,7 @@ public:
     void tick_animation(std::uintptr_t base, std::uintptr_t client) {
         xray::tick();
         hud_corner::tick();
+        if (score_line::wanted()) score_line::tick(base, score_line_refusal());
         game_speed::tick();
         launches::tick(client);
         outfit_overlay::tick();
@@ -1516,6 +1583,22 @@ public:
             start = end + 1;
         }
         return menu;
+    }
+    MenuState menu_state() override {
+        MenuState state;
+        if (!base_) return state;
+        // The native menu's tick reads the game's own flag (none while a level loads); ReSkate's pages
+        // in it are seen while drawn, in the order of overlay::HubPage's sections. A page counts only
+        // while the pause menu is up: the page is sampled every 50 ms and taken as current for up to
+        // 200 ms, so closing the menu on one would otherwise report the page a moment after the menu.
+        state.pause = multiplayer::native_pause_menu_open();
+        state.known = multiplayer::sample_game_ui_state(base_).available;
+        if (const auto page = multiplayer::native_menu_page();
+            state.pause && page.visible && page.section >= 0 && page.section < 3) // (Enums.MenuPage's order)
+            state.page = std::array{"multiplayer", "mod_options", "mod_manager"}[page.section];
+        state.reskate = overlay::menu_visible() || !state.page.empty();
+        state.replay_editor = multiplayer::replay_editor_open(base_);
+        return state;
     }
     std::optional<MenuGrid> menu_grid() override {
         const auto view = item_browser::view();
@@ -1886,6 +1969,7 @@ public:
         }
         if (hold_owner_ == plugin) (void)skater_hold(plugin, false);
         plugin_feed::release_hidden(std::string(plugin));
+        plugin_feed::release_hidden_items(std::string(plugin));
         world_entities::clear(plugin);
         throwdown_flag_leave(plugin);
         dialog_close(plugin, {});
@@ -1926,6 +2010,7 @@ public:
         xray::prepare(plugin, false);
         xray::hide(plugin, false);
         hud_corner::release(plugin);
+        score_line::release(plugin);
         game_speed::ask(plugin, 1.0f);
         held_settings::release(plugin);
         launches::release(plugin);
@@ -1969,6 +2054,33 @@ public:
     }
 
 private:
+    // Why no plugin's line may be in skate.'s score HUD now ("" when one may), in this order. Each is
+    // checked at the call and every tick while a line is wanted. Where the game's state cannot be told
+    // (an activity's player not verified, a challenge's hooks not in) the line is refused, never shown.
+    std::string score_line_refusal() {
+        if (multiplayer_session_active()) return "never in a multiplayer session";
+        if (multiplayer::local_throwdown_active() || multiplayer::local_throwdown_event_active() || throwdowns::kit::match().in_activity ||
+            competition_stock_physics())
+            return "never during a throwdown or match";
+        if (challenge_or_activity()) return "never during a challenge or activity";
+        if (multiplayer::replay_editor_open(base_)) return "not in the replay editor";
+        if (multiplayer::native_pause_menu_open()) return "not while a menu is open";
+        return {};
+    }
+    // Challenges are checked on every call. Only the game's activity getter waits 250 ms between
+    // reads while a line is wanted; an unknown holds the display back and is logged once.
+    bool challenge_or_activity() {
+        return activity_.running(profile_runtime::local_challenge_attempt_open(), GetTickCount64(), [&] {
+            const char* why{};
+            const bool active = multiplayer::local_player_in_activity(&why);
+            if (why && !std::exchange(activity_unknown_said_, true))
+                logging::log(logging::Level::warning, logging::Channel::plugins,
+                    "Plugins' score lines stay down: whether the player is in an activity cannot be told ({}).", why);
+            return active;
+        });
+    }
+    score_line::ActivityCheck activity_;
+    bool activity_unknown_said_{};
     void publish_replacements() {
         std::vector<skater_animation::Replacement> list;
         for (const auto& [key, value] : replacements_) list.push_back(value.second);

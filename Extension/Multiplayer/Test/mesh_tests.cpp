@@ -80,6 +80,8 @@ std::string status() { return {}; }
 namespace dingosdk::profile_runtime {
 void install_script_error_log(std::uintptr_t) noexcept {}
 void install_board_wear_hold(std::uintptr_t) noexcept {}
+// No paid store items in the mesh's outfits (session.cpp leaves them out of reskate.session.outfit).
+bool reserved_cosmetic(std::string_view) { return false; }
 bool simulated_profile_store_ready = true;
 std::map<std::string, Json, std::less<>> simulated_profile;
 bool local_profile_store_ready() noexcept { return simulated_profile_store_ready; }
@@ -303,7 +305,7 @@ bool show_remote(std::uintptr_t, std::uintptr_t, const NativeFrame &, const Pose
     return true;
 }
 void remove_remote(std::uintptr_t) noexcept {}
-void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::string &) {}
+void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::uint64_t, std::string &) {}
 std::uint64_t remote_pose_updates() noexcept { return 0; }
 std::uint64_t remote_board_pose_updates() noexcept { return 0; }
 NativeAnimationStats remote_animation_stats() noexcept { return {}; }
@@ -752,7 +754,7 @@ void role_checks() {
               player_role(host, id(host), true) == Role{nametag_centrix, "Centrix"},
           "A Centrix player who hosts is not shown as Centrix");
     simulated_identities.erase({id(host), L::centrix});
-    // A player who has turned their tag off (the Special page) is whatever they are in the lobby,
+    // A player who has turned their tag off (the STYLE tab) is whatever they are in the lobby,
     // to everyone: their appearance carries the choice through the host. Their items are a
     // separate choice, which leaves the tag alone.
     auto plain = packet(host, PacketKind::cosmetics, sim.now);

@@ -36,6 +36,7 @@
 #include "Extension/World/texture_handle_limit.h"
 #include "Extension/Console/commands.h"
 #include "Extension/UI/ui_pointer_skip.h"
+#include "Extension/UI/score_line_hud.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/profiler_labels.h"
 #include "Engine/Game/Build/supported_build.h"
@@ -60,6 +61,7 @@
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Profile/local_profile.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Progression/challenge_attempts.h"
 #include "Extension/Progression/fixed_stop_entitlement_provider.h"
 #include "Extension/Progression/mission_progression_override.h"
 #include "Extension/Progression/neighborhood_unlock_override.h"
@@ -80,7 +82,6 @@
 #include "Engine/Vfs/world_layer_scan.h"
 #include "Engine/Game/World/world_layer_catalog.h"
 #include "Engine/Core/Platform/startup_failure.h"
-#include <array>
 #include <cstring>
 #include <filesystem>
 
@@ -102,14 +103,6 @@ BOOL stop_startup(dingosdk::logging::Level level, dingosdk::logging::Channel cha
                   std::string_view reason) noexcept {
     dingosdk::logging::write(level, channel, reason);
     return startup_failed(reason);
-}
-bool exact_environment_one(const wchar_t* name) noexcept {
-    const auto incoming_error = GetLastError();
-    std::array<wchar_t, 2> value{};
-    const auto length = GetEnvironmentVariableW(name, value.data(),
-        static_cast<DWORD>(value.size()));
-    SetLastError(incoming_error);
-    return length == 1 && value[0] == L'1';
 }
 bool validate_image(std::uintptr_t base) {
     IMAGE_DOS_HEADER dos{}; IMAGE_NT_HEADERS64 nt{};
@@ -278,8 +271,17 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             const auto view = dingosdk::map_download::view();
             using Stage = dingosdk::map_download::Stage;
             dingosdk::overlay::MapDownloadCard card;
-            card.stage = view.stage == Stage::asking ? 1 : view.stage == Stage::downloading ? 2 : view.stage == Stage::installing ? 3
-                       : view.stage == Stage::applying ? 4 : view.stage == Stage::joining ? 5 : 0;
+            const auto number = [](Stage stage) {
+                return stage == Stage::asking ? 1 : stage == Stage::downloading ? 2 : stage == Stage::installing ? 3
+                     : stage == Stage::applying ? 4 : stage == Stage::joining ? 5 : 0;
+            };
+            // (Idle with a failure: the card shows it until the player puts it away.)
+            card.stage = view.stage == Stage::idle && !view.failure.empty() ? 6 : number(view.stage);
+            card.failure = view.failure;
+            card.failed_stage = number(view.failed_in);
+            card.failed_item = view.failed_item;
+            card.session = view.session;
+            card.session_map = view.session_map;
             card.map = view.map;
             card.package = view.package;
             card.author = view.author;
@@ -299,7 +301,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             card.yes_bind = view.yes_bind;
             card.no_bind = view.no_bind;
             for (const auto& item : view.items)
-                card.items.push_back({item.name, item.author, item.version, item.have, item.plugin, item.installed, item.bytes});
+                card.items.push_back({item.name, item.author, item.version, item.have, item.icon, item.plugin, item.installed, item.bytes});
             card.current = view.current;
             return card;
         });
@@ -344,11 +346,10 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             return stop_startup(dingosdk::logging::Level::error, dingosdk::logging::Channel::graphics, "Overlay startup failed.");
         // Install the offline boot hooks before the passive observers and other
         // native hooks, while Skate's primary thread remains suspended. The
-        // launcher always sets the global-offline variable; install the dependent
+        // launcher always sets RESKATE_GLOBAL_OFFLINE (offline_boot.h); install the dependent
         // guard first in forwarding-only mode. Launches without it do not
         // install this hook.
-        const bool global_offline_requested = exact_environment_one(
-            L"RESKATE_DEBUG_TEST_GLOBAL_OFFLINE");
+        const bool global_offline_requested = dingosdk::offline_boot_requested();
         const bool progression_guard_prepared = global_offline_requested &&
             dingosdk::prepare_progression_service_guard(r.base);
         record("{\"event\":\"progression_service_guard_prepared\",\"requested\":" +
@@ -357,7 +358,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             std::string(progression_guard_prepared ? "true" : "false") + "}");
         const bool global_offline_hook = global_offline_requested &&
             progression_guard_prepared && dingosdk::start_offline_boot(r.base);
-        record("{\"event\":\"global_offline_experiment_initialized\",\"active\":" +
+        record("{\"event\":\"global_offline_initialized\",\"active\":" +
             std::string(global_offline_hook ? "true" : "false") +
             ",\"requested\":" +
             std::string(global_offline_requested ? "true" : "false") +
@@ -411,10 +412,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         (void)dingosdk::streaming_copy_guard::install(r.base);
         (void)dingosdk::load_error_guard::install(r.base);
         (void)dingosdk::texture_handle_limit::install(r.base);
-#if !defined(DINGOSDK_LEAN_PLAYTEST)
         (void)dingosdk::stack_check_report::install(r.base);
         dingosdk::console::start_memory_trace_from_environment();
-#endif
         (void)dingosdk::music_inject::install(r.base);
         (void)dingosdk::spotify_rows::install(r.base);
         dingosdk::spotify_device::start(); // (the game as a device in the player's Spotify app)
@@ -583,8 +582,10 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
                 dingosdk::effects::before_level_transition(next);
                 dingosdk::skater_events::before_level_transition(next);
                 dingosdk::local_profile_before_level_transition(next);
+                dingosdk::profile_runtime::challenge_attempts_before_level_transition(next);
                 dingosdk::world_entities::before_level_transition(base, next);
                 dingosdk::placement_physics::before_level_transition(next);
+                dingosdk::score_line::before_level_transition(base, next);
                 dingosdk::multiplayer::native_menu_before_level_transition(base, next);
                 dingosdk::multiplayer::throwdown_lab_before_level_transition(next);
             });

@@ -7,6 +7,7 @@
 #include "external_audio.h"
 #include "youtube_music.h"
 #include "spotify_rows.h"
+#include "Extension/Skater/trick_feed.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include <set>
@@ -116,6 +117,7 @@ bool is_shown_locked(std::uintptr_t metadata) noexcept {
     return std::any_of(shown.begin(), shown.end(), [&](const Shown& entry) { return entry.metadata == metadata; });
 }
 void show(int index, const std::string& artist, const std::string& title) {
+    tricks::feed::song_playing(artist, title); // (what the game shows as playing: no trick, trick_feed.h)
     std::lock_guard lock(mutex);
     if (index < 0 || static_cast<std::size_t>(index) >= stations.size() || artist.empty() || title.empty()) return;
     current_artist = keep(artist);
@@ -152,12 +154,6 @@ void set_stations(std::vector<Station> next, std::uintptr_t table) {
     stations = std::move(next);
     metadata_table = table;
     station_count.store(stations.size(), std::memory_order_release);
-}
-std::vector<std::string> playlist_ids() {
-    std::lock_guard lock(mutex);
-    std::vector<std::string> ids;
-    for (const auto& station : stations) ids.push_back(station.id);
-    return ids;
 }
 bool has_stations() noexcept { return station_count.load(std::memory_order_acquire) != 0; }
 int station_of(const unsigned char* members, std::uint32_t count, unsigned char* carrier, bool& add) noexcept {
