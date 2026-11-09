@@ -35,6 +35,18 @@ Sound& sound() {
     return *s;
 }
 
+// Under Wine (Proton on Linux, CrossOver on macOS), as ntdll says. There, every look at the audio sessions leaks: a
+// Linux player's game went from 1.3 to 28 GB in under two minutes, 6 million blocks of 3992 bytes and a 2 GB array
+// made by MMDevAPI from the looks below (memory ledger, 2026-11-09), while it looked again every 3 s for a sound to
+// unmute that it never found. So under Wine the studio leaves the game's sound alone.
+bool under_wine() noexcept {
+    static const bool wine = [] {
+        const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        return ntdll && (GetProcAddress(ntdll, "wine_get_version") || GetProcAddress(ntdll, "wine_get_host_version"));
+    }();
+    return wine;
+}
+
 // Every audio session of this process on every playback device, given to `each` with its instance id.
 template <typename Each> void our_sessions(Each&& each) {
     ComPtr<IMMDeviceEnumerator> devices;
@@ -107,8 +119,10 @@ void worker() {
                 our_sessions([&](const std::wstring& id, ISimpleAudioVolume* volume) {
                     if (const auto found = before.find(id); found != before.end()) volume->SetMute(found->second ? TRUE : FALSE, nullptr);
                 });
-                std::filesystem::remove(marker, error);
             }
+            // Closed: nothing of the studio's is left muted, even when it found nothing to mute. Left behind then, the
+            // marker made the next start look for a muted sound 40 times. (One from an earlier run is dealt with below.)
+            if (!stale) std::filesystem::remove(marker, error);
             if (stale) {
                 int found = 0;
                 our_sessions([&](const std::wstring&, ISimpleAudioVolume* volume) { found += SUCCEEDED(volume->SetMute(FALSE, nullptr)); });
@@ -136,6 +150,15 @@ void worker() {
 void studio_sound(bool studio_open, const std::filesystem::path& marker) {
     auto& s = sound();
     std::lock_guard lock(s.mutex);
+    if (under_wine()) {
+        // Never a look at the sessions (above); a marker an older build left is put away once.
+        if (s.stale < 0) {
+            std::error_code error;
+            std::filesystem::remove(marker, error);
+            s.stale = 0;
+        }
+        return;
+    }
     s.marker = marker;
     const bool changed = s.wanted != studio_open;
     s.wanted = studio_open;
