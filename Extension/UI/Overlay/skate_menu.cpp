@@ -144,6 +144,16 @@ float held_for() {
 // The item just drawn has the controller's or the keyboard's focus, shown. (After a click ImGui
 // keeps its focus on the item too, but hidden: the pointer then lights it as hovered instead.)
 bool nav_lit() { return ImGui::IsItemFocused() && ImGui::GetIO().NavVisible; }
+// A hover tip wrapped to a width that reads: one of a sentence or three, unwrapped, ran across the whole screen (the
+// ANIMATOR page's Which version plays, 2026-11-10).
+void hover_tip(const char* text) {
+    if (!text || !*text) return;
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(std::min(ImGui::GetFontSize() * 30.0f, ImGui::GetIO().DisplaySize.x * 0.4f));
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
 // The tile under a row: the focus blue under the focus, a lighter grey under the pointer, rough-cut
 // like the game's tiles.
 void row_frame(ImDrawList* draw, ImVec2 at, ImVec2 end, bool lit, bool hovered, bool disabled) {
@@ -331,7 +341,7 @@ bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& valu
     const auto size = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
     draw->AddText(menu.bold, px(14), ImVec2(box.x + (block - size.x) * 0.5f, box.y + (box_end.y - box.y - size.y) * 0.5f),
                   on ? paper : lit ? IM_COL32(10, 40, 82, 255) : muted, state);
-    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(hint);
     ImGui::EndDisabled();
     ImGui::PopID();
     return clicked;
@@ -613,7 +623,7 @@ void field(SkateMenu&, const char* label, const char* tooltip) {
     const bool beside = wide_rows() && ImGui::CalcTextSize(label).x <= column - ImGui::GetStyle().ItemSpacing.x;
     if (beside) ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
-    if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
+    if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(tooltip);
     if (beside) ImGui::SameLine(start + column);
     ImGui::SetNextItemWidth(-FLT_MIN);
 }
@@ -669,7 +679,7 @@ bool choice(SkateMenu& menu, const char* id, int& selected, std::initializer_lis
     }
     const char* tooltip = selected >= 0 && selected < static_cast<int>(tooltips.size()) ? tooltips.begin()[selected] : nullptr;
     if (lit || hovered) focus_hint = tooltip ? tooltip : pending_hint;
-    if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
+    if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(tooltip);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
     row_frame(draw, at, end, lit, hovered, !enabled);
@@ -786,7 +796,7 @@ bool button_tile(SkateMenu& menu, const char* label, ImVec2 size, bool enabled, 
     ImGui::EndDisabled();
     const bool lit = nav_lit(), hovered = enabled && ImGui::IsItemHovered();
     if ((lit || hovered) && hint) focus_hint = hint;
-    if (hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    if (hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(hint);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + size.x, at.y + size.y);
     const ImU32 fill = lit ? focus_fill : !enabled ? IM_COL32(40, 40, 43, 130) : on ? primary_rest : hovered ? row_hover : row_fill;
@@ -876,7 +886,7 @@ bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selec
         changed = true;
     }
     if (lit || hovered) focus_hint = hint ? hint : "";
-    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(hint);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
     row_frame(draw, at, end, lit, hovered, !enabled);
