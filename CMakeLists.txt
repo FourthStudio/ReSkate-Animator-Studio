@@ -89,7 +89,7 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     if(WIN32)
         add_executable(dingosdk_https_download_timeout_tests Engine/Vfs/Test/https_download_timeout_tests.cpp)
         target_include_directories(dingosdk_https_download_timeout_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-        target_link_libraries(dingosdk_https_download_timeout_tests PRIVATE winhttp)
+        target_link_libraries(dingosdk_https_download_timeout_tests PRIVATE winhttp dingosdk_https_trust)
         add_test(NAME https_download_timeout COMMAND dingosdk_https_download_timeout_tests
             "${CMAKE_CURRENT_BINARY_DIR}/https-download-fixtures")
         # https::fetch: large downloads resumed with Range after a drop or a stall, tried again, checked, never partial.

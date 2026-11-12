@@ -194,6 +194,15 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
     if (hat == before) return;
     refresh_playstation_bluetooth_crc(bytes, size);
 }
+// The buttons a plugin keeps from the game (reskate.input.game_buttons, hide_game_buttons): let go in a
+// native PlayStation report the game read too, as they are in its XInput reads. Without this a
+// DualShock 4 or DualSense read natively still reached the game with them (D-pad right opened Quick
+// Drop while the Filmer had it).
+void hide_hid_buttons(const InputCaptureHooks::HidRead& read, DWORD size) {
+    const auto hidden = mode_hidden_buttons.load(std::memory_order_relaxed);
+    if (!hidden || overlay_input_access || !read.buffer || size > read.capacity || read.kind == PlayStationPad::none) return;
+    (void)hide_playstation_buttons(read.kind, playstation_bluetooth(size), static_cast<std::uint8_t*>(read.buffer), size, hidden);
+}
 // The gamepad filter (DingoSDKOverlaySetGamepadFilter) on the game's own native PlayStation
 // reads, as filter_pad applies it to XInput: a DualShock 4 or DualSense read without Steam Input
 // never goes through XInput. The report is parsed into XInput's layout, filtered, and what the
@@ -277,6 +286,7 @@ void complete_hid(OVERLAPPED* request, DWORD bytes, bool success, bool finished)
     }
     if (success) handle_hid(read, bytes);
     if (success) hide_hid_dpad(read, bytes);
+    if (success) hide_hid_buttons(read, bytes);
 }
 BOOL WINAPI captured_read_file(HANDLE file, LPVOID buffer, DWORD size, LPDWORD bytes, LPOVERLAPPED request) {
     auto& h = input_hooks();
@@ -460,6 +470,8 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     if (result == ERROR_SUCCESS && output) {
         // A menu holding the pad drops any plugin's stand-in for this controller, so it is not replayed once the menu closes.
         if (capture) (void)input::pad_outputs().read(0, GetTickCount64(), false);
+        // The buttons a plugin keeps from the game are let go here too (upstream 2.1.4-5: with Steam's overlay answering the
+        // game first they reached it): game_hidden_buttons has them, and finish_gamepad_read lets them go on the game's read.
         finish_gamepad_read(*output, outer, capture, hidden, [user](XINPUT_STATE& pad) { game_pad_read(user, &pad); });
     }
     return result;
@@ -964,6 +976,32 @@ DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE ou
     if(result==ERROR_SUCCESS && output && suppress_challenge_menu() && output->VirtualKey==VK_PAD_START) {
         *output={};return ERROR_EMPTY;
     }
+    // The buttons a plugin keeps from the game: their presses and releases are not the game's either (a
+    // menu of the game's that reads keystrokes, not the pad's state, still opened on them).
+    if (result == ERROR_SUCCESS && output && !overlay_input_access) {
+        if (const auto hidden = mode_hidden_buttons.load(std::memory_order_relaxed)) {
+            WORD bit = 0;
+            switch (output->VirtualKey) {
+            case VK_PAD_A: bit = XINPUT_GAMEPAD_A; break;
+            case VK_PAD_B: bit = XINPUT_GAMEPAD_B; break;
+            case VK_PAD_X: bit = XINPUT_GAMEPAD_X; break;
+            case VK_PAD_Y: bit = XINPUT_GAMEPAD_Y; break;
+            case VK_PAD_RSHOULDER: bit = XINPUT_GAMEPAD_RIGHT_SHOULDER; break;
+            case VK_PAD_LSHOULDER: bit = XINPUT_GAMEPAD_LEFT_SHOULDER; break;
+            case VK_PAD_DPAD_UP: bit = XINPUT_GAMEPAD_DPAD_UP; break;
+            case VK_PAD_DPAD_DOWN: bit = XINPUT_GAMEPAD_DPAD_DOWN; break;
+            case VK_PAD_DPAD_LEFT: bit = XINPUT_GAMEPAD_DPAD_LEFT; break;
+            case VK_PAD_DPAD_RIGHT: bit = XINPUT_GAMEPAD_DPAD_RIGHT; break;
+            case VK_PAD_START: bit = XINPUT_GAMEPAD_START; break;
+            case VK_PAD_BACK: bit = XINPUT_GAMEPAD_BACK; break;
+            case VK_PAD_LTHUMB_PRESS: bit = XINPUT_GAMEPAD_LEFT_THUMB; break;
+            case VK_PAD_RTHUMB_PRESS: bit = XINPUT_GAMEPAD_RIGHT_THUMB; break;
+            default: break;
+            }
+            if (bit & hidden) { *output = {}; return ERROR_EMPTY; }
+        }
+    }
+    // The buttons a playlist is held on (the studio's): their presses are not the game's.
     if (result == ERROR_SUCCESS && output && !(output->Flags & XINPUT_KEYSTROKE_KEYUP)) {
         const auto hidden = modifier_hidden_buttons();
         const auto key = output->VirtualKey;
