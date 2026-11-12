@@ -144,6 +144,16 @@ float held_for() {
 // The item just drawn has the controller's or the keyboard's focus, shown. (After a click ImGui
 // keeps its focus on the item too, but hidden: the pointer then lights it as hovered instead.)
 bool nav_lit() { return ImGui::IsItemFocused() && ImGui::GetIO().NavVisible; }
+// A hover tip wrapped to a width that reads: one of a sentence or three, unwrapped, ran across the whole screen (the
+// ANIMATOR page's Which version plays, 2026-11-10).
+void hover_tip(const char* text) {
+    if (!text || !*text) return;
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(std::min(ImGui::GetFontSize() * 30.0f, ImGui::GetIO().DisplaySize.x * 0.4f));
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
 // The tile under a row: the focus blue under the focus, a lighter grey under the pointer, rough-cut
 // like the game's tiles.
 void row_frame(ImDrawList* draw, ImVec2 at, ImVec2 end, bool lit, bool hovered, bool disabled) {
@@ -331,7 +341,7 @@ bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& valu
     const auto size = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
     draw->AddText(menu.bold, px(14), ImVec2(box.x + (block - size.x) * 0.5f, box.y + (box_end.y - box.y - size.y) * 0.5f),
                   on ? paper : lit ? IM_COL32(10, 40, 82, 255) : muted, state);
-    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(hint);
     ImGui::EndDisabled();
     ImGui::PopID();
     return clicked;
@@ -613,7 +623,7 @@ void field(SkateMenu&, const char* label, const char* tooltip) {
     const bool beside = wide_rows() && ImGui::CalcTextSize(label).x <= column - ImGui::GetStyle().ItemSpacing.x;
     if (beside) ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
-    if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
+    if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(tooltip);
     if (beside) ImGui::SameLine(start + column);
     ImGui::SetNextItemWidth(-FLT_MIN);
 }
@@ -669,7 +679,7 @@ bool choice(SkateMenu& menu, const char* id, int& selected, std::initializer_lis
     }
     const char* tooltip = selected >= 0 && selected < static_cast<int>(tooltips.size()) ? tooltips.begin()[selected] : nullptr;
     if (lit || hovered) focus_hint = tooltip ? tooltip : pending_hint;
-    if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
+    if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(tooltip);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
     row_frame(draw, at, end, lit, hovered, !enabled);
@@ -786,7 +796,7 @@ bool button_tile(SkateMenu& menu, const char* label, ImVec2 size, bool enabled, 
     ImGui::EndDisabled();
     const bool lit = nav_lit(), hovered = enabled && ImGui::IsItemHovered();
     if ((lit || hovered) && hint) focus_hint = hint;
-    if (hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    if (hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(hint);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + size.x, at.y + size.y);
     const ImU32 fill = lit ? focus_fill : !enabled ? IM_COL32(40, 40, 43, 130) : on ? primary_rest : hovered ? row_hover : row_fill;
@@ -876,7 +886,7 @@ bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selec
         changed = true;
     }
     if (lit || hovered) focus_hint = hint ? hint : "";
-    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) hover_tip(hint);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
     row_frame(draw, at, end, lit, hovered, !enabled);
@@ -1450,6 +1460,16 @@ void open_page(SkateMenu& menu, int page, int tab) {
 }
 
 namespace {
+// A plugin's own page, opened straight from the page list (the window's rail), as
+// it was before the PLUGINS list: players found the list's extra step a hassle. Empty `plugin`: the
+// list itself.
+void open_plugin_page(SkateMenu& menu, const std::string& plugin) {
+    open_page(menu, page_plugins);
+    menu.plugin_page = plugin.empty() ? std::string(plugin_manager_entry) : plugin;
+}
+bool on_plugin_page(const SkateMenu& menu, const std::string& plugin) {
+    return menu.page == page_plugins && menu.plugin_page == plugin;
+}
 bool page_hidden(const Model& model, int page) {
     // Offline there is no Online.
     return model.steam_offline && page == page_online;
@@ -1828,6 +1848,7 @@ void draw_sheet(SkateMenu& menu, const Model& model, const CallbacksV3& callback
             // it sits in the middle: which pages LB and RB lead to reads at a glance (dots did not).
             const float size_text = px(13), spacing = px(16), y = origin.y + px(70);
             const float left = origin.x + pad_x + rb_width + px(14), right = origin.x + size.x - pad_x - rb_width - px(14);
+            // (Plugins' own pages are listed only in the window's rail; here PLUGINS opens their list.)
             std::vector<std::pair<int, float>> names;
             float total = 0, before = 0;
             for (int i = 0; i < page_count; ++i) {
@@ -1847,8 +1868,10 @@ void draw_sheet(SkateMenu& menu, const Model& model, const CallbacksV3& callback
                 ImGui::PushID(i);
                 ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
                 const bool visible_name = x + w > left && x < right;
-                if (visible_name && ImGui::InvisibleButton("##page-name", ImVec2(w + spacing, px(24))))
-                    open_page(menu, i);
+                if (visible_name && ImGui::InvisibleButton("##page-name", ImVec2(w + spacing, px(24)))) {
+                    if (i == page_plugins) open_plugin_page(menu, {});
+                    else open_page(menu, i);
+                }
                 const bool hovered = visible_name && ImGui::IsItemHovered();
                 ImGui::PopItemFlag();
                 ImGui::PopID();
@@ -1924,38 +1947,71 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
         const auto origin = ImGui::GetWindowPos();
         auto* draw = ImGui::GetWindowDrawList();
 
-        // The rail: the wordmark, then the pages in the brushed font, the open one white on a blue stroke.
+        // The rail: the wordmark, then the pages in the brushed font, the open one white on a blue bar
+        // the rail's full width.
         const float rail = px(250);
         draw->AddRectFilled(origin, ImVec2(origin.x + rail, origin.y + size.y), rail_fill);
         wordmark(draw, menu, ImVec2(origin.x + px(28), origin.y + px(20)), px(42));
         {
             const float top = px(100), list_height = size.y - top - px(20);
             ImGui::SetCursorScreenPos(ImVec2(origin.x + px(18), origin.y + top));
-            ImGui::BeginChild("pages", ImVec2(rail - px(18), list_height), ImGuiChildFlags_NavFlattened,
-                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            // It scrolls (wheel, and a thin bar shown only then) once the rows outgrow it: with plugin
+            // pages listed under PLUGINS they can, and players could not reach the last ones.
+            ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, px(6));
+            ImGui::BeginChild("pages", ImVec2(rail - px(18), list_height), ImGuiChildFlags_NavFlattened);
             int rows = 0;
             for (int i = 0; i < page_count; ++i) rows += page_hidden(model, i) ? 0 : 1;
-            const float row = std::clamp(list_height / static_cast<float>(std::max(rows, 1)) - ImGui::GetStyle().ItemSpacing.y, px(26), px(38));
+            // Each plugin's own page as a smaller row under PLUGINS, opened with one click (they were
+            // behind the PLUGINS list, a step players found a hassle).
+            const auto pages = plugin_pages();
+            const float sub = px(26), spacing_y = ImGui::GetStyle().ItemSpacing.y;
+            const float plugin_rows = pages ? static_cast<float>(pages->size()) * (sub + spacing_y) : 0.0f;
+            const float row = std::clamp((list_height - plugin_rows) / static_cast<float>(std::max(rows, 1)) - spacing_y, px(26), px(38));
             auto* list = ImGui::GetWindowDrawList();
             ImFont* font = title_font(menu);
+            // The open (or focused) row's bar, edge to edge across the rail: drawn on the menu window
+            // under the list (the list itself starts in from the edge), kept to the list's area as it
+            // scrolls, and stopping at the scroll bar while there is one.
+            const float bar_right = origin.x + rail - (ImGui::GetScrollMaxY() > 0 ? ImGui::GetStyle().ScrollbarSize : 0.0f);
+            const ImVec2 list_min(origin.x, origin.y + top), list_max(bar_right, origin.y + top + list_height);
+            const auto row_bar = [&](float y0, float y1, ImU32 colour) {
+                draw->PushClipRect(list_min, list_max, true);
+                draw->AddRectFilled(ImVec2(origin.x, y0), ImVec2(bar_right, y1), colour);
+                draw->PopClipRect();
+            };
             for (int i = 0; i < page_count; ++i) {
                 if (page_hidden(model, i)) continue;
                 const auto at = ImGui::GetCursorScreenPos();
                 ImGui::PushID(i);
-                if (ImGui::InvisibleButton("##page", ImVec2(rail - px(36), row), ImGuiButtonFlags_EnableNav)) open_page(menu, i);
+                if (ImGui::InvisibleButton("##page", ImVec2(rail - px(36), row), ImGuiButtonFlags_EnableNav)) {
+                    if (i == page_plugins) open_plugin_page(menu, {});
+                    else open_page(menu, i);
+                }
                 const bool lit = nav_lit(), hovered = ImGui::IsItemHovered();
                 ImGui::PopID();
-                const bool on = menu.page == i;
-                if (on || lit) {
-                    // A brush stroke, cut crooked at its ends.
-                    const float x0 = at.x, x1 = at.x + px(200), y0 = at.y + row * .08f, y1 = at.y + row * .92f, h = y1 - y0;
-                    list->AddQuadFilled(ImVec2(x0 + px(4), y0 + h * .12f), ImVec2(x1, y0), ImVec2(x1 - px(8), y1), ImVec2(x0, y1 - h * .12f), lit && !on ? primary_rest : blue);
-                }
+                const bool on = menu.page == i && (i != page_plugins || !drilled_plugin_page(menu));
+                if (on || lit) row_bar(at.y, at.y + row, lit && !on ? primary_rest : blue);
                 const float text = std::min(px(24), row * .8f);
                 list->AddText(font, text, ImVec2(at.x + px(10), at.y + (row - text) * .5f), lit || on ? focus_ink : hovered ? paper : quiet_ink,
                               page_names[static_cast<std::size_t>(i)]);
+                if (i != page_plugins || !pages) continue;
+                for (const auto& entry : *pages) {
+                    const auto sub_at = ImGui::GetCursorScreenPos();
+                    ImGui::PushID(entry.plugin.c_str());
+                    if (ImGui::InvisibleButton("##plugin-page", ImVec2(rail - px(36), sub), ImGuiButtonFlags_EnableNav)) open_plugin_page(menu, entry.plugin);
+                    const bool sub_lit = nav_lit(), sub_hovered = ImGui::IsItemHovered();
+                    ImGui::PopID();
+                    const bool sub_on = on_plugin_page(menu, entry.plugin);
+                    if (sub_on || sub_lit) row_bar(sub_at.y, sub_at.y + sub, sub_lit && !sub_on ? primary_rest : blue);
+                    const float size_text = px(14);
+                    list->PushClipRect(sub_at, ImVec2(sub_at.x + rail - px(40), sub_at.y + sub), true);
+                    list->AddText(menu.bold, size_text, ImVec2(sub_at.x + px(24), sub_at.y + (sub - size_text) * .5f),
+                                  sub_lit || sub_on ? focus_ink : sub_hovered ? paper : quiet_ink, entry.title.c_str());
+                    list->PopClipRect();
+                }
             }
             ImGui::EndChild();
+            ImGui::PopStyleVar();
         }
 
         // The page: its title, its tabs and body, the prompts under it.
@@ -2046,6 +2102,7 @@ void pop_kit_style(int colours) {
 
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible) {
+    (void)time_of_day_shown(model); // (a time stepped to goes to the game once the stepping stops)
     menu::tab_switched = false;
     if (std::exchange(menu.close_requested, false)) visible = false;
     const bool on_controls = menu.page == page_settings && menu.settings_tab == 0;
