@@ -29,8 +29,9 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
         dingosdk_miniz dingosdk_zstd dingosdk_https_trust winhttp shell32)
     add_test(NAME launcher_mod_manager COMMAND dingosdk_mod_manager_tests)
     add_executable(dingosdk_update_channel_tests Launcher/Test/update_channel_tests.cpp Launcher/updater.cpp)
+    # updater.cpp checks a refused certificate against ReSkate's own roots since 2.1.4-5 (dingosdk_https_trust).
     target_link_libraries(dingosdk_update_channel_tests PRIVATE dingosdk_launcher_support dingosdk_logging dingosdk_json
-        dingosdk_miniz winhttp shell32)
+        dingosdk_miniz dingosdk_https_trust winhttp shell32)
     target_include_directories(dingosdk_update_channel_tests PRIVATE "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated")
     add_test(NAME launcher_update_channel COMMAND dingosdk_update_channel_tests)
     add_executable(dingosdk_thunderstore_tests Launcher/Test/thunderstore_tests.cpp Launcher/thunderstore.cpp)

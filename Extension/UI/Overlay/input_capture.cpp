@@ -201,6 +201,8 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
 void hide_hid_buttons(const InputCaptureHooks::HidRead& read, DWORD size) {
     const auto hidden = mode_hidden_buttons.load(std::memory_order_relaxed);
     if (!hidden || overlay_input_access || !read.buffer || size > read.capacity || read.kind == PlayStationPad::none) return;
+    // A playing script's presses (the room walk's) pass, as they do on XInput, where the scripted pad is answered first.
+    if (stand_in_connected()) return;
     (void)hide_playstation_buttons(read.kind, playstation_bluetooth(size), static_cast<std::uint8_t*>(read.buffer), size, hidden);
 }
 // The gamepad filter (DingoSDKOverlaySetGamepadFilter) on the game's own native PlayStation

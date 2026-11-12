@@ -101,9 +101,12 @@ float eased(ImGuiID id, float target, float rate = 16.0f) {
     return value;
 }
 // What a row does, in the line under its name: its first sentence ("How one trick hands over to the next.").
-std::string first_sentence(const std::string& about) {
+// A row's line keeps a colon: Transitions' and Trick matching's open with an option's name ("Smooth: into a grind..."), which
+// alone read as the value chosen.
+std::string first_sentence(const std::string& about, bool colon = true) {
     for (std::size_t i = 0; i < about.size(); ++i)
-        if ((about[i] == '.' || about[i] == ':') && (i + 1 == about.size() || about[i + 1] == ' ')) return about.substr(0, i + (about[i] == '.' ? 1 : 0));
+        if ((about[i] == '.' || (colon && about[i] == ':')) && (i + 1 == about.size() || about[i + 1] == ' '))
+            return about.substr(0, i + (about[i] == '.' ? 1 : 0));
     return about;
 }
 std::string upper(std::string text) {
@@ -124,7 +127,7 @@ void row_tile(ImDrawList* d, ImVec2 a, ImVec2 b, bool lit, bool hovered, bool en
 void row_words(SkateMenu& menu, ImDrawList* d, ImVec2 a, float right, float h, const std::string& label, const std::string& about, bool lit,
                bool enabled) {
     const float room = right - a.x - px(18);
-    const std::string line = fit(menu.body, px(13), first_sentence(about), room);
+    const std::string line = fit(menu.body, px(13), first_sentence(about, false), room);
     const float name_size = px(16);
     const auto name = fit(menu.bold, name_size, label, room);
     const ImU32 ink = !enabled ? muted : paper;
@@ -243,7 +246,8 @@ void studio_slider(SkateMenu& menu, const std::string& label, const std::string&
     const ImGuiID drag = ImGui::GetID("##drag");
     auto* store = ImGui::GetStateStorage();
     bool dragging = store->GetBool(drag, false);
-    if (ImGui::IsItemActivated() && ImGui::GetIO().MousePos.y >= bar_y - px(14)) dragging = true;
+    // (A mouse press only: Enter or Space on the row would set it to wherever the pointer happens to be.)
+    if (ImGui::IsItemActivated() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::GetIO().MousePos.y >= bar_y - px(14)) dragging = true;
     if (!ImGui::IsItemActive()) dragging = false;
     store->SetBool(drag, dragging);
     float shown_amount = std::clamp(amount, 0.0f, 1.0f);
@@ -756,7 +760,11 @@ void animator_studio_page(SkateMenu& menu, const Model& model, const CallbacksV3
     help_now() = {};
     // The help panel's room at the foot: tall enough for the longest row's words at the side sheet's width.
     const float help_height = px(118), help_gap = px(8);
-    ImGui::BeginChild("animator-studio", ImVec2(0, std::max(px(140), page_body_height(menu) - help_height - help_gap)), ImGuiChildFlags_NavFlattened);
+    // (The spacing after the child and after the gap counted too: without the second the page ran 6 px over and grew a
+    // scroll bar of its own.)
+    ImGui::BeginChild("animator-studio",
+                      ImVec2(0, std::max(px(140), page_body_height(menu) - help_height - help_gap - ImGui::GetStyle().ItemSpacing.y)),
+                      ImGuiChildFlags_NavFlattened);
     banner(menu, now, settings, t);
     if (studio_button(menu, "##openstudio", "OPEN ANIMATION STUDIO", "F8  /  BOTH STICKS", animator_studio_openable(model), t)) {
         anim_studio::request_open(true);
