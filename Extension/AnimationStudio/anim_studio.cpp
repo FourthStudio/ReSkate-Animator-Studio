@@ -147,7 +147,7 @@ struct CustomTrick {
     // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
     bool modifier_route{};
-    std::uint16_t route_button{}; // on a modifier route: the button its playlist plays on
+    std::uint16_t route_button{}; // on a modifier route: the button its playlist plays on (two bits: two held together)
     PlaylistMode route_mode{PlaylistMode::fixed};
 };
 // The game's own stance setting (Options, DefaultStanceIsGoofy), kept for the animation thread.
@@ -8076,7 +8076,8 @@ View view() {
     v.tab_request = s.tab_request;
     v.tab_requested = s.tab_requested;
     v.library_modifier_help = s.library_modifier_help;
-    v.modifier_ready = modifier_masks(s.loaded_modifiers);
+    v.modifier_ready.clear();
+    for (const auto& b : s.loaded_modifiers) v.modifier_ready.push_back(modifier_mask(b));
     v.catch_marker = s.catch_marker;
     v.guide_seen = s.guide_seen;
     v.editor_tour_seen = s.editor_tour_seen;
@@ -9533,12 +9534,21 @@ namespace {
 std::filesystem::path modifier_file() { return library_folder() / L"presets" / L"modifier-input.local"; }
 void commit_playlist_structure_locked(State& s, const Playlists& lists, const ModifierBindings& bindings,
                                       const std::string& opened, const std::string& message);
-// The file: every binding under "bindings", and the first also as the one binding older builds read.
+// The file: every binding under "bindings", and the first also as the one binding older builds read. Two buttons held
+// together are "buttons", with "button" 0: a build from before them reads that playlist as off its button, not as on the
+// first of the two alone.
+Json modifier_json(const ModifierBinding& b) {
+    const bool together = modifier_together(modifier_mask(b));
+    Json out{{"playlist", b.playlist}, {"button", together ? 0 : b.button}, {"block_native", b.block_native}};
+    if (together) out["buttons"] = Json::array({b.button, b.also});
+    return out;
+}
 std::string modifiers_json(const ModifierBindings& all) {
     Json list = Json::array();
-    for (const auto& b : all) list.push_back(Json{{"playlist", b.playlist}, {"button", b.button}, {"block_native", b.block_native}});
-    const ModifierBinding first = all.empty() ? ModifierBinding{} : all.front();
-    return Json{{"playlist", first.playlist}, {"button", first.button}, {"block_native", first.block_native}, {"bindings", list}}.dump(2);
+    for (const auto& b : all) list.push_back(modifier_json(b));
+    Json out = modifier_json(all.empty() ? ModifierBinding{} : all.front());
+    out["bindings"] = std::move(list);
+    return out.dump(2);
 }
 // A loaded button stays on while its binding is unchanged; a changed one is let go while its playlist is read.
 void keep_loaded_locked(State& s) {
@@ -9564,6 +9574,12 @@ ModifierBindings& modifiers_locked(State& s) {
                     out.playlist = utf8_prefix(b.value("playlist", ""), 48);
                     const auto button = b.value("button", 0);
                     out.button = button >= 0 && button < static_cast<int>(modifier_buttons.size()) ? button : 0;
+                    // Two held together (put_binding refuses what is not two buttons).
+                    if (const auto two = b.find("buttons"); two != b.end() && two->is_array() && two->size() == 2 &&
+                                                            two->at(0).is_number_integer() && two->at(1).is_number_integer()) {
+                        out.button = two->at(0).get<int>();
+                        out.also = two->at(1).get<int>();
+                    }
                     out.block_native = b.value("block_native", true);
                     return out;
                 };
@@ -9592,7 +9608,7 @@ ModifierBinding modifier_binding(const std::string& playlist) {
     return none;
 }
 void set_modifier_binding(ModifierBinding binding) {
-    if (binding.button < 0 || binding.button >= static_cast<int>(modifier_buttons.size())) binding.button = 0;
+    if (!modifier_button(binding.button)) binding.button = 0;
     auto& s = state();
     {
         std::lock_guard lock(s.mutex);
@@ -9613,7 +9629,8 @@ void set_modifier_binding(ModifierBinding binding) {
 void modifier_tick(bool gameplay) {
     const auto snap = snapshot();
     const std::uint16_t mask = snap ? modifier_masks(snap->modifiers) : std::uint16_t{};
-    overlay::update_trick_modifier(mask, snap ? modifier_blocks(snap->modifiers) : std::uint16_t{},
+    // Which of them the game does not get depends on the ones held: two held together are its own until both are down.
+    overlay::update_trick_modifier(mask, [&](std::uint16_t held) { return snap ? modifier_blocks(snap->modifiers, held) : std::uint16_t{}; },
         gameplay && snap && snap->play_in_game && !snap->open && !testing_tricks.load());
 }
 void set_modifier_hint(bool on) {
@@ -12289,7 +12306,7 @@ bool write_diagnostics_now(std::string& message) {
           {
               Json buttons = Json::array();
               for (const auto& b : s.modifiers)
-                  buttons.push_back(Json{{"playlist", b.playlist}, {"button", b.button}, {"block_native", b.block_native},
+                  buttons.push_back(Json{{"playlist", b.playlist}, {"button", b.button}, {"also", b.also}, {"block_native", b.block_native},
                                          {"loaded", binding_of(s.loaded_modifiers, b.playlist) != nullptr}});
               summary["trick_modifier"] = buttons;
           }

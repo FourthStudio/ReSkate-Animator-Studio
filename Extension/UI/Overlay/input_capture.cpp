@@ -1330,12 +1330,13 @@ namespace dingosdk::overlay {
 // every caller uses this one.)
 void set_plugin_dialog_active(bool active) noexcept { detail::state().plugin_dialog_visible.store(active); }
 bool interface_open() noexcept { return detail::interactive_visible(detail::state()); }
-void update_trick_modifier(std::uint16_t mask, std::uint16_t block, bool gameplay) {
+void update_trick_modifier(std::uint16_t mask, const std::function<std::uint16_t(std::uint16_t held)>& block, bool gameplay) {
     const auto pad = gameplay && mask ? read_gamepad() : Gamepad{};
     std::uint64_t value = 0;
     if (gameplay && mask && pad.valid) {
-        value = static_cast<std::uint64_t>(block & mask);
-        value |= static_cast<std::uint64_t>(pad.buttons & mask) << 16;
+        const auto held = static_cast<std::uint16_t>(pad.buttons & mask);
+        value = static_cast<std::uint64_t>(block(held) & mask);
+        value |= static_cast<std::uint64_t>(held) << 16;
         value |= static_cast<std::uint64_t>(static_cast<DWORD>(GetTickCount64())) << 32;
     }
     detail::studio_modifier_input.store(value, std::memory_order_release);

@@ -9644,11 +9644,12 @@ void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
 }
 
 void create_own_pack(const studio::View& v); // studio_packs_page.inl
-// The button a playlist plays on, as its tags say it ("HOLD RB / R1"); "" when it has none. Each playlist can have one.
+// The button a playlist plays on, as its tags say it ("HOLD RB / R1", or "HOLD LB / L1 + RB / R1" for two held together);
+// "" when it has none. Each playlist can have one.
 std::string button_words(const studio::ModifierBindings& all, const std::string& playlist) {
     const auto* b = studio::binding_of(all, playlist);
-    if (!b || b->button <= 0 || static_cast<std::size_t>(b->button) >= studio::modifier_button_names.size()) return {};
-    return std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(b->button)];
+    const auto words = b ? studio::modifier_words(*b) : std::string{};
+    return words.empty() ? words : "HOLD " + words;
 }
 std::string lowered(std::string text) {
     for (auto& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

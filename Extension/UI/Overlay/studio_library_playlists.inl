@@ -333,9 +333,9 @@ void library_playlist_content(ImDrawList* d, const Fonts& f, const studio::View&
     if (lib_guide_on && lib_guide_now == 2 && v.playlist_playing.empty()) lib_pulse(d, default_a, {default_a.x + default_w, default_a.y + rh}, k);
     // Says what it does: "+ ADD A BUTTON" until this playlist has a button (it read "ON OFF / SET UP" with none chosen),
     // then the button it plays on, held.
-    const bool has_button = binding.button > 0 && static_cast<std::size_t>(binding.button) < studio::modifier_button_names.size();
-    const std::string button_label =
-        has_button ? std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(binding.button)] + "  -  CHANGE" : "+ ADD A BUTTON";
+    const auto held_words = studio::modifier_words(binding);
+    const bool has_button = !held_words.empty();
+    const std::string button_label = has_button ? "HOLD " + held_words + "  -  CHANGE" : "+ ADD A BUTTON";
     const float button_x = x + default_w + 10 * k, button_w = lib_w(f, button_label, rh, 214 * k);
     if (lib_button(d, f, "##librarymodifierrole", {button_x, ry}, {button_w, rh}, button_label, has_button ? Look::paper : Look::ghost)) {
         // Its own button, set on the page for buttons: no other playlist's is taken until one is chosen there.

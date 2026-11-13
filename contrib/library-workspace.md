@@ -52,7 +52,14 @@ Keep a regular Kickflip animation in the normal playlist. Put a Dolphin Flip var
 Kickflip input in another playlist and assign it to the modifier. Choose a controller button, for
 example RB / R1. Hold before the move begins to use that playlist; without it, keep the normal animation.
 
+A playlist can also play on two buttons held together, for example LB + RB: choose the first button,
+then the second under **AND A SECOND BUTTON, HELD TOGETHER WITH IT**. The pair is a button of its own,
+so LB, RB and LB + RB can each have a playlist. With both held as the move begins, the pair's playlist
+plays before either button's.
+
 Replace native button reserves that button during gameplay (preventing RB/R1's native darkcatch).
+Two buttons held together are reserved only while both are held, so each keeps its own action alone;
+the first of the two pressed still reaches the game until the second is down.
 The Steam Overlay front hook and direct XInput share final filtering; Sony HID reports are filtered
 selectively too. The button remains available to Studio's own reader and is released in menus, on focus
 loss/disconnection, when disabled, or if the client stops refreshing its capture lease.
@@ -112,7 +119,8 @@ animation suite separately checks the pose matching. These checks do not replace
 
 Live acceptance on the exact DLL: normal versus modifier flips; normal/switch tail/nose manuals;
 grind entry and transfers; grabs including a style change during one hold; release/press during a move;
-missing modifier variants; a library edit or binding disable during a hold; native menus, F8, focus loss
+missing modifier variants; two buttons held together beside a playlist on one of them, and what the game
+does with the first of the two pressed; a library edit or binding disable during a hold; native menus, F8, focus loss
 and reconnection. Verify the original normal animations still play with the modifier OFF. Export
 diagnostics after a mismatch so native selection, source clip and route can be compared.
 

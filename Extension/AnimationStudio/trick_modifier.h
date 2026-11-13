@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -11,53 +12,83 @@ struct ModifierBinding {
     std::string playlist;
     int button{};
     bool block_native{true};
+    // A second button, held together with the first (LB + RB); 0: the one button. Last, so {playlist, button, block} still reads.
+    int also{};
     bool operator==(const ModifierBinding&) const = default;
 };
 inline constexpr std::array<const char*, 9> modifier_button_names{"OFF", "RB / R1", "LB / L1", "A / CROSS", "B / CIRCLE", "X / SQUARE", "Y / TRIANGLE", "L3", "R3"};
 inline constexpr std::array<std::uint16_t, 9> modifier_buttons{0, 0x0200, 0x0100, 0x1000, 0x2000, 0x4000, 0x8000, 0x0040, 0x0080};
-inline std::uint16_t modifier_mask(const ModifierBinding& b) noexcept {
-    return b.button >= 0 && static_cast<std::size_t>(b.button) < modifier_buttons.size() && !b.playlist.empty()
-        ? modifier_buttons[static_cast<std::size_t>(b.button)] : 0;
+// One button's bit (0: OFF or not a button), and the bits of a button with a second one held together.
+inline std::uint16_t modifier_button(int button) noexcept {
+    return button >= 0 && static_cast<std::size_t>(button) < modifier_buttons.size() ? modifier_buttons[static_cast<std::size_t>(button)] : std::uint16_t{};
 }
-// Several playlists can play on buttons, each on a button of its own (2026-11-05: only one could): a playlist has one
-// button at most and a button one playlist. In their order: when two of the buttons are held, the first one's plays.
+inline std::uint16_t modifier_buttons_mask(int button, int also) noexcept {
+    const auto first = modifier_button(button);
+    return first ? static_cast<std::uint16_t>(first | modifier_button(also)) : std::uint16_t{};
+}
+// A binding's buttons: one bit, or two for a playlist on two buttons held together. Without a first button there is none.
+inline std::uint16_t modifier_mask(const ModifierBinding& b) noexcept {
+    return b.playlist.empty() ? std::uint16_t{} : modifier_buttons_mask(b.button, b.also);
+}
+// Two buttons held together, rather than one.
+inline bool modifier_together(std::uint16_t mask) noexcept { return std::popcount(mask) > 1; }
+// The buttons as the pages say them: "RB / R1", "LB / L1 + RB / R1" for two held together, "" for none.
+inline std::string modifier_words(int button, int also) {
+    if (!modifier_button(button)) return {};
+    std::string out = modifier_button_names[static_cast<std::size_t>(button)];
+    if (modifier_together(modifier_buttons_mask(button, also))) out += std::string(" + ") + modifier_button_names[static_cast<std::size_t>(also)];
+    return out;
+}
+inline std::string modifier_words(const ModifierBinding& b) { return modifier_words(b.button, b.also); }
+// Several playlists can play on buttons, each on its own (2026-11-05: only one could): a playlist has one button, or two
+// held together (2026-11-13: LB + RB, its own playlist beside LB's and RB's), and a button or pair has one playlist.
 using ModifierBindings = std::vector<ModifierBinding>;
-// Every button a playlist plays on, and the ones of those that the game no longer gets while playing.
+// Every button a playlist plays on.
 inline std::uint16_t modifier_masks(const ModifierBindings& all) noexcept {
     std::uint16_t out{};
     for (const auto& b : all) out |= modifier_mask(b);
     return out;
 }
-inline std::uint16_t modifier_blocks(const ModifierBindings& all) noexcept {
+// The buttons the game no longer gets while playing, with the ones `held`. A playlist's one button is kept from the game
+// throughout. Two held together are kept from it only while both are held: each of them alone stays the game's (or
+// another playlist's), at the cost that the first of the two pressed reaches the game until the second is down.
+inline std::uint16_t modifier_blocks(const ModifierBindings& all, std::uint16_t held) noexcept {
     std::uint16_t out{};
-    for (const auto& b : all) if (b.block_native) out |= modifier_mask(b);
+    for (const auto& b : all) {
+        const auto mask = modifier_mask(b);
+        if (b.block_native && (!modifier_together(mask) || (held & mask) == mask)) out |= mask;
+    }
     return out;
 }
-// The button whose playlist a move takes, of the ones `held`: the first binding's that is held (0: none).
+// The buttons whose playlist a move takes, of the ones `held` (0: none). Two held together win over either of them
+// alone, so LB + RB plays its own playlist with LB's and RB's also set; otherwise the first binding in their order.
 inline std::uint16_t held_route(const ModifierBindings& all, std::uint16_t held) noexcept {
+    std::uint16_t best{};
     for (const auto& b : all)
-        if (const auto mask = modifier_mask(b); mask && (held & mask) == mask) return mask;
-    return 0;
+        if (const auto mask = modifier_mask(b); mask && (held & mask) == mask && std::popcount(mask) > std::popcount(best)) best = mask;
+    return best;
 }
 // The playlist's binding, or none.
 inline const ModifierBinding* binding_of(const ModifierBindings& all, const std::string& playlist) noexcept {
     const auto at = std::find_if(all.begin(), all.end(), [&](const ModifierBinding& b) { return b.playlist == playlist; });
     return at == all.end() ? nullptr : &*at;
 }
-// Puts `binding` on its playlist: the button it names leaves any other playlist; button 0 takes the playlist off its button.
+// Puts `binding` on its playlist: the button or pair it names leaves any other playlist (RB + LB is LB + RB); button 0
+// takes the playlist off its buttons. A second button that is no button, or the first again, is no second button.
 inline void put_binding(ModifierBindings& all, ModifierBinding binding) {
     if (binding.playlist.empty()) return;
-    if (binding.button < 0 || static_cast<std::size_t>(binding.button) >= modifier_buttons.size()) binding.button = 0;
+    if (!modifier_button(binding.button)) binding.button = 0;
+    if (!binding.button || !modifier_button(binding.also) || binding.also == binding.button) binding.also = 0;
     if (binding.button)
         for (auto& b : all)
-            if (b.playlist != binding.playlist && b.button == binding.button) b.button = 0;
+            if (b.playlist != binding.playlist && modifier_mask(b) == modifier_mask(binding)) b.button = b.also = 0;
     const auto at = std::find_if(all.begin(), all.end(), [&](const ModifierBinding& b) { return b.playlist == binding.playlist; });
     if (at == all.end()) all.push_back(std::move(binding));
     else *at = std::move(binding);
     std::erase_if(all, [](const ModifierBinding& b) { return b.playlist.empty() || b.button <= 0; });
 }
 // Read once per episode, not on every recognised/refined trick. Releases cannot swap poses in mid-air.
-// `route`: the button whose playlist it takes (held_route; 0 none).
+// `route`: the button (or the two held together) whose playlist it takes (held_route; 0 none).
 struct ModifierAttempt {
     bool held{};
     std::uint16_t button{};

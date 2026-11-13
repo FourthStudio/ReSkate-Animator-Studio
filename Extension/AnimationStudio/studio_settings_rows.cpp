@@ -222,10 +222,10 @@ std::vector<Setting> button_playlists(const studio::PlaylistsNow& now, const Mod
     std::vector<Setting> rows;
     std::vector<std::string> names;
     for (const auto& list : now.lists) names.push_back(list.name);
-    const auto button_ok = [](int b) { return b > 0 && static_cast<std::size_t>(b) < modifier_button_names.size(); };
-    // Each button on a playlist: which one, or OFF.
+    // Each button on a playlist (or two held together, set in the LIBRARY): which one, or OFF.
     for (const auto& binding : bindings) {
-        if (!button_ok(binding.button)) continue;
+        const auto held = modifier_words(binding);
+        if (held.empty()) continue;
         std::vector<std::string> options;
         int selected = -1;
         for (const auto& list : now.lists) {
@@ -234,7 +234,7 @@ std::vector<Setting> button_playlists(const studio::PlaylistsNow& now, const Mod
         }
         if (selected < 0) continue; // its playlist is gone
         options.push_back("OFF");
-        rows.push_back(one_of(std::format("Hold {}", modifier_button_names[static_cast<std::size_t>(binding.button)]), std::move(options), selected,
+        rows.push_back(one_of(std::format("Hold {}", held), std::move(options), selected,
             "The playlist that plays while this button is held as a trick or a held move begins; releasing it during the move does not "
             "change what plays. Another playlist takes the button over. OFF takes it off the button.",
             [binding, names](int picked) {
@@ -248,7 +248,7 @@ std::vector<Setting> button_playlists(const studio::PlaylistsNow& now, const Mod
     // Another button: the first playlist with no button (not the default one, while there is another) goes on it.
     std::vector<int> free;
     for (int b = 1; b < static_cast<int>(modifier_button_names.size()); ++b)
-        if (std::none_of(bindings.begin(), bindings.end(), [&](const ModifierBinding& m) { return m.button == b; })) free.push_back(b);
+        if (std::none_of(bindings.begin(), bindings.end(), [&](const ModifierBinding& m) { return modifier_mask(m) == modifier_button(b); })) free.push_back(b);
     std::string target;
     for (const bool not_default : {true, false}) {
         for (const auto& list : now.lists)

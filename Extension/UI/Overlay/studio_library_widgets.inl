@@ -91,7 +91,7 @@ void library_role_strip(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     Plate normal{v.play_in_game ? "PLAYS BY DEFAULT" : "PLAYS BY DEFAULT / PLAYBACK OFF", playing ? v.playlist_playing : "nothing yet",
                  playing ? entries(v.playlist_playing) : std::string{}, v.play_in_game && playing ? lib_blue : lib_warn, playing};
     // One playlist on a button: its button and its name. More: how many buttons, and their playlists' names.
-    const bool all_ready = enabled && (v.modifier_ready & studio::modifier_masks(binds)) == studio::modifier_masks(binds);
+    const bool all_ready = enabled && std::all_of(binds.begin(), binds.end(), [&](const studio::ModifierBinding& one) { return v.modifier_plays(studio::modifier_mask(one)); });
     std::string held, on_them;
     if (binds.size() == 1) held = button_words(binds, binds.front().playlist), on_them = binds.front().playlist;
     else if (binds.size() > 1) {
@@ -291,7 +291,7 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     float y = la.y - route.settings_scroll;
     y += paragraph(d, body(f, 16 * k), 16 * k, {x, y}, w, lib_ink_soft,
         "Keep your regular kickflip. Put a dolphin flip version of the same kickflip input in another playlist, then hold a button to use it. "
-        "Each playlist can have a button of its own: one on RB, another on LB. Grinds, manuals and grabs work the same way.") + 22 * k;
+        "Each playlist can have a button of its own: one on RB, another on LB, a third on LB and RB held together. Grinds, manuals and grabs work the same way.") + 22 * k;
     const float half = (w - 16 * k) * 0.5f;
     lib_row_box(d, {x, y}, {x + half, y + 82 * k}, lib_row, k);
     lib_row_box(d, {x + half + 16 * k, y}, {x + w - 8 * k, y + 82 * k}, lib_row_in, k);
@@ -309,7 +309,7 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
         const ImVec2 ra(x, y), rb(x + w - 8 * k, y + 50 * k);
         lib_row_box(d, ra, rb, one.playlist == list ? lib_row_in : lib_row, k);
         const auto held = button_words(all, one.playlist);
-        const bool ready = (v.modifier_ready & studio::modifier_mask(one)) != 0;
+        const bool ready = v.modifier_plays(studio::modifier_mask(one));
         const float off_w = lib_w(f, "OFF", 32 * k, 70 * k), edit_w = lib_w(f, "EDIT", 32 * k, 80 * k);
         lib_caps(d, f, {ra.x + 14 * k, ra.y + 18 * k}, 13 * k, lib_blue, held, 1.4f);
         const float name_x = ra.x + 30 * k + spaced_width(mont(f, 13 * k), 13 * k, held, 1.4f * k);
@@ -336,21 +336,46 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     }
     if (v.playlists.empty()) y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w, lib_ink_faint, "Make a playlist first (+ NEW PLAYLIST), then choose it here.");
     y += 52 * k;
-    if (has_button && !(v.modifier_ready & studio::modifier_mask(bind)))
+    if (has_button && !v.modifier_plays(studio::modifier_mask(bind)))
         y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w - 8 * k, lib_warn,
             "Nothing of this playlist is ready to play yet. Add playable animations to it and let it finish loading. Until then the button keeps its game action.") + 20 * k;
     library_step(d, f, {x, y}, 2, list.empty() ? "CHOOSE A BUTTON TO HOLD" : "CHOOSE A BUTTON TO HOLD FOR " + upper(list)); y += 40 * k;
     const int columns = 3; const float cell = (w - 24 * k) / static_cast<float>(columns);
+    // The other playlist that has the buttons a choice would make (with the other button of the two as it is), if any.
+    const auto owner_of = [&](int button, int also) {
+        const auto mask = studio::modifier_buttons_mask(button, also);
+        return std::find_if(all.begin(), all.end(), [&](const studio::ModifierBinding& m) { return mask && studio::modifier_mask(m) == mask && m.playlist != list; });
+    };
+    const int second = has_button && studio::modifier_together(studio::modifier_mask(bind)) ? bind.also : 0;
     for (std::size_t i = 0; i < names.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
-        // A button on another playlist says whose it is; choosing it moves it to this one.
-        const auto owner = std::find_if(all.begin(), all.end(), [&](const studio::ModifierBinding& m) { return m.button == static_cast<int>(i) && m.playlist != list; });
+        // A button on another playlist says whose it is; choosing it moves it to this one. The second button stays, unless
+        // it is the one chosen.
+        const int keeps = static_cast<int>(i) == second ? 0 : second;
+        const auto owner = owner_of(static_cast<int>(i), keeps);
         std::string label = names[i];
         if (i > 0 && owner != all.end()) label += "  /  " + elide(mont(f, 13 * k), 13 * k, upper(owner->playlist), cell * 0.45f);
         const bool mine = static_cast<int>(i) == (has_button ? bind.button : 0);
         if (lib_button(d, f, "##modifierbutton", {x + static_cast<float>(i % 3) * (cell + 8 * k), y + static_cast<float>(i / 3) * 44 * k}, {cell, 36 * k},
                        label, mine ? Look::blue : owner != all.end() && i > 0 ? Look::paper : Look::ghost, !list.empty()) && !mine) {
-            auto to = bind; to.button = static_cast<int>(i); studio::set_modifier_binding(to);
+            auto to = bind; to.button = static_cast<int>(i); to.also = keeps; studio::set_modifier_binding(to);
+        }
+        ImGui::PopID();
+    }
+    y += 146 * k;
+    // A second button, for two held together (LB + RB): its own playlist beside the ones on either button alone.
+    lib_caps(d, f, {x, y}, 13 * k, lib_ink_soft, "AND A SECOND BUTTON, HELD TOGETHER WITH IT (OPTIONAL)", 1.6f);
+    y += 26 * k;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        ImGui::PushID(1000 + static_cast<int>(i));
+        const auto owner = has_button ? owner_of(bind.button, static_cast<int>(i)) : all.end();
+        std::string label = i ? names[i] : "NONE";
+        if (owner != all.end()) label += "  /  " + elide(mont(f, 13 * k), 13 * k, upper(owner->playlist), cell * 0.45f);
+        const bool mine = has_button && static_cast<int>(i) == second;
+        // The first button cannot be its own second.
+        if (lib_button(d, f, "##modifiersecond", {x + static_cast<float>(i % 3) * (cell + 8 * k), y + static_cast<float>(i / 3) * 44 * k}, {cell, 36 * k},
+                       label, mine ? Look::blue : owner != all.end() ? Look::paper : Look::ghost, has_button && static_cast<int>(i) != bind.button) && !mine) {
+            auto to = bind; to.also = static_cast<int>(i); studio::set_modifier_binding(to);
         }
         ImGui::PopID();
     }
@@ -363,7 +388,7 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     }
     y += 50 * k;
     y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w - 8 * k, lib_ink_soft,
-        "With RB / R1 this prevents the native darkcatch. Menus keep their normal controls. Hold before the move starts; releasing during the move keeps the animation you chose. A missing compatible version falls back to regular playback. With two buttons held, the one higher in YOUR BUTTONS plays.") + 18 * k;
+        "With RB / R1 this prevents the native darkcatch. Menus keep their normal controls. Hold before the move starts; releasing during the move keeps the animation you chose. A missing compatible version falls back to regular playback. A playlist on two buttons held together plays before one on either of them alone, and the game loses those two only while both are held; otherwise, with two buttons held, the one higher in YOUR BUTTONS plays.") + 18 * k;
     if (has_button && list == v.playlist_playing)
         y += paragraph(d, body(f, 14 * k), 14 * k, {x, y}, w - 8 * k, lib_warn,
             "This playlist also plays by default. Choose a different one for the button to get different animations.") + 16 * k;
