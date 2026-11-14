@@ -360,7 +360,7 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     if (has_button && !v.modifier_plays(studio::modifier_mask(bind)))
         y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w - 8 * k, lib_warn,
             "Nothing of this playlist is ready to play yet. Add playable animations to it and let it finish loading. Until then the button keeps its game action.") + 20 * k;
-    library_step(d, f, {x, y}, 2, list.empty() ? "CHOOSE A BUTTON TO HOLD, OR TWO TOGETHER" : "CHOOSE A BUTTON TO HOLD, OR TWO TOGETHER, FOR " + upper(list)); y += 40 * k;
+    library_step(d, f, {x, y}, 2, "CHOOSE ONE OR TWO BUTTONS TO HOLD"); y += 40 * k;
     const int columns = 3; const float cell = (w - 24 * k) / static_cast<float>(columns);
     // One grid, in which a button or two are chosen (2026-11-13): a button chosen joins the one already chosen, held
     // together with it, and one chosen again leaves. Nothing is another playlist's or this one's until DONE.
@@ -391,9 +391,14 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
     if (changed) {
         // What DONE does, and whose buttons it takes: the playlist that has exactly these.
         const auto loser = owner_of(first, second);
-        std::string words = first ? "Not applied yet. DONE puts " + list + " on " + studio::modifier_words(first, second) + "." : "Not applied yet. DONE takes " + list + " off its button.";
-        if (first && second) words += " Hold both together.";
-        if (loser != all.end()) words += " " + loser->playlist + " has that now and will have no button.";
+        // Playlists are often named after buttons ("RB", "LB + RB"), so a playlist's name is quoted and called a
+        // playlist, to tell it from the button beside it.
+        const std::string mine = "the playlist \"" + list + "\"";
+        std::string words = !first ? "Not applied yet. Press DONE to take " + mine + " off its button."
+                          : second ? "Not applied yet. Press DONE to play " + mine + " while " + studio::modifier_words(first, second) + " are held together."
+                                   : "Not applied yet. Press DONE to play " + mine + " while " + studio::modifier_words(first, second) + " is held.";
+        if (loser != all.end())
+            words += " The playlist \"" + loser->playlist + "\" uses " + (second ? "those buttons" : "that button") + " now, and will be left without one.";
         y += paragraph(d, body(f, 14 * k), 14 * k, {x, y}, w - 8 * k, lib_warn, words) + 16 * k;
     }
     library_step(d, f, {x, y}, 3, "KEEP OR TAKE OVER ITS GAME ACTION"); y += 40 * k;
