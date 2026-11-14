@@ -13,6 +13,8 @@ ReSkate now names its releases by date: 20261114 is the update after 2.1.4-5.
 
 - **Global illumination no longer hangs the GPU**, and DLSS frame generation keeps working when the game switches it off for a frame.
 - **The park editor** flies right after skating or turning the camera, and can lay its snap grid over the world (Show snap grid).
-- **The launcher's Mod Manager** installs mods from a queue, several downloading at once, with an ITEMS tab to leave items out of a mod; merging many mods is much faster.
+- **Merging many mods is much faster.**
+
+ReSkate's own 20261114 launcher also has a new Mod Manager: mods install from a queue with several downloading at once, and an ITEMS tab leaves items out of a mod. UPDATE NOW only replaces `ReSkate.dll`, so the launcher you have stays as it is; you get the new one by letting the ReSkate launcher update once and then putting the studio's `ReSkate.dll` back (the second way above).
 
 The rest is in the [ReSkate 20261114 release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/20261114).
