@@ -31,7 +31,7 @@ void draw_notices() {
     auto& s = state();
     if (!s.loaded_notice_posted) {
         s.loaded_notice_posted = true;
-        // "ReSkate 0.6.0 loaded" and the keys the launcher chose for the menu and console.
+        // "ReSkate 20261114 loaded" and the keys the launcher chose for the menu and console.
         const auto keys = dingosdk::launcher::overlay_keys();
         const auto name = [](unsigned key) { return key == VK_OEM_3 ? std::string("~") : dingosdk::launcher::key_name(key); };
         // A build that carries a named mod says both: "ReSkate 2.1.2 + Animator Studio 1.0.11 loaded".
