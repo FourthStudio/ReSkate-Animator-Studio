@@ -356,6 +356,11 @@ struct Ui {
     std::uint64_t dev_key_request_seen{};
     std::uint64_t tab_request_seen{};
     studio::LibraryNavigation library;
+    // PLAYLISTS ON BUTTONS: the buttons chosen for a playlist and not its own yet (DONE makes them so), and the frame the
+    // page last drew, by which a page left any other way forgets them.
+    studio::ModifierBinding modifier_draft;
+    bool modifier_drafted{};
+    int modifier_draft_frame{-2};
     std::optional<studio::PlaylistEntry> library_pending_source;
     // The LIBRARY's reorder: an entry of the open playlist picked up by its grip, dragged with the mouse or carried with the
     // pad or the arrow keys, and the place it would go (list_reorder.h). Found again by what it is (`entry`), so a list

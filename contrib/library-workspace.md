@@ -52,10 +52,14 @@ Keep a regular Kickflip animation in the normal playlist. Put a Dolphin Flip var
 Kickflip input in another playlist and assign it to the modifier. Choose a controller button, for
 example RB / R1. Hold before the move begins to use that playlist; without it, keep the normal animation.
 
-A playlist can also play on two buttons held together, for example LB + RB: choose the first button,
-then the second under **AND A SECOND BUTTON, HELD TOGETHER WITH IT**. The pair is a button of its own,
+A playlist can also play on two buttons held together, for example LB + RB: choose both in the grid
+(a chosen button pressed again leaves; a third waits until one does). The pair is a button of its own,
 so LB, RB and LB + RB can each have a playlist. With both held as the move begins, the pair's playlist
 plays before either button's.
+
+The buttons and the native action chosen on this page apply when **DONE** is pressed, and only then
+leave a playlist that had them; the page says whose they are first. Leaving the page another way, or
+turning it to another playlist, keeps what was set. **OFF** in YOUR BUTTONS still acts at once.
 
 Replace native button reserves that button during gameplay (preventing RB/R1's native darkcatch).
 Two buttons held together are reserved only while both are held, so each keeps its own action alone;
