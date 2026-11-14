@@ -4,7 +4,7 @@ This describes the current release (`DINGOSDK_MOD_VERSION` in `CMakePresets.json
 
 ## Runtime contract
 
-Studio is compiled into ReSkate.dll. ReSkate 2.1.4-5 (hotfix 2) and game build 20260929 / Steam 25414733 are the supported integration. Do not infer support for another executable from a successful source build.
+Studio is compiled into ReSkate.dll. ReSkate 20261114 and game build 20260929 / Steam 25414733 are the supported integration. Do not infer support for another executable from a successful source build.
 
 Gameplay edits are applied to fresh native body/board poses. The selected trick, pop, stance and takeoff context decide which saved edits are eligible. The native clip matching clock supplies source timing; marked fallback paths are not proof of a decoded native animation-graph state.
 
