@@ -416,7 +416,7 @@ struct Changelog {
     int shown{};                                     // the release the panel is showing
     // Whether pre-releases are wanted (the setting), and whether `notes` were fetched with them.
     bool prereleases{}, fetched_prereleases{};
-    // Whose releases the notes are of (the "ReSkate build" setting), and those `note` came from.
+    // Whose releases the notes are of (the "Use base ReSkate" setting), and whose releases `notes` came from.
     update::Channel channel{}, fetched_channel{};
 
     ~Changelog() {

@@ -925,7 +925,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     else if (ui.settings) settings_window(launcher, fonts, size, ui, window);
     else if (ui.news) announcement_window(fonts, size, ui);
     else if (ui.changelog)
-        changelog_window(fonts, size, ui, update::binary_updates_enabled() && state.config ? state.config->runtime.version : std::string());
+        changelog_window(fonts, size, ui, update::binary_updates_enabled() && state.config
+            ? update::installed_release_tag(state.config_channel, state.config->runtime.version) : std::string());
     else if (ui.mods) mods_window(launcher, fonts, size, ui, mods_panel, window);
     else if (state.phase == Phase::mods_broken)
         mods_broken_window(launcher, fonts, size, ui, mods_panel, state.mod_problems);

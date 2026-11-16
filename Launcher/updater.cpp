@@ -629,6 +629,11 @@ std::vector<ReleaseNote> fetch_release_notes(bool prereleases, Channel channel, 
 
 std::string releases_page(Channel channel) { return "https://github.com/" + utf8(std::wstring(release_repo(channel))) + "/releases"; }
 
+std::string installed_release_tag(Channel channel, const std::string& version) {
+    if (channel == Channel::official) return {};
+    return version.substr(0, version.find("+reskate."));
+}
+
 bool file_matches(const fs::path& path, const RemoteFile& file) {
     std::error_code error;
     return fs::is_regular_file(path, error) && fs::file_size(path, error) == file.size && !error &&
