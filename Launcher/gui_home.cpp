@@ -441,7 +441,7 @@ void state_tile(ImDrawList* draw, const Fonts& fonts, const State& state, ImVec2
     const float text_x = position.x + pad + S(28), text_end = failed ? buttons_x - S(18) : end.x - pad;
     const float line = fonts.body->FontSize + S(2);
     const float detail_tall = detail.empty() ? 0.0f
-        : std::min(fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, text_end - text_x, detail.c_str()).y, line * 2);
+        : std::min(fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, text_end - text_x, detail.c_str()).y, line * 3);
     const float block = fonts.heading->FontSize + (detail.empty() ? 0.0f : S(6) + detail_tall);
     const float y = position.y + (size.y - block) * 0.5f;
     skate_theme::status_icon(draw, ImVec2(position.x + pad + S(10), y + fonts.heading->FontSize * 0.5f), failed ? Icon::fail : Icon::warning,
@@ -450,7 +450,7 @@ void state_tile(ImDrawList* draw, const Fonts& fonts, const State& state, ImVec2
     draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(text_x, y), failed ? color::danger : color::text, headline.c_str(), nullptr, 0,
                   &clip);
     if (!detail.empty()) {
-        // Two lines of it at most: the rest is in the logs.
+        // Three lines of it at most, because the one-way warning before SWITCH is three lines. The logs have the rest.
         const float detail_y = y + fonts.heading->FontSize + S(6);
         const ImVec4 lines(text_x, detail_y, text_end, detail_y + detail_tall);
         draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, detail_y), color::muted, detail.c_str(), nullptr, text_end - text_x, &lines);
