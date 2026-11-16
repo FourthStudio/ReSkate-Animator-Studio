@@ -10,6 +10,9 @@
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/Skater/real_bails.h"
+#include "Extension/Trainer/trainer.h"
+#include "Extension/Trainer/trainer_gamestate.h"
+#include "Extension/AnimationStudio/anim_runtime_rules.h"
 #include "Extension/AnimationStudio/studio_update.h"
 #include "studio_cover_maker.h"
 #include "studio_market_art.h"
@@ -107,6 +110,22 @@ struct Ui {
     bool catch_drag{}, catch_began{}; // CATCH is held; its undo step is taken
     float catch_dragged_to{-1};       // the frame it was last moved to
     bool trick_panel{};               // THIS TRICK is open
+    // The card a click on THIS CLIP NEVER PLAYS opens (shown_on_row): the pop the trick plays on ("" closed), for the clip
+    // that was open (`pop_choice_serial`).
+    std::string pop_choice;
+    std::uint64_t pop_choice_serial{};
+    // The editor's place in the open trick, kept while it is previewed on another pop and put back after (on_new_clip).
+    struct Place {
+        std::uint16_t selected{};
+        std::vector<std::pair<std::uint16_t, float>> picked;
+        std::optional<std::uint16_t> key_joint;
+        int axis{-1}, channel{-1};
+        View timeline_view{View::fit};
+        float timeline_zoom{1}, timeline_scroll{}, rows_scroll{};
+        std::uint16_t rows_followed{0xffff};
+    };
+    std::optional<Place> place_under_look;
+    bool clip_seen_look{}; // the clip last seen was a preview on another pop
     int guide_page{};                 // the HOW IT WORKS guide's page
     std::string delete_card;          // a saved trick in a pack about to be deleted: the card asks first
     bool account{};                   // MARKET > ACCOUNT is open: the Thunderstore team signed in, and changing it
@@ -2652,7 +2671,7 @@ bool other_cards_open(const studio::View& v) {
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
            !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account || !u.reshare_pack.empty() ||
            !u.playlist_for.empty() || !u.binding.empty() || v.loop_offer.has_value() || !v.guide_seen || studio::update::popup_wanted() || u.dev_key ||
-           !u.offer_pack.empty() || u.report_form;
+           !u.offer_pack.empty() || u.report_form || !u.pop_choice.empty();
 }
 bool any_card_open(const studio::View& v) { return other_cards_open(v) || tour_wanted(v); }
 // The menu's tabs by number (menu_tabs below): 0 TRICKS, 1 LIBRARY, 2 MARKET, 3 SETTINGS, 4 ABOUT, and PACKS, which came back
@@ -2701,6 +2720,7 @@ bool close_card(const studio::View& v) {
     } else if (!u.share_pack.empty()) u.share_pack.clear();
     else if (!u.offer_pack.empty()) u.offer_pack.clear(), u.offer_naming = false; // NOT NOW
     else if (u.save_card) u.save_card = false;
+    else if (!u.pop_choice.empty()) u.pop_choice.clear();
     else if (!v.test_returned.empty()) studio::clear_test_returned();
     else if (!other_cards_open(v) && tour_wanted(v)) tour_close();
     else return false;
@@ -11762,13 +11782,334 @@ void market_preview_card(ImDrawList* d, const Fonts& f, const studio::View& v, f
         else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) && at > 0) open_market_preview(m.preview, u.preview_order[at - 1]);
     }
 }
+// ---- SHOWN ON: what the skater in the middle is, said where it differs from the game -------------------------------------------
+// The studio draws the open trick on its own clip with its keys whole. The game does not always: on another pop it plays
+// another clip, it brings the keys in and takes them out, it leaves keyed legs outside the editor's limits, and a player's
+// Trainer turns the flip faster or slower. This row is where the studio says so, and lets a flip trick be looked at on the
+// game's clip of another pop (studio::look_on_pop), to watch only.
+// The Trainer's name for the speed of its own it gives the game's trick `trick` (trainer_gamestate.h, flip_tricks). The
+// studio and the Trainer name the impossibles and the nollie differently (native_library.cpp); a nollie trick turns at its
+// regular trick's speed, but for the impossibles.
+std::string trainer_flip_key(std::string_view trick) {
+    if (trick == "bsimpossible") return "flip.impossible";
+    if (trick == "fsimpossible") return "flip.frontfootimpossible";
+    if (trick == "n_fsimpossible") return "flip.nollieimpossible";
+    if (trick == "n_bsimpossible") return "flip.nolliebackfootimpossible";
+    if (trick == "ollie" || trick == "nollie") return "flip.ollie";
+    if (trick.starts_with("n_")) trick.remove_prefix(2);
+    return "flip." + std::string(trick);
+}
+// How many times a full flick's flip speed the player's Trainer makes of the game's trick `trick`: 1, or its flip trick speed
+// and, with Advanced trick speed, the trick's own. (A pop with no flip in it - the ollie, the nollie - is left alone but with
+// "Slow flips pop higher": trainer.cpp, drive_flip_speed.)
+// 1 also where a session's host sets everyone's physics: the Trainer then flips at the host's speed (boosts_in_force), which
+// the studio does not know.
+// `set_by`: the Trainer settings that make it, by their names on the Trainer's page.
+float players_flip_speed(const std::string& trick, std::string& set_by) {
+    set_by.clear();
+    const auto own = dingosdk::trainer::view();
+    const bool plain_pop = trick == "ollie" || trick == "nollie";
+    if (!own || own->session_enforced || own->boosts_blocked || (plain_pop && !own->flip_pop)) return 1;
+    float times = own->flip_speed;
+    if (std::abs(own->flip_speed - 1) > 0.005f) set_by = "THE TRAINER: FLIP TRICK SPEED";
+    if (own->flip_advanced && !own->flip_advanced_blocked) {
+        const auto key = trainer_flip_key(trick);
+        for (std::size_t i = 0; i < dingosdk::trainer::flip_tricks.size(); ++i)
+            if (dingosdk::trainer::flip_tricks[i].key == key && std::abs(own->flip_trick[i] - 1) > 0.005f) {
+                times *= own->flip_trick[i];
+                set_by += set_by.empty() ? "THE TRAINER: ADVANCED TRICK SPEED" : " AND ADVANCED TRICK SPEED";
+            }
+    }
+    return times;
+}
+// The clip that is open plays in game. Not when the trick plays on another pop and the game has its own clip of that pop:
+// then the game plays the trick moved onto that clip (THIS CLIP NEVER PLAYS), with its own timing.
+bool open_clip_plays(const studio::View& v) {
+    return v.own_pop.empty() || v.plays_pop.empty() || v.plays_pop == v.own_pop || !v.plays_pop_clip || v.own_clip_fills;
+}
+// How much of the open trick's keys the game still shows at the playhead as it takes them out before the trick's end
+// (studio::keys_weight_in_game, its way out alone, and before an END ANIM set by hand studio::keys_window_out too). 1
+// before that, and for a trick with no pop marked: a piece of the game's animation comes on when the game plays that
+// piece, not at a moment of this timeline. Where the keys come in is not said here. (A trick the game hands back sooner -
+// into a grind, a manual, the next pop - loses its keys sooner; the editor does not know of that.)
+float keys_out_in_game(const studio::View& v, float seconds) {
+    const float end = v.bracket_end < 0 ? v.duration : v.bracket_end;
+    return studio::keys_weight_in_game(1.0f, end - seconds, v.trick_crossfade.value_or(v.crossfade)) *
+           studio::keys_window_out(v.bracket_start, v.bracket_end, seconds);
+}
+float keys_shown_in_game(const studio::View& v) {
+    if (!v.has_clip || !(v.takeoff > 0) || !open_clip_plays(v)) return 1;
+    // (Outside START to END ANIM neither the editor nor the game puts the keys on: nothing fades there.)
+    if (v.time < v.bracket_start || (v.bracket_end >= 0 && v.time > v.bracket_end)) return 1;
+    return keys_out_in_game(v, v.time);
+}
+// One chip of the row at `x` (moved on past it). `on`: lit. `enabled` off: darker, and a click does nothing.
+bool row_chip(ImDrawList* d, const Fonts& f, const std::string& id, const std::string& label, float& x, float y, bool on, bool enabled, bool* over) {
+    const float k = f.k, h = 30 * k;
+    const auto size = text_size(f.heading, 13 * k, label.c_str());
+    const ImVec2 a(x, y), b(x + size.x + 22 * k, y + h);
+    bool lit = false;
+    const bool pressed = hit(id.c_str(), a, b, &lit, enabled);
+    skate_theme::rough_rect(d, a, b, on ? (lit ? IM_COL32(40, 152, 255, 255) : blue) : lit && enabled ? IM_COL32(46, 48, 54, 245) : IM_COL32(20, 21, 24, 230),
+                            seed_of(a), k * 0.6f);
+    text(d, f.heading, 13 * k, ImVec2(a.x + 11 * k, a.y + (h - size.y) * 0.5f), enabled || on ? white : faint, label);
+    x = b.x + 8 * k;
+    if (over) *over = lit || (!enabled && !ui().blocked && ImGui::IsMouseHoveringRect(a, b));
+    return pressed;
+}
+// The LOW, MID and HIGH chips of a flip trick on one of the game's pop clips, from `x` on. The one of its own clip is lit
+// while it is edited; while it is looked at on another pop, that pop's is. A click on another pop looks at the trick there
+// (to watch only); a click on its own goes back to editing it. `over`: the pop the mouse is on ("" none).
+void pop_chips(ImDrawList* d, const Fonts& f, const studio::View& v, float& x, float y, std::string& over) {
+    const std::string shown = v.pop_look.empty() ? v.own_pop : v.pop_look;
+    for (const char* pop : {"low", "mid", "high"}) {
+        const bool own = v.own_pop == pop;
+        // (Every other pop can be previewed, whatever it plays on: one it does not play on shows how it would look there. Not
+        // the pop it plays on when the game has no clip of it: there this clip plays.)
+        const bool plays = own || v.plays_pop != pop || v.plays_pop_clip;
+        bool lit = false;
+        const std::string label = upper(pop) + (own ? (v.pop_look.empty() ? ": EDITING" : ": BACK TO EDIT") : "");
+        if (row_chip(d, f, std::string("##shownpop") + pop, label, x, y, shown == pop, plays, &lit) && shown != pop) {
+            std::string message;
+            if (!studio::look_on_pop(pop, message) && !message.empty()) say(message);
+        }
+        if (lit) over = pop;
+    }
+}
+// One thing the game does differently from what the editor shows (shown_on_row): a short chip on the row, the whole of it
+// in a card while the mouse is on the chip, and what a click on the chip does (`act` empty: nothing to click).
+struct RowFlag {
+    std::string label, title, body, click;
+    std::function<void()> act;
+    bool strong{}; // the clip on show never plays in game
+};
+// A card under the row at `below` (moved left to stay on screen): a title, what it means, and what a click does. On top of
+// everything else.
+void hover_card(const Fonts& f, ImVec2 below, const std::string& title, const std::string& body, const std::string& click) {
+    auto* d = ImGui::GetForegroundDrawList();
+    const float k = f.k, w = 380 * k, inner = w - 34 * k;
+    const float body_h = body.empty() ? -14 * k : sharp(f.bold, 13 * k)->CalcTextSizeA(13 * k, FLT_MAX, inner, body.c_str()).y;
+    const float click_h = click.empty() ? 0.0f : sharp(f.bold, 12 * k)->CalcTextSizeA(12 * k, FLT_MAX, inner, click.c_str()).y + 10 * k;
+    const float left = std::min(below.x, ImGui::GetIO().DisplaySize.x - w - 16 * k);
+    const ImVec2 a(left, below.y + 6 * k), b(left + w, a.y + 38 * k + body_h + click_h + 14 * k);
+    skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 248), seed_of(a), k);
+    d->AddRectFilled(a, ImVec2(a.x + 5 * k, b.y), skate_theme::warning);
+    text(d, f.heading, 14 * k, ImVec2(a.x + 18 * k, a.y + 13 * k), white, title);
+    if (!body.empty()) paragraph(d, f.bold, 13 * k, ImVec2(a.x + 18 * k, a.y + 38 * k), inner, soft, body);
+    if (!click.empty()) paragraph(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 38 * k + body_h + 10 * k), inner, blue_light, click);
+}
+// The width of a flag's chip.
+float flag_chip_width(const Fonts& f, const RowFlag& flag) { return text_size(f.heading, 13 * f.k, flag.label.c_str()).x + 26 * f.k; }
+// A flag's chip at `x` (moved on past it): amber words, with an amber bar at its left as on its card. `over`: the mouse is
+// on it. Returns the chip's corners through `a` and `b`.
+bool flag_chip(ImDrawList* d, const Fonts& f, const std::string& id, const RowFlag& flag, float& x, float y, bool& over, ImVec2& a, ImVec2& b) {
+    const float k = f.k, h = 30 * k;
+    const auto size = text_size(f.heading, 13 * k, flag.label.c_str());
+    a = ImVec2(x, y);
+    b = ImVec2(x + flag_chip_width(f, flag), y + h);
+    over = false;
+    const bool pressed = hit(id.c_str(), a, b, &over, true);
+    // (Lit under the mouse only when a click does something: a chip with nothing to click only has its card.)
+    skate_theme::rough_rect(d, a, b, flag.strong ? skate_theme::warning : over && flag.act ? IM_COL32(46, 48, 54, 245) : IM_COL32(20, 21, 24, 230), seed_of(a), k * 0.6f);
+    if (!flag.strong) d->AddRectFilled(a, ImVec2(a.x + 4 * k, b.y), skate_theme::warning);
+    text(d, f.heading, 13 * k, ImVec2(a.x + 15 * k, a.y + (h - size.y) * 0.5f), flag.strong ? IM_COL32(20, 21, 24, 255) : skate_theme::warning, flag.label);
+    x = b.x + 8 * k;
+    return pressed;
+}
+// The card a click on THIS CLIP NEVER PLAYS opens: the trick plays in game on another pop's clip than the one open. Preview
+// how it plays there, move it onto that clip to edit what plays (studio::move_onto_pop: not for a pop set by a pack's rule,
+// which the trick's own PLAYS ON does not follow), or - for a saved trick set to that pop by its own PLAYS ON - set PLAYS ON
+// to the open clip's pop, so this clip is what plays.
+void pop_choice_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
+    auto& u = ui();
+    // (Closed once it no longer fits what is open: another clip, the trick moved, its pop changed.)
+    if (u.pop_choice != v.plays_pop || u.pop_choice_serial != v.clip_serial || !v.plays_pop_clip || v.own_clip_fills || v.own_pop.empty() ||
+        v.own_pop == v.plays_pop) {
+        u.pop_choice.clear();
+        return;
+    }
+    const float k = f.k, bh = 46 * k, gap = 10 * k;
+    const std::string plays = upper(v.plays_pop), own = upper(v.own_pop);
+    const bool can_move = !v.pop_by_pack;
+    const bool can_set = can_move && preset_named(v, v.name);
+    const int buttons = 2 + can_move + can_set;
+    const auto [a, b] = card_box(d, f, display, 640 * k, 92 * k + 70 * k + buttons * (bh + gap) + 30 * k, "THIS CLIP NEVER PLAYS IN GAME", skate_theme::warning);
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 92 * k;
+    y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
+                   "In game, this trick plays on the " + v.plays_pop + " pop clip. " + (v.pop_by_pack ? "Its pack sets this." : "Its PLAYS ON sets this.")) + 22 * k;
+    const auto button = [&](const char* id, const std::string& label, Look look, bool enabled = true) {
+        const bool pressed = action(d, f, id, ImVec2(x, y), ImVec2(w, bh), label, look, enabled);
+        y += bh + gap;
+        return pressed;
+    };
+    std::string message;
+    if (button("##popchoicelook", "PREVIEW THE " + plays + " POP", Look::dark)) {
+        u.pop_choice.clear();
+        if (!studio::look_on_pop(v.plays_pop, message) && !message.empty()) say(message);
+    }
+    // (Only a saved trick with nothing unsaved is moved: until it is saved again its file keeps the old clip.)
+    if (can_move && button("##popchoicemove", v.dirty ? "SAVE FIRST TO EDIT ON THE " + plays + " POP CLIP" : "EDIT ON THE " + plays + " POP CLIP", Look::blue, !v.dirty)) {
+        u.pop_choice.clear();
+        if (!studio::move_onto_pop(v.plays_pop, message) && !message.empty()) say(message);
+    }
+    if (can_set && button("##popchoiceset", "PLAY ON " + own + " POPS INSTEAD", Look::dark)) {
+        u.pop_choice.clear();
+        studio::set_saved_pop(v.name, v.own_pop, message);
+        say(message);
+    }
+    if (button("##popchoicecancel", "CANCEL", Look::ghost)) u.pop_choice.clear();
+}
+// The row in the editor, at `at`; its words stop at `until` (the THIS TRICK button stands there). Returns where it ends
+// (what is drawn under it starts there).
+float shown_on_row(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, float until) {
+    if (!v.has_clip || v.previewing) return at.y;
+    const float k = f.k, h = 30 * k;
+    float x = at.x, y = at.y;
+    // What the game does differently at the playhead, one flag each (RowFlag): the pop it plays on, the keys going out, a
+    // leg the limits move, the Trainer's flip speed.
+    std::vector<RowFlag> flags;
+    // (A trick that plays on its own pop has no flag: that is the usual case - a trick opened from TRICKS starts on its own
+    // pop. The pop chips' cards say where it plays.)
+    if (!open_clip_plays(v)) {
+        const std::string pop = v.plays_pop;
+        flags.push_back({"THIS CLIP NEVER PLAYS", "THIS CLIP NEVER PLAYS",
+                         "In game, this trick plays on the " + pop + " pop clip. " + (v.pop_by_pack ? "Its pack sets this." : "Its PLAYS ON sets this."),
+                         "CLICK TO CHOOSE A FIX",
+                         [pop, serial = v.clip_serial] {
+                             auto& u = ui();
+                             u.pop_choice = pop;
+                             u.pop_choice_serial = serial;
+                         },
+                         true});
+    }
+    if (const float shows = keys_shown_in_game(v); shows < 0.995f) {
+        // (The fade is set by the Crossfade - in THIS TRICK, the main one or the trick's own - before END ANIM.)
+        const float crossfade = std::clamp(v.trick_crossfade.value_or(v.crossfade), 0.1f, 0.8f);
+        flags.push_back({shows <= 0.005f ? std::string("KEYS FADED OUT") : std::format("KEYS AT {:.0f}%", shows * 100), "KEYS FADE OUT",
+                         std::format("In game, {:.0f}% of your keys play here. They fade out over the last {:.2f} s (the Crossfade).", shows * 100, crossfade),
+                         "CLICK TO SET THE CROSSFADE", [] { ui().trick_panel = true; }});
+    }
+    // (A foot on the board is the exception: in game it is put where the limited leg has it, ride_feet_on_the_board.) No
+    // click: LIMITS is one setting for every trick, and in game it still limits the arms, back and head.
+    if (v.legs_limited_deg >= 1.0f)
+        flags.push_back({"LEG OVER LIMIT", "LEG OVER LIMIT",
+                         std::format("LIMITS move this leg {:.0f} degrees. In game, a leg off the board plays as keyed.", v.legs_limited_deg), "", {}});
+    if (!v.own_pop.empty()) {
+        std::string set_by;
+        if (const float flips = players_flip_speed(v.trick, set_by); std::abs(flips - 1) > 0.005f)
+            flags.push_back({std::format("FLIP x{:.2f}", flips), flips > 1 ? "FLIPS FASTER IN GAME" : "FLIPS SLOWER IN GAME",
+                             std::format("In game, this trick flips at x{:.2f}. Set in {}.", flips, set_by), "", {}});
+    }
+    // The flags from `x` on, wrapping under each other from `from` when they do not fit; the card of the one under the mouse.
+    // Returns the height of the rows they take past the first.
+    const auto draw_flags = [&](float& fx, float from, float fy) {
+        float extra = 0;
+        fx += 10 * k;
+        for (const auto& flag : flags) {
+            const float w = flag_chip_width(f, flag);
+            if (fx > from && fx + w > until) {
+                fx = from;
+                extra += h + 6 * k;
+            }
+            bool over = false;
+            ImVec2 a, b;
+            if (flag_chip(d, f, "##rowflag" + flag.title, flag, fx, fy + extra, over, a, b) && flag.act) flag.act();
+            if (over) hover_card(f, ImVec2(a.x, b.y), flag.title, flag.body, flag.click);
+        }
+        return extra;
+    };
+    // The pop chips, for a flip trick on one of the game's pop clips: its own clip, being edited, and the others to preview.
+    const bool pop_row = !v.own_pop.empty();
+    if (pop_row) {
+        text(d, f.bold, 11 * k, ImVec2(x, y + 9 * k), faint, "PREVIEW ON");
+        x += text_size(f.bold, 11 * k, "PREVIEW ON").x + 12 * k;
+        const float chips_from = x;
+        std::string over;
+        pop_chips(d, f, v, x, y, over);
+        // (The card of a pop chip under the mouse: a pop to preview - the keys fitted to another clip, which can move them - or
+        // why it is dimmed.)
+        if (!over.empty() && over != v.own_pop) {
+            const ImVec2 under(ImGui::GetIO().MousePos.x - 20 * k, y + h);
+            const std::string fitted = "Your keys from the " + v.own_pop + " clip, fitted to the " + over + " clip";
+            if (!v.plays_pop.empty() && v.plays_pop != over)
+                hover_card(f, under, "PREVIEW THIS TRICK", fitted + ". It plays on " + v.plays_pop + " pops only.", "");
+            else if (v.plays_pop == over && !v.plays_pop_clip)
+                hover_card(f, under, upper(over) + " POP", "The game has no " + over + " pop clip for this trick. This clip plays on " + over + " pops.", "");
+            else
+                hover_card(f, under, "PREVIEW THIS TRICK", fitted + ". Some keys can look different.", "");
+        }
+        y += draw_flags(x, chips_from, y) + h + 8 * k;
+    }
+    // THIS GRIND, THIS MANUAL: the parts of the move the open trick is a piece of, in the order they play. The open one is
+    // lit. A click opens your own saved edit of that part, or the game's clip of it to make one. Drawn over the IN GAME
+    // line, which comes and goes with the playhead: the chips stay where they are.
+    if (!v.line_parts.empty()) {
+        x = at.x;
+        const char* title = v.line_is_manual ? "THIS MANUAL" : "THIS GRIND";
+        text(d, f.bold, 11 * k, ImVec2(x, y + 9 * k), faint, title);
+        x += text_size(f.bold, 11 * k, title).x + 12 * k;
+        const float chips_from = x;
+        int n = 0;
+        for (const auto& part : v.line_parts) {
+            const std::string label = part.label + (part.saved.empty() || part.open ? "" : ": YOURS");
+            // (A part that does not fit goes on a line of its own under the others: each part can be reached.)
+            if (x > chips_from && x + text_size(f.heading, 13 * k, label.c_str()).x + 22 * k > until) {
+                x = chips_from;
+                y += h + 8 * k;
+            }
+            bool over = false;
+            const float chip_x = x;
+            const bool pressed = row_chip(d, f, "##linepart" + std::to_string(n++), label, x, y, part.open, true, &over);
+            // (Its card: a click puts another clip in the editor, so it says which one, and that it replaces the one open.)
+            if (over) {
+                const ImVec2 under(chip_x, y + h);
+                const auto* saved = part.saved.empty() ? nullptr : preset_named(v, part.saved);
+                const std::string ask = v.dirty ? " You are asked to save your changes first." : "";
+                if (part.open) hover_card(f, under, "EDITING THIS PART", "", "");
+                else if (saved && saved->locked)
+                    hover_card(f, under, part.label, "Your saved edit of this part, locked by its maker." + ask, "CLICK TO PREVIEW IT");
+                else if (saved) hover_card(f, under, part.label, "Your saved edit of this part." + ask, "CLICK TO EDIT THIS PART INSTEAD");
+                else hover_card(f, under, part.label, "The game's clip of this part. Save it to make your own edit." + ask, "CLICK TO EDIT THIS PART INSTEAD");
+            }
+            if (pressed && !part.open) {
+                if (!part.saved.empty()) open_or_preview(v, part.saved);
+                else {
+                    bool opened = false;
+                    if (const auto tricks = studio::game_tricks())
+                        for (const auto& t : *tricks)
+                            if (!opened && t.asset == part.asset) {
+                                open_game_trick(t);
+                                opened = true;
+                            }
+                    if (!opened) say("Could not find the game's clip for that part.");
+                }
+            }
+        }
+        y += h + 8 * k;
+    }
+    if (!pop_row && !flags.empty()) {
+        x = at.x;
+        text(d, f.bold, 11 * k, ImVec2(x, y + 9 * k), faint, "IN GAME");
+        x += text_size(f.bold, 11 * k, "IN GAME").x + 2 * k;
+        const float from = x + 10 * k;
+        y += draw_flags(x, from, y) + h + 8 * k;
+    }
+    return y;
+}
 void mouse_camera(const studio::View& v, const Projector& project, bool inside, bool left_turns, float k); // below
-void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, const Projector& project) {
+// `keys_free`: the keys are this screen's (no menu or card was open over it as they were pressed: an Esc that closes one
+// is its own).
+void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, const Projector& project, bool keys_free) {
     auto& u = ui();
     const float k = f.k;
-    const bool market = !u.preview_market.empty();
-    const auto* p = market ? nullptr : preset_named(v, u.preview_name.empty() ? v.name : u.preview_name);
-    const auto* pack = market || u.preview_pack.empty() ? nullptr : pack_named(v, u.preview_pack);
+    // The open trick looked at on another pop (studio::look_on_pop): the card is that trick's, whatever preview was open
+    // before it (its name, pack and MARKET page are left set when a preview ends another way than by BACK). Not the saved
+    // trick's tags: what is on show is the open trick, with changes not saved (its stance among them).
+    const bool pop_look = !v.pop_look.empty();
+    const bool market = !pop_look && !u.preview_market.empty();
+    const auto* p = market || pop_look ? nullptr : preset_named(v, u.preview_name.empty() ? v.name : u.preview_name);
+    const auto* pack = pop_look || market || u.preview_pack.empty() ? nullptr : pack_named(v, u.preview_pack);
     // ---- the card: the pack and the trick ----
     if (market) market_preview_card(d, f, v, display.y - 128 * k - 26 * k - 20 * k);
     else {
@@ -11791,7 +12132,11 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
         }
         text(d, f.heading, 12 * k, ImVec2(x, y), blue_light, "TRICK");
         y += 20 * k;
-        y += paragraph(d, f.title, 30 * k, ImVec2(x, y), iw, white, upper(shown_name(v, u.preview_name.empty() ? v.name : u.preview_name))) + 6 * k;
+        // (A preview on another pop: the name the editor's title gives it, so it keeps one name across the switch.)
+        y += paragraph(d, f.title, 30 * k, ImVec2(x, y), iw, white, pop_look ? title_of(v) : upper(shown_name(v, u.preview_name.empty() ? v.name : u.preview_name))) + 6 * k;
+        if (pop_look)
+            y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), iw, faint,
+                           (v.kept_dirty ? "Your trick with unsaved changes, on the " : "Your trick on the ") + v.pop_look + " pop clip.") + 8 * k;
         if (p) {
             text(d, f.bold, 14 * k, ImVec2(x, y), soft, elide(f.bold, 14 * k, trick_label(p->trick) + (p->made_by.empty() ? "" : "   by " + p->made_by), iw));
             y += 26 * k;
@@ -11821,6 +12166,43 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
     const ImVec2 a((display.x - bar_w) * 0.5f, display.y - bar_h - 26 * k), b(a.x + bar_w, a.y + bar_h);
     // Why there is nothing here to edit or copy with: said over the bar, for a MARKET preview too (its card is the MARKET's).
     if (v.locked) tag(d, f, ImVec2(a.x, a.y - 34 * k), "LOCKED BY ITS CREATOR: PREVIEW ONLY", IM_COL32(120, 34, 36, 255));
+    // ... the pops over the bar, and what is on show.
+    if (pop_look) {
+        float px = a.x;
+        const float py = a.y - 42 * k;
+        text(d, f.bold, 11 * k, ImVec2(px, py + 9 * k), faint, "PREVIEW ON");
+        px += text_size(f.bold, 11 * k, "PREVIEW ON").x + 12 * k;
+        std::string over;
+        pop_chips(d, f, v, px, py, over);
+        // The pop the trick plays on, while it is on another pop's clip: it can be moved onto this clip to edit what plays.
+        // Or, for a saved trick set to that pop by its own PLAYS ON, PLAYS ON set to the pop of the clip it is on, so that clip
+        // is what plays (back in the editor after it: the pop on show no longer plays the trick).
+        const bool plays_here = v.plays_pop == v.pop_look && v.own_pop != v.pop_look && !v.own_clip_fills;
+        const bool can_move = plays_here && !v.pop_by_pack;
+        const bool can_set = can_move && preset_named(v, v.name);
+        const float move_w = 300 * k, set_w = 300 * k;
+        const float buttons_w = (can_move ? move_w + 12 * k : 0.0f) + (can_set ? set_w + 10 * k : 0.0f);
+        // (On a pop it does not play on: how it would look there.)
+        const bool would = !v.plays_pop.empty() && v.plays_pop != v.pop_look;
+        const std::string says = would ? "IT PLAYS ON " + upper(v.plays_pop) + " POPS ONLY. EDITING IS OFF." : std::string("EDITING IS OFF.");
+        text(d, f.heading, 13 * k, ImVec2(px + 6 * k, py + 8 * k), white, elide(f.heading, 13 * k, says, b.x - px - 6 * k - buttons_w));
+        // (Only with nothing unsaved: until it is saved again its file keeps the old clip.)
+        if (can_move && action(d, f, "##moveontopop", ImVec2(b.x - move_w, py), ImVec2(move_w, 32 * k),
+                               v.kept_dirty ? "SAVE FIRST TO EDIT HERE" : "EDIT ON THE " + upper(v.pop_look) + " POP CLIP", Look::blue, !v.kept_dirty)) {
+            std::string message;
+            if (!studio::move_onto_pop(v.pop_look, message) && !message.empty()) say(message);
+        }
+        if (can_set && action(d, f, "##setpoptoown", ImVec2(b.x - move_w - 10 * k - set_w, py), ImVec2(set_w, 32 * k), "PLAY ON " + upper(v.own_pop) + " POPS INSTEAD", Look::dark)) {
+            const std::string name = v.name, own = v.own_pop;
+            studio::end_preview();
+            std::string message;
+            studio::set_saved_pop(name, own, message);
+            say(message);
+        }
+        // What a chip said when it could not show a pop: this screen has no status box.
+        if (!u.message.empty() && ImGui::GetTime() < u.message_until)
+            text(d, f.bold, 13 * k, ImVec2(a.x, py - 26 * k), skate_theme::warning, elide(f.bold, 13 * k, u.message, b.x - a.x));
+    }
     skate_theme::rough_rect(d, a, b, IM_COL32(14, 14, 16, 230), seed_of(a), k);
     {
         // Where it is: a bar to click or drag along.
@@ -11860,15 +12242,22 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
         ImGui::PopID();
     }
     if (action(d, f, "##previewexit", ImVec2(b.x - 24 * k - 230 * k, by), ImVec2(230 * k, bh),
-               market ? "< BACK TO MARKET" : u.preview_return_tab == 1 ? "< BACK TO LIBRARY" : u.preview_from_pack ? "< BACK TO PACK" : "< BACK", Look::paper))
-        leave_preview();
+               pop_look ? "< BACK TO EDIT" : market ? "< BACK TO MARKET" : u.preview_return_tab == 1 ? "< BACK TO LIBRARY" : u.preview_from_pack ? "< BACK TO PACK" : "< BACK",
+               Look::paper)) {
+        // (A look at another pop goes back to the trick in the editor, not to the menu it was never opened from.)
+        if (pop_look) studio::end_preview();
+        else leave_preview();
+    }
     // The keys.
-    if (!ImGui::GetIO().WantTextInput) {
+    if (keys_free && !ImGui::GetIO().WantTextInput) {
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) studio::set_playing(!v.playing);
         if (ImGui::IsKeyPressed(ImGuiKey_R, false)) studio::set_time(0), studio::set_playing(true);
         for (const auto& [label, shot] : views)
             if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_0 + shot), false)) take_shot(v, shot);
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) leave_preview();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            if (pop_look) studio::end_preview();
+            else leave_preview();
+        }
     }
     // The mouse on the open floor (not on the card at the left, the bar, a button or a card over it) takes the camera.
     const auto mouse = ImGui::GetIO().MousePos;
@@ -12483,6 +12872,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (!u.reshare_pack.empty()) reshare_card(d, f, v, display);
     else if (!u.offer_pack.empty()) offer_card(d, f, v, display);
     else if (u.save_card) save_card(d, f, v, display);
+    else if (!u.pop_choice.empty()) pop_choice_card(d, f, v, display);
     else if (v.loop_offer) loop_card(d, f, v, display);
     else if (!v.test_returned.empty()) test_card(d, f, v, display);
     else if (studio::update::popup_wanted()) update_card(d, f, display);
@@ -13006,7 +13396,30 @@ void draw_fisheye(ImDrawList* d, ImVec2 display) {
 void on_new_clip(const studio::View& v) {
     auto& u = ui();
     if (u.clip_seen == v.clip_serial) return;
+    // A preview on another pop and back is the same trick: the editor's place in it (joint, picked keys, axis, timeline)
+    // is kept, and put back when the next clip is the trick come back (one step on: a move onto another clip is two).
+    const bool look = !v.pop_look.empty(), back = u.clip_seen_look && !look && !v.previewing && v.clip_serial == u.clip_seen + 1;
+    if (look && !u.clip_seen_look) u.place_under_look = Ui::Place{u.selected, u.picked, u.key_joint, u.axis, u.channel, u.timeline_view,
+                                                                    u.timeline_zoom, u.timeline_scroll, u.rows_scroll, u.rows_followed};
     u.clip_seen = v.clip_serial;
+    u.clip_seen_look = look;
+    if (look) return;
+    if (back && u.place_under_look) {
+        auto& p = *u.place_under_look;
+        u.selected = p.selected;
+        u.picked = std::move(p.picked);
+        u.key_joint = p.key_joint;
+        u.axis = p.axis;
+        u.channel = p.channel;
+        u.timeline_view = p.timeline_view;
+        u.timeline_zoom = p.timeline_zoom;
+        u.timeline_scroll = p.timeline_scroll;
+        u.rows_scroll = p.rows_scroll;
+        u.rows_followed = p.rows_followed;
+        u.place_under_look.reset();
+        return;
+    }
+    u.place_under_look.reset();
     u.selected = studio::hips_joint;
     u.picked.clear();
     u.key_joint.reset();
@@ -13941,6 +14354,25 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         const auto tw = text_size(f.bold, 10 * k, why);
         if (room > tw.x + 16 * k) text(d, f.bold, 10 * k, ImVec2(from + 8 * k, bottom - tw.y - 8 * k), IM_COL32(255, 255, 255, 90), why);
     }
+    // ... and they go out again over the Crossfade before the trick's end (studio::keys_weight_in_game): the shade comes
+    // back over that stretch, as much as the game takes of them.
+    if (v.has_clip && v.takeoff > 0 && open_clip_plays(v)) {
+        const float end = v.bracket_end < 0 ? v.duration : v.bracket_end;
+        const float fade = std::clamp(v.trick_crossfade.value_or(v.crossfade), 0.1f, 0.8f);
+        const float top = at.y + header_h, bottom = at.y + size.y;
+        const float fade_from = std::max(x_of(end - fade), ruler_left), fade_to = std::min(x_of(end), ruler_right);
+        if (fade_to > fade_from) {
+            const auto alpha = [&](float x) {
+                const float seconds = end - fade + (x - x_of(end - fade)) / std::max(x_of(end) - x_of(end - fade), 1.0f) * fade;
+                return static_cast<int>(90 * (1 - keys_out_in_game(v, seconds)));
+            };
+            d->AddRectFilledMultiColor(ImVec2(fade_from, top), ImVec2(fade_to, bottom), IM_COL32(0, 0, 0, alpha(fade_from)),
+                                       IM_COL32(0, 0, 0, alpha(fade_to)), IM_COL32(0, 0, 0, alpha(fade_to)), IM_COL32(0, 0, 0, alpha(fade_from)));
+            const char* why = "KEYS FADE OUT IN GAME";
+            const auto tw = text_size(f.bold, 10 * k, why);
+            if (fade_to - fade_from > tw.x + 16 * k) text(d, f.bold, 10 * k, ImVec2(fade_to - tw.x - 8 * k, bottom - tw.y - 8 * k), IM_COL32(255, 255, 255, 90), why);
+        }
+    }
     // CATCH: where the trick is caught - the pose held in the air off a bigger drop or down stairs, before it plays on to
     // its landing. The studio finds it (AUTO CATCH); drag the flag to the frame to hold, double-click it for the
     // studio's again. Its flag hangs under the frame numbers, out of the brackets' way, pointing back into the air.
@@ -14653,7 +15085,7 @@ void draw_animation_studio() {
         u.menu_fade = 0;
         if (lens().on) draw_fisheye(d, display);
         if (v.previewing) {
-            preview_screen(d, f, v, display, project);
+            preview_screen(d, f, v, display, project, !card && !menu_open_at_input);
             ImGui::End();
             ImGui::PopStyleVar(2);
             draw_cards(f, v, display);
@@ -14682,6 +15114,10 @@ void draw_animation_studio() {
             return;
         }
         editor_top(d, f, v, display, left, right);
+        // (Its words stop before the THIS TRICK button - or, open, its panel.)
+        const float shown_on_end = shown_on_row(d, f, v, ImVec2(left + (tool_strip_margin + tool_strip_width + 26) * k, 92 * k),
+                                                ui().trick_panel ? view_max.x - 16 * k - 420 * k - 24 * k
+                                                                 : view_max.x - 16 * k - text_size(f.bold, 13 * k, "THIS TRICK  +").x - 34 * k - 14 * k);
         tool_strip(d, f, v, ImVec2(left + tool_strip_margin * k, 98 * k));
         joint_card(d, f, v, ImVec2(right - 20 * k - side_w, 98 * k), side_w);
         trick_panel(d, f, v, ImVec2(view_max.x - 16 * k, 98 * k));
@@ -14694,7 +15130,8 @@ void draw_animation_studio() {
         // reached under it and hid its MODIFIER HINT.
         const float status_right = ui().trick_panel ? view_max.x - 16 * k - 420 * k - 24 * k : view_max.x - 24 * k;
         if (!line.empty())
-            status_box(d, f, ImVec2(view_min.x + 24 * k, 100 * k), std::max(160 * k, std::min(680 * k, status_right - view_min.x - 24 * k)),
+            // (Under the SHOWN ON row: over it, it hid the row's chips.)
+            status_box(d, f, ImVec2(view_min.x + 24 * k, std::max(100 * k, shown_on_end + 10 * k)), std::max(160 * k, std::min(680 * k, status_right - view_min.x - 24 * k)),
                        v.failure.empty() ? white : skate_theme::danger, line);
         if (!card && !menu_open_at_input) keyboard(v);
     }

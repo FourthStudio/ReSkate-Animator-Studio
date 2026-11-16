@@ -73,6 +73,33 @@ struct View {
     std::size_t source_pose_count{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
+    // THE POPS. The open trick is on the game's clip of one pop (`own_pop`: low, mid or high; "": it is no trick on a pop's
+    // clip). `pop_look`: it is being looked at on another pop's clip, to watch only (look_on_pop), fitted to it as the game
+    // fits an ANY POP trick; "": not.
+    std::string own_pop, pop_look;
+    // The pop it plays on in game ("": any pop): its own setting, or the rule of a pack it is in (EVERY TRICK PLAYS ON),
+    // which goes first in game (load_custom_trick). `pop_by_pack`: a pack's rule says.
+    std::string plays_pop;
+    bool pop_by_pack{};
+    // ... and the game has its own clip of that pop for this trick, so in game the trick plays moved onto that clip and the
+    // clip it is on never plays. False: with no such clip the game plays the trick's own clip on that pop.
+    bool plays_pop_clip{};
+    // Another maker's trick: in game its own clip still plays on its own pop when nothing in the playlist is for that pop
+    // (load_custom_trick's fill-in versions), so that clip does play.
+    bool own_clip_fills{};
+    // How far the editor's joint limits move a keyed leg at the playhead, in degrees (0: not at all, or LIMITS is off). In
+    // game a leg off the board plays as keyed (limit_keyed_joints); a foot on the board is put where the limited leg has it
+    // (ride_feet_on_the_board).
+    float legs_limited_deg{};
+    // The open trick is a piece of a grind or a manual: the parts of its line in the order they play - its ways in, its
+    // loop, its ways out - each one of the game's clips. `saved`: your own saved edit of that part ("" none yet). `open`:
+    // the open trick is on it. Empty: it is no such piece.
+    struct LinePart {
+        std::string asset, label, saved;
+        bool open{};
+    };
+    std::vector<LinePart> line_parts;
+    bool line_is_manual{};
     // The trick previewed is locked by its creator (trick_lock.h): preview only. Its keys' values are not in `tracks` (their
     // times are), so nothing on the screen can copy them.
     bool locked{};
@@ -552,6 +579,19 @@ bool load(const std::string& name, std::string& message);
 // A saved trick open to watch only, a pack's or anyone's (one locked to its maker too): it plays, the camera moves, but
 // nothing is keyed or saved. end_preview closes it.
 bool preview_saved(const std::string& name, std::string& message);
+// THE POPS: the open trick on the game's clip of another pop (`pop`: low, mid or high), to watch only - its keys fitted to
+// that clip the way an ANY POP trick's are in game, and COPY TO LOW, MID AND HIGH makes them. Nothing of it is saved; the
+// open trick is kept as it is, with its changes, and comes back with its own pop or end_preview. A trick set to one pop
+// is shown on another all the same: how it would look there. False, with why: no flip trick on a pop's clip is open, or
+// the library has no clip of the game's for that pop.
+bool look_on_pop(const std::string& pop, std::string& message);
+// The open trick moved onto the game's clip of the one pop it plays on (`pop`), to edit there: a trick made on another
+// pop's clip and set to this one plays in game on this clip only (load_custom_trick's version for that pop), so the clip it
+// was made on never plays. Its keys are fitted as onto_game_pop fits them; it is NOT SAVED until saved, and undo starts
+// again from here. False, with why: it plays on another pop or on every pop, a pack's rule sets its pop, it has unsaved
+// changes (save first: until it is saved again its file keeps the old clip), it is locked by its maker, or the library
+// has no clip of the game's for that pop.
+bool move_onto_pop(const std::string& pop, std::string& message);
 // One of a pack's tricks not installed (unpack_preview) open to watch only, the same way. end_preview closes it.
 bool preview_unpacked(const UnpackedTrick& trick, std::string& message);
 void end_preview();
