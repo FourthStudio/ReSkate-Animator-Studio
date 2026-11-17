@@ -408,6 +408,10 @@ void library_modifier_setup(ImDrawList* d, const Fonts& f, const studio::View& v
         auto to = draft; to.block_native = !to.block_native; choose(to);
     }
     y += 50 * k;
+    // Two held together: the first one down is still alone, and the game's, until the second is.
+    if (second && draft.block_native)
+        y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w - 8 * k, lib_ink_soft,
+            "Whichever of the two you press first still does its game action, until the other is down.") + 10 * k;
     y += paragraph(d, body(f, 13 * k), 13 * k, {x, y}, w - 8 * k, lib_ink_soft,
         "With RB / R1 this prevents the native darkcatch. Menus keep their normal controls. Hold before the move starts; releasing during the move keeps the animation you chose. A missing compatible version falls back to regular playback. A playlist on two buttons held together plays before one on either of them alone, and the game loses those two only while both are held; otherwise, with two buttons held, the one higher in YOUR BUTTONS plays.") + 18 * k;
     if (first && list == v.playlist_playing)

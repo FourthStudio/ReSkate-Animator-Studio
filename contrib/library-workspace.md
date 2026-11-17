@@ -62,8 +62,9 @@ leave a playlist that had them; the page says whose they are first. Leaving the 
 turning it to another playlist, keeps what was set. **OFF** in YOUR BUTTONS still acts at once.
 
 Replace native button reserves that button during gameplay (preventing RB/R1's native darkcatch).
-Two buttons held together are reserved only while both are held, so each keeps its own action alone;
-the first of the two pressed still reaches the game until the second is down.
+Two buttons held together are reserved from the read of the pad that has both down until each is let
+go, so each keeps its own action alone; the first of the two pressed still reaches the game until the
+second is down, so press the one whose action can be spared first (RB, then Y: Y alone gets off the board).
 The Steam Overlay front hook and direct XInput share final filtering; Sony HID reports are filtered
 selectively too. The button remains available to Studio's own reader and is released in menus, on focus
 loss/disconnection, when disabled, or if the client stops refreshing its capture lease.

@@ -9629,8 +9629,9 @@ void set_modifier_binding(ModifierBinding binding) {
 void modifier_tick(bool gameplay) {
     const auto snap = snapshot();
     const std::uint16_t mask = snap ? modifier_masks(snap->modifiers) : std::uint16_t{};
-    // Which of them the game does not get depends on the ones held: two held together are its own until both are down.
-    overlay::update_trick_modifier(mask, [&](std::uint16_t held) { return snap ? modifier_blocks(snap->modifiers, held) : std::uint16_t{}; },
+    // Two held together are the game's until both are down, which its own read of the pad decides.
+    const auto together = snap ? modifier_kept_together(snap->modifiers) : std::vector<std::uint16_t>{};
+    overlay::update_trick_modifier(mask, snap ? modifier_kept(snap->modifiers) : std::uint16_t{}, together,
         gameplay && snap && snap->play_in_game && !snap->open && !testing_tricks.load());
 }
 void set_modifier_hint(bool on) {

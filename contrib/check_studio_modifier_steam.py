@@ -13,6 +13,7 @@ fixture = r'''
 #include <Xinput.h>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #if __has_include("Extension/UI/Overlay/polled_gamepad.h")
@@ -27,8 +28,8 @@ std::uint16_t modifier_mask = 0x0200;
 bool menu_capture{}, full_capture{};
 bool block_polled_input(){return !overlay_input_access && full_capture;}
 bool suppress_challenge_menu(){return !overlay_input_access && menu_capture;}
-std::uint16_t modifier_hidden_buttons(){return overlay_input_access ? 0 : modifier_mask;}
-std::uint16_t game_hidden_buttons(){return overlay_input_access ? 0 : static_cast<std::uint16_t>(mode_hidden_buttons.load() | modifier_hidden_buttons() | (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));}
+std::uint16_t modifier_hidden_buttons(std::size_t,std::uint16_t){return overlay_input_access ? 0 : modifier_mask;}
+std::uint16_t game_hidden_buttons(){return overlay_input_access ? 0 : static_cast<std::uint16_t>(mode_hidden_buttons.load() | (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));}
 void note_prompt_read(std::atomic<unsigned>&){}
 void note_xinput(DWORD,const XINPUT_STATE&){}
 bool scripted_pad(DWORD,XINPUT_STATE&){return false;}

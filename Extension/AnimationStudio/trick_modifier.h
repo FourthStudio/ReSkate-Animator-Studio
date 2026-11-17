@@ -49,15 +49,22 @@ inline std::uint16_t modifier_masks(const ModifierBindings& all) noexcept {
     for (const auto& b : all) out |= modifier_mask(b);
     return out;
 }
-// The buttons the game no longer gets while playing, with the ones `held`. A playlist's one button is kept from the game
-// throughout. Two held together are kept from it only while both are held: each of them alone stays the game's (or
-// another playlist's), at the cost that the first of the two pressed reaches the game until the second is down.
-inline std::uint16_t modifier_blocks(const ModifierBindings& all, std::uint16_t held) noexcept {
+// The buttons the game no longer gets while playing: a playlist's one button is kept from it throughout.
+inline std::uint16_t modifier_kept(const ModifierBindings& all) noexcept {
     std::uint16_t out{};
-    for (const auto& b : all) {
-        const auto mask = modifier_mask(b);
-        if (b.block_native && (!modifier_together(mask) || (held & mask) == mask)) out |= mask;
-    }
+    for (const auto& b : all)
+        if (const auto mask = modifier_mask(b); b.block_native && !modifier_together(mask)) out |= mask;
+    return out;
+}
+// Two held together are kept from the game only once both are down: each of them alone stays the game's (or another
+// playlist's), at the cost that the first of the two pressed reaches the game until the second is down. Which read has
+// both down is decided on the game's own read of the pad (overlay::detail::together_hidden), not from the buttons a
+// tick saw held: decided a tick late, the second one's press had already reached the game (2026-11-16: with RB + Y
+// taken over, Y still got the skater off the board).
+inline std::vector<std::uint16_t> modifier_kept_together(const ModifierBindings& all) {
+    std::vector<std::uint16_t> out;
+    for (const auto& b : all)
+        if (const auto mask = modifier_mask(b); b.block_native && modifier_together(mask)) out.push_back(mask);
     return out;
 }
 // The buttons whose playlist a move takes, of the ones `held` (0: none). Two held together win over either of them
