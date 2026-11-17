@@ -7,6 +7,7 @@
 #include "Extension/Plugins/plugin_listing.h"
 #include "Extension/Objects/placement_geometry.h"
 #include "Extension/Plugins/plugin_manifest.h"
+#include "Extension/Plugins/plugin_server_scope.h"
 #include "Extension/Plugins/plugin_session_feed.h"
 #include "Extension/Plugins/plugin_wire.h"
 #include "Extension/Throwdowns/challenge_registry.h"
@@ -142,8 +143,11 @@ struct FakeGame final : Game {
         ++body_submit_entries; // Count entry even when the backend rejects a zero/invalid packet.
         sequence = 0;
         auto* b = body_of(owner, h);
-        if (!b || b->released || body_command_sequence == std::numeric_limits<std::uint64_t>::max() ||
-            !b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1)) return "owner, generation or packet";
+        if (!b || b->released || body_command_sequence == std::numeric_limits<std::uint64_t>::max()) return "owner, generation or packet";
+        // A command the inbox refuses is answered in the service's own words (submit in
+        // Extension/World/owned_bodies.cpp), so a host test can show a plugin is handed them as they are.
+        if (!b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1))
+            return "body command invalid, repeated, stopped, pending or receipt ring full";
         sequence = ++body_command_sequence;
         ++body_submissions;
         return {};
@@ -287,23 +291,46 @@ struct FakeGame final : Game {
         body_releases.push_back(owner);
         for (auto& [id, b] : owned) { (void)id; if (b.owner == owner) { b.released = true; b.mailbox.cancel(); } }
     }
-    void body_producer_step(bool complete = true) {
+    // The clock edge alone: the physics step that publishes every body's next sample.
+    void body_clock_step() {
         for (auto& [id, b] : owned) {
             (void)id;
             if (b.released || b.quarantined) continue;
             ++b.sample.epoch.serial;
             b.sample.epoch.time += b.sample.epoch.seconds;
+        }
+    }
+    // One synchronizer call on a listed wrapper: it takes a body's pending command only when the
+    // clock reads the step after that command's epoch. Returns how many commands it took.
+    unsigned body_synchronizer_call(bool complete = true) {
+        unsigned taken{};
+        for (auto& [id, b] : owned) {
+            (void)id;
+            if (b.released || b.quarantined) continue;
             owned_body::Command out;
             if (b.mailbox.consume(b.sample.epoch, 1, out)) {
+                ++taken;
                 (void)b.mailbox.finish(true, complete, complete);
                 if (!complete) b.quarantined = true;
             }
         }
+        return taken;
+    }
+    // The full-rate order: the edge, then the synchronizer, and the plugin's tick after both.
+    // A test of the half-rate order ticks the host between body_clock_step and body_synchronizer_call.
+    void body_producer_step(bool complete = true) {
+        body_clock_step();
+        (void)body_synchronizer_call(complete);
     }
     struct Effect { std::string owner; EffectRequest request; bool stopped{}; float alpha{1}; };
     std::map<std::uint64_t, Effect> effects;
     std::uint64_t effect_serial{}, effect_epoch{1};
     bool effects_ready{true};
+    std::vector<std::pair<std::string, std::string>> effect_bundles;   // bundle, asset: each one asked for
+    EffectBundleState effect_bundle(std::string_view, std::string_view bundle, std::string_view asset) override {
+        effect_bundles.emplace_back(std::string(bundle), std::string(asset));
+        return effect_bundles.size() == 1 ? EffectBundleState::loading : EffectBundleState::ready;
+    }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override {
         if (!effects_ready) return 0;
         const auto id = ++effect_serial;
@@ -908,6 +935,14 @@ struct FakeGame final : Game {
         for (const auto& [owner, who] : hidden_list)
             if (owner == plugin) out.push_back(who);
         return out;
+    }
+    std::string place_player(std::string_view plugin, std::uint64_t player, std::optional<SkaterPlacement> placement) override {
+        if (!placement) calls.push_back(std::format("place {} {} back", plugin, player));
+        else
+            calls.push_back(std::format("place {} {} at {:.1f} {:.1f} {:.1f} turned {} joint {}{}", plugin, player, placement->position[0], placement->position[1],
+                                        placement->position[2], placement->rotation ? std::format("{:.2f}", (*placement->rotation)[3]) : "no",
+                                        placement->joint ? std::to_string(*placement->joint) : "none", placement->board ? "" : " no board"));
+        return {};
     }
     std::map<std::uint64_t, PlayerOutfit> outfits; // what player_outfit() reads
     std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
@@ -1624,23 +1659,75 @@ void expired_effects_return_their_quota() {
         local fx = reskate.effects
         local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
         reskate.console.command("fxfill", "", function()
-            for i=1,24 do assert(fx.particle("effects/reskate/test/ebp_spark", m)) end
+            for i=1,64 do assert(fx.particle("effects/reskate/test/ebp_spark", m)) end
             for i=1,2048 do assert(fx.decal("world/materials/decal/reskate_test/stain_dv", m)) end
             assert(fx.particle("effects/reskate/test/ebp_spark", m) == nil)
             assert(fx.decal("world/materials/decal/reskate_test/stain_dv", m) == nil)
         end)
     )"}})});
     auto& game = environment.fake;
-    check(host.run_console("fxfill") && game.effects.size() == 2072, "Both effect quotas can be filled");
+    check(host.run_console("fxfill") && game.effects.size() == 2112, "Both effect quotas can be filled");
     game.effects.clear(); // Ten-minute native expiry, with no change to the world epoch.
     ticks(host, environment, 1);
-    check(host.run_console("fxfill") && game.effects.size() == 2072, "Expiry returns both quotas without Lua release/clear");
+    check(host.run_console("fxfill") && game.effects.size() == 2112, "Expiry returns both quotas without Lua release/clear");
     ticks(host, environment, 1);
     game.effects.clear();
     ++game.effect_epoch;
     // A console call can arrive after the native reset but before Plugin::tick.
-    check(host.run_console("fxfill") && game.effects.size() == 2072, "A reset returns quota even before the next VM tick");
+    check(host.run_console("fxfill") && game.effects.size() == 2112, "A reset returns quota even before the next VM tick");
     running(host, "effects-expire", environment);
+}
+
+void game_effects_need_their_own_permission() {
+    // effects.game cannot stand alone, and is a known permission.
+    bool refused = false;
+    try { (void)parse_manifest(manifest(R"("effects.game")")); } catch (const std::exception&) { refused = true; }
+    check(refused, "effects.game without effects is refused");
+    check(parse_manifest(manifest(R"("effects", "effects.game")")).permissions.contains("effects.game"), "effects.game is a permission");
+    check(game_effect_asset("effects/environments/effectblueprints/ebp_env_thick_smoke_popup") &&
+          !game_effect_asset("effects/reskate/test/ebp_spark") && !game_effect_asset("world/materials/decal/reskate_test/stain_dv") &&
+          !game_effect_asset("/effects/a") && !game_effect_asset("effects//a") && !game_effect_asset("Effects/A") && !game_effect_asset(""),
+          "A game effect's name is a plain asset path that is not a mod's own");
+
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    // Without effects.game, a plugin with effects still cannot name one of the game's.
+    host.apply({package("fx-private-only", {{manifest_file, manifest(R"("effects", "console")")}, {"plugin/main.lua", R"(
+        local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        reskate.console.command("fxstock", "", function()
+            local ok, why = pcall(reskate.effects.particle, "effects/environments/effectblueprints/ebp_env_thick_smoke_popup", m)
+            assert(not ok and why:find("effects.game"), tostring(why))
+            ok, why = pcall(reskate.effects.load, "win32/effects/gestures/effectblueprints/ebp_x_bundle", "effects/gestures/effectblueprints/ebp_x")
+            assert(not ok and why:find("effects.game"), tostring(why))
+        end)
+    )"}})});
+    check(host.run_console("fxstock") && environment.fake.effects.empty() && environment.fake.effect_bundles.empty(),
+          "A plugin without effects.game cannot play the game's effects or ask for its bundles");
+
+    // With it, the game's particle effects play; decals and the plugin's own undeclared names do not.
+    host.apply({package("fx-game", {{manifest_file, manifest(R"("effects", "effects.game", "console")")}, {"plugin/main.lua", R"(
+        local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        reskate.console.command("fxgame", "", function()
+            assert(reskate.effects.particle("effects/environments/effectblueprints/ebp_env_thick_smoke_popup", m))
+            assert(not pcall(reskate.effects.decal, "world/materials/decal/some_game_decal", m))
+            assert(not pcall(reskate.effects.particle, "effects/reskate/test/undeclared", m))
+            assert(not pcall(reskate.effects.particle, "Effects/Upper", m))
+            -- One of the game's effect bundles can be asked for; only those under win32/effects/.
+            local bundle = "win32/effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst_bundle"
+            local effect = "effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst"
+            assert(reskate.effects.load(bundle, effect) == "loading")
+            assert(reskate.effects.load(bundle, effect) == "ready")
+            assert(not pcall(reskate.effects.load, "win32/levels/game/bam_levelroot/bam_levelroot", effect))
+            assert(not pcall(reskate.effects.load, bundle, "effects/reskate/test/ebp_spark"))
+        end)
+    )"}})});
+    check(host.run_console("fxgame") && environment.fake.effects.size() == 1 &&
+          environment.fake.effects.begin()->second.request.game &&
+          environment.fake.effects.begin()->second.request.asset == "effects/environments/effectblueprints/ebp_env_thick_smoke_popup",
+          "A plugin with effects.game plays one of the game's particle effects, marked as the game's");
+    check(environment.fake.effect_bundles.size() == 2 &&
+          environment.fake.effect_bundles.front().first == "win32/effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst_bundle",
+          "It can ask for one of the game's effect bundles, and nothing outside win32/effects/ reaches the game");
 }
 
 void plugins_render_private_effects() {
@@ -1699,7 +1786,7 @@ void plugins_render_private_effects() {
         broken=table.clone(m); broken[1]=0
         assert(not pcall(fx.particle,p,broken))
         assert(not pcall(fx.decal,d,m,{lift=2}))
-        for i=1,24 do assert(fx.particle(p,m)) end
+        for i=1,64 do assert(fx.particle(p,m)) end
         assert(fx.particle(p,m)==nil,"particle quota")
         for i=1,2048 do assert(fx.decal(d,m,{attach=true,lift=.04})) end
         assert(fx.decal(d,m)==nil,"decal quota")
@@ -2003,6 +2090,7 @@ void plugin_approval_follows_the_plugins_own_files() {
         auto requested = std::string("\"") + std::string(name) + "\"";
         if (name == "events.physics.geometry") requested = R"("events.physics", "events.physics.geometry")";
         if (name == "world.physics.reuse") requested = R"("world.physics", "world.physics.reuse")";
+        if (name == "effects.game") requested = R"("effects", "effects.game")";
         const auto requested_prompt = approval_prompt(permission_groups(parse_manifest(manifest(requested))));
         check(requested_prompt.find("\n- ") != std::string::npos && requested_prompt.find("No special permissions") == std::string::npos,
               "A request for " + std::string(name) + " has a capability summary");
@@ -2280,6 +2368,189 @@ void plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_
     running(host, "body-pipeline-failure", environment);
     check(environment.logged("later partial body receipt is inspectable"), environment.all());
     check(environment.fake.body_submissions == 2 && environment.fake.owned.at(1).mailbox.failed, "partial command was replayed or failed mailbox reopened");
+}
+
+// A plugin that reads, acknowledges and submits on every tick, driven through frames in the two
+// orders the game runs them in, as counted there per frame. 'f' is the full-rate order: clock
+// edge, three synchronizer calls on listed wrappers, tick, three more calls. 'h' is the half-rate
+// order: clock edge, tick, three calls, where the tick that reads sample N+1 still finds its
+// command for N queued. Either way, and across changes of order, every tick's command is
+// accepted and one is applied on every step, each in the step after its own epoch.
+void plugins_command_every_step_when_the_tick_precedes_the_synchronizer() {
+    for (const std::string_view order : {"ffffffff", "hhhhhhhh", "hhhffffhhhhfff", "fhfhhffhhf"}) {
+        TestEnvironment environment;
+        Host host(environment, Side::client);
+        host.apply({script("body-every-step", R"(
+            local P, v = reskate.world.physics, vector.create
+            local h = assert(P.create({mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1},
+                capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}))
+            local last_produced, acknowledged, most_rows = nil, 0, 0
+            local waiting = {}
+            reskate.on("tick", function()
+                local sample = assert(P.read(h))
+                while #waiting > 0 do
+                    local r = assert(P.receipt(h))
+                    assert(r.sequence == waiting[1], "the oldest receipt is not the oldest command")
+                    if r.outcome == "queued" then break end
+                    assert(r.outcome == "applied" and r.force_attempted and r.torque_attempted, "a command ended as " .. r.outcome)
+                    if not r.successor then break end
+                    local produced = tonumber(r.produced_serial)
+                    assert(produced == tonumber(r.requested_serial) + 1, "a command was applied on another step than the one after its epoch")
+                    assert(last_produced == nil or produced == last_produced + 1, "a step went without a command")
+                    last_produced = produced
+                    assert(P.acknowledge(h, r.sequence))
+                    table.remove(waiting, 1)
+                    acknowledged += 1
+                end
+                local ok, why, id = P.submit(h, sample.epoch, {force = v(0, 20, 0)})
+                assert(ok and why == nil, "a tick's command was refused: " .. tostring(why))
+                table.insert(waiting, id)
+                most_rows = math.max(most_rows, #waiting)
+                assert(not P.submit(h, sample.epoch, {}), "one measured epoch was commanded twice")
+                reskate.log("every-step acknowledged=" .. acknowledged .. " most_rows=" .. most_rows)
+            end)
+        )", R"("world.physics")")});
+        running(host, "body-every-step", environment);
+        auto& fake = environment.fake;
+        unsigned taken{};
+        for (const char kind : order) {
+            fake.body_clock_step();
+            // Of a frame's calls at most one takes a command: the first before a full-rate
+            // frame's tick, or the first after a half-rate frame's.
+            if (kind != 'h') for (unsigned call = 0; call < 3; ++call) taken += fake.body_synchronizer_call();
+            ticks(host, environment, 1);
+            const auto before = taken;
+            for (unsigned call = 0; call < 3; ++call) taken += fake.body_synchronizer_call();
+            check(kind == 'h' || taken == before, "order " + std::string(order) + ": a call after the tick took the command for the step it read");
+            running(host, "body-every-step", environment);
+        }
+        const auto frames = static_cast<unsigned>(order.size());
+        const auto& box = fake.owned.at(1).mailbox;
+        check(fake.body_submissions == frames && taken == frames - 1 && box.last_serial == fake.owned.at(1).sample.epoch.serial - 1,
+            "order " + std::string(order) + ": submitted " + std::to_string(fake.body_submissions) + " commands, applied " + std::to_string(taken) +
+            " in " + std::to_string(frames) + " frames\n" + environment.all());
+        // A result is acknowledged two ticks after its command, and the plugin never holds more
+        // than two receipts after its submit: the same in both orders.
+        check(environment.logged("every-step acknowledged=" + std::to_string(frames - 2) + " most_rows=2"), "order " + std::string(order) + "\n" + environment.all());
+        for (std::size_t i = 0; i < box.count; ++i) {
+            const auto outcome = box.receipts[(box.head + i) % box.receipts.size()].outcome;
+            check(outcome == owned_body::Outcome::applied || outcome == owned_body::Outcome::queued, "a command expired or was rejected");
+        }
+    }
+}
+// How a plugin learns, before it relies on it, that this runtime queues a second command:
+// reskate.world.physics.limits() returns {pending_commands = 2}. A runtime whose inbox holds one
+// command has no limits function. It needs world.physics like every other call there, runs on
+// the client only, and nothing readable without the permission says the number.
+void plugins_read_how_many_commands_a_body_holds_pending() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("physics-limits", R"(
+        local P, v = reskate.world.physics, vector.create
+        local limits = P.limits()
+        assert(type(limits) == "table" and getmetatable(limits) == nil, "limits is a plain table")
+        assert(type(limits.pending_commands) == "number" and limits.pending_commands == 2, "limits did not say the inbox holds two pending commands")
+        local count = 0
+        for key in limits do assert(key == "pending_commands", key); count += 1 end
+        assert(count == 1, "limits says more than it was asked to")
+        limits.pending_commands = 9
+        assert(P.limits().pending_commands == 2, "a plugin changed what limits returns")
+        assert(not pcall(P.limits, 1) and not pcall(P.limits, {}), "limits takes no arguments")
+        -- What it says is true of submit: the next sample's command queues behind a pending one.
+        local h = assert(P.create({mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1},
+            capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}))
+        local first = assert(P.read(h))
+        assert(first.pending_commands == nil and first.limits == nil, "read's sample grew a field")
+        local refusal = "body command invalid, repeated, stopped, pending or receipt ring full"
+        local _, _, first_id = assert(P.submit(h, first.epoch, {}))
+        local second_id, second_serial, stage = nil, nil, 0
+        -- A refused command comes back as false and the game's own words, with no sequence.
+        local function refused(epoch, why)
+            local results = table.pack(P.submit(h, epoch, {}))
+            assert(results.n == 2 and results[1] == false and results[2] == refusal, why .. ": " .. tostring(results[2]))
+        end
+        -- Read by its sequence, a command's receipt is its own; with no sequence it is the oldest.
+        local function both_queued()
+            local own = assert(P.receipt(h, second_id))
+            assert(own.sequence == second_id and own.outcome == "queued" and own.requested_serial == second_serial and
+                own.produced_serial == "0" and own.successor == nil and not own.force_attempted and not own.torque_attempted,
+                "receipt(h, sequence) is not the second command's own queued receipt")
+            local oldest = assert(P.receipt(h))
+            assert(oldest.sequence == first_id and oldest.outcome == "queued" and oldest.requested_serial == first.serial,
+                "receipt(h) is not the oldest command's receipt")
+            local same = assert(P.receipt(h, first_id))
+            assert(same.sequence == first_id and same.outcome == "queued", "receipt(h, sequence) lost the first command's receipt")
+        end
+        reskate.on("tick", function()
+            local sample = assert(P.read(h))
+            if sample.serial == first.serial then return end
+            stage += 1
+            if stage == 1 then
+                -- The clock reads the step after the first command's epoch and no call has taken it.
+                assert(assert(P.receipt(h)).outcome == "queued", "this case needs the first command still pending")
+                local held = 1
+                local ok, why, id = P.submit(h, sample.epoch, {})
+                if ok then held += 1 end
+                assert(held == P.limits().pending_commands, "the inbox held " .. held .. " pending commands")
+                assert(why == nil and tonumber(id) == tonumber(first_id) + 1, "the second command did not get the next sequence")
+                second_id, second_serial = id, sample.serial
+                both_queued()
+                refused(sample.epoch, "a second command for one epoch was not refused in the game's words")
+                both_queued()
+                reskate.log("physics limits read")
+            elseif stage == 2 then
+                -- The clock moved on again with both still pending: this sample's command would be a third.
+                assert(sample.serial ~= second_serial, "this case needs a third step")
+                refused(sample.epoch, "a third pending command was not refused in the game's words")
+                both_queued()
+                reskate.log("physics limits third refused")
+            elseif stage == 3 then
+                -- A call has read this step: the first command's step was missed, the second was applied.
+                local expired, applied = assert(P.receipt(h)), assert(P.receipt(h, second_id))
+                assert(expired.sequence == first_id and expired.outcome == "expired" and expired.produced_serial == "0",
+                    "the first command did not expire on its own: " .. expired.outcome)
+                assert(applied.sequence == second_id and applied.outcome == "applied" and applied.produced_serial == sample.serial,
+                    "the second command was not applied in the step after its epoch: " .. applied.outcome)
+                -- Neither refusal spent a sequence: the next command accepted is numbered after the second.
+                local ok, why, id = P.submit(h, sample.epoch, {})
+                assert(ok and why == nil and tonumber(id) == tonumber(second_id) + 1, "a refused command spent a sequence")
+                reskate.log("physics limits sequence kept")
+            end
+        end)
+    )", R"("world.physics")"), script("physics-limits-denied", R"(
+        local P = reskate.world.physics
+        local ok, why = pcall(P.limits)
+        assert(not ok and string.find(why, "world.physics", 1, true), tostring(why))
+        for name, value in P do assert(type(value) == "function", name .. " is a value a plugin can read without the permission") end
+        reskate.log("physics limits denied")
+    )")});
+    running(host, "physics-limits", environment);
+    running(host, "physics-limits-denied", environment);
+    // The half-rate order: the clock moves on and the tick comes before any synchronizer call.
+    environment.fake.body_clock_step();
+    ticks(host, environment, 1);
+    running(host, "physics-limits", environment);
+    check(environment.logged("physics limits read") && environment.logged("physics limits denied"), environment.all());
+    check(environment.fake.body_creates == 1 && environment.fake.body_submissions == 2, "the inbox did not hold what limits said");
+    // Another clock edge with both commands still pending: the tick's command would be a third.
+    environment.fake.body_clock_step();
+    ticks(host, environment, 1);
+    running(host, "physics-limits", environment);
+    check(environment.logged("physics limits third refused"), environment.all());
+    check(environment.fake.body_submissions == 2 && environment.fake.body_command_sequence == 2 && environment.fake.body_submit_entries == 4 &&
+        environment.fake.owned.at(1).mailbox.count == 2, "a refused command reached the inbox or spent a sequence");
+    // A synchronizer call reads that step: it is the second command's, and the first's has gone.
+    check(environment.fake.body_synchronizer_call() == 1, "the second command was not taken in the step after its epoch");
+    ticks(host, environment, 1);
+    running(host, "physics-limits", environment);
+    check(environment.logged("physics limits sequence kept") && environment.fake.body_command_sequence == 3, environment.all());
+    TestEnvironment server_environment;
+    Host server(server_environment, Side::server);
+    server.apply({package("server-limits", {{manifest_file, manifest(R"("world.physics")", "server")}, {"plugin/main.lua", R"(
+        local ok, why = pcall(reskate.world.physics.limits)
+        assert(not ok and string.find(why, "client phase only"), tostring(why))
+    )"}})});
+    running(server, "server-limits", server_environment);
 }
 
 // create(definition, {reuse = true}) through the binding: it forwards this VM's own instance and
@@ -3821,7 +4092,7 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
             pcall(function() local t = {} while true do t[#t + 1] = string.rep("y", 8000000) end end)
             reskate.log("survived the memory bomb")
         )"),
-        script("huge", R"(local s = string.rep("x", 100000000))"),
+        script("huge", R"(local s = string.rep("x", 200000000))"),
         script("buffer", R"(local b = buffer.create(1e9))"),
         script("errors", R"(reskate.on("tick", function() error("boom") end))"),
         script("timers", R"(
@@ -3835,7 +4106,7 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
     });
     for (const auto* id : {"loop", "catches"}) stopped(host, id, "ran longer than 50 ms");
     stopped(host, "coroutines", ""); // its time or its memory, whichever runs out first
-    for (const auto* id : {"memory", "memory_caught", "huge", "buffer"}) stopped(host, id, "more than 64 MB");
+    for (const auto* id : {"memory", "memory_caught", "huge", "buffer"}) stopped(host, id, "more than 128 MB");
     check(!environment.logged("survived the memory bomb"), "A memory bomb cannot be caught and carried on from");
     running(host, "tick_loop", environment);
     ticks(host, environment, 1);
@@ -4856,6 +5127,16 @@ void plugins_touch_hide_and_ray_at_players() {
         assert(not pcall(reskate.session.raycast, vector.create(0, 0, 0), vector.create(2000, 0, 0)), "too long")
         assert(reskate.session.hide("12") and reskate.session.hidden()[1] == "12")
         assert(reskate.session.hide({id = "12"}, false) and #reskate.session.hidden() == 0)
+        -- A player's skater drawn somewhere else: where it stands, or one of its joints, put at a place.
+        assert(reskate.session.place("12", {position = vector.create(1, 2, 3)}))
+        assert(reskate.session.place({id = "12"}, {position = vector.create(4, 5, 6), rotation = {0, 0, 0, 2}, joint = "hips"}))
+        assert(reskate.session.place("12", {position = vector.create(7, 8, 9), board = false}))
+        assert(reskate.session.place("12", nil))
+        assert(not pcall(reskate.session.place, "12", {}), "a place has a position")
+        assert(not pcall(reskate.session.place, "12", {position = vector.create(0 / 0, 0, 0)}), "a finite position")
+        assert(not pcall(reskate.session.place, "12", {position = vector.create(0, 0, 0), rotation = {0, 0, 0, 0}}), "a rotation has a length")
+        assert(not pcall(reskate.session.place, "12", {position = vector.create(0, 0, 0), joint = 999}), "a joint of the skeleton")
+        assert(not pcall(reskate.session.place, "nobody", {position = vector.create(0, 0, 0)}), "a player")
         assert(not pcall(reskate.session.touch, true, 2), "a reach is 0 to 1 m")
         reskate.session.touch(true)
         reskate.on("touch", function(e)
@@ -4869,6 +5150,9 @@ void plugins_touch_hide_and_ray_at_players() {
     running(host, "tag", environment);
     check(environment.logged("[tag] rayed") && game.called("hide tag 12 on") && game.called("hide tag 12 off"),
           "Rays at players and a player hidden and shown\n" + environment.all());
+    check(game.called("place tag 12 at 1.0 2.0 3.0 turned no joint none") && game.called("place tag 12 at 4.0 5.0 6.0 turned 1.00 joint 7") &&
+              game.called("place tag 12 at 7.0 8.0 9.0 turned no joint none no board") && game.called("place tag 12 back"),
+          "A player's skater placed, by a joint and turned, and put back\n" + environment.all());
     check(!environment.logged("[tag] touch "), "Nobody within reach\n" + environment.all());
     const auto count = [&](std::string_view part) {
         return std::count_if(environment.logs.begin(), environment.logs.end(), [&](const auto& line) { return line.find(part) != std::string::npos; });
@@ -4890,10 +5174,12 @@ void plugins_touch_hide_and_ray_at_players() {
     host.apply({package("sneaky", {{manifest_file, manifest(R"("skater.read")")}, {"plugin/main.lua", R"(
         reskate.log(tostring(pcall(reskate.session.touch, true)) .. " " .. tostring(pcall(reskate.session.hide, "9")) .. " " ..
             tostring(pcall(reskate.session.raycast, vector.create(0, 1, 0), vector.create(1, 1, 0))) .. " " ..
-            tostring(pcall(reskate.on, "touch", function() end)))
+            tostring(pcall(reskate.on, "touch", function() end)) .. " " ..
+            tostring(pcall(reskate.session.place, "9", {position = vector.create(0, 0, 0)})))
     )"}})});
     ticks(host, environment, 1);
-    check(environment.logged("[sneaky] false false false false"), "session.skaters is needed\n" + environment.all());
+    check(environment.logged("[sneaky] false false false false false") && !game.called("place sneaky 9 at 0.0 0.0 0.0 turned no joint none"),
+          "session.skaters is needed\n" + environment.all());
 }
 
 // Menu pose observation is permission-gated and never writes board bones.
@@ -5322,8 +5608,8 @@ std::string adpcm_file(unsigned channels, unsigned bits, unsigned block_align, c
     put(20, 4);
     put(0x11, 2);
     put(channels, 2);
-    put(16000, 4);
-    put(16000 * block_align / 9, 4);
+    put(wave_rate, 4);
+    put(wave_rate * block_align / 9, 4);
     put(block_align, 2);
     put(bits, 2);
     put(2, 2);
@@ -5364,7 +5650,7 @@ void plugins_play_ima_adpcm_sounds() {
     same = wave && wave->samples.size() == 9;
     for (std::size_t i = 0; same && i < 9; ++i) same = wave->samples[i] == 0;
     check(same, "and its channels are mixed to mono, each from its own bytes: " + error);
-    check(!decode(adpcm_file(1, 4, 8, mono, 13), 0.0005f, error) && error.find("longer than") != std::string::npos,
+    check(!decode(adpcm_file(1, 4, 8, mono, 13), 0.0002f, error) && error.find("longer than") != std::string::npos,
           "A long IMA ADPCM sound is refused");
     check(!decode(adpcm_file(1, 3, 8, mono), 30, error) && !decode(adpcm_file(1, 4, 6, mono), 30, error) &&
               error == "its format is not 8 to 32-bit PCM, 32-bit float or IMA ADPCM",
@@ -5375,7 +5661,7 @@ void plugins_play_their_own_sounds() {
     std::string error;
     const auto bytes = wave_file(8000, 4000);
     const auto wave = decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 30, error);
-    check(wave && wave->samples.size() == 8000, "Half a second at 8 kHz is half a second at 16 kHz: " + error);
+    check(wave && wave->samples.size() == 24000, "Half a second at 8 kHz is half a second at 48 kHz: " + error);
     check(!decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 0.25f, error),
           "and a sound longer than allowed is refused");
     TestEnvironment environment;
@@ -5397,7 +5683,7 @@ void plugins_play_their_own_sounds() {
     running(host, "noisy", environment);
     host.run_console("noise");
     check(environment.logged("[noisy] sounded"), "A plugin plays its own sounds\n" + environment.all());
-    for (const auto* call : {"sound noisy 8000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "change noisy 2 0.9 skater", "stop sound noisy 1"})
+    for (const auto* call : {"sound noisy 24000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "change noisy 2 0.9 skater", "stop sound noisy 1"})
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
 }
 
@@ -5411,8 +5697,8 @@ void plugins_play_any_number_of_different_sounds() {
             end
         end)
     )";
-    const std::map<std::string, std::string> files{{manifest_file, manifest(R"("console", "audio")")}, {"sounds/a.wav", wave_file(16000, 1000)},
-                                                   {"sounds/b.wav", wave_file(16000, 2000)}, {"sounds/c.wav", wave_file(16000, 3000)},
+    const std::map<std::string, std::string> files{{manifest_file, manifest(R"("console", "audio")")}, {"sounds/a.wav", wave_file(wave_rate, 1000)},
+                                                   {"sounds/b.wav", wave_file(wave_rate, 2000)}, {"sounds/c.wav", wave_file(wave_rate, 3000)},
                                                    {"plugin/main.lua", play}};
     {
         TestEnvironment environment;
@@ -6022,7 +6308,7 @@ void plugins_preload_clips_and_sounds() {
         end)
     )";
     host.apply({package("preloader", {{manifest_file, manifest(R"("console", "skater.animation", "audio")")}, {"plugin/main.lua", main},
-                                      {"clips/spin.fas", std::string(bytes.begin(), bytes.end())}, {"sounds/beep.wav", wave_file(16000, 1000)},
+                                      {"clips/spin.fas", std::string(bytes.begin(), bytes.end())}, {"sounds/beep.wav", wave_file(wave_rate, 1000)},
                                       {"notes.txt", "x"}})});
     running(host, "preloader", environment);
     host.run_console("warm");
@@ -6652,6 +6938,51 @@ void discovery_finds_the_plugins_among_the_mods_left_on() {
     check(again[0].fingerprint != before, "A changed file changes the fingerprint, which reloads it");
 }
 
+// A plugin a dedicated server brought here is the server's: it runs only on servers that require it.
+void a_servers_plugin_runs_only_on_servers_that_require_it() {
+    namespace scope = server_scope;
+    const auto mods = scratch / "server-scope-game" / "Mods";
+    std::filesystem::create_directories(mods);
+    check(scope::read(mods).empty(), "No plugin is a server's before one brings any");
+    check(scope::set(mods, "Team-Drone", true) && scope::set(mods, "neekgate-FPV_Drone", true) && scope::set(mods, "Team-Drone", true),
+          "A plugin a server brought is marked as the server's");
+    const auto marked = scope::read(mods);
+    check(marked == scope::Folders{"team-drone", "neekgate-fpv_drone"}, "The mark is kept by mod folder, whatever its case, once each");
+
+    // The player's own plugins run everywhere, in a session or not.
+    check(scope::runs(marked, {}, "Team-Filmer", "Filmer", "Team") && scope::runs(marked, {"Team-Drone"}, "Team-Filmer", "Filmer", "Team"),
+          "A plugin of the player's own was held back");
+    // A server's own: nowhere but on a server that requires it.
+    check(!scope::runs(marked, {}, "Team-Drone", "Drone", "Team"), "A server's plugin ran outside any server");
+    check(!scope::runs(marked, {"Team-Filmer", "Other-Drone"}, "Team-Drone", "Drone", "Team"),
+          "A server's plugin ran on a server that does not require it");
+    check(scope::runs(marked, {"Team-Filmer", "team-drone"}, "Team-Drone", "Drone", "Team") &&
+              scope::runs(marked, {"Team-Drone-1.2.0"}, "TEAM-DRONE", "", ""),
+          "A server's plugin did not run on a server that requires it");
+    // A package is the mod in its folder, or the one with its name and author (map_download.h).
+    check(scope::names("neekgate-FPV_Drone-2.0.1", "neekgate-FPV_Drone", "", "") && scope::names("neekgate-FPV_Drone", "drone-dev", "FPV_Drone", "Neekgate"),
+          "A required package did not name its plugin");
+    check(!scope::names("neekgate-FPV_Drone", "drone-dev", "FPV_Drone", "") && !scope::names("neekgate-FPV_Drone", "neekgate-FPV", "FPV", "other") &&
+              !scope::names("", "", "", ""),
+          "A required package named a plugin that is not its own");
+    check(scope::runs(marked, {"neekgate-FPV_Drone"}, "neekgate-FPV_Drone", "FPV Drone", "neekgate"), "A marked plugin is known by its folder");
+
+    // The player makes one their own; a mod that is taken out is forgotten.
+    check(scope::set(mods, "TEAM-DRONE", false) && scope::read(mods) == scope::Folders{"neekgate-fpv_drone"}, "A plugin made the player's own stayed the server's");
+    check(scope::runs(scope::read(mods), {}, "Team-Drone", "Drone", "Team"), "and runs everywhere again");
+    scope::keep_only(mods, {"Neekgate-FPV_Drone", "Team-Drone"});
+    check(scope::read(mods).size() == 1, "A plugin still in Mods was forgotten");
+    scope::keep_only(mods, {"Team-Drone"});
+    check(scope::read(mods).empty() && !std::filesystem::exists(mods / scope::file_name), "A plugin taken out of Mods is forgotten, and the file with the last");
+
+    // A file that is not the list marks nothing, so every plugin runs as before.
+    write(mods / scope::file_name, R"({"Team-Drone": true})");
+    check(scope::read(mods).empty(), "A file that is no list marked a plugin");
+    write(mods / scope::file_name, "not json");
+    check(scope::read(mods).empty() && scope::set(mods, "Team-Drone", true) && scope::read(mods) == scope::Folders{"team-drone"},
+          "A broken file is replaced by the next mark");
+}
+
 void discovery_can_recheck_sources_when_mod_metadata_is_unchanged() {
     const auto root = scratch / "same-metadata-game";
     const auto mods = root / "Mods";
@@ -7156,6 +7487,8 @@ int main() {
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
+        run(plugins_read_how_many_commands_a_body_holds_pending);
+        run(plugins_command_every_step_when_the_tick_precedes_the_synchronizer);
         run(plugins_reuse_their_own_parked_bodies);
         run(native_body_permission_and_client_boundary_are_enforced);
         run(body_prepare_host_fixture_v1);
@@ -7167,6 +7500,7 @@ int main() {
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(effects_require_resident_roots);
         run(expired_effects_return_their_quota);
+        run(game_effects_need_their_own_permission);
         run(plugins_render_private_effects);
         run(failed_plugin_startup_releases_effects);
         run(plugins_track_effect_lifetimes);
@@ -7251,6 +7585,7 @@ int main() {
         run(a_package_with_a_program_or_on_the_wrong_side_is_not_loaded);
         run(discovery_finds_the_plugins_among_the_mods_left_on);
         run(discovery_can_recheck_sources_when_mod_metadata_is_unchanged);
+        run(a_servers_plugin_runs_only_on_servers_that_require_it);
         run(plugins_change_the_games_text);
         run(a_plugin_reads_the_content_folder_it_names);
         run(content_is_read_from_the_mod_folders);

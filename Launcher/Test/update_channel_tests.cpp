@@ -57,6 +57,12 @@ int main(int argc, char** argv) {
     check(launcher_update::releases_page(Channel::official).ends_with("/releases") &&
               launcher_update::releases_page(Channel::official).starts_with("https://github.com/"),
           "the official releases page is a GitHub releases page");
+    check(launcher_update::installed_release_tag(Channel::own, "2.1.4+reskate.20261114") == "2.1.4",
+          "a Studio release is marked installed by its own tag");
+    check(launcher_update::installed_release_tag(Channel::own, "20261116") == "20261116",
+          "a version with no mod part is its own tag");
+    check(launcher_update::installed_release_tag(Channel::official, "20261116").empty(),
+          "base ReSkate is never marked installed while this launcher runs");
     std::cout << "update channel tests passed\n";
     return 0;
 }
