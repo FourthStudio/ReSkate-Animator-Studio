@@ -164,7 +164,9 @@ struct View {
     std::uint64_t tab_request{};     // a tab of the menu asked for (request_tab), and which
     int tab_requested{};
     bool library_modifier_help{};
-    std::uint16_t modifier_ready{}; // the buttons whose playlists are loaded and play (modifier_mask)
+    // The buttons whose playlists are loaded and play, a modifier_mask each: LB + RB is ready by its own playlist, not LB's.
+    std::vector<std::uint16_t> modifier_ready;
+    bool modifier_plays(std::uint16_t mask) const { return mask && std::find(modifier_ready.begin(), modifier_ready.end(), mask) != modifier_ready.end(); }
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
     // SETTINGS > STUDIO: the CATCH flag on the timeline shown or not; and whether the first-start guide has been read (it
     // opens by itself until it has).

@@ -38,8 +38,9 @@ void set_plugin_dialog_active(bool active) noexcept;
 // and the mouse wheel's notches since the last call.
 void hide_game_buttons(std::uint16_t buttons) noexcept;
 // Experimental Studio modifier input is independent of plugin masks. Client thread refreshes its short lease.
-// `mask`: every button a playlist plays on; `block`: the ones of those the game does not get while playing.
-void update_trick_modifier(std::uint16_t mask, std::uint16_t block, bool gameplay);
+// `mask`: every button a playlist plays on; `kept`: the ones of those the game does not get while playing; `together`:
+// buttons held together (two bits each) that it does not get from the read that has both down until each is let go.
+void update_trick_modifier(std::uint16_t mask, std::uint16_t kept, std::span<const std::uint16_t> together, bool gameplay);
 bool trick_modifier_held(std::uint16_t mask) noexcept;
 // Which of the buttons a playlist plays on are held now.
 std::uint16_t trick_modifier_buttons() noexcept;

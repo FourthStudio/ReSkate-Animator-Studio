@@ -190,6 +190,17 @@ void buttons_put_several_playlists_on_buttons() {
     check(!current_modifiers[0].block_native, "Replace native buttons did not reach the button");
     rows[0].pick(2); // OFF
     check(current_modifiers.empty(), "OFF did not take the playlist off its button");
+    // Two held together (set in the LIBRARY) have a row that says both, and leave each of the two free for a playlist alone.
+    current_modifiers = {{"Park", 2, true, 1}};
+    rows = button_playlists(two_playlists("Street"), current_modifiers);
+    check(rows.size() == 3 && rows[0].label == "Hold LB / L1 + RB / R1" && rows[0].value == "Park (0)", "The row of two buttons held together does not say both");
+    rows[1].pick(1); // RB / R1 alone, still free, for Street
+    check(current_modifiers.size() == 2 && current_modifiers[1].playlist == "Street" && current_modifiers[1].button == 1 && !current_modifiers[1].also,
+          "A button of two held together was not free for a playlist alone");
+    rows = button_playlists(two_playlists("Street"), current_modifiers);
+    rows[0].pick(2); // OFF
+    check(current_modifiers.size() == 1 && current_modifiers[0].playlist == "Street", "OFF did not take the playlist off its two buttons");
+    current_modifiers.clear();
 }
 void playing_lists_none_and_each_playlist_and_switches_by_name() {
     reset();

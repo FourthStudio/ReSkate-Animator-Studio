@@ -52,7 +52,19 @@ Keep a regular Kickflip animation in the normal playlist. Put a Dolphin Flip var
 Kickflip input in another playlist and assign it to the modifier. Choose a controller button, for
 example RB / R1. Hold before the move begins to use that playlist; without it, keep the normal animation.
 
+A playlist can also play on two buttons held together, for example LB + RB: choose both in the grid
+(a chosen button pressed again leaves; a third waits until one does). The pair is a button of its own,
+so LB, RB and LB + RB can each have a playlist. With both held as the move begins, the pair's playlist
+plays before either button's.
+
+The buttons and the native action chosen on this page apply when **DONE** is pressed, and only then
+leave a playlist that had them; the page says whose they are first. Leaving the page another way, or
+turning it to another playlist, keeps what was set. **OFF** in YOUR BUTTONS still acts at once.
+
 Replace native button reserves that button during gameplay (preventing RB/R1's native darkcatch).
+Two buttons held together are reserved from the read of the pad that has both down until each is let
+go, so each keeps its own action alone; the first of the two pressed still reaches the game until the
+second is down, so press the one whose action can be spared first (RB, then Y: Y alone gets off the board).
 The Steam Overlay front hook and direct XInput share final filtering; Sony HID reports are filtered
 selectively too. The button remains available to Studio's own reader and is released in menus, on focus
 loss/disconnection, when disabled, or if the client stops refreshing its capture lease.
@@ -112,7 +124,8 @@ animation suite separately checks the pose matching. These checks do not replace
 
 Live acceptance on the exact DLL: normal versus modifier flips; normal/switch tail/nose manuals;
 grind entry and transfers; grabs including a style change during one hold; release/press during a move;
-missing modifier variants; a library edit or binding disable during a hold; native menus, F8, focus loss
+missing modifier variants; two buttons held together beside a playlist on one of them, and what the game
+does with the first of the two pressed; a library edit or binding disable during a hold; native menus, F8, focus loss
 and reconnection. Verify the original normal animations still play with the modifier OFF. Export
 diagnostics after a mismatch so native selection, source clip and route can be compared.
 

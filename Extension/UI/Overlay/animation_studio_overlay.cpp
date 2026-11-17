@@ -356,6 +356,11 @@ struct Ui {
     std::uint64_t dev_key_request_seen{};
     std::uint64_t tab_request_seen{};
     studio::LibraryNavigation library;
+    // PLAYLISTS ON BUTTONS: the buttons chosen for a playlist and not its own yet (DONE makes them so), and the frame the
+    // page last drew, by which a page left any other way forgets them.
+    studio::ModifierBinding modifier_draft;
+    bool modifier_drafted{};
+    int modifier_draft_frame{-2};
     std::optional<studio::PlaylistEntry> library_pending_source;
     // The LIBRARY's reorder: an entry of the open playlist picked up by its grip, dragged with the mouse or carried with the
     // pad or the arrow keys, and the place it would go (list_reorder.h). Found again by what it is (`entry`), so a list
@@ -9644,11 +9649,12 @@ void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
 }
 
 void create_own_pack(const studio::View& v); // studio_packs_page.inl
-// The button a playlist plays on, as its tags say it ("HOLD RB / R1"); "" when it has none. Each playlist can have one.
+// The button a playlist plays on, as its tags say it ("HOLD RB / R1", or "HOLD LB / L1 + RB / R1" for two held together);
+// "" when it has none. Each playlist can have one.
 std::string button_words(const studio::ModifierBindings& all, const std::string& playlist) {
     const auto* b = studio::binding_of(all, playlist);
-    if (!b || b->button <= 0 || static_cast<std::size_t>(b->button) >= studio::modifier_button_names.size()) return {};
-    return std::string("HOLD ") + studio::modifier_button_names[static_cast<std::size_t>(b->button)];
+    const auto words = b ? studio::modifier_words(*b) : std::string{};
+    return words.empty() ? words : "HOLD " + words;
 }
 std::string lowered(std::string text) {
     for (auto& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

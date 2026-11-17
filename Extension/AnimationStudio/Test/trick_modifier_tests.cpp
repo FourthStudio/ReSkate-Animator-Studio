@@ -42,7 +42,7 @@ int main() {
         ModifierBindings all;
         put_binding(all, {"Street", 1, true});
         put_binding(all, {"Park", 2, false});
-        check(all.size() == 2 && modifier_masks(all) == (0x0200 | 0x0100) && modifier_blocks(all) == 0x0200, "Two playlists do not play on two buttons");
+        check(all.size() == 2 && modifier_masks(all) == (0x0200 | 0x0100) && modifier_kept(all) == 0x0200, "Two playlists do not play on two buttons");
         check(held_route(all, 0x0100) == 0x0100 && held_route(all, 0) == 0 && held_route(all, 0x0300) == 0x0200,
               "The button held does not pick its own playlist, or the first one's when both are held");
         put_binding(all, {"Park", 1, true});
@@ -56,6 +56,48 @@ int main() {
         check(two.held && two.button == 0x0200, "A grind does not keep the button whose playlist it takes");
         two.observe(0, 0, 0, true, false);
         check(!two.held && two.button == 0, "Leaving the hold did not clear its button");
+        // Two buttons held together (2026-11-13): LB + RB is a playlist's own, beside the ones on LB and on RB.
+        ModifierBindings pairs;
+        put_binding(pairs, {"Street", 1, true});
+        put_binding(pairs, {"Park", 2, false});
+        put_binding(pairs, {"Both", 2, true, 1});
+        check(pairs.size() == 3 && modifier_mask(pairs[2]) == 0x0300 && modifier_together(modifier_mask(pairs[2])) && !modifier_together(modifier_mask(pairs[0])),
+              "Two buttons held together took a playlist off one of them, or are not both of them");
+        check(modifier_words(pairs[2]) == "LB / L1 + RB / R1" && modifier_words(pairs[0]) == "RB / R1" && modifier_words({"None", 0, true, 1}).empty(),
+              "The buttons are not said as they are held");
+        check(held_route(pairs, 0x0300) == 0x0300 && held_route(pairs, 0x0200) == 0x0200 && held_route(pairs, 0x0100) == 0x0100,
+              "Both held do not play their own playlist before either button's, or one alone plays the pair's");
+        check(modifier_kept(pairs) == 0x0200 && modifier_kept_together(pairs) == std::vector<std::uint16_t>{0x0300},
+              "Two held together are kept from the game as one button is, or a playlist's one button is not kept");
+        put_binding(pairs, {"Street", 1, true, 2});
+        check(pairs.size() == 2 && binding_of(pairs, "Street")->also == 2 && !binding_of(pairs, "Both"),
+              "RB + LB on another playlist did not take LB + RB off the one it was on");
+        check(held_route(pairs, 0x0200) == 0 && held_route(pairs, 0x0300) == 0x0300 && modifier_kept(pairs) == 0,
+              "One of two held together plays or is kept from the game alone");
+        // RB + Y taken over (2026-11-16: Y still got the skater off the board, decided a tick after the game read it).
+        ModifierBindings off_board;
+        put_binding(off_board, {"Flips", 1, true, 6});
+        put_binding(off_board, {"Loose", 2, false, 6});
+        const auto together = modifier_kept_together(off_board);
+        check(together == std::vector<std::uint16_t>{0x8200} && modifier_kept(off_board) == 0, "Only the two taken over are kept from the game");
+        std::uint16_t kept{};
+        check(overlay::detail::together_hidden(together, 0x0200, kept) == 0 && overlay::detail::together_hidden(together, 0x8000, kept) == 0,
+              "One of two held together is kept from the game alone");
+        check(overlay::detail::together_hidden(together, 0x9200, kept) == 0x8200, "The read that has both down still gives the game the second one's press");
+        check(overlay::detail::together_hidden(together, 0x8000, kept) == 0x8000 && overlay::detail::together_hidden(together, 0x8200, kept) == 0x8200,
+              "The one still held after the other was let go is a fresh press to the game");
+        check(overlay::detail::together_hidden(together, 0x0200, kept) == 0x0200 && overlay::detail::together_hidden(together, 0, kept) == 0 &&
+              overlay::detail::together_hidden(together, 0x8000, kept) == 0, "A button let go and pressed alone is not the game's again");
+        check(overlay::detail::together_hidden(together, 0x8100, kept) == 0, "Two held together that keep their game actions are kept from the game");
+        check(overlay::detail::together_hides_press(together, 0x8000, 0x0200) && overlay::detail::together_hides_press(together, 0x0200, 0x8000) &&
+              !overlay::detail::together_hides_press(together, 0x8000, 0) && !overlay::detail::together_hides_press(together, 0x1000, 0x8200),
+              "A keystroke of the second one is not kept from the game, or one of another button is");
+        put_binding(pairs, {"Street", 1, true, 1});
+        check(binding_of(pairs, "Street")->also == 0 && modifier_mask(*binding_of(pairs, "Street")) == 0x0200, "A button is its own second button");
+        put_binding(pairs, {"Street", 1, true, 99});
+        check(binding_of(pairs, "Street")->also == 0, "A second button that is none was kept");
+        put_binding(pairs, {"Street", 0, true, 2});
+        check(!binding_of(pairs, "Street"), "A second button alone kept a playlist on a button");
         std::vector<NativeLoopCandidate> loops{{0, "manual", false, false, 0, 0.01f}, {1, "manual", true, false, 0, 0.01f},
             {2, "manual", true, false, 0, 0.01f}, {3, "another grab", true, false, -1, 0.001f}};
         check(native_loop_candidates(loops, false, true) == std::vector<std::size_t>{0}, "Without a modifier only the normal native loop is eligible");

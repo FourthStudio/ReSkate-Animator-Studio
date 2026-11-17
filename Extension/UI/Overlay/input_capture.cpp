@@ -37,9 +37,33 @@ std::uint64_t live_modifier_input() noexcept {
         GetForegroundWindow() != state().window.load() || interactive_visible(state()) || animation_studio_loading_pending()) return 0;
     return value;
 }
-std::uint16_t modifier_hidden_buttons() noexcept {
+// Buttons held together that a playlist takes from the game (two bits each, 0: unused; 28: every two of the eight), and
+// the ones of them kept from it at the last read of each pad: XInput's four, and a natively read PlayStation one.
+using TogetherPairs = std::array<std::uint16_t, 28>;
+std::array<std::atomic<std::uint16_t>, 28> studio_together{};
+std::array<std::atomic<std::uint16_t>, 5> studio_together_kept{};
+inline constexpr std::size_t native_pad_slot = 4;
+TogetherPairs together_pairs() noexcept {
+    TogetherPairs pairs{};
+    for (std::size_t i = 0; i < pairs.size(); ++i) pairs[i] = studio_together[i].load(std::memory_order_relaxed);
+    return pairs;
+}
+// The buttons a playlist keeps from the game, in the game's read of pad `slot` that has `buttons` down.
+std::uint16_t modifier_hidden_buttons(std::size_t slot, std::uint16_t buttons) noexcept {
     if (overlay_input_access) return 0;
-    return static_cast<std::uint16_t>(live_modifier_input());
+    auto& last = studio_together_kept[slot < native_pad_slot ? slot : native_pad_slot];
+    const auto live = live_modifier_input();
+    if (!live) { last.store(0, std::memory_order_relaxed); return 0; }
+    auto kept = last.load(std::memory_order_relaxed);
+    const auto together = together_hidden(together_pairs(), buttons, kept);
+    last.store(kept, std::memory_order_relaxed);
+    return static_cast<std::uint16_t>(static_cast<std::uint16_t>(live) | together);
+}
+// A press of `button` the game reads as a keystroke.
+bool modifier_hides_press(std::uint16_t button) noexcept {
+    if (overlay_input_access || !button) return false;
+    const auto live = live_modifier_input();
+    return live && ((button & static_cast<std::uint16_t>(live)) || together_hides_press(together_pairs(), button, static_cast<std::uint16_t>(live >> 16)));
 }
 std::atomic<int> mode_mouse_wheel{};
 std::atomic<bool> challenge_menu_capture{};
@@ -51,7 +75,7 @@ bool suppress_challenge_menu() noexcept {
 std::uint16_t game_hidden_buttons() noexcept {
     if (overlay_input_access) return 0;
     return static_cast<std::uint16_t>(mode_hidden_buttons.load(std::memory_order_relaxed) |
-        modifier_hidden_buttons() | (suppress_challenge_menu() ? XINPUT_GAMEPAD_START : 0));
+        (suppress_challenge_menu() ? XINPUT_GAMEPAD_START : 0));
 }
 bool challenge_menu_key(int key) noexcept {
     return key==VK_ESCAPE && suppress_challenge_menu();
@@ -247,8 +271,10 @@ void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
     if (block_polled_input()) { (void)input::pad_outputs().read(4, GetTickCount64(), false); neutral_hid(read, size); }
     else {
         filter_hid(read, size);
-        if (const auto hidden = modifier_hidden_buttons(); hidden && read.buffer && size <= read.capacity)
-            (void)hide_playstation_buttons(read.kind, playstation_bluetooth(size), static_cast<std::uint8_t*>(read.buffer), size, hidden);
+        if (read.buffer && size <= read.capacity)
+            if (const auto pad = parse_playstation_report(read.kind, playstation_bluetooth(size), static_cast<const std::uint8_t*>(read.buffer), size))
+                if (const auto hidden = modifier_hidden_buttons(native_pad_slot, pad->buttons))
+                    (void)hide_playstation_buttons(read.kind, playstation_bluetooth(size), static_cast<std::uint8_t*>(read.buffer), size, hidden);
         int stick{};
         SHORT value{};
         if (!overlay_input_access && read.buffer && size <= read.capacity && held_stick(stick, value)) {
@@ -474,7 +500,8 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         if (capture) (void)input::pad_outputs().read(0, GetTickCount64(), false);
         // The buttons a plugin keeps from the game are let go here too (upstream 2.1.4-5: with Steam's overlay answering the
         // game first they reached it): game_hidden_buttons has them, and finish_gamepad_read lets them go on the game's read.
-        finish_gamepad_read(*output, outer, capture, hidden, [user](XINPUT_STATE& pad) { game_pad_read(user, &pad); });
+        finish_gamepad_read(*output, outer, capture, static_cast<std::uint16_t>(hidden | modifier_hidden_buttons(user, output->Gamepad.wButtons)),
+            [user](XINPUT_STATE& pad) { game_pad_read(user, &pad); });
     }
     return result;
 }
@@ -940,7 +967,8 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     if (result == ERROR_SUCCESS && output) {
         // A menu holding the pad drops any plugin's stand-in for this controller, so it is not replayed once the menu closes.
         if (capture) (void)input::pad_outputs().read(0, GetTickCount64(), false);
-        finish_gamepad_read(*output, game_poll, capture, hidden, [user](XINPUT_STATE& pad) { game_pad_read(user, &pad); });
+        finish_gamepad_read(*output, game_poll, capture, static_cast<std::uint16_t>(hidden | modifier_hidden_buttons(user, output->Gamepad.wButtons)),
+            [user](XINPUT_STATE& pad) { game_pad_read(user, &pad); });
     }
     return result;
 }
@@ -1005,12 +1033,11 @@ DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE ou
     }
     // The buttons a playlist is held on (the studio's): their presses are not the game's.
     if (result == ERROR_SUCCESS && output && !(output->Flags & XINPUT_KEYSTROKE_KEYUP)) {
-        const auto hidden = modifier_hidden_buttons();
         const auto key = output->VirtualKey;
         const std::uint16_t button = key == VK_PAD_RSHOULDER ? 0x0200 : key == VK_PAD_LSHOULDER ? 0x0100 :
             key == VK_PAD_A ? 0x1000 : key == VK_PAD_B ? 0x2000 : key == VK_PAD_X ? 0x4000 : key == VK_PAD_Y ? 0x8000 :
             key == VK_PAD_LTHUMB_PRESS ? 0x0040 : key == VK_PAD_RTHUMB_PRESS ? 0x0080 : 0;
-        if (button & hidden) { *output = {}; return ERROR_EMPTY; }
+        if (modifier_hides_press(button)) { *output = {}; return ERROR_EMPTY; }
     }
     // VK_PAD_DPAD_DOWN 0x5811, LEFT 0x5812, RIGHT 0x5813 (UP 0x5810 stays), while Dark Pop hides the D-pad.
     if (result == ERROR_SUCCESS && output && !overlay_input_access && output->VirtualKey >= 0x5811 && output->VirtualKey <= 0x5813 &&
@@ -1330,12 +1357,18 @@ namespace dingosdk::overlay {
 // every caller uses this one.)
 void set_plugin_dialog_active(bool active) noexcept { detail::state().plugin_dialog_visible.store(active); }
 bool interface_open() noexcept { return detail::interactive_visible(detail::state()); }
-void update_trick_modifier(std::uint16_t mask, std::uint16_t block, bool gameplay) {
+void update_trick_modifier(std::uint16_t mask, std::uint16_t kept, std::span<const std::uint16_t> together, bool gameplay) {
     const auto pad = gameplay && mask ? read_gamepad() : Gamepad{};
     std::uint64_t value = 0;
     if (gameplay && mask && pad.valid) {
-        value = static_cast<std::uint64_t>(block & mask);
-        value |= static_cast<std::uint64_t>(pad.buttons & mask) << 16;
+        // Before the lease that makes them count. A pair past the 28 there can be is not kept from the game.
+        for (std::size_t i = 0; i < detail::studio_together.size(); ++i)
+            if (const std::uint16_t pair = i < together.size() ? static_cast<std::uint16_t>(together[i] & mask) : std::uint16_t{};
+                detail::studio_together[i].load(std::memory_order_relaxed) != pair)
+                detail::studio_together[i].store(pair, std::memory_order_relaxed);
+        const auto held = static_cast<std::uint16_t>(pad.buttons & mask);
+        value = static_cast<std::uint64_t>(kept & mask);
+        value |= static_cast<std::uint64_t>(held) << 16;
         value |= static_cast<std::uint64_t>(static_cast<DWORD>(GetTickCount64())) << 32;
     }
     detail::studio_modifier_input.store(value, std::memory_order_release);
