@@ -361,6 +361,21 @@ struct State {
     std::string saved_as; // the library name it was loaded from or saved to
     bool dirty{};
     bool previewing{}; // open to watch only (preview_saved)
+    std::string pop_look; // ... and what is watched is the open trick (kept below) on this pop's clip (look_on_pop); "" not
+    // THIS GRIND, THIS MANUAL (View::line_parts): worked out again when the open clip or the saved tricks change.
+    struct LinePartsKept {
+        std::string asset;
+        const Clip* clip{}; // a new one when the open trick is mirrored into another stance
+        std::uint64_t library_reads{};
+        std::string saved_as;
+        std::vector<View::LinePart> parts;
+        bool manual{};
+    } line_parts_kept;
+    std::uint64_t library_reads{}; // one more each time the saved tricks are read again (read_library_locked)
+    // The game's clip asked about last (game_has_pop_clip_locked), and whether the game has it.
+    std::string pop_clip_asked;
+    std::weak_ptr<const std::vector<GameTrick>> pop_clip_library; // the trick library it was asked of
+    bool pop_clip_there{};
     // The trick open to watch is locked by its creator: its keys are not handed to the screen (View::tracks) and nothing is
     // copied from it while it is open.
     bool open_locked{};
@@ -828,6 +843,10 @@ std::atomic<bool> overrides_allowed{true};
 // SETTINGS > TRICKS > Transitions: SMOOTH (true) hands a trick over to a grind the way the game does its own (Handover);
 // CLASSIC fades it out over the Crossfade.
 std::atomic<bool> smooth_transitions{true};
+// How far the editor's joint limits move a keyed leg at the playhead, in degrees (View::legs_limited_deg): written by the
+// animation update, read for the screen.
+std::atomic<float> legs_limited_deg{0};
+void line_parts_locked(State& s, View& v); // below
 // ---- the studio's props: the grind rail (studio_rails.h) and the quarter pipe (studio_ramps.h) ----
 // The animation thread says where a trick open in the studio wants its prop (rail_frame under a grind, ramp_frame under an
 // invert); the client thread puts one of the game's build-kit objects there through the park editor's own edits, moves it,
@@ -1770,6 +1789,7 @@ const Animation& listed_animation(const std::filesystem::path& json) {
     return files.insert_or_assign(json, ListedFile{written, bytes, std::move(animation)}).first->second.animation;
 }
 void read_library_locked(State& s) {
+    ++s.library_reads;
     s.library.clear();
     s.presets.clear();
     s.packs.clear();
@@ -1901,6 +1921,49 @@ void read_library_locked(State& s) {
     } catch (const std::exception& e) { s.status = e.what(); }
 }
 
+// The pop of the game's trick clip an animation is on ("low", "mid" or "high": c_proto_onb_trick_<trick>_<pop>, as
+// onto_game_pop reads it). "": it is not a trick on a pop's clip (a piece of the game's animation, a recording).
+std::string pop_of_trick_clip(const Animation& a) {
+    if (a.source.kind != "native_asset" || a.trick.starts_with("native:")) return {};
+    const auto& from = a.source.asset;
+    const auto cut = from.rfind('_');
+    if (cut == std::string::npos || !from.starts_with("animation/dingo/c_proto_onb_trick_")) return {};
+    auto own = from.substr(cut + 1);
+    return own == "low" || own == "mid" || own == "high" ? own : std::string{};
+}
+// The pop a trick plays on in game ("": any pop): the rule of a pack it is in (Preset::pack_pop) over its own setting, as
+// load_custom_trick takes it. `saved_as`: its name in the library ("" not saved: its own setting).
+std::string plays_on_pop_locked(const State& s, const Animation& a, const std::string& saved_as, bool& by_pack) {
+    by_pack = false;
+    if (!saved_as.empty())
+        for (const auto& p : s.presets)
+            if (p.name == saved_as && p.included && p.pack_pop) {
+                by_pack = true;
+                return *p.pack_pop;
+            }
+    return a.pop;
+}
+} // namespace
+std::shared_ptr<const std::vector<GameTrick>> game_tricks(); // below
+namespace {
+// The game has its own clip of `pop` for the trick `a` is on (the one onto_game_pop moves it onto), and it is not locked to
+// its maker: in game a trick set to that pop then plays moved onto that clip (load_custom_trick's version for it). Without
+// one - or locked - the game plays the trick's own clip on that pop. Kept by the clip asked about and the library asked of
+// (built or read again, it is a new one): the screen asks every frame.
+bool game_has_pop_clip_locked(State& s, const Animation& a, const std::string& pop) {
+    if (locked_key(a.maker_key) && !a.editable) return false;
+    const auto& from = a.source.asset;
+    const auto cut = from.rfind('_');
+    if (cut == std::string::npos) return false;
+    const auto to = from.substr(0, cut + 1) + pop;
+    const auto library = game_tricks();
+    if (s.pop_clip_asked != to || s.pop_clip_library.lock() != library) {
+        s.pop_clip_asked = to;
+        s.pop_clip_library = library;
+        s.pop_clip_there = library && std::any_of(library->begin(), library->end(), [&](const GameTrick& t) { return t.asset == to && !t.preview_only && !t.file.empty(); });
+    }
+    return s.pop_clip_there;
+}
 } // namespace
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
 std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, const Clip& clip, const std::string& pop); // below
@@ -4214,7 +4277,27 @@ void on_animation(std::uintptr_t component) noexcept {
             // A trick set to fakie or switch fakie stands with its upper body mirrored (editor_base), as it plays in game.
             if (has_trick && fakie_mirrored(shown_edits)) mirror_upper_body(l.pose);
             apply_edits(shown_edits, shown_time, l.pose);
-            if (snap->limits) limit_keyed_joints(shown_edits, shown_time, l.pose);
+            {
+                // The editor keeps full limits; in game the legs are left as keyed (limit_keyed_joints). How far apart that
+                // puts a keyed leg here is told to the screen, which says so: the two are limited apart from the legs and
+                // put side by side.
+                float legs_moved = 0;
+                if (snap->limits && has_trick && !peeking && !shown_edits.tracks.empty()) {
+                    // (The update's scratch pose: with a trick on show nothing is mirrored through it, below.)
+                    auto& legs_as_keyed = l.mirror_scratch;
+                    legs_as_keyed.assign(l.pose.begin(), l.pose.end());
+                    limit_keyed_joints(shown_edits, shown_time, legs_as_keyed, false);
+                    limit_keyed_joints(shown_edits, shown_time, l.pose);
+                    for (const auto& track : shown_edits.tracks)
+                        if (track.joint < l.pose.size() && track.joint < legs_as_keyed.size()) {
+                            const auto& a = legs_as_keyed[track.joint].rotation;
+                            const auto& b = l.pose[track.joint].rotation;
+                            const float dot = std::min(1.0f, std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]));
+                            legs_moved = std::max(legs_moved, 2 * std::acos(dot) * 57.29578f);
+                        }
+                } else if (snap->limits) limit_keyed_joints(shown_edits, shown_time, l.pose);
+                legs_limited_deg.store(std::isfinite(legs_moved) ? legs_moved : 0.0f, std::memory_order_relaxed);
+            }
             // Standing him the other way round: his body is reflected across its own middle, so the foot
             // that was at the nose is at the tail and the arm that led now trails. Only the skinned body
             // moves; the placement and everything hanging off it stay where they stood, so the board does
@@ -7982,6 +8065,20 @@ View view() {
     v.has_clip = s.clip && !s.clip->empty();
     v.dirty = s.dirty;
     v.previewing = s.previewing;
+    {
+        // THE POPS: of the open trick - or, while it is looked at on another pop, of the trick kept under the look.
+        const bool looking = s.previewing && !s.pop_look.empty() && s.kept;
+        if (looking) v.pop_look = s.pop_look;
+        if (v.has_clip && (looking || !s.previewing)) {
+            const auto& open = looking ? s.kept->edits : s.edits;
+            v.own_pop = pop_of_trick_clip(open);
+            if (!v.own_pop.empty()) v.plays_pop = plays_on_pop_locked(s, open, looking ? s.kept->saved_as : s.saved_as, v.pop_by_pack);
+            if (!v.plays_pop.empty() && v.plays_pop != v.own_pop) v.plays_pop_clip = game_has_pop_clip_locked(s, open, v.plays_pop);
+            v.own_clip_fills = locked_key(open.maker_key);
+        }
+        v.legs_limited_deg = v.has_clip && !s.previewing ? legs_limited_deg.load(std::memory_order_relaxed) : 0.0f;
+        if (v.has_clip && !s.previewing) line_parts_locked(s, v);
+    }
     v.kept_dirty = s.previewing && s.kept && s.kept->dirty;
     if (s.kept) v.kept_name = s.kept->edits.name.empty() ? s.kept->edits.trick : s.kept->edits.name;
     v.playing = s.playing;
@@ -8226,7 +8323,10 @@ void set_loop(bool loop) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.edits.loop = loop;
-    changed_locked(s);
+    // A preview is watched only: LOOP there changes nothing to save. (Marked as a change, closing the studio asked about
+    // saving a preview, and the preview screen has no room for that question: the studio would not close.)
+    if (s.previewing) publish_locked(s);
+    else changed_locked(s);
 }
 void set_speed(float speed) {
     if (!std::isfinite(speed)) return;
@@ -9056,6 +9156,8 @@ bool set_label(const std::string& animation, const std::string& label_in, std::s
         root["label"] = label;
         write_keeping_saved_time(path, root.dump(2));
         if (s.saved_as == safe) s.edits.label = label;
+        // (Under a preview the open trick is kept aside: it gets the change too, or its next SAVE writes the old label back.)
+        if (s.kept && s.kept->saved_as == safe) s.kept->edits.label = label;
         message = label.empty() ? animation + " is shown by its own name again." : animation + " is labelled " + label + ".";
         read_library_locked(s);
         s.status = message;
@@ -9097,6 +9199,8 @@ bool set_saved_pop(const std::string& animation, const std::string& pop_in, std:
         root["pop"] = pop;
         write_keeping_saved_time(saved_json(safe), root.dump(2));
         if (s.saved_as == safe) s.edits.pop = pop;
+        // (The same for the trick kept aside under a preview.)
+        if (s.kept && s.kept->saved_as == safe) s.kept->edits.pop = pop;
         read_library_locked(s);
         // Filed under its new pop in every pack it is in (keeping Fixed or Alternate and its place in the cycle).
         const auto packs = s.packs;
@@ -11041,6 +11145,45 @@ std::string own_piece_locked(const State& s, std::string_view asset, bool lead) 
         if (loop_copy_target(p, asset, lead) && (!newest || p.saved_at > newest->saved_at)) newest = &p;
     return newest ? newest->name : std::string{};
 }
+// THIS GRIND, THIS MANUAL: the parts of the line the open trick is a piece of, in the order they play, with your own saved
+// edit of each (View::line_parts). The same lines and the same saved edits COPY TO INS AND OUTS works with
+// (offer_loop_copy_locked). Kept until the open clip or the saved tricks change: the screen asks every frame.
+void line_parts_locked(State& s, View& v) {
+    const auto& asset = s.edits.source.asset;
+    if (s.edits.source.kind != "native_asset" || asset.empty()) return;
+    auto& kept = s.line_parts_kept;
+    if (kept.asset != asset || kept.clip != s.clip.get() || kept.library_reads != s.library_reads || kept.saved_as != s.saved_as) {
+        // (Your own edit of a part is one on the foot the open trick leads with: loop_copy_target.)
+        const auto saved = std::find_if(s.presets.begin(), s.presets.end(), [&](const auto& p) { return p.name == s.saved_as; });
+        const bool lead = saved != s.presets.end() ? preset_leads_right(*saved) : s.clip && clip_leads_right(*s.clip).value_or(false);
+        kept = {asset, s.clip.get(), s.library_reads, s.saved_as, {}, false};
+        const auto place = line_place(asset);
+        if (place.line && place.role != LineRole::none) {
+            kept.manual = manual_line(*place.line);
+            const auto add = [&](std::string_view name, std::string label) {
+                const auto part = "animation/dingo/" + std::string(name);
+                kept.parts.push_back({part, std::move(label), own_piece_locked(s, part, lead), part == asset});
+            };
+            // (Not a layer the game adds on top of a pose - manual_t_land_addi: it is no part that plays by itself.)
+            for (const auto in : line_names(place.line->ins))
+                if (!in.ends_with("_addi")) add(in, "WAY IN");
+            add(place.line->loop, kept.manual ? "MANUAL" : "GRIND");
+            for (const auto out : line_names(place.line->outs)) {
+                if (out.ends_with("_addi")) continue;
+                std::string label = kept.manual ? "EXIT" : "WAY OUT";
+                if (const auto pop = out.find("popout_"); pop != std::string_view::npos && pop + 9 <= out.size()) {
+                    label = "POP OUT ";
+                    label += static_cast<char>(std::toupper(static_cast<unsigned char>(out[pop + 7])));
+                    label += static_cast<char>(std::toupper(static_cast<unsigned char>(out[pop + 8])));
+                    if (out.ends_with("_inair")) label += " IN AIR";
+                } else if (out.find("_brake") != std::string_view::npos) label = "BRAKE";
+                add(out, std::move(label));
+            }
+        }
+    }
+    v.line_parts = kept.parts;
+    v.line_is_manual = kept.manual;
+}
 // The offer that comes up when a loop is saved: its line's ins and outs, with your own saved edit of each where there is
 // one. None for a loop whose line has neither, or for anything else.
 void offer_loop_copy_locked(State& s, const std::string& saved) {
@@ -11861,6 +12004,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.previewing = false;
+        s.pop_look.clear();
         s.open_locked = false;
         s.kept.reset(); // opened to edit: what a preview kept goes (the studio asks first when it has changes)
         s.edits = game_trick_edits(trick);
@@ -12049,6 +12193,7 @@ namespace {
 void end_preview_locked(State& s) {
     if (!s.previewing) return;
     s.previewing = false;
+    s.pop_look.clear();
     s.open_locked = false;
     ++s.clip_serial;
     s.playing = false;
@@ -12079,6 +12224,124 @@ void end_preview() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     end_preview_locked(s);
+}
+bool look_on_pop(const std::string& pop, std::string& message) {
+    auto& s = state();
+    const auto refuse = [&](std::string why) {
+        message = std::move(why);
+        s.status = message;
+        publish_locked(s);
+        return false;
+    };
+    // The open trick - or the one kept under a look at another pop - copied out: the game's clip is read with the studio's
+    // state free, and nothing is put in its place if another trick was opened meanwhile.
+    Animation open;
+    std::shared_ptr<const Clip> open_clip;
+    std::uint64_t serial{};
+    bool looking{};
+    std::string plays; // the pop it plays on in game ("" any)
+    {
+        std::lock_guard lock(s.mutex);
+        looking = s.previewing && !s.pop_look.empty() && s.kept;
+        if (s.previewing && !looking) return refuse("This is a preview. To preview other pops, open the trick to edit it first.");
+        open = looking ? s.kept->edits : s.edits;
+        open_clip = looking ? s.kept->clip : s.clip;
+        serial = s.clip_serial;
+        if (!open_clip || open_clip->empty()) return refuse("No trick is open.");
+        const auto own = pop_of_trick_clip(open);
+        if (own.empty() || (pop != "low" && pop != "mid" && pop != "high"))
+            return refuse("Other pops are only for flip tricks made on a low, mid or high pop clip.");
+        if (pop == own) {
+            end_preview_locked(s);
+            return true;
+        }
+        // (A trick that plays on one pop - its own setting or its pack's rule - is shown on another all the same: how it would
+        // look there if it played there, as ANY POP or COPY TO LOW, MID AND HIGH would fit it. Said so as it opens.)
+        bool by_pack = false;
+        plays = plays_on_pop_locked(s, open, looking ? s.kept->saved_as : s.saved_as, by_pack);
+    }
+    auto moved = onto_game_pop(open, *open_clip, pop);
+    std::shared_ptr<const Clip> moved_clip;
+    if (moved) moved_clip = std::make_shared<Clip>(std::move(moved->second));
+    std::lock_guard lock(s.mutex);
+    if (s.clip_serial != serial) return false;
+    if (!moved) return refuse("Could not find the game's " + pop + " pop clip for this trick, so it cannot be previewed on " + pop + " pops.");
+    if (!looking) s.kept = State::Kept{s.clip, s.edits, std::move(s.undo), std::move(s.redo), s.saved_as, s.time, s.dirty};
+    s.edits = std::move(moved->first);
+    s.edits.speed = 1;
+    s.clip = std::move(moved_clip);
+    ++s.clip_serial;
+    s.previewing = true;
+    s.open_locked = false;
+    s.pop_look = pop;
+    // (No file of the library's: a change made to the saved trick by its name - its pop, its label - goes to the trick
+    // kept under the look, which has the name, not to the look's copy.)
+    s.saved_as.clear();
+    s.undo.clear();
+    s.redo.clear();
+    s.dirty = false;
+    // (Watched whole, from its start, as any preview is: open_trick_files.)
+    s.time = 0;
+    s.playing = true;
+    s.play_after = now_seconds() + 0.35;
+    message = !plays.empty() && plays != pop ? "Preview on the " + pop + " pop clip. This trick plays on " + plays + " pops only."
+                                             : "Preview on the " + pop + " pop clip.";
+    s.status = message;
+    publish_locked(s);
+    return true;
+}
+bool move_onto_pop(const std::string& pop, std::string& message) {
+    auto& s = state();
+    const auto refuse = [&](std::string why) {
+        message = std::move(why);
+        s.status = message;
+        publish_locked(s, false);
+        return false;
+    };
+    // The open trick - or the one kept under a look - copied out: the game's clip is read with the studio's state free.
+    Animation open;
+    std::shared_ptr<const Clip> open_clip;
+    std::uint64_t serial{};
+    {
+        std::lock_guard lock(s.mutex);
+        const bool looking = s.previewing && !s.pop_look.empty() && s.kept;
+        if (s.previewing && !looking) return refuse("This is a preview. Open the trick to edit it first.");
+        open = looking ? s.kept->edits : s.edits;
+        open_clip = looking ? s.kept->clip : s.clip;
+        serial = s.clip_serial;
+        if (!open_clip || open_clip->empty()) return refuse("No trick is open.");
+        if (locked_key(open.maker_key) && !open.editable) return refuse("This trick is locked by its maker: it cannot be moved onto another clip.");
+        bool by_pack = false;
+        const auto plays = plays_on_pop_locked(s, open, looking ? s.kept->saved_as : s.saved_as, by_pack);
+        const auto own = pop_of_trick_clip(open);
+        if (own.empty() || own == pop || plays != pop)
+            return refuse("Only a trick that plays on " + pop + " pops only, and is on another pop's clip, can be moved onto the " + pop + " pop clip.");
+        // (Its own PLAYS ON would stay on the old pop: outside that pack the game would move it back, a second time.)
+        if (by_pack) return refuse("Its pack sets this trick's pop, so it cannot be moved onto the " + pop + " pop clip.");
+        // (Until it is saved again its file keeps the old clip: nothing is lost by not saving.)
+        if (looking ? s.kept->dirty : s.dirty) return refuse("Save your trick first. Then you can edit it on the " + pop + " pop clip.");
+    }
+    auto moved = onto_game_pop(open, *open_clip, pop);
+    std::shared_ptr<const Clip> moved_clip;
+    if (moved) moved_clip = std::make_shared<Clip>(std::move(moved->second));
+    std::lock_guard lock(s.mutex);
+    if (s.clip_serial != serial) return false;
+    if (!moved) return refuse("Could not find the game's " + pop + " pop clip for this trick.");
+    // Back from a look first: the trick under it, its name and its file, is the one moved.
+    if (s.previewing) end_preview_locked(s);
+    const float at = s.time;
+    s.edits = std::move(moved->first);
+    s.clip = std::move(moved_clip);
+    ++s.clip_serial;
+    // (Its old keys' steps were made on the other clip: undo starts again here. Its file keeps the old clip until it is saved.)
+    s.undo.clear();
+    s.redo.clear();
+    s.dirty = true;
+    s.time = std::clamp(at, 0.0f, s.clip->duration());
+    message = "Now on the " + pop + " pop clip, the one that plays in game. Save to keep it. Until you save, your saved trick stays on its old clip.";
+    s.status = message;
+    publish_locked(s);
+    return true;
 }
 namespace {
 // A trick opened from its two files: one of the library's (`library`, by its name) to edit or watch, or one of a pack's
@@ -12136,6 +12399,7 @@ bool open_trick_files(const std::string& safe, const std::filesystem::path& json
         s.clip = std::move(clip);
         ++s.clip_serial;
         s.previewing = preview;
+        s.pop_look.clear();
         s.open_locked = preview && locked;
         s.saved_as = library ? safe : std::string{}; // one not installed is no file of the library's
         s.undo.clear();

@@ -351,6 +351,27 @@ void native_names_and_search() {
 
 void pop_grades_read_back() {
     check(graded_pop_name(1) == "low" && graded_pop_name(3) == "high" && graded_pop_name(4).empty(), "Only the game's three pop grades have a name");
+    {
+        const auto near = [](float a, float b) { return std::abs(a - b) < 0.006f; };
+        check(keys_weight_in_game(-0.2f, 1.5f, 0.3f) == 0 && keys_weight_in_game(0.0f, 1.5f, 0.3f) == 0, "No keys before the trick starts to show");
+        check(near(keys_weight_in_game(0.05f, 1.5f, 0.3f), 0.5f) && keys_weight_in_game(0.1f, 1.5f, 0.3f) == 1, "The keys are in over a tenth of a second");
+        check(keys_weight_in_game(0.8f, 0.3f, 0.3f) == 1 && near(keys_weight_in_game(0.8f, 0.15f, 0.3f), 0.5f) && keys_weight_in_game(0.8f, 0.0f, 0.3f) == 0,
+              "They go out over the Crossfade before the trick's end");
+        check(near(keys_weight_in_game(0.8f, 0.5285f, 0.6f), 0.961f) && near(keys_weight_in_game(0.8f, 0.4303f, 0.6f), 0.805f) &&
+                  near(keys_weight_in_game(0.8f, 0.3302f, 0.6f), 0.575f),
+              "As the game's own weights on a real kickflip with a Crossfade of 0.6 s");
+        check(keys_weight_in_game(0.8f, 0.05f, 0.01f) == keys_weight_in_game(0.8f, 0.05f, 0.1f) && keys_weight_in_game(0.8f, 0.8f, 5.0f) == 1,
+              "The Crossfade counts between 0.1 and 0.8 s");
+        // The editor's copy of the END ANIM way out against the animation update's own.
+        Animation window;
+        window.end = 1.0f;
+        bool same = keys_window_out(0.0f, -1.0f, 0.95f) == 1;
+        for (const float t : {0.5f, 0.92f, 0.95f, 0.98f, 1.0f, 1.01f}) same = same && near(keys_window_out(0.0f, 1.0f, t), animation_window_weight(window, t));
+        window.start = 0.3f;
+        window.end = 0.4f;
+        for (const float t : {0.36f, 0.38f, 0.4f}) same = same && near(keys_window_out(0.3f, 0.4f, t), animation_window_weight(window, t));
+        check(same, "The keys go out before an END ANIM as the animation update takes them out");
+    }
     check(pop_grade_since(100, 0.5) == 0 && pop_grade_since(5000, 0.5) == 4200,
           "Grade lookup uses a bounded recent time window without unsigned wraparound");
     {

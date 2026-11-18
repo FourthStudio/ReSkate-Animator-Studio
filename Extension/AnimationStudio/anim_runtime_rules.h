@@ -15,6 +15,31 @@ namespace dingosdk::anim_studio {
 inline std::string_view graded_pop_name(int grade) noexcept {
     return grade == 1 ? "low" : grade == 2 ? "mid" : grade == 3 ? "high" : "";
 }
+// How much of a trick's keys the game shows at a moment of the trick: the animation update gives them a weight, in over
+// 0.1 s from where the trick starts to show, out over its Crossfade (0.1 to 0.8 s) before its end - END ANIM, or the clip's
+// end. The editor draws them whole all the way, so it says where the game does not. Read on real kickflips with a Crossfade
+// of 0.6 s (2026-11-14): the game's weight was 0.96, 0.81 and 0.58 at 0.53, 0.43 and 0.33 s before the trick's end, and
+// 0.07 then 1.00 over the tenth of a second it came in; this gives the same.
+// `since_shown`: seconds since the trick started to show; `until_end`: seconds to its end.
+inline constexpr float keys_fade_in_seconds = 0.1f;
+constexpr float eased_share(float x) noexcept {
+    x = x < 0 ? 0.0f : x > 1 ? 1.0f : x;
+    return x * x * (3 - 2 * x);
+}
+constexpr float keys_weight_in_game(float since_shown, float until_end, float crossfade) noexcept {
+    const float fade_out = crossfade < 0.1f ? 0.1f : crossfade > 0.8f ? 0.8f : crossfade;
+    return eased_share(since_shown / keys_fade_in_seconds) * eased_share(until_end / fade_out);
+}
+// With an END ANIM set by hand (`end` >= 0) the game also takes the keys out over the last 0.08 s before it (half the
+// START to END ANIM window when that is shorter), on top of the Crossfade: the way out of animation_window_weight
+// (anim_core.cpp). 1 without an END ANIM.
+constexpr float keys_window_out(float start, float end, float seconds) noexcept {
+    if (end < 0) return 1;
+    if (seconds > end) return 0;
+    const float half = (end - start) * 0.5f;
+    const float width = half < 0.08f ? (half > 0 ? half : 0.0f) : 0.08f;
+    return width > 0 ? eased_share((end - seconds) / width) : 0.0f;
+}
 // How far back to look for the grade of the pop `elapsed_seconds` ago (and a little more), never before 0.
 inline std::uint64_t pop_grade_since(std::uint64_t now, double elapsed_seconds) noexcept {
     const double age = std::isfinite(elapsed_seconds) ? std::max(0.0, elapsed_seconds) * 1000.0 + 300.0 : static_cast<double>(now);
