@@ -575,18 +575,19 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys() {
     struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
     const auto& s = state();
     const HWND window = s.window.load();
-    // (Not while a menu, the console or chat has the keyboard; the card itself having the pointer is no reason.)
-    const bool typing = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() || s.hub_typing.load();
+    // (Not while a menu, the console, chat or the Animator Studio has the keyboard. The card itself having the pointer is no reason.)
+    const bool typing = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() || s.hub_typing.load() ||
+                        s.studio_visible.load();
     if (!window || s.stop.load() || s.failed.load() || typing || !game_window_foreground(window)) return 0;
     unsigned keys{};
-    constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE};
+    constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE, VK_BACK};
     if (std::array<std::uint64_t, 4> held{}; sampled_keys(window, held)) {
-        for (unsigned bit = 0; bit < 4; ++bit)
+        for (unsigned bit = 0; bit < std::size(wanted); ++bit)
             if (held[wanted[bit] / 64] >> (wanted[bit] % 64) & 1) keys |= 1u << bit;
         return keys;
     }
     OverlayInputAccess access;
-    for (unsigned bit = 0; bit < 4; ++bit)
+    for (unsigned bit = 0; bit < std::size(wanted); ++bit)
         if (GetAsyncKeyState(wanted[bit]) & 0x8000) keys |= 1u << bit;
     return keys;
 }

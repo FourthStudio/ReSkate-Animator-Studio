@@ -98,7 +98,7 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
         target_link_libraries(dingosdk_https_fetch_tests PRIVATE winhttp dingosdk_https_trust)
         add_test(NAME https_fetch COMMAND dingosdk_https_fetch_tests "${CMAKE_CURRENT_BINARY_DIR}/https-fetch-fixtures")
         add_executable(dingosdk_map_download_timeout_tests Extension/Assets/Test/map_download_timeout_tests.cpp
-            Engine/Vfs/thunderstore_package.cpp)
+            Engine/Vfs/thunderstore_package.cpp Extension/Plugins/plugin_server_scope.cpp)
         target_include_directories(dingosdk_map_download_timeout_tests PRIVATE "${PROJECT_SOURCE_DIR}")
         target_link_libraries(dingosdk_map_download_timeout_tests PRIVATE dingosdk_json)
         add_test(NAME map_download_timeout COMMAND dingosdk_map_download_timeout_tests

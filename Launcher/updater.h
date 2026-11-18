@@ -68,6 +68,10 @@ inline bool can_apply_update(UpdateChoices checked, UpdateChoices requested, boo
 // reinstalls this build to return to it.
 bool has_official_channel() noexcept;
 std::wstring_view release_repo(Channel channel) noexcept;
+// The release tag that gets the changelogs' INSTALLED mark, from a runtime version of `channel`.
+// This build's "1.0.11+reskate.2.1.2" is its release "1.0.11". Official ReSkate's releases get no
+// mark: while this launcher runs, base ReSkate is only chosen, not installed.
+std::string installed_release_tag(Channel channel, const std::string& version);
 
 // Returns nothing when offline or the config is invalid; the reason is logged.
 // `prereleases`: the newest release that carries a launcher.json, pre-release or not (the
@@ -85,6 +89,9 @@ std::vector<ReleaseNote> parse_release_feed(std::string_view feed);
 // The newest release of the repo the launcher updates from (with `prereleases`, the newest
 // pre-release when it is newer). Throws when GitHub cannot be reached.
 ReleaseNote fetch_release_note(bool prereleases = false, Channel channel = Channel::own);
+// That release first, then the ones before it from the releases page's feed, `most` in all at
+// most: what someone who skipped a few updates missed. Throws when GitHub cannot be reached.
+std::vector<ReleaseNote> fetch_release_notes(bool prereleases = false, Channel channel = Channel::own, std::size_t most = 12);
 // That repo's releases page on GitHub.
 std::string releases_page(Channel channel = Channel::own);
 

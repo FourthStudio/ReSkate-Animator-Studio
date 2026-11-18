@@ -599,7 +599,40 @@ ReleaseNote fetch_release_note(bool prereleases, Channel channel) {
     return std::move(notes.front());
 }
 
+std::vector<ReleaseNote> fetch_release_notes(bool prereleases, Channel channel, std::size_t most) {
+    std::vector<ReleaseNote> feed;
+    try {
+        const auto url = std::wstring(L"https://github.com/") + std::wstring(release_repo(channel)) + L"/releases.atom";
+        std::string text;
+        http_get(url, 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
+        feed = parse_release_feed(text);
+    } catch (const std::exception& exception) {
+        logging::log(logging::Level::info, logging::Channel::launcher, "The releases feed could not be read ({}).", exception.what());
+    }
+    // The newest as GitHub's API has it (its notes as they were written), which also says which
+    // release that is when pre-releases are not wanted: the feed lists them among the rest.
+    std::vector<ReleaseNote> notes;
+    try {
+        notes.push_back(fetch_release_note(prereleases, channel));
+    } catch (const std::exception&) {
+        if (feed.empty()) throw;
+    }
+    for (auto& note : feed) {
+        if (notes.size() >= most) break;
+        // (Nothing newer than the release in use: a pre-release that is not wanted.)
+        if (!notes.empty() && (note.tag == notes.front().tag || note.date > notes.front().date)) continue;
+        notes.push_back(std::move(note));
+    }
+    if (notes.empty()) fail("The repository has no releases");
+    return notes;
+}
+
 std::string releases_page(Channel channel) { return "https://github.com/" + utf8(std::wstring(release_repo(channel))) + "/releases"; }
+
+std::string installed_release_tag(Channel channel, const std::string& version) {
+    if (channel == Channel::official) return {};
+    return version.substr(0, version.find("+reskate."));
+}
 
 bool file_matches(const fs::path& path, const RemoteFile& file) {
     std::error_code error;
